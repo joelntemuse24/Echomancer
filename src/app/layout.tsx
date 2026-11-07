@@ -11,6 +11,8 @@ const cormorantGaramond = Cormorant_Garamond({
   style: ["normal", "italic"],
 });
 
+// Next 16.4.3+ encodes Google's extensionless /l/font?kit= URLs. On 16.1.6
+// a response that contains `&` fails the Vercel build. The families stay.
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],

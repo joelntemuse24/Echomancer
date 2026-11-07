@@ -229,8 +229,12 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 `en-GB-LibbyNeural`), **Ryan** (`ryan` → Edge `en-GB-RyanNeural`) plus user
 clones. No Gemini / MiniMax / rejected Edge
 females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
-not listed. `SLIM_STOCK_VOICE_IDS` lists five ids and the customer UI renders
-all five. Picker samples are committed recordings at
+not listed. `SLIM_STOCK_VOICE_IDS` lists five ids. The customer UI renders
+those five, then a Sowell card only when `GET /api/tts/voices` includes
+provider `sowell`. The card uses that voice's name. A tap selects it and
+does not request a sample. When the response omits Sowell the card is
+absent, and a saved Sowell pick does not highlight Andrew. Picker samples
+for the five are committed recordings at
 `public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
 `libby`, `ryan`), preloaded on the voice page. Re-record
 them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara

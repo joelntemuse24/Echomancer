@@ -7,6 +7,7 @@ import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { resolveStockAdapter } from "@/lib/tts/providers";
 import { splitSowellText } from "@/lib/tts/providers/sowell";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import { voicesForPath } from "@/lib/voice-path";
 import { takehomeCacheVariant } from "@/lib/tts/process-job";
 import { hardMaxCharsForModel } from "@/lib/tts/section-size";
 import {
@@ -38,6 +39,9 @@ describe("sowell voice", () => {
     expect(await getCatalogVoice("sowell")).toBeUndefined();
     const listed = await listCatalogVoices();
     expect(listed.map((voice) => voice.id)).not.toContain("sowell");
+    expect(voicesForPath(listed, "standard").map((voice) => voice.id)).toEqual([
+      ...SLIM_STOCK_VOICE_IDS,
+    ]);
     expect(() => sowellEndpoint()).toThrow(SowellNotConfiguredError);
     await expect(
       resolveStockAdapter({ provider: "sowell", catalogVoiceId: "sowell" }).synthesize({
@@ -53,9 +57,15 @@ describe("sowell voice", () => {
     const voice = await getCatalogVoice("sowell");
     expect(voice?.provider).toBe("sowell");
     expect(voice?.displayName).toMatch(/^Sowell/);
-    const listed = (await listCatalogVoices()).map((item) => item.id);
+    const catalog = await listCatalogVoices();
+    const listed = catalog.map((item) => item.id);
     expect(listed.slice(0, 5)).toEqual([...SLIM_STOCK_VOICE_IDS]);
     expect(listed).toContain("sowell");
+    expect(voicesForPath(catalog, "standard").map((voice) => voice.id)).toEqual([
+      ...SLIM_STOCK_VOICE_IDS,
+      "sowell",
+    ]);
+    expect(voicesForPath(catalog, "standard").at(-1)?.displayName).toMatch(/^Sowell/);
     expect(takehomeCacheVariant("sowell", "sowell")).toBe(SOWELL_CACHE_VARIANT);
     expect(takehomeCacheVariant("edge", "standard")).not.toBe(SOWELL_CACHE_VARIANT);
     expect(takehomeCacheVariant("paradee", "echomancer-andrew")).toBe("paradee-paragraph-v1");

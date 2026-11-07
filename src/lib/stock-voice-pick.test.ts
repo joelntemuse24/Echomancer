@@ -77,6 +77,32 @@ describe("stock voice pick", () => {
     expect(readStockVoicePick(storage)).toBeNull();
   });
 
+  it("remembers a Sowell pick and does not replace a missing one with Andrew", () => {
+    const storage = memoryStore();
+    writeStockVoicePick(
+      { catalogVoiceId: "sowell", delivery: "standard" },
+      storage
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "sowell",
+      delivery: "standard",
+    });
+    expect(
+      resolveStockSelection({
+        availableIds: ["standard", "echomancer-andrew", "ava", "libby", "ryan", "sowell"],
+        explicitId: "sowell",
+        suggestedId: "standard",
+      })
+    ).toBe("sowell");
+    expect(
+      resolveStockSelection({
+        availableIds: ["standard", "ava", "libby", "ryan"],
+        explicitId: "sowell",
+        suggestedId: "standard",
+      })
+    ).toBeNull();
+  });
+
   it("keeps an explicit pick ahead of the narrator suggestion", () => {
     const availableIds = ["standard", "ava", "clara", "randolph"];
     expect(

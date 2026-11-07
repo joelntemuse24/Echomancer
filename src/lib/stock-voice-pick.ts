@@ -3,6 +3,7 @@
  * An auto-highlight is not a pick — only a tap is written.
  */
 
+import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
 
 const STORAGE_KEY = "ec_stock_voice_pick";
@@ -68,6 +69,9 @@ export function resolveStockSelection(input: {
 }): string | null {
   const available = new Set(input.availableIds);
   if (input.explicitId && available.has(input.explicitId)) return input.explicitId;
+  // A saved Sowell pick stays Sowell's. When the endpoint is off the card
+  // is gone, and Andrew is not substituted for it.
+  if (input.explicitId === SOWELL_CATALOG_VOICE_ID) return null;
   if (input.suggestedId && available.has(input.suggestedId)) {
     return input.suggestedId;
   }

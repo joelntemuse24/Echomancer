@@ -69,8 +69,10 @@ import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
+  isPersistableStandardVoiceId,
   isUserCloneVoice,
   parseVoicePath,
+  stockCardAudition,
   voicesForPath,
   withVoicePathParam,
   type VoicePath,
@@ -299,7 +301,7 @@ function VoiceSelectionContent() {
 
   useLayoutEffect(() => {
     const pick = readStockVoicePick();
-    if (!pick || !isSlimStockVoiceId(pick.catalogVoiceId)) return;
+    if (!pick || !isPersistableStandardVoiceId(pick.catalogVoiceId)) return;
     stockPickRef.current = pick;
     narratorTouchedRef.current = true;
     setSelectedVoiceId(pick.catalogVoiceId);
@@ -485,7 +487,7 @@ function VoiceSelectionContent() {
       // before the path query updates.
       if (
         selectedVoiceId &&
-        isSlimStockVoiceId(selectedVoiceId) &&
+        isPersistableStandardVoiceId(selectedVoiceId) &&
         narratorTouchedRef.current
       ) {
         return;
@@ -535,7 +537,7 @@ function VoiceSelectionContent() {
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
-    if (!isSlimStockVoiceId(id)) return;
+    if (!isPersistableStandardVoiceId(id)) return;
     narratorTouchedRef.current = true;
     const pick = {
       catalogVoiceId: id,
@@ -674,6 +676,11 @@ function VoiceSelectionContent() {
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
+    if (stockCardAudition(voice) === "select-only") {
+      stopPreviewPlayback();
+      selectVoice(voice.id, { dismissSample: true });
+      return;
+    }
     if (
       previewingId === voice.id &&
       (previewAudioRef.current?.active ||
@@ -819,7 +826,7 @@ function VoiceSelectionContent() {
 
   const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
-      if (isSlimStockVoiceId(voice.id)) {
+      if (isPersistableStandardVoiceId(voice.id)) {
         const pick = {
           catalogVoiceId: voice.id,
           delivery: "standard" as const,
@@ -1070,6 +1077,7 @@ function VoiceSelectionContent() {
 
   const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
+    const selectOnly = stockCardAudition(voice) === "select-only";
     const isPlaying = previewingId === voice.id;
     const isSelected = selectedVoiceId === voice.id && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
@@ -1184,9 +1192,13 @@ function VoiceSelectionContent() {
           ) : (
           <button
             type="button"
-            disabled={previewBusyElsewhere}
+            disabled={selectOnly ? false : previewBusyElsewhere}
             aria-pressed={isSelected}
-            aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
+            aria-label={
+              selectOnly
+                ? label
+                : `${isPlaying ? UX.liveListenStop : UX.preview} ${label}`
+            }
             onClick={() => {
               void previewVoice(voice);
             }}
@@ -1194,7 +1206,7 @@ function VoiceSelectionContent() {
             style={{ fontWeight: 300 }}
           >
             <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
-              {glyph(isLoadingPreview, isPlaying)}
+              {selectOnly ? null : glyph(isLoadingPreview, isPlaying)}
             </span>
             <span className="min-w-0 truncate">{label}</span>
             {isSelected ? (
