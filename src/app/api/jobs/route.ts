@@ -35,6 +35,12 @@ import {
   assertCanDispatchTakehome,
   enqueueTakehomeAdvance,
 } from "@/lib/jobs/takehome-dispatch";
+import {
+  abortTakehomeCreate,
+  beginTakehomeCreate,
+  commitTakehomeCreate,
+  TakehomeCreateBusyError,
+} from "@/lib/jobs/takehome-identity";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -237,7 +243,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const jobId = randomUUID();
+    let jobId: string = randomUUID();
     const ttsOptions = JSON.stringify({
       ...(parsed.ttsOptions || {}),
       model: resolvedModel,
@@ -245,45 +251,38 @@ export async function POST(request: NextRequest) {
       ...(catalog?.locale ? { locale: catalog.locale } : {}),
     });
 
-    // Accent variants share a `providerVoiceId`, so dedupe on the catalog id.
-    // Any live book (queued, waiting on extract, processing, or ready) is
-    // returned as-is, so a double tap or a back-then-re-tap lands on the
-    // same job instead of starting a second book.
+    // Accent variants share a `providerVoiceId`, so the key includes the
+    // catalog id. A live book is returned as-is. The key insert is one
+    // statement, so two overlapping creates cannot both win.
+    let takehomeKey: string | null = null;
     if (jobKind === "takehome") {
-      const existing = await query<{ id: string; status: string }>(
-        catalogVoiceId
-          ? `SELECT id, status FROM jobs
-             WHERE user_id = ? AND pdf_storage_path = ? AND catalog_voice_id = ?
-             AND tts_provider = ?
-             AND job_kind = 'takehome'
-             AND status IN ('queued', 'waiting', 'processing', 'ready')
-             AND deleted_at IS NULL
-             LIMIT 1`
-          : `SELECT id, status FROM jobs
-             WHERE user_id = ? AND pdf_storage_path = ? AND tts_provider = ?
-             AND provider_voice_id = ?
-             AND job_kind = 'takehome'
-             AND status IN ('queued', 'waiting', 'processing', 'ready')
-             AND deleted_at IS NULL
-             LIMIT 1`,
-        catalogVoiceId
-          ? [session.userId, parsed.pdfStoragePath, catalogVoiceId, ttsProvider]
-          : [
-              session.userId,
-              parsed.pdfStoragePath,
-              ttsProvider,
-              providerVoiceId,
-            ]
-      );
-      if (existing.length > 0) {
+      let opened: Awaited<ReturnType<typeof beginTakehomeCreate>>;
+      try {
+        opened = await beginTakehomeCreate({
+          userId: session.userId,
+          pdfStoragePath: parsed.pdfStoragePath,
+          ttsProvider,
+          catalogVoiceId,
+          providerVoiceId,
+          jobId,
+        });
+      } catch (err) {
+        if (err instanceof TakehomeCreateBusyError) {
+          return NextResponse.json({ error: err.message }, { status: 409 });
+        }
+        throw err;
+      }
+      if (opened.action === "use") {
         return NextResponse.json({
-          jobId: existing[0]!.id,
-          status: existing[0]!.status,
+          jobId: opened.jobId,
+          status: opened.status,
           duplicate: true,
           message: "Take-home audiobook already exists",
           priceEstimate: price,
         });
       }
+      jobId = opened.jobId;
+      takehomeKey = opened.idemKey;
     }
 
     // `waiting` is invisible to the deployed Trigger drain, which only claims
@@ -292,38 +291,44 @@ export async function POST(request: NextRequest) {
     const initialStatus =
       jobKind === "takehome" && extract !== "ready" ? "waiting" : "queued";
 
-    await execute(
-      `INSERT INTO jobs (
-         id, user_id, book_title, voice_name, status, progress,
-         pdf_storage_path,
-         generation_mode, job_kind, tts_provider, provider_voice_id,
-         catalog_voice_id, tts_options, char_count, parent_job_id,
-         price_estimate_eur, stream_max_chars, stream_cursor, stream_chars_used,
-         next_section_index
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        jobId,
-        session.userId,
-        parsed.bookTitle,
-        voiceName,
-        initialStatus,
-        0,
-        parsed.pdfStoragePath,
-        "stock",
-        jobKind,
-        ttsProvider,
-        providerVoiceId,
-        catalogVoiceId,
-        ttsOptions,
-        charCount,
-        parsed.parentJobId ?? null,
-        price.suggestedPriceEur,
-        streamMaxChars(),
-        0,
-        0,
-        0,
-      ]
-    );
+    try {
+      await execute(
+        `INSERT INTO jobs (
+           id, user_id, book_title, voice_name, status, progress,
+           pdf_storage_path,
+           generation_mode, job_kind, tts_provider, provider_voice_id,
+           catalog_voice_id, tts_options, char_count, parent_job_id,
+           price_estimate_eur, stream_max_chars, stream_cursor, stream_chars_used,
+           next_section_index
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          jobId,
+          session.userId,
+          parsed.bookTitle,
+          voiceName,
+          initialStatus,
+          0,
+          parsed.pdfStoragePath,
+          "stock",
+          jobKind,
+          ttsProvider,
+          providerVoiceId,
+          catalogVoiceId,
+          ttsOptions,
+          charCount,
+          parsed.parentJobId ?? null,
+          price.suggestedPriceEur,
+          streamMaxChars(),
+          0,
+          0,
+          0,
+        ]
+      );
+      if (takehomeKey) await commitTakehomeCreate(takehomeKey, jobId);
+    } catch (err) {
+      if (takehomeKey) await abortTakehomeCreate(takehomeKey, jobId);
+      throw err;
+    }
 
     // Generation is *enqueued*, never run here. The VM worker (or Trigger
     // fallback) picks take-homes up.

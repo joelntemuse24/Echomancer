@@ -22,6 +22,7 @@ import {
   isFishLiveVoice,
   startFishHttpStream,
 } from "@/lib/tts/providers/fish";
+import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
 import {
   clientIp,
   createRateLimiter,
@@ -282,6 +283,15 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       },
     });
   } catch (error) {
+    if (error instanceof ProviderSlotBusyError) {
+      return NextResponse.json(
+        {
+          error: "That voice is busy right now. Nothing else was substituted.",
+          code: "PREVIEW_CAPACITY",
+        },
+        { status: 503 }
+      );
+    }
     console.error("[tts/live] error:", error);
     const raw = error instanceof Error ? error.message : "Preview failed";
     const status =

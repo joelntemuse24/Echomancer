@@ -32,7 +32,7 @@
  * a slow one, and double-synthesized any section that took longer than that.
  */
 
-import { deleteFile, downloadFile, uploadFile } from "@/lib/storage";
+import { deleteFile, downloadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
 import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
@@ -91,7 +91,10 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
-import { prepareSectionForStorage } from "@/lib/tts/section-master";
+import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
+import { holdBookConcat } from "@/lib/cpu/runner";
+import { commitSectionAudio, promoteFinishedSections } from "@/lib/cpu/section-publish";
+import { runInsideCpuTask } from "@/lib/cpu/task-slot";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
@@ -111,7 +114,6 @@ import {
   readyCount,
   runIndexBoundFanout,
   runRollingIndexPool,
-  sectionObjectName,
   upsertSegment,
 } from "@/lib/tts/section-index";
 import {
@@ -129,11 +131,23 @@ import {
   bindEdgeGoogleGate,
   createInFlightGate,
   edgeGoogleInFlightLimit,
+  edgeGoogleSectionConcurrency,
   isEdgeOrGoogleProvider,
   isUpstreamThrottle,
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
+import { markTakehomeServed, takehomeClaimSql, takehomeInflightCap } from "@/lib/jobs/takehome-fairness";
+import {
+  holdEdgeSectionSlot,
+  holdNamedProviderSlot,
+  paradeeSharedCap,
+  ProviderSlotBusyError,
+  readProviderThrottle,
+  releaseProviderSlotsForOwner,
+  renewTakehomeProviderSlots,
+} from "@/lib/tts/provider-slots";
+import { takehomeLeaseContext } from "@/lib/tts/takehome-lease-context";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import type { FishLatency } from "@/lib/tts/providers/fish";
@@ -236,10 +250,7 @@ export function paradeeAttemptBudgetMs(chars: number): number {
 /** Paradee sections in flight for one book. */
 export const PARADEE_FANOUT_DEFAULT = 3;
 export function paradeeFanout(): number {
-  const raw = Number(process.env.TTS_PARADEE_FANOUT);
-  const chosen =
-    Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : PARADEE_FANOUT_DEFAULT;
-  return Math.max(1, chosen);
+  return paradeeSharedCap() || PARADEE_FANOUT_DEFAULT;
 }
 
 type LeaseCover = { jobId: string; untilMs: number };
@@ -360,6 +371,11 @@ function dropInFlightTakehomeLease(jobId: string, token: string) {
 export async function releaseInFlightTakehomeLeases(): Promise<number> {
   const held = [...inFlightTakehomeLeases.entries()];
   for (const [jobId, token] of held) {
+    // Slots first. A crash between the two still leaves the lease, which the
+    // next boot can reclaim, rather than a permit with no owner process.
+    await releaseProviderSlotsForOwner(token).catch((err) => {
+      console.error(`[Job ${jobId}] slot release failed`, err);
+    });
     await releaseLease(jobId, token, { status: "queued" });
     dropInFlightTakehomeLease(jobId, token);
   }
@@ -533,7 +549,22 @@ export async function claimTakehomeLease(
             OR lease_expires_at <= unixepoch())`,
     [token, ttlSeconds, jobId]
   );
-  return result.rowsAffected > 0 ? token : null;
+  if (result.rowsAffected <= 0) return null;
+  await markTakehomeServed(jobId);
+  return token;
+}
+
+async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boolean> {
+  const row = await queryOne<{
+    status: string;
+    deleted_at: number | null;
+    processing_lease_token: string | null;
+  }>(
+    `SELECT status, deleted_at, processing_lease_token FROM jobs WHERE id = ?`,
+    [jobId]
+  );
+  if (!row || row.deleted_at != null || row.status === "cancelled") return true;
+  return row.processing_lease_token !== lease;
 }
 
 async function heartbeatLease(
@@ -593,8 +624,17 @@ function startLeaseHeartbeat(
     }
     paused = false;
     void heartbeatLease(jobId, token)
-      .then((held) => {
-        if (!held) lost = true;
+      .then(async (held) => {
+        if (!held) {
+          lost = true;
+          return;
+        }
+        await renewTakehomeProviderSlots(token, LEASE_TTL_SECONDS).catch((err) => {
+          console.warn(
+            `[lease] provider-slot renew skipped for ${jobId}`,
+            err instanceof Error ? err.message : err
+          );
+        });
       })
       .catch((err) => {
         if (isTransientWorkerError(err)) {
@@ -882,10 +922,24 @@ export async function processTakehomeTick(
     deadlineMs: opts?.deadlineMs,
   });
   try {
-    return await runClaimedTick(job, lease, opts);
+    return await takehomeLeaseContext.run({ token: lease, jobId }, () =>
+      runClaimedTick(job, lease, opts)
+    );
   } catch (err) {
-    if (err instanceof ListenPrepDeferredError) {
-      console.log(`[Job ${jobId}] listen-prep needs a later tick`);
+    if (
+      err instanceof ListenPrepDeferredError ||
+      err instanceof ProviderSlotBusyError ||
+      err instanceof CpuBacklogError
+    ) {
+      console.log(
+        `[Job ${jobId}] ${
+          err instanceof ProviderSlotBusyError
+            ? "shared provider cap is full"
+            : err instanceof CpuBacklogError
+              ? "cpu work is queued"
+              : "listen-prep needs a later tick"
+        }`
+      );
       await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
       return {
         done: false,
@@ -1072,7 +1126,7 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
-  const fanout =
+  let fanout =
     providerId === "paradee"
       ? paradeeFanout()
       : usesModalClone(job.catalog_voice_id)
@@ -1082,6 +1136,12 @@ async function runClaimedTick(
         : isEdgeOrGoogleProvider(providerId)
           ? edgeGoogleInFlightLimit()
           : await takehomeFanoutCap();
+  if (isEdgeOrGoogleProvider(providerId)) {
+    // Another process may already have halved the shared cap after a 429.
+    // Starting a full local wave would take the slots, then defer the book.
+    const shared = await readProviderThrottle("edge");
+    if (shared != null) fanout = Math.max(1, Math.min(fanout, shared));
+  }
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   //
@@ -1098,7 +1158,9 @@ async function runClaimedTick(
     clonePacked &&
     frozen!.sections.length > 0 &&
     Math.max(...frozen!.sections.map((section) => section.text.length)) > packChars &&
-    parseSegments(job.segments_json).every((segment) => segment.status !== "ready");
+    parseSegments(job.segments_json).every(
+      (segment) => segment.status !== "ready" && segment.status !== "mastering"
+    );
   if (frozenTooWide) {
     console.warn(
       `[Job ${jobId}] clone sections were packed wider than one call can render ` +
@@ -1183,6 +1245,18 @@ async function runClaimedTick(
   }
 
   let segments = parseSegments(job.segments_json);
+  const promoted = await promoteFinishedSections(jobId, segments);
+  if (promoted.changed) {
+    segments = promoted.segments;
+    await writeWithLease(
+      jobId,
+      lease,
+      `UPDATE jobs SET segments_json = ?, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [JSON.stringify(segments)]
+    );
+  }
+  let cpuBacklog = promoted.waiting;
 
   const provider = resolveStockAdapter({
     provider: providerId,
@@ -1296,6 +1370,9 @@ async function runClaimedTick(
      * worker reuses what is stored and re-claims only unfinished sections.
      */
     let cloneColdSeen = false;
+    // A shared cap that is only partly free. Sections that already hold a
+    // slot finish and write before the tick returns the book to the queue.
+    let providerCapFull = false;
     /**
      * The last hard provider fault (a non-cold 5xx / unusable audio) seen in
      * this tick, if any. Presence means the Modal engine answered and its
@@ -1308,6 +1385,20 @@ async function runClaimedTick(
       nextWriteIndex: () => number,
       sectionOpts?: { skipSectionQa?: boolean }
     ): Promise<SynthesisSuccess | SynthesisFailure> => {
+      if (await takehomeLeaseStopped(jobId, lease)) {
+        throw new LeaseLostError(jobId);
+      }
+      const capacitySlot =
+        providerId === "edge" || providerId === "google"
+          ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
+          : providerId === "paradee"
+            ? await holdNamedProviderSlot("paradee", paradeeFanout())
+            : providerId === "fish"
+              ? null
+              : await holdNamedProviderSlot(
+                  providerId,
+                  FISH_ACCOUNT_CONCURRENCY
+                );
       const life = openSectionLifecycle(
         jobId,
         provider.id,
@@ -1401,28 +1492,58 @@ async function runClaimedTick(
         }
 
         life.mastering();
-        const stored = await prepareSectionForStorage(
-          synthesized.audio,
-          synthesized.extension,
-          synthesized.contentType,
-          process.env,
-          // S2 clones need their own spectral balance and loudness target.
-          usesModalClone(catalog?.id) ? "s2" : "podcast"
-        );
-        const uploaded = await uploadFile(
-          `audiobooks/${jobId}`,
-          sectionObjectName(index, stored.extension),
-          stored.audio,
-          stored.contentType
-        );
+        const stored = await commitSectionAudio({
+          jobId,
+          index,
+          audio: synthesized.audio,
+          extension: synthesized.extension,
+          contentType: synthesized.contentType,
+          chain: usesModalClone(catalog?.id) ? "s2" : "podcast",
+          qaDeferred: synthesized.qaDeferred === true,
+          sourceText: sections[index],
+        });
+        if (!stored.ready) {
+          const segment: JobSegment = {
+            index,
+            path: "",
+            status: stored.regen ? "retry" : "mastering",
+            contentType: stored.contentType,
+            durationSeconds: synthesized.durationHintSeconds,
+            rawPath: stored.rawPath,
+            error: stored.regen ? "transcript check asked for another take" : undefined,
+          };
+          await writeLock(async () => {
+            segments = upsertSegment(segments, segment);
+            const done = readyCount(segments);
+            await writeWithLease(
+              jobId,
+              lease,
+              `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                 current_section = ?, total_sections = ?, tts_options = ?,
+                 status = 'processing', updated_at = unixepoch()
+               WHERE id = ? AND processing_lease_token = ?`,
+              [
+                nextWriteIndex(),
+                JSON.stringify(segments),
+                Math.min(99, Math.round((done / total) * 100)),
+                done,
+                total,
+                JSON.stringify(ttsOptions),
+              ]
+            );
+          });
+          if (!stored.regen) cpuBacklog = true;
+          return synthesized;
+        }
 
         const segment: JobSegment = {
           index,
-          path: uploaded.path,
+          path: stored.path,
           status: "ready",
           contentType: stored.contentType,
           durationSeconds: synthesized.durationHintSeconds,
           mastered: stored.mastered,
+          rawPath: stored.rawPath,
         };
 
         await writeLock(async () => {
@@ -1450,7 +1571,24 @@ async function runClaimedTick(
 
         return synthesized;
       } finally {
+        await capacitySlot?.release();
         life.end();
+      }
+    };
+
+    const workSection = async (
+      index: number,
+      nextWriteIndex: () => number,
+      sectionOpts?: { skipSectionQa?: boolean }
+    ): Promise<SynthesisSuccess | SynthesisFailure> => {
+      try {
+        return await processSection(index, nextWriteIndex, sectionOpts);
+      } catch (err) {
+        if (!(err instanceof ProviderSlotBusyError)) throw err;
+        // Do not mark the section failed. The pool keeps the sections that
+        // already acquired a slot running until they write.
+        providerCapFull = true;
+        return { ok: false, error: err.message };
       }
     };
 
@@ -1559,7 +1697,7 @@ async function runClaimedTick(
                 // Section 0 is published without it; every later section is
                 // still checked. The take is not swapped afterwards, because
                 // the player may already be reading the object.
-                await processSection(
+                await workSection(
                   index,
                   () => lowestUnreadyIndex(segments, total),
                   { skipSectionQa: true }
@@ -1637,9 +1775,13 @@ async function runClaimedTick(
       await runRollingIndexPool({
         concurrency: maxClaim,
         gate: edgeGate,
-        shouldStop: () => Boolean(stopAt && Date.now() >= stopAt),
+        shouldStop: () =>
+          providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
+          if (await takehomeLeaseStopped(jobId, lease)) {
+            throw new LeaseLostError(jobId);
+          }
           const index = nextClaimableIndex(segments, total, claimedSet);
           if (index === null) return null;
           if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
@@ -1655,7 +1797,7 @@ async function runClaimedTick(
           return index;
         },
         work: (index) =>
-          processSection(
+          workSection(
             index,
             () => lowestUnclaimedAfter(segments, total, [...claimedSet])
           ),
@@ -1685,12 +1827,16 @@ async function runClaimedTick(
         // One bad section must not fail the book — holes stay on the map.
         await runIndexBoundFanout(
           claimed,
-          (index) => processSection(index, () => nextUnclaimed),
+          (index) => workSection(index, () => nextUnclaimed),
           claimed.length,
           edgeGate ?? undefined
         );
       }
     }
+
+    // The cap stopped this wave. In-flight sections have already written.
+    // Hand the book back without opening another wave of provider calls.
+    if (providerCapFull) throw new ProviderSlotBusyError("provider");
 
     // After the last first-pass index, retry remaining holes once in this tick.
     const holes = claimableIndexes(segments, total);
@@ -1705,11 +1851,13 @@ async function runClaimedTick(
       await runIndexBoundFanout(
         holeSet,
         (index) =>
-          processSection(index, () => lowestUnreadyIndex(segments, total)),
+          workSection(index, () => lowestUnreadyIndex(segments, total)),
         holeSet.length,
         edgeGate ?? undefined
       );
     }
+
+    if (providerCapFull) throw new ProviderSlotBusyError("provider");
 
     // A section that could not be placed inside the restore budget must not
     // open another compile-length wait. Park the book here, with its sections
@@ -1782,6 +1930,10 @@ async function runClaimedTick(
    * treats as "not the finished book", and `error_message` is where a person
    * looks for why.
    */
+  if (cpuBacklog || segments.some((segment) => segment.status === "mastering")) {
+    throw new CpuBacklogError();
+  }
+
   const complete = allIndexesReady(segments, total);
   const canAssemble = complete || (stillClaimable.length === 0 && doneCount > 0);
 
@@ -1880,20 +2032,38 @@ async function runClaimedTick(
     // A whole-book concat can outlive the wave by many minutes. Keep the
     // heartbeat renewing for as long as it runs, or the sweeper reclaims the
     // job mid-finalize.
+    const concatHold = await holdBookConcat(jobId);
+    if (concatHold.kind === "deferred") throw new CpuBacklogError();
     const finalizing = markJobFinalizing(jobId);
     try {
-      audioPath = await materializeFullAudiobook(jobId, segments, total, {
-        crossfadeMs:
-          typeof ttsOptions.crossfadeMs === "number"
-            ? ttsOptions.crossfadeMs
-            : undefined,
-        allowHoles: holesLeft > 0,
-        joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
-        onDryUploaded: async (path) => {
-          uploadedPath = path;
-          await markReady(path);
-        },
-      });
+      if (concatHold.kind === "already") {
+        audioPath = concatHold.path;
+        uploadedPath = concatHold.path;
+        await markReady(concatHold.path);
+      } else {
+        try {
+          audioPath = await runInsideCpuTask(() =>
+            materializeFullAudiobook(jobId, segments, total, {
+              crossfadeMs:
+                typeof ttsOptions.crossfadeMs === "number"
+                  ? ttsOptions.crossfadeMs
+                  : undefined,
+              allowHoles: holesLeft > 0,
+              joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
+              onDryUploaded: async (path) => {
+                uploadedPath = path;
+                await markReady(path);
+              },
+            })
+          );
+          await concatHold.finish(Boolean(audioPath));
+        } catch (err) {
+          await concatHold.finish(false);
+          throw err;
+        } finally {
+          await concatHold.release();
+        }
+      }
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     } finally {
@@ -2066,6 +2236,8 @@ interface SynthesisSuccess {
   extension: string;
   durationHintSeconds?: number;
   cacheKey?: string;
+  /** Whisper could not run. The raw take is stored; the section is not ready. */
+  qaDeferred?: boolean;
 }
 
 /**
@@ -2192,25 +2364,33 @@ async function synthesizeSettled(
     );
     return first;
   }
-  const settled = await settleSectionTake({
-    jobId: args.jobId,
-    index: args.index,
-    sourceText: args.sectionText,
-    first,
-    rate,
-    regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText)),
-    synthesize: async (text, remainingMs) => {
-      const again = await synthesizeSection({
-        ...args,
-        sectionText: text,
-        frozen: undefined,
-        useCache: false,
-        maxAttempts: 1,
-        deadlineMs: Date.now() + remainingMs,
-      });
-      return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
-    },
-  });
+  let settled: Awaited<ReturnType<typeof settleSectionTake>>;
+  try {
+    settled = await settleSectionTake({
+      jobId: args.jobId,
+      index: args.index,
+      sourceText: args.sectionText,
+      first,
+      rate,
+      regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText)),
+      synthesize: async (text, remainingMs) => {
+        const again = await synthesizeSection({
+          ...args,
+          sectionText: text,
+          frozen: undefined,
+          useCache: false,
+          maxAttempts: 1,
+          deadlineMs: Date.now() + remainingMs,
+        });
+        return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
+      },
+    });
+  } catch (err) {
+    if (err instanceof CpuSaturatedError) {
+      return { ...first, qaDeferred: true };
+    }
+    throw err;
+  }
   if (settled.audio !== first.audio && first.cacheKey) {
     await writeSectionCache(
       first.cacheKey,
@@ -2374,9 +2554,12 @@ async function synthesizeSection(args: {
                   }),
           });
         };
-        // Fish and clones share the account slot. Edge and Google do not.
+        // Fish account calls share the account slot. A pinned Modal section
+        // does not: that HTTP is a clone lane, and taking a Fish permit for
+        // it would block a Fish book without capping the GPU. The lane
+        // dispatcher holds the Modal permit. This fallback does not.
         const result =
-          args.provider.id === "fish"
+          args.provider.id === "fish" && args.clonePin !== "modal"
             ? await withFishSlot(synthesize)
             : await synthesize();
 
@@ -2407,6 +2590,7 @@ async function synthesizeSection(args: {
           cacheKey,
         };
       } catch (err) {
+        if (err instanceof ProviderSlotBusyError) throw err;
         if (err instanceof FishRateLimitError) {
           lastError = err.message;
           console.warn(
@@ -2461,6 +2645,7 @@ async function synthesizeSection(args: {
         cover.end();
       }
     } catch (err) {
+      if (err instanceof ProviderSlotBusyError) throw err;
       lastError = err instanceof Error ? err.message : String(err);
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
@@ -2676,14 +2861,14 @@ export async function releaseExpiredTakehomeLeases(): Promise<number> {
 
 /** Take-home jobs waiting for a worker, oldest first. */
 export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
+  const claim = takehomeClaimSql(takehomeInflightCap());
   const rows = await query<{ id: string }>(
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
        AND job_kind = 'takehome'
-       AND status IN ('queued', 'waiting')
-     ORDER BY updated_at ASC
+       AND status IN ('queued', 'waiting')${claim.filter}${claim.order}
      LIMIT ?`,
-    [limit]
+    [...claim.args, limit]
   );
   return rows.map((r) => r.id);
 }
@@ -2695,6 +2880,7 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
  * Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
+  const claim = takehomeClaimSql(takehomeInflightCap());
   const rows = await query<{ id: string }>(
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
@@ -2707,10 +2893,9 @@ export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
            AND lease_expires_at IS NOT NULL
            AND lease_expires_at <= unixepoch()
          )
-       )
-     ORDER BY updated_at ASC
+       )${claim.filter}${claim.order}
      LIMIT ?`,
-    [limit]
+    [...claim.args, limit]
   );
   return [...new Set(rows.map((r) => r.id))];
 }

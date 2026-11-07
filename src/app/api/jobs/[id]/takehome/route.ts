@@ -16,6 +16,12 @@ import {
   assertCanDispatchTakehome,
   enqueueTakehomeAdvance,
 } from "@/lib/jobs/takehome-dispatch";
+import {
+  abortTakehomeCreate,
+  beginTakehomeCreate,
+  commitTakehomeCreate,
+  TakehomeCreateBusyError,
+} from "@/lib/jobs/takehome-identity";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -94,38 +100,74 @@ export async function POST(
         ? estimatePriceEur({ charCount, voice: catalog })
         : null;
 
-    const jobId = randomUUID();
+    let jobId: string = randomUUID();
     assertCanDispatchTakehome();
 
-    await execute(
-      `INSERT INTO jobs (
-         id, user_id, book_title, voice_name, status, progress,
-         pdf_storage_path,
-         generation_mode, job_kind, tts_provider, provider_voice_id,
-         catalog_voice_id, tts_options, char_count, parent_job_id,
-         price_estimate_eur, stream_max_chars, next_section_index
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        jobId,
-        session.userId,
-        String(parent.book_title ?? "Untitled"),
-        typeof parent.voice_name === "string" ? parent.voice_name : null,
-        "queued",
-        0,
-        parent.pdf_storage_path,
-        "stock",
-        "takehome",
-        typeof parent.tts_provider === "string" ? parent.tts_provider : null,
-        providerVoiceId || null,
+    const ttsProvider =
+      typeof parent.tts_provider === "string" ? parent.tts_provider : "";
+    let opened: Awaited<ReturnType<typeof beginTakehomeCreate>>;
+    try {
+      opened = await beginTakehomeCreate({
+        userId: session.userId,
+        pdfStoragePath: String(parent.pdf_storage_path ?? ""),
+        ttsProvider,
         catalogVoiceId,
-        parentTtsOptions,
-        charCount,
-        parent.id,
-        price?.suggestedPriceEur ?? null,
-        streamMaxChars(),
-        0,
-      ]
-    );
+        providerVoiceId,
+        jobId,
+      });
+    } catch (err) {
+      if (err instanceof TakehomeCreateBusyError) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      throw err;
+    }
+    if (opened.action === "use") {
+      return NextResponse.json({
+        jobId: opened.jobId,
+        status: opened.status,
+        duplicate: true,
+        parentJobId: parent.id,
+        priceEstimate: price,
+        message: "Take-home audiobook already exists",
+      });
+    }
+    jobId = opened.jobId;
+
+    try {
+      await execute(
+        `INSERT INTO jobs (
+           id, user_id, book_title, voice_name, status, progress,
+           pdf_storage_path,
+           generation_mode, job_kind, tts_provider, provider_voice_id,
+           catalog_voice_id, tts_options, char_count, parent_job_id,
+           price_estimate_eur, stream_max_chars, next_section_index
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          jobId,
+          session.userId,
+          String(parent.book_title ?? "Untitled"),
+          typeof parent.voice_name === "string" ? parent.voice_name : null,
+          "queued",
+          0,
+          parent.pdf_storage_path,
+          "stock",
+          "takehome",
+          ttsProvider || null,
+          providerVoiceId || null,
+          catalogVoiceId,
+          parentTtsOptions,
+          charCount,
+          parent.id,
+          price?.suggestedPriceEur ?? null,
+          streamMaxChars(),
+          0,
+        ]
+      );
+      await commitTakehomeCreate(opened.idemKey, jobId);
+    } catch (err) {
+      await abortTakehomeCreate(opened.idemKey, jobId);
+      throw err;
+    }
 
     await enqueueTakehomeAdvance(jobId);
 

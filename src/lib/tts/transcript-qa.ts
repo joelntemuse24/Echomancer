@@ -16,6 +16,8 @@
 import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
 import { assembleSectionTakes } from "@/lib/tts/section-master";
+import { CpuSaturatedError } from "@/lib/cpu/errors";
+import { insideCpuTask, tryCpuSlot } from "@/lib/cpu/task-slot";
 import {
   qaTranscriptsDisabled,
   resolveSttProvider,
@@ -214,7 +216,7 @@ export function localWhisperWaitMs(
   );
 }
 
-async function transcribeLocally(
+export async function transcribeLocally(
   audio: Buffer,
   env: NodeJS.ProcessEnv,
   remainingMs: number
@@ -619,17 +621,25 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript = await bounded((ms) =>
-        provider === "local"
-          ? transcribeLocally(audio, env, ms)
-          : transcribeWithOpenRouter(
-              audio,
-              contentType,
-              openRouterKey(env),
-              env,
-              Math.min(qaWaitMs(env), ms)
-            )
-      );
+      const transcript = await bounded(async (ms) => {
+        if (provider !== "local") {
+          return transcribeWithOpenRouter(
+            audio,
+            contentType,
+            openRouterKey(env),
+            env,
+            Math.min(qaWaitMs(env), ms)
+          );
+        }
+        if (insideCpuTask()) return transcribeLocally(audio, env, ms);
+        const cpu = await tryCpuSlot("whisper", ms);
+        if (cpu === null) throw new CpuSaturatedError("whisper");
+        try {
+          return await transcribeLocally(audio, env, ms);
+        } finally {
+          if (cpu !== "unavailable") await cpu.release();
+        }
+      });
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);
@@ -697,6 +707,7 @@ export async function settleSectionTake(opts: {
     logQa(opts.jobId, opts.index, best.wer, best.flags, action, provider, Date.now() - started);
     return best;
   } catch (err) {
+    if (err instanceof CpuSaturatedError) throw err;
     console.warn(
       `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open via=${provider} ms=${Date.now() - started}`,
       err instanceof Error ? err.message : err

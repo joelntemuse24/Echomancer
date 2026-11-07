@@ -23,8 +23,15 @@ It does **not** self-host Fish.
 
 ## Host sizing
 
-`WORKER_CONCURRENCY=1` is the default. Raise to `2` only after a full
-book has mastered without the OOM killer. DeepFilterNet3 is **opt-in**
+`WORKER_CONCURRENCY=1` is the default. Leave it there until
+`docs/cpu-modal-runbook.md` has been smoked. CPU tasks (extract, section
+master, local Whisper, concat) run on this VM when `CPU_RUNNER` is unset,
+under `cpu-host:<CPU_HOST_ID>:…` permits so a second process on this
+machine shares the cap. `CPU_RUNNER=modal` sends those tasks to the
+`echomancer-cpu` app instead of mastering them here. That app is not
+deployed by a worker restart. Do not raise book concurrency to paper over
+a full CPU cap: a full cap leaves the raw take queued and the section
+not ready. DeepFilterNet3 is **opt-in**
 (`TTS_MASTER_DFN=1` / `TTS_MASTER_DFN_WET>0`); default remaster is
 ffmpeg-only and is not the RAM hog.
 
@@ -345,18 +352,36 @@ Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 
 ## Cancel and concurrency
 
-Unchanged: `POST /api/jobs/[id]/cancel` sets `cancelled` and clears the
-lease. `runTakehomeUntilSettled` stops on `ready` / `failed` / `cancelled`,
-and also returns after a wave when another take-home is queued, or waiting
-on a file that is already read or failed. The drain then starts the oldest
-runnable job. When a read finishes, that upload's waiting books are queued
-(or failed) before the drain wakes. Sections already written stay on the
-book. `WORKER_CONCURRENCY` stays the number of books in flight. Do not raise
-it to overlap a second book's ffmpeg: Edge synthesis is network-bound, and
-section mastering is CPU-bound on this one machine.
+`POST /api/jobs/[id]/cancel` sets `cancelled` and clears the lease. The
+tick will not start another section after it sees that, and it will not
+write the row back to `processing` or `ready`. The provider call already
+running is not aborted. `runTakehomeUntilSettled` stops on `ready` /
+`failed` / `cancelled`, and also returns after a wave when another
+take-home is queued, or waiting on a file that is already read or failed.
+The drain then prefers the user who has waited longer since their last
+claim (`takehome_fairness`). Inside one user, order is still `updated_at`.
+A user with a live lease is not given a second book
+(`TAKEHOME_MAX_INFLIGHT_PER_USER`, default 1). When a read finishes, that
+upload's waiting books are queued (or failed) before the drain wakes.
+Sections already written stay on the book. A section whose master is still
+queued is `mastering`, not `ready`, and its provider audio lives under
+`raw/`. `WORKER_CONCURRENCY` stays the number of books in flight on this
+VM. CPU for master, Whisper, concat, and extract is a separate bound
+(`cpu_tasks`, and `CPU_MAX_CONTAINERS` once the Modal CPU app is deployed).
 Two workers cannot synthesize the same section — lease tokens already
-gate every progress write. This process also refuses to start a `jobId`
-that is already in flight.
+gate every progress write. Fish take-home calls, live Fish, Edge sections,
+Paradee sections, other stock sections, Modal clone lanes, per-section Modal
+fallback, and warm clone previews take a row in `provider_slots`. A second
+process shares those caps. A listen or preview with no lease renews its row
+until release. An Edge 429 writes `provider_throttle` for 120 seconds; other
+processes read it when they size the next wave and when they take a slot.
+A full cap lets every section that already holds a permit finish and
+write, then puts the book back on `queued` for the next drain. It does
+not fail the section and it does not poll the table. Shutdown deletes the
+slots owned by the leases this process still holds. This process also refuses to start a `jobId` that is
+already in flight. Overlapping creates of the same book
+reserve one `takehome_create_keys` row. Historical duplicate jobs are left
+in place. The oldest live one is the id a new create returns.
 
 On `SIGTERM` or `SIGINT` the process stops the drain, waits up to 30s for
 in-flight waves, then releases any lease this process still holds back to

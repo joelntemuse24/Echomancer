@@ -22,7 +22,10 @@ import {
   stubModalEndpoints,
 } from "./modal-endpoints.fixture";
 
-vi.mock("@/lib/turso", () => ({ queryOne: vi.fn(), execute: vi.fn() }));
+vi.mock("@/lib/turso", () => ({
+  queryOne: vi.fn(),
+  execute: vi.fn(async () => ({ rowsAffected: 1 })),
+}));
 vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
 
 /** Smallest bytes that pass `sniffAudioContentType` and the truncation guard. */

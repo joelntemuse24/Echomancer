@@ -2,7 +2,17 @@
  * Edge and Google whole-book sections do not use the Fish account, so they
  * do not share the Fish fan-out (4, or 5 when nothing live is in flight).
  * Fish and clones stay on {@link takehomeFanoutCap}.
+ *
+ * The in-memory halving below is this process only. The same number is
+ * written to `provider_throttle` so every other process's slot acquire
+ * uses it until it expires. There is no poller.
  */
+
+import {
+  clearProviderThrottle,
+  EDGE_THROTTLE_TTL_SECONDS,
+  writeProviderThrottle,
+} from "@/lib/tts/provider-slots";
 
 export const EDGE_GOOGLE_SECTION_CONCURRENCY_DEFAULT = 8;
 export const EDGE_GOOGLE_SECTION_CONCURRENCY_MAX = 16;
@@ -85,10 +95,14 @@ export function noteEdgeGoogleThrottle(): number {
   const next = Math.max(1, Math.floor(edgeGoogleInFlightLimit() / 2));
   throttledCap = next;
   liveGate?.shrinkTo(next);
+  void writeProviderThrottle("edge", next, EDGE_THROTTLE_TTL_SECONDS).catch(
+    () => undefined
+  );
   return next;
 }
 
 export function resetEdgeGoogleThrottle(): void {
   throttledCap = null;
   liveGate = null;
+  void clearProviderThrottle("edge").catch(() => undefined);
 }

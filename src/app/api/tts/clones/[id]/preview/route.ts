@@ -49,6 +49,7 @@ import {
   ModalCloneColdError,
   synthesizeModalClonePreview,
 } from "@/lib/tts/providers/modal-clone";
+import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
 
 export const runtime = "nodejs";
 /**
@@ -260,15 +261,22 @@ export async function POST(
       // A cold pool is a wait, not a broken voice. Both cases say plainly that
       // nothing was substituted, and neither leaks the provider's own wording.
       const cold = err instanceof ModalCloneColdError;
+      const busy = err instanceof ProviderSlotBusyError;
       return NextResponse.json(
         {
           error: cold
             ? "Your cloned voice is starting up. Try again in a moment — nothing else was substituted."
-            : "That voice's sample couldn't be made right now. Nothing else was substituted.",
-          code: cold ? "PREVIEW_ENGINE_COLD" : "PREVIEW_RENDER_FAILED",
+            : busy
+              ? "That voice is busy right now. Nothing else was substituted."
+              : "That voice's sample couldn't be made right now. Nothing else was substituted.",
+          code: cold
+            ? "PREVIEW_ENGINE_COLD"
+            : busy
+              ? "PREVIEW_CAPACITY"
+              : "PREVIEW_RENDER_FAILED",
           engine,
         },
-        { status: cold ? 503 : 502 }
+        { status: cold || busy ? 503 : 502 }
       );
     }
 
