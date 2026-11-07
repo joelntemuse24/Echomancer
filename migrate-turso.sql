@@ -64,12 +64,16 @@ CREATE TABLE IF NOT EXISTS jobs (
   processing_started_at INTEGER,
   processing_lease_token TEXT,
   lease_expires_at INTEGER,
-  generation_started_at INTEGER
+  generation_started_at INTEGER,
+  -- Drain skips a book until this unix time. Null means eligible now.
+  sched_not_before INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 CREATE INDEX IF NOT EXISTS idx_jobs_takehome_queue ON jobs (job_kind, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_takehome_due ON jobs (job_kind, status, sched_not_before);
+CREATE INDEX IF NOT EXISTS idx_jobs_takehome_active ON jobs (job_kind, status, lease_expires_at);
 
 -- One live take-home per user + upload + narrator. Not a UNIQUE index on
 -- jobs: historical duplicate rows stay. A failed or cancelled book releases
@@ -123,10 +127,15 @@ CREATE TABLE IF NOT EXISTS cpu_tasks (
   payload_json TEXT,
   error_message TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  placed_at INTEGER,
+  started_at INTEGER,
+  finished_at INTEGER,
+  deadline_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status);
+CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path);

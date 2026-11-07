@@ -43,6 +43,25 @@ function loudness(file: string, start: number, seconds: number): number {
   return Number(match[1]);
 }
 
+describe("join step metric", () => {
+  it("still fails a one-sample step the size of the old delay onset", () => {
+    const slope = 244;
+    const click = 1638;
+    const deltas: number[] = [];
+    let maxJump = 0;
+    for (let i = 1; i < 8000; i++) {
+      const jump = i === 4000 ? click : slope;
+      deltas.push(jump);
+      if (jump > maxJump) maxJump = jump;
+    }
+    deltas.sort((a, b) => a - b);
+    const p99 = deltas[Math.floor(deltas.length * 0.99)] ?? 0;
+    expect(p99).toBe(slope);
+    expect(maxJump).toBe(click);
+    expect(maxJump < p99 * 6).toBe(false);
+  });
+});
+
 describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
   it.for([
     { name: "checks duration, loudness and clicks on three sections", sections: 3, seconds: 6, benchmark: false },
@@ -192,6 +211,9 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
 
       if (benchmark) expect(newFinishMs).toBeLessThan(oldFinishMs);
       expect(maxJump).toBeLessThan(p99 * 6);
+      // The gapless-delay onset was a 1638-count step at the first join
+      // (p99 244). A clean sine join stays near that slope.
+      if (!benchmark) expect(maxJump).toBeLessThan(1000);
       expect(spread).toBeLessThan(2);
       for (const level of levels) {
         expect(Math.abs(level - MASTER_LOUDNORM_I)).toBeLessThan(2.5);

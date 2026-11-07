@@ -30,6 +30,16 @@ export interface CpuTaskRow {
   output_path: string | null;
   payload_json: string | null;
   error_message: string | null;
+  created_at?: number | null;
+  updated_at?: number | null;
+  /** Unix time the orchestrator placed this attempt. */
+  placed_at?: number | null;
+  /** Unix time the owner first heartbeated. Queue wait ends here. */
+  started_at?: number | null;
+  /** Unix time the task reached a terminal status. */
+  finished_at?: number | null;
+  /** Unix time the work itself must stop. Independent of the placement lease. */
+  deadline_at?: number | null;
 }
 
 const CREATE_SQL = `
@@ -48,7 +58,11 @@ CREATE TABLE IF NOT EXISTS cpu_tasks (
   payload_json TEXT,
   error_message TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  placed_at INTEGER,
+  started_at INTEGER,
+  finished_at INTEGER,
+  deadline_at INTEGER
 )`;
 
 const INDEX_SQL = `
@@ -56,6 +70,16 @@ CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at
 
 const JOB_INDEX_SQL = `
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status)`;
+
+const LEASE_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at)`;
+
+const CPU_TASK_COLUMNS = [
+  "placed_at INTEGER",
+  "started_at INTEGER",
+  "finished_at INTEGER",
+  "deadline_at INTEGER",
+];
 
 let tableReady = false;
 
@@ -67,8 +91,17 @@ export async function ensureCpuTaskTable(): Promise<void> {
   if (tableReady) return;
   await execute("PRAGMA busy_timeout = 5000").catch(() => {});
   await execute(CREATE_SQL);
+  for (const column of CPU_TASK_COLUMNS) {
+    try {
+      await execute(`ALTER TABLE cpu_tasks ADD COLUMN ${column}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column/i.test(msg)) throw err;
+    }
+  }
   await execute(INDEX_SQL);
   await execute(JOB_INDEX_SQL);
+  await execute(LEASE_INDEX_SQL);
   tableReady = true;
 }
 
@@ -125,15 +158,20 @@ export async function getCpuTask(id: string): Promise<CpuTaskRow | null> {
 export async function claimCpuTask(
   id: string,
   ownerToken: string,
-  ttlSeconds = CPU_TASK_LEASE_SECONDS
+  ttlSeconds = CPU_TASK_LEASE_SECONDS,
+  deadlineSeconds?: number | null
 ): Promise<boolean> {
   await ensureCpuTaskTable();
+  const deadline = deadlineSeconds == null ? null : deadlineSeconds;
   const result = await execute(
     `UPDATE cpu_tasks SET
        status = 'claimed',
        owner_token = ?,
        lease_expires_at = unixepoch() + ?,
        attempts = attempts + 1,
+       placed_at = COALESCE(placed_at, unixepoch()),
+       deadline_at = CASE WHEN ? IS NULL THEN deadline_at ELSE unixepoch() + ? END,
+       finished_at = NULL,
        updated_at = unixepoch()
      WHERE id = ?
        AND attempts < ?
@@ -142,9 +180,22 @@ export async function claimCpuTask(
          OR status = 'failed'
          OR (status = 'claimed' AND lease_expires_at <= unixepoch())
        )`,
-    [ownerToken, ttlSeconds, id, CPU_TASK_MAX_ATTEMPTS]
+    [ownerToken, ttlSeconds, deadline, deadline, id, CPU_TASK_MAX_ATTEMPTS]
   );
   return result.rowsAffected === 1;
+}
+
+/** True when this id is claimed and the lease has not expired. */
+export async function cpuTaskLeaseLive(id: string): Promise<boolean> {
+  await ensureCpuTaskTable();
+  const row = await queryOne<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM cpu_tasks
+     WHERE id = ? AND status = 'claimed'
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at > unixepoch()`,
+    [id]
+  );
+  return Number(row?.n || 0) > 0;
 }
 
 export async function heartbeatCpuTask(
@@ -156,6 +207,7 @@ export async function heartbeatCpuTask(
   const result = await execute(
     `UPDATE cpu_tasks SET
        lease_expires_at = unixepoch() + ?,
+       started_at = COALESCE(started_at, unixepoch()),
        updated_at = unixepoch()
      WHERE id = ?
        AND owner_token = ?
@@ -174,6 +226,7 @@ export async function completeCpuTask(id: string, ownerToken: string): Promise<b
        owner_token = NULL,
        lease_expires_at = NULL,
        error_message = NULL,
+       finished_at = unixepoch(),
        updated_at = unixepoch()
      WHERE id = ? AND owner_token = ? AND status = 'claimed'`,
     [id, ownerToken]
@@ -208,9 +261,10 @@ export async function failCpuTask(
        owner_token = NULL,
        lease_expires_at = NULL,
        error_message = ?,
+       finished_at = CASE WHEN attempts >= ? THEN unixepoch() ELSE NULL END,
        updated_at = unixepoch()
      WHERE id = ? AND owner_token = ? AND status = 'claimed'`,
-    [CPU_TASK_MAX_ATTEMPTS, message.slice(0, 500), id, ownerToken]
+    [CPU_TASK_MAX_ATTEMPTS, message.slice(0, 500), CPU_TASK_MAX_ATTEMPTS, id, ownerToken]
   );
 }
 
@@ -221,6 +275,7 @@ export async function cancelCpuTask(id: string, ownerToken: string): Promise<voi
        status = 'cancelled',
        owner_token = NULL,
        lease_expires_at = NULL,
+       finished_at = unixepoch(),
        updated_at = unixepoch()
      WHERE id = ? AND owner_token = ? AND status = 'claimed'`,
     [id, ownerToken]
@@ -238,6 +293,32 @@ export async function cancelCpuTasksForJob(jobId: string): Promise<void> {
      WHERE job_id = ? AND status IN ('queued', 'claimed', 'failed')`,
     [jobId]
   );
+}
+
+/**
+ * A claimed task whose lease expired had no heartbeat. Put it back, or
+ * fail it once the attempt budget is spent. A live owner is not touched,
+ * so a container that is still heartbeating cannot be duplicated.
+ */
+export async function requeueExpiredCpuTasks(): Promise<number> {
+  await ensureCpuTaskTable();
+  const result = await execute(
+    `UPDATE cpu_tasks SET
+       status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'queued' END,
+       owner_token = NULL,
+       lease_expires_at = NULL,
+       error_message = CASE
+         WHEN attempts >= ? THEN COALESCE(error_message, 'cpu lease expired')
+         ELSE error_message
+       END,
+       finished_at = CASE WHEN attempts >= ? THEN COALESCE(finished_at, unixepoch()) ELSE finished_at END,
+       updated_at = unixepoch()
+     WHERE status = 'claimed'
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at <= unixepoch()`,
+    [CPU_TASK_MAX_ATTEMPTS, CPU_TASK_MAX_ATTEMPTS, CPU_TASK_MAX_ATTEMPTS]
+  );
+  return result.rowsAffected;
 }
 
 export function cpuTaskId(kind: CpuTaskKind, subject: string, index?: number): string {

@@ -327,6 +327,22 @@ type Packet = { t: number; pos: number };
 const COPY_JOIN_FLOOR = 900;
 
 /**
+ * Samples ffmpeg's MP3 decoder emits before the first encoder input
+ * sample: LAME's 576-sample delay plus the decoder's 529. A crossfade
+ * that keeps them steps from that padding into the real waveform about
+ * 25 ms into the next section, and the step is then in the middle of
+ * the book. Measured on a mastered sine as a 5443-count step at sample
+ * 1105. Tails taken with `-sseof` do not include this padding.
+ */
+const MP3_GAPLESS_DELAY_SAMPLES = 576 + 529;
+
+function dropMp3GaplessDelay(pcm: Buffer): Buffer {
+  const bytes = MP3_GAPLESS_DELAY_SAMPLES * 2;
+  if (pcm.length <= bytes + 64) return pcm;
+  return pcm.subarray(bytes);
+}
+
+/**
  * The splice search reads about two seconds of the next section and the
  * last half-second of the previous one. Shorter than this, that search
  * has nowhere to land, and the old code aborted the whole book.
@@ -651,11 +667,13 @@ async function foldPiecePcm(
 ): Promise<Buffer> {
   let acc: Buffer | null = null;
   for (let i = 0; i < pieces.length; i++) {
-    const pcm = await decodeMp3Pcm(
-      run,
-      pieces[i]!.file,
-      path.join(workDir, `short_dec_${id}_${i}.wav`),
-      timeoutMs
+    const pcm = dropMp3GaplessDelay(
+      await decodeMp3Pcm(
+        run,
+        pieces[i]!.file,
+        path.join(workDir, `short_dec_${id}_${i}.wav`),
+        timeoutMs
+      )
     );
     if (pcm.length < 4) continue;
     if (!acc) {
@@ -746,12 +764,14 @@ async function stitchShortsBefore(
 ): Promise<CopyPiece> {
   const fade = resolveJoinFadeMs(next.join, crossfadeMs);
   const shortPcm = await foldPiecePcm(shorts, crossfadeMs, run, workDir, id, timeoutMs);
-  const headPcm = await decodeMp3Pcm(
-    run,
-    next.file,
-    path.join(workDir, `short_head_${id}.wav`),
-    timeoutMs,
-    { t: 3.2 }
+  const headPcm = dropMp3GaplessDelay(
+    await decodeMp3Pcm(
+      run,
+      next.file,
+      path.join(workDir, `short_head_${id}.wav`),
+      timeoutMs,
+      { t: 3.2 }
+    )
   );
   const minT = Math.max(0.2, fade.ms / 1000 + 0.06);
   const maxT = Math.min(2.4, Math.max(minT, next.duration - 0.08));
@@ -1162,7 +1182,7 @@ export async function joinMasteredMp3s(opts: {
       const bodyEnd = Buffer.from(stripWavHeader(await readFile(endWav)));
       const after = indexAfter(bodyEnd, removed);
       const tailPcm = removed.subarray(after * 2);
-      const headPcm = Buffer.from(stripWavHeader(await readFile(headWav)));
+      const headPcm = dropMp3GaplessDelay(Buffer.from(stripWavHeader(await readFile(headWav))));
       return { index: i, fadeSamples, tailPcm, headPcm };
     }
   );

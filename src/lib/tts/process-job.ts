@@ -92,8 +92,10 @@ import {
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
+import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
-import { commitSectionAudio, promoteFinishedSections } from "@/lib/cpu/section-publish";
+import { commitSectionAudio, promoteFinishedSections, recoverOrphanRawSections } from "@/lib/cpu/section-publish";
+import { requeueExpiredCpuTasks } from "@/lib/cpu/tasks";
 import { runInsideCpuTask } from "@/lib/cpu/task-slot";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
@@ -137,7 +139,12 @@ import {
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
-import { markTakehomeServed, takehomeClaimSql, takehomeInflightCap } from "@/lib/jobs/takehome-fairness";
+import {
+  markTakehomeServed,
+  takehomeAdmissionSql,
+  takehomeClaimSql,
+  takehomeInflightCap,
+} from "@/lib/jobs/takehome-fairness";
 import {
   holdEdgeSectionSlot,
   holdNamedProviderSlot,
@@ -535,19 +542,21 @@ export async function claimTakehomeLease(
   ttlSeconds = LEASE_TTL_SECONDS
 ): Promise<string | null> {
   const token = newLeaseToken();
+  const admission = takehomeAdmissionSql();
   const result = await execute(
     `UPDATE jobs SET status = 'processing',
        processing_lease_token = ?,
        lease_expires_at = unixepoch() + ?,
        processing_started_at = unixepoch(),
        generation_started_at = COALESCE(generation_started_at, unixepoch()),
+       sched_not_before = NULL,
        updated_at = unixepoch()
      WHERE id = ? AND deleted_at IS NULL
        AND status IN ('queued', 'processing', 'waiting')
        AND (processing_lease_token IS NULL
             OR lease_expires_at IS NULL
-            OR lease_expires_at <= unixepoch())`,
-    [token, ttlSeconds, jobId]
+            OR lease_expires_at <= unixepoch())${admission.sql}`,
+    [token, ttlSeconds, jobId, ...admission.args]
   );
   if (result.rowsAffected <= 0) return null;
   await markTakehomeServed(jobId);
@@ -584,14 +593,22 @@ async function heartbeatLease(
 async function releaseLease(
   jobId: string,
   token: string,
-  patch: { status: "queued" | "waiting" | "failed"; errorMessage?: string | null }
+  patch: {
+    status: "queued" | "waiting" | "failed";
+    errorMessage?: string | null;
+    /** Seconds before the drain may claim this book again. 0 clears the delay. */
+    notBeforeSec?: number;
+  }
 ): Promise<void> {
+  const delay = patch.notBeforeSec && patch.notBeforeSec > 0 ? patch.notBeforeSec : 0;
   await execute(
     `UPDATE jobs SET status = ?, error_message = COALESCE(?, error_message),
        processing_lease_token = NULL, lease_expires_at = NULL,
-       processing_started_at = NULL, updated_at = unixepoch()
+       processing_started_at = NULL,
+       sched_not_before = CASE WHEN ? > 0 THEN unixepoch() + ? ELSE NULL END,
+       updated_at = unixepoch()
      WHERE id = ? AND processing_lease_token = ?`,
-    [patch.status, patch.errorMessage ?? null, jobId, token]
+    [patch.status, patch.errorMessage ?? null, delay, delay, jobId, token]
   );
 }
 
@@ -881,6 +898,8 @@ export async function processTakehomeTick(
   total: number;
   busy?: boolean;
   deferred?: boolean;
+  /** Release this process slot so another book can run. */
+  yieldSlot?: boolean;
 }> {
   await ensureTtsJobColumns();
 
@@ -931,6 +950,7 @@ export async function processTakehomeTick(
       err instanceof ProviderSlotBusyError ||
       err instanceof CpuBacklogError
     ) {
+      const yieldSlot = err instanceof CpuBacklogError;
       console.log(
         `[Job ${jobId}] ${
           err instanceof ProviderSlotBusyError
@@ -940,11 +960,18 @@ export async function processTakehomeTick(
               : "listen-prep needs a later tick"
         }`
       );
-      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      await releaseLease(jobId, lease, {
+        status: "queued",
+        // A full provider cap can free a slot as soon as the section that
+        // held it finishes, so the same book must stay claimable. A book
+        // that is only waiting on a CPU container must not spin.
+        notBeforeSec: yieldSlot ? cpuYieldSeconds() : 0,
+      }).catch(() => {});
       return {
         done: false,
         busy: true,
         deferred: true,
+        yieldSlot,
         nextIndex: job.next_section_index ?? 0,
         total: job.total_sections ?? 0,
       };
@@ -1245,6 +1272,22 @@ async function runClaimedTick(
   }
 
   let segments = parseSegments(job.segments_json);
+  const recovered = await recoverOrphanRawSections({
+    jobId,
+    segments,
+    total,
+    sectionText: (index) => sections[index] ?? "",
+  });
+  if (recovered.recovered > 0) {
+    segments = recovered.segments;
+    await writeWithLease(
+      jobId,
+      lease,
+      `UPDATE jobs SET segments_json = ?, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [JSON.stringify(segments)]
+    );
+  }
   const promoted = await promoteFinishedSections(jobId, segments);
   if (promoted.changed) {
     segments = promoted.segments;
@@ -2146,6 +2189,7 @@ async function runClaimedTick(
     `UPDATE jobs SET status = 'queued', next_section_index = ?, progress = ?,
        current_section = ?, processing_lease_token = NULL,
        lease_expires_at = NULL, processing_started_at = NULL,
+       sched_not_before = NULL,
        updated_at = unixepoch()
      WHERE id = ? AND processing_lease_token = ?`,
     [
@@ -2677,7 +2721,7 @@ function extensionForContentType(contentType: string): string {
 export async function runTakehomeWave(
   jobId: string,
   budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
-): Promise<{ deferred: boolean; changed: boolean }> {
+): Promise<{ deferred: boolean; changed: boolean; yieldSlot?: boolean }> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   // Tight budgets synthesize one section at a time so the caller can respond.
@@ -2693,6 +2737,12 @@ export async function runTakehomeWave(
         deadlineMs: deadline,
         sectionsPerTick,
       });
+      if (result.yieldSlot) {
+        console.log(
+          `[Job ${jobId}] yielding the slot while cpu or provider capacity is busy`
+        );
+        return { deferred: false, changed: true, yieldSlot: true };
+      }
       if (result.deferred) {
         console.log(
           `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
@@ -2764,9 +2814,9 @@ async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
  * / lease loss. After each wave, if someone else is queued, the lease is
  * already back on `queued` (the tick releases it) and this run returns so
  * the drain can pick the oldest runnable job, including one still marked
- * `waiting` whose file is already read or failed. One VM stays on one book at
- * a time: Edge synthesis is network-bound, but ffmpeg mastering is
- * CPU-bound, so a second lane would stack encodes.
+ * `waiting` whose file is already read or failed. A book that is only
+ * waiting on CPU returns `yielded` so another book can use the slot.
+ * Local ffmpeg stays one slot unless `WORKER_LOCAL_MULTIBOOK=1`.
  */
 export async function runTakehomeUntilSettled(
   jobId: string,
@@ -2792,6 +2842,10 @@ export async function runTakehomeUntilSettled(
       // The book's text is not extracted yet. Hot-looping waves here would
       // hammer the row for nothing — hand it back to the drain cadence.
       if (outcome.deferred) return { status: "deferred" };
+      // CPU or a provider cap is busy. The lease is already released and
+      // the book is not eligible again until sched_not_before, so the
+      // drain can run someone else on this slot.
+      if (outcome.yieldSlot) return { status: "yielded" };
     } catch (err) {
       if (err instanceof LeaseLostError) {
         return { status: "lease_lost" };
@@ -2838,6 +2892,9 @@ async function releaseHeldTakehomeIfAny(jobId: string): Promise<void> {
  */
 export async function releaseExpiredTakehomeLeases(): Promise<number> {
   try {
+    await requeueExpiredCpuTasks().catch((err) => {
+      console.error("[cpu] expired task sweep failed:", err);
+    });
     const result = await execute(
       `UPDATE jobs SET status = 'queued', processing_lease_token = NULL,
          lease_expires_at = NULL, processing_started_at = NULL,
