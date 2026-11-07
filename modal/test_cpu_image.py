@@ -35,7 +35,14 @@ def test_cpu_worker_image_keeps_apt_python_and_installs_fastapi_for_modal():
     assert "ffmpeg" in dockerfile
     assert "python3" in dockerfile
     assert "python-is-python3" in dockerfile
-    assert "faster-whisper==1.1.1" in dockerfile
+    assert "workers/cpu/requirements.txt" in dockerfile
+    assert "from faster_whisper import WhisperModel" in dockerfile
+    reqs = (ROOT / "workers" / "cpu" / "requirements.txt").read_text()
+    assert "faster-whisper==1.1.1" in reqs
+    assert "requests==2.34.2" in reqs
+    assert "huggingface-hub==0.36.2" in reqs
+    assert "pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt" in dockerfile
+    assert "--no-deps" not in dockerfile
     assert "python -VV" in dockerfile
     assert "TTS_QA_WHISPER_PYTHON=/usr/bin/python3" in dockerfile
     assert "fastapi==" not in dockerfile

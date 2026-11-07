@@ -1,0 +1,12 @@
+# Apt Python runtime for section QA. Installed with pip's normal resolver
+# (not --no-deps).
+#
+# faster-whisper 1.1.1 imports requests from faster_whisper/utils.py and does
+# not list it in Requires-Dist. huggingface-hub 1+ replaced requests with
+# httpx, so `pip install faster-whisper==1.1.1` resolves hub 2.x and never
+# installs requests. The image build then dies on `import faster_whisper`.
+# Hub stays on the last 0.x series, which still accepts the snapshot_download
+# kwargs this Whisper release passes.
+faster-whisper==1.1.1
+huggingface-hub==0.36.2
+requests==2.34.2
