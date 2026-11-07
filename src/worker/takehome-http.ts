@@ -31,7 +31,9 @@ export interface RouteTakehomeWorkerInput {
   /** Fork a document extract. Must not take a Whole-book concurrency slot. */
   startExtract?: (
     uploadId: string
-  ) => { started: boolean; queued: boolean };
+  ) =>
+    | { started: boolean; queued: boolean }
+    | Promise<{ started: boolean; queued: boolean }>;
   wakeClip?: () => void;
   checkReference?: (input: { uploadId: string; samplePath: string; remasterFailing: boolean }) => Promise<unknown>;
   /**
@@ -153,7 +155,7 @@ export async function routeTakehomeWorkerRequest(
     if (!input.startExtract) {
       return json(503, { ok: false, error: "Not available" });
     }
-    const accepted = input.startExtract(uploadId);
+    const accepted = await input.startExtract(uploadId);
     return json(202, {
       ok: true,
       accepted: true,

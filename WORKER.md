@@ -23,14 +23,15 @@ It does **not** self-host Fish.
 
 ## Host sizing
 
-`WORKER_CONCURRENCY=1` is the default. Leave it there. Queue hardening
-(create keys, shared provider permits, per-user claim order) does not make
-this box able to master two books. ffmpeg and local Whisper now share a
-ceiling equal to today's local caps, so a second process cannot stack past
-them, but the work still runs here. Extract children are still process-local
-(`EXTRACT_NODE_CONCURRENCY`, default 1). Moving that CPU off this VM is a
-follow-on. Do not raise book concurrency until that split exists and a full
-book has mastered without the OOM killer. DeepFilterNet3 is **opt-in**
+`WORKER_CONCURRENCY=1` is the default. Leave it there until
+`docs/cpu-modal-runbook.md` has been smoked. CPU tasks (extract, section
+master, local Whisper, concat) run on this VM when `CPU_RUNNER` is unset,
+under `cpu-host:<CPU_HOST_ID>:…` permits so a second process on this
+machine shares the cap. `CPU_RUNNER=modal` sends those tasks to the
+`echomancer-cpu` app instead of mastering them here. That app is not
+deployed by a worker restart. Do not raise book concurrency to paper over
+a full CPU cap: a full cap leaves the raw take queued and the section
+not ready. DeepFilterNet3 is **opt-in**
 (`TTS_MASTER_DFN=1` / `TTS_MASTER_DFN_WET>0`); default remaster is
 ffmpeg-only and is not the RAM hog.
 
@@ -362,10 +363,11 @@ claim (`takehome_fairness`). Inside one user, order is still `updated_at`.
 A user with a live lease is not given a second book
 (`TAKEHOME_MAX_INFLIGHT_PER_USER`, default 1). When a read finishes, that
 upload's waiting books are queued (or failed) before the drain wakes.
-Sections already written stay on the book. `WORKER_CONCURRENCY` stays the
-number of books in flight. Do not raise it to overlap a second book's
-ffmpeg: Edge synthesis is network-bound, and section mastering is CPU-bound
-on this one machine.
+Sections already written stay on the book. A section whose master is still
+queued is `mastering`, not `ready`, and its provider audio lives under
+`raw/`. `WORKER_CONCURRENCY` stays the number of books in flight on this
+VM. CPU for master, Whisper, concat, and extract is a separate bound
+(`cpu_tasks`, and `CPU_MAX_CONTAINERS` once the Modal CPU app is deployed).
 Two workers cannot synthesize the same section — lease tokens already
 gate every progress write. Fish take-home calls, live Fish, Edge sections,
 Paradee sections, other stock sections, Modal clone lanes, per-section Modal

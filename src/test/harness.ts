@@ -15,6 +15,7 @@ import {
   ensureTtsJobColumns,
   resetSchemaMigrationCache,
 } from "@/lib/tts/schema-migrate";
+import { resetCpuTaskTableCache } from "@/lib/cpu/tasks";
 import { resetProviderSlotTableCache } from "@/lib/tts/provider-slots";
 import { resetRateLimitTableCache } from "@/lib/rate-limit";
 import { SESSION_COOKIE, signSessionToken } from "@/lib/auth/session";
@@ -38,6 +39,7 @@ export async function resetDatabase(): Promise<void> {
   resetTakehomeIdentityCache();
   resetTakehomeFairnessCache();
   resetProviderSlotTableCache();
+  resetCpuTaskTableCache();
   await resetLocalStorageRoot();
   await ensureTtsJobColumns();
 }

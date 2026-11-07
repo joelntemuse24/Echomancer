@@ -1807,15 +1807,14 @@ Env knobs (defaults):
 Losing a lease mid-write abandons safely; successor resumes from the lowest
 unready index (holes first). Ready files are not shifted.
 
-### Queue hardening (delivered) and what is still one box
+### Queue hardening and CPU tasks
 
-This increment does **not** raise `WORKER_CONCURRENCY` and does **not** make
-200 books synthesize at once. The default host still runs one take-home.
-Raising it is **not** safe yet: extract children are still a process-local
-pool (`EXTRACT_NODE_CONCURRENCY`, default 1), and ffmpeg, Whisper, and TTS
-still share this one machine. The shared CPU ceiling below stops a second
-process from stacking past today's local limits. It does not move that work
-onto another machine. That move is a follow-on, and it is not done here.
+This increment does **not** raise `WORKER_CONCURRENCY` and does **not**
+prove 200 live syntheses. An offline burst of 200 fake-provider books
+finished under a cap of two ticks at a time. That is a queue test, not a
+production load. The default process still runs one take-home. CPU work
+can leave this machine only after `modal deploy modal/cpu_worker.py` and
+the smoke in `docs/cpu-modal-runbook.md`. That deploy was not run here.
 
 What did land, so a second worker can be added later without double-creating
 books or doubling provider calls:
@@ -1866,13 +1865,38 @@ books or doubling provider calls:
   uses `min(configured, shared)`. Another process does not have to see the
   429 itself. There is no poller. When the row expires, the configured cap
   returns.
-- **CPU ceiling, same box.** `src/lib/cpu/task-slot.ts`. Each ffmpeg process
-  waits for a `cpu-ffmpeg` permit capped at `availableParallelism()`, which
-  is the existing local gate. Local Whisper waits for a `cpu-whisper` permit
-  capped at the Edge section fan-out (default 8), so one worker's QA still
-  fits. A full ffmpeg cap stores that section unmastered instead of
-  speaking it again. A full Whisper cap keeps the take and skips the check.
-  Extract children are not on this ceiling.
+- **CPU tasks.** `cpu_tasks` (`src/lib/cpu/tasks.ts`) is the queue for
+  `master`, `whisper`, `concat`, and `extract`. The id is
+  `kind:subject[:index]`. Claim steals only an expired lease. Complete and
+  fail require the owner token. A full host does not burn an attempt.
+  Three failed attempts mark the task `failed`. Input and output are
+  object keys, not a shared temp path. `CPU_RUNNER=local` (the default,
+  including tests) claims and runs on this process.
+  `CPU_RUNNER=modal` POSTs `{ taskId }` to `MODAL_CPU_URL` with no path
+  on the URL. `429` leaves the row queued. The container runs
+  `src/worker/cpu-once.ts` with `CPU_RUNNER=local` so it does not dispatch
+  back to itself. The app name is `echomancer-cpu`
+  (`modal/cpu_worker.py`). It is not the S2 GPU app, so a CPU deploy does
+  not reset that autoscaler. `min_containers=0`. `CPU_MAX_CONTAINERS`
+  (default 4), `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB`
+  (default 4096), and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs.
+  They are not a measured bill.
+- **Unmastered audio is not a ready section.** When mastering is on, the
+  provider take is stored at `audiobooks/<jobId>/raw/NNNN.<ext>` and the
+  section stays `mastering` until the master task writes
+  `audiobooks/<jobId>/sections/NNNN.mp3`. A full host, a failed master,
+  and a cancel do not copy the raw bytes onto that section key and do
+  not set `status: ready`. The player only reads `ready` rows. A cancelled
+  job cancels the task before publish.   Host permits are
+  `cpu-host:<CPU_HOST_ID>:<kind>` (`src/lib/cpu/task-slot.ts`). Processes
+  on one machine share that host's cap. Another machine has its own.
+  ffmpeg and concat use the CPU count (`CPU_HOST_CONCURRENCY` overrides).
+  Whisper uses the Edge fan-out (default 8). Extract uses
+  `EXTRACT_NODE_CONCURRENCY` (default 1, max 4). A missing permit table
+  still runs the work. A full Whisper cap defers the section instead of
+  skipping the check and marking it ready. A transcript error or a
+  missing sidecar still keeps the take. Provider account caps stay on
+  their own slot names and are not the CPU queue.
 - **Claim order.** `takehome_fairness` is the user clock. One library's own
   books still yield in `updated_at` order. Across users, the user served
   less recently goes first. The per-user processing cap is 1 until
@@ -1892,16 +1916,19 @@ same failed row is what the next create returns; it does not insert a second
 book. A crash between insert and commit still commits the existing live row
 instead of opening another.
 
-Cost of this increment, on one worker: one key write per take-home create,
+Cost of the queue writes, on one worker: one key write per take-home create,
 one fairness write per successful claim, one slot insert and delete per Fish
 section, Edge section, Paradee section, other stock section, clone lane,
 per-section Modal call, and warm clone preview. A live Fish request, a stock
 preview, and a live stream add one slot plus a renew `UPDATE` about every
 30 seconds until release. An Edge 429 adds one throttle upsert, and each
-Edge tick reads that row once. Each ffmpeg process and each local Whisper
-pass add one CPU-slot insert and delete. The drain's user-cap subquery is
+Edge tick reads that row once. Each local CPU task adds a claim, a
+heartbeat about every 15 seconds, and a complete. A master also writes the
+raw object and the section object. The drain's user-cap subquery is
 bounded by its existing `LIMIT` (50 on the VM, 3 on the cron fallback).
-None of this calls Modal or a paid speech API.
+Modal CPU spend starts only after the app is deployed and `CPU_RUNNER=modal`.
+The knobs are in `docs/cpu-modal-runbook.md`. This change did not call Modal
+or a paid speech API, and it does not state a measured dollar cost.
 
 Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress uses
 ready-count, capped at 99 until final ready.

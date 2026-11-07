@@ -356,6 +356,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_youtube_clips_queue ON youtube_clips (status, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_youtube_clips_user_day ON youtube_clips (user_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_queue ON jobs (job_kind, status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status)`,
 ];
 
 const CREATE_TAKEHOME_CREATE_KEYS_SQL = `
@@ -389,6 +391,25 @@ CREATE TABLE IF NOT EXISTS provider_throttle (
   expires_at INTEGER NOT NULL
 )`;
 
+const CREATE_CPU_TASKS_SQL = `
+CREATE TABLE IF NOT EXISTS cpu_tasks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  job_id TEXT,
+  upload_id TEXT,
+  section_index INTEGER,
+  status TEXT NOT NULL,
+  owner_token TEXT,
+  lease_expires_at INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  input_path TEXT,
+  output_path TEXT,
+  payload_json TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+)`;
+
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 const CLIP_COLUMN_NAMES_SQL = CLIP_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 // Derived from the list, not hand-written: a hardcoded subset let
@@ -405,7 +426,7 @@ SELECT
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
-    'provider_throttle'
+    'provider_throttle', 'cpu_tasks'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -555,7 +576,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 14 &&
+      Number(row?.tables_ok || 0) >= 15 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -594,6 +615,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_PROVIDER_SLOTS_SQL },
         { sql: CREATE_TAKEHOME_FAIRNESS_SQL },
         { sql: CREATE_PROVIDER_THROTTLE_SQL },
+        { sql: CREATE_CPU_TASKS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -610,6 +632,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_PROVIDER_SLOTS_SQL);
       await execute(CREATE_TAKEHOME_FAIRNESS_SQL);
       await execute(CREATE_PROVIDER_THROTTLE_SQL);
+      await execute(CREATE_CPU_TASKS_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

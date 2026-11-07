@@ -1294,9 +1294,11 @@ describe("section lifecycle lease", () => {
     await seedTakehomeJob("Chapter 1.\n\nThe harbor was quiet after the rain. ".repeat(40));
     const master = await import("@/lib/tts/section-master");
     let sawMaster = false;
+    process.env.TTS_SECTION_MASTER = "1";
+    process.env.WORKER = "1";
     const masterSpy = vi
-      .spyOn(master, "prepareSectionForStorage")
-      .mockImplementation(async (audio, extension, contentType) => {
+      .spyOn(master, "masterSectionBuffer")
+      .mockImplementation(async () => {
         sawMaster = true;
         const { shouldRenewTakehomeLease } = await import("@/lib/tts/process-job");
         // Synth attempt covers have already ended. The wave budget is over.
@@ -1309,7 +1311,7 @@ describe("section lifecycle lease", () => {
           })
         ).toBe(true);
         await new Promise((r) => setTimeout(r, 30));
-        return { audio, extension, contentType, mastered: true };
+        return Buffer.from("mastered-section");
       });
     await useProvider();
     const { processTakehomeTick, shouldRenewTakehomeLease } = await import(
@@ -1332,6 +1334,8 @@ describe("section lifecycle lease", () => {
       ).toBe(false);
     } finally {
       masterSpy.mockRestore();
+      delete process.env.TTS_SECTION_MASTER;
+      delete process.env.WORKER;
     }
   });
 });

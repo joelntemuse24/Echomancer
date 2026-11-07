@@ -16,7 +16,8 @@
 import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
 import { assembleSectionTakes } from "@/lib/tts/section-master";
-import { tryCpuSlot } from "@/lib/cpu/task-slot";
+import { CpuSaturatedError } from "@/lib/cpu/errors";
+import { insideCpuTask, tryCpuSlot } from "@/lib/cpu/task-slot";
 import {
   qaTranscriptsDisabled,
   resolveSttProvider,
@@ -215,7 +216,7 @@ export function localWhisperWaitMs(
   );
 }
 
-async function transcribeLocally(
+export async function transcribeLocally(
   audio: Buffer,
   env: NodeJS.ProcessEnv,
   remainingMs: number
@@ -630,8 +631,9 @@ export async function settleSectionTake(opts: {
             Math.min(qaWaitMs(env), ms)
           );
         }
+        if (insideCpuTask()) return transcribeLocally(audio, env, ms);
         const cpu = await tryCpuSlot("whisper", ms);
-        if (cpu === null) throw new Error("qa cpu capacity");
+        if (cpu === null) throw new CpuSaturatedError("whisper");
         try {
           return await transcribeLocally(audio, env, ms);
         } finally {
@@ -705,6 +707,7 @@ export async function settleSectionTake(opts: {
     logQa(opts.jobId, opts.index, best.wer, best.flags, action, provider, Date.now() - started);
     return best;
   } catch (err) {
+    if (err instanceof CpuSaturatedError) throw err;
     console.warn(
       `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open via=${provider} ms=${Date.now() - started}`,
       err instanceof Error ? err.message : err

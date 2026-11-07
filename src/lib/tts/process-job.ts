@@ -32,7 +32,7 @@
  * a slow one, and double-synthesized any section that took longer than that.
  */
 
-import { deleteFile, downloadFile, uploadFile } from "@/lib/storage";
+import { deleteFile, downloadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
 import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
@@ -91,7 +91,10 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
-import { prepareSectionForStorage } from "@/lib/tts/section-master";
+import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
+import { holdBookConcat } from "@/lib/cpu/runner";
+import { commitSectionAudio, promoteFinishedSections } from "@/lib/cpu/section-publish";
+import { runInsideCpuTask } from "@/lib/cpu/task-slot";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
@@ -111,7 +114,6 @@ import {
   readyCount,
   runIndexBoundFanout,
   runRollingIndexPool,
-  sectionObjectName,
   upsertSegment,
 } from "@/lib/tts/section-index";
 import {
@@ -926,13 +928,16 @@ export async function processTakehomeTick(
   } catch (err) {
     if (
       err instanceof ListenPrepDeferredError ||
-      err instanceof ProviderSlotBusyError
+      err instanceof ProviderSlotBusyError ||
+      err instanceof CpuBacklogError
     ) {
       console.log(
         `[Job ${jobId}] ${
           err instanceof ProviderSlotBusyError
             ? "shared provider cap is full"
-            : "listen-prep needs a later tick"
+            : err instanceof CpuBacklogError
+              ? "cpu work is queued"
+              : "listen-prep needs a later tick"
         }`
       );
       await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
@@ -1153,7 +1158,9 @@ async function runClaimedTick(
     clonePacked &&
     frozen!.sections.length > 0 &&
     Math.max(...frozen!.sections.map((section) => section.text.length)) > packChars &&
-    parseSegments(job.segments_json).every((segment) => segment.status !== "ready");
+    parseSegments(job.segments_json).every(
+      (segment) => segment.status !== "ready" && segment.status !== "mastering"
+    );
   if (frozenTooWide) {
     console.warn(
       `[Job ${jobId}] clone sections were packed wider than one call can render ` +
@@ -1238,6 +1245,18 @@ async function runClaimedTick(
   }
 
   let segments = parseSegments(job.segments_json);
+  const promoted = await promoteFinishedSections(jobId, segments);
+  if (promoted.changed) {
+    segments = promoted.segments;
+    await writeWithLease(
+      jobId,
+      lease,
+      `UPDATE jobs SET segments_json = ?, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [JSON.stringify(segments)]
+    );
+  }
+  let cpuBacklog = promoted.waiting;
 
   const provider = resolveStockAdapter({
     provider: providerId,
@@ -1473,28 +1492,58 @@ async function runClaimedTick(
         }
 
         life.mastering();
-        const stored = await prepareSectionForStorage(
-          synthesized.audio,
-          synthesized.extension,
-          synthesized.contentType,
-          process.env,
-          // S2 clones need their own spectral balance and loudness target.
-          usesModalClone(catalog?.id) ? "s2" : "podcast"
-        );
-        const uploaded = await uploadFile(
-          `audiobooks/${jobId}`,
-          sectionObjectName(index, stored.extension),
-          stored.audio,
-          stored.contentType
-        );
+        const stored = await commitSectionAudio({
+          jobId,
+          index,
+          audio: synthesized.audio,
+          extension: synthesized.extension,
+          contentType: synthesized.contentType,
+          chain: usesModalClone(catalog?.id) ? "s2" : "podcast",
+          qaDeferred: synthesized.qaDeferred === true,
+          sourceText: sections[index],
+        });
+        if (!stored.ready) {
+          const segment: JobSegment = {
+            index,
+            path: "",
+            status: stored.regen ? "retry" : "mastering",
+            contentType: stored.contentType,
+            durationSeconds: synthesized.durationHintSeconds,
+            rawPath: stored.rawPath,
+            error: stored.regen ? "transcript check asked for another take" : undefined,
+          };
+          await writeLock(async () => {
+            segments = upsertSegment(segments, segment);
+            const done = readyCount(segments);
+            await writeWithLease(
+              jobId,
+              lease,
+              `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                 current_section = ?, total_sections = ?, tts_options = ?,
+                 status = 'processing', updated_at = unixepoch()
+               WHERE id = ? AND processing_lease_token = ?`,
+              [
+                nextWriteIndex(),
+                JSON.stringify(segments),
+                Math.min(99, Math.round((done / total) * 100)),
+                done,
+                total,
+                JSON.stringify(ttsOptions),
+              ]
+            );
+          });
+          if (!stored.regen) cpuBacklog = true;
+          return synthesized;
+        }
 
         const segment: JobSegment = {
           index,
-          path: uploaded.path,
+          path: stored.path,
           status: "ready",
           contentType: stored.contentType,
           durationSeconds: synthesized.durationHintSeconds,
           mastered: stored.mastered,
+          rawPath: stored.rawPath,
         };
 
         await writeLock(async () => {
@@ -1881,6 +1930,10 @@ async function runClaimedTick(
    * treats as "not the finished book", and `error_message` is where a person
    * looks for why.
    */
+  if (cpuBacklog || segments.some((segment) => segment.status === "mastering")) {
+    throw new CpuBacklogError();
+  }
+
   const complete = allIndexesReady(segments, total);
   const canAssemble = complete || (stillClaimable.length === 0 && doneCount > 0);
 
@@ -1979,20 +2032,38 @@ async function runClaimedTick(
     // A whole-book concat can outlive the wave by many minutes. Keep the
     // heartbeat renewing for as long as it runs, or the sweeper reclaims the
     // job mid-finalize.
+    const concatHold = await holdBookConcat(jobId);
+    if (concatHold.kind === "deferred") throw new CpuBacklogError();
     const finalizing = markJobFinalizing(jobId);
     try {
-      audioPath = await materializeFullAudiobook(jobId, segments, total, {
-        crossfadeMs:
-          typeof ttsOptions.crossfadeMs === "number"
-            ? ttsOptions.crossfadeMs
-            : undefined,
-        allowHoles: holesLeft > 0,
-        joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
-        onDryUploaded: async (path) => {
-          uploadedPath = path;
-          await markReady(path);
-        },
-      });
+      if (concatHold.kind === "already") {
+        audioPath = concatHold.path;
+        uploadedPath = concatHold.path;
+        await markReady(concatHold.path);
+      } else {
+        try {
+          audioPath = await runInsideCpuTask(() =>
+            materializeFullAudiobook(jobId, segments, total, {
+              crossfadeMs:
+                typeof ttsOptions.crossfadeMs === "number"
+                  ? ttsOptions.crossfadeMs
+                  : undefined,
+              allowHoles: holesLeft > 0,
+              joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
+              onDryUploaded: async (path) => {
+                uploadedPath = path;
+                await markReady(path);
+              },
+            })
+          );
+          await concatHold.finish(Boolean(audioPath));
+        } catch (err) {
+          await concatHold.finish(false);
+          throw err;
+        } finally {
+          await concatHold.release();
+        }
+      }
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     } finally {
@@ -2165,6 +2236,8 @@ interface SynthesisSuccess {
   extension: string;
   durationHintSeconds?: number;
   cacheKey?: string;
+  /** Whisper could not run. The raw take is stored; the section is not ready. */
+  qaDeferred?: boolean;
 }
 
 /**
@@ -2291,25 +2364,33 @@ async function synthesizeSettled(
     );
     return first;
   }
-  const settled = await settleSectionTake({
-    jobId: args.jobId,
-    index: args.index,
-    sourceText: args.sectionText,
-    first,
-    rate,
-    regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText)),
-    synthesize: async (text, remainingMs) => {
-      const again = await synthesizeSection({
-        ...args,
-        sectionText: text,
-        frozen: undefined,
-        useCache: false,
-        maxAttempts: 1,
-        deadlineMs: Date.now() + remainingMs,
-      });
-      return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
-    },
-  });
+  let settled: Awaited<ReturnType<typeof settleSectionTake>>;
+  try {
+    settled = await settleSectionTake({
+      jobId: args.jobId,
+      index: args.index,
+      sourceText: args.sectionText,
+      first,
+      rate,
+      regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText)),
+      synthesize: async (text, remainingMs) => {
+        const again = await synthesizeSection({
+          ...args,
+          sectionText: text,
+          frozen: undefined,
+          useCache: false,
+          maxAttempts: 1,
+          deadlineMs: Date.now() + remainingMs,
+        });
+        return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
+      },
+    });
+  } catch (err) {
+    if (err instanceof CpuSaturatedError) {
+      return { ...first, qaDeferred: true };
+    }
+    throw err;
+  }
   if (settled.audio !== first.audio && first.cacheKey) {
     await writeSectionCache(
       first.cacheKey,

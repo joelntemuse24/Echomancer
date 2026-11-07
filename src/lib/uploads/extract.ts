@@ -115,6 +115,11 @@ function nodeExtractIo(host: ExtractHost): ExtractIo {
   };
 }
 
+/** One extract on this process. The Modal CPU worker and the local task runner call this. */
+export async function runExtractOnce(uploadId: string): Promise<void> {
+  await runUploadExtract(uploadId, "node", nodeExtractIo("node"));
+}
+
 export async function extractUploadedDocument(
   uploadId: string,
   options?: {

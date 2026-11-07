@@ -14,8 +14,9 @@
  * and the rest of the neighbor stays a packet copy. One short section
  * does not send the book through a full encode.
  *
- * A section that fails this pass is stored raw (`mastered` unset). Finish
- * retries mastering missing sections locally before joining mixed books.
+ * A section that fails this pass is not published as mastered. The
+ * caller keeps the provider bytes under a raw key and queues a retry.
+ * Finish retries mastering missing sections locally before joining mixed books.
  * DeepFilter opt-in stays on the full-book path for unmastered books.
  *
  * ffmpeg and ffprobe are spawned asynchronously. A synchronous child
@@ -34,7 +35,8 @@ import {
   resolveJoinFadeMs,
 } from "@/lib/tts/crossfade-audio";
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
-import { tryCpuSlot } from "@/lib/cpu/task-slot";
+import { CpuSaturatedError } from "@/lib/cpu/errors";
+import { insideCpuTask, tryCpuSlot } from "@/lib/cpu/task-slot";
 import {
   MASTER_OUTPUT_MP3_BITRATE,
   MASTER_OUTPUT_SAMPLE_RATE,
@@ -111,16 +113,16 @@ function createSlotGate(limit: number) {
 const localFfmpegGate = createSlotGate(ffmpegSlotLimit());
 
 /**
- * Local gate first, then one shared permit for the ffmpeg process itself.
- * On one worker the permit is free as soon as the local gate admits the
- * call, because both caps are the CPU count. A second process waits instead
- * of starting another ffmpeg. The wait is the slot helper's one-second
- * wake, bounded by the ffmpeg budget.
+ * Local gate first, then one permit on this host. A task that already
+ * holds the permit does not take a second one. A full host throws
+ * `CpuSaturatedError` so the caller can queue the raw audio instead of
+ * storing it as a mastered section.
  */
 export async function withFfmpegSlot<T>(fn: () => Promise<T>): Promise<T> {
   return localFfmpegGate(async () => {
+    if (insideCpuTask()) return fn();
     const cpu = await tryCpuSlot("ffmpeg", 180_000);
-    if (cpu === null) throw new Error("ffmpeg capacity is in use");
+    if (cpu === null) throw new CpuSaturatedError("ffmpeg");
     try {
       return await fn();
     } finally {
@@ -242,6 +244,7 @@ export async function masterSectionBuffer(
     if (isEmptyOrSilentAudio(mastered)) return null;
     return mastered;
   } catch (err) {
+    if (err instanceof CpuSaturatedError) throw err;
     console.warn(
       "[section-master] section pass failed:",
       err instanceof Error ? err.message : err

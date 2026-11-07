@@ -79,14 +79,22 @@ and returns 503. See `TECHNICAL_DESIGN.md`.
 ## Who runs generation
 
 **Whole book runs on an always-on VPS worker (pm2)**, not inside Vercel
-isolates and **not** on Trigger.dev in production. Document extract runs
-on that same Node process, in a child so it does not take a TTS slot.
-Cloudflare `workers/extract` is only the fallback when the Node worker
-is unreachable or unhealthy.
+isolates and **not** on Trigger.dev in production. Document extract,
+section mastering, local Whisper, and the final concat are CPU tasks
+(`cpu_tasks`). With `CPU_RUNNER` unset they still run on that VM, bounded
+per host. `CPU_RUNNER=modal` sends the task id to `MODAL_CPU_URL`
+(`modal/cpu_worker.py`, app `echomancer-cpu`, scale to zero). That app is
+not deployed by the code change. `WORKER_CONCURRENCY` stays 1 until a
+staging smoke of it. Cloudflare `workers/extract` is only the fallback
+when the Node worker is unreachable or unhealthy. A full host does not
+store an unmastered take on the section key; the raw object stays under
+`audiobooks/<jobId>/raw/` until the master task publishes
+`sections/NNNN.mp3`.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process, document extract in a warm child (`POST /extract`). Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
+| Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process. CPU tasks run here when `CPU_RUNNER` is unset. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
+| Modal CPU | `modal/cpu_worker.py` | Extract, section master, local Whisper, and concat when `CPU_RUNNER=modal`. Separate app from the S2 GPU app. `min_containers=0`. Not deployed until the runbook smoke. |
 | Trigger.dev (**legacy**) | `takehome.advance` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. `takehome.drain` has no schedule in this repo. The copy still deployed on Trigger is old and still claims `queued` rows every minute — turn that schedule off in the Trigger dashboard. |
 | Cloudflare Worker | `workers/extract` | Extract fallback when the Node worker is unreachable or unhealthy. Same `runUploadExtract` pipeline. Free-plan CPU still kills a large PDF, so it is not the default. |
 | Vercel | `GET /api/storage/**` | Ownership check, then 302 to presigned R2. **No audio bytes.** |

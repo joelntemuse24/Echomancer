@@ -105,6 +105,28 @@ CREATE TABLE IF NOT EXISTS provider_throttle (
   cap INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+
+-- CPU work (extract, master, whisper, concat). Claim steals only an
+-- expired lease. Input and output are object keys.
+CREATE TABLE IF NOT EXISTS cpu_tasks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  job_id TEXT,
+  upload_id TEXT,
+  section_index INTEGER,
+  status TEXT NOT NULL,
+  owner_token TEXT,
+  lease_expires_at INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  input_path TEXT,
+  output_path TEXT,
+  payload_json TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path);
