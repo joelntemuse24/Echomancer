@@ -274,6 +274,57 @@ describe("the blocked-job path reproduces job 75944dc9 exactly", () => {
     }
   });
 
+  it("is decisive rather than parking the book on a retry clock", async () => {
+    // A daily cap does not clear in 25 minutes. Parking would re-claim the job
+    // every drain for the rest of the day, and the warning would promise a
+    // fallback that never happens — the same trap as the retry loop, just
+    // slower. With no Fish key there is no second engine, so the book must fail
+    // with the real reason instead.
+    configureModal();
+    delete process.env.FISH_API_KEY;
+    process.env.MODAL_S2_GLOBAL_DAILY_CHARS = "1";
+    await seedCloneJob("A sentence about farmland. ".repeat(700));
+    warmPool(4);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const first = await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+    const row = await jobRow(JOB_ID);
+
+    // Settled, not parked: no retry clock was started.
+    expect(first.done).toBe(true);
+    expect(row?.status).toBe("failed");
+    expect(Number(row?.clone_wait_started_at ?? 0)).toBe(0);
+    expect(String(row?.error_message ?? "")).toMatch(/budget/i);
+    expect(String(row?.error_message ?? "")).not.toMatch(OBSERVED_GENERIC_ERROR);
+  });
+
+  it("switches to the same voice on the backup engine when one exists", async () => {
+    // The documented fallback is direct Fish, which trained the reference and so
+    // speaks the same voice. A budget refusal must use it rather than failing a
+    // book that could still be narrated correctly.
+    configureModal();
+    process.env.FISH_API_KEY = "test-fish";
+    process.env.MODAL_S2_GLOBAL_DAILY_CHARS = "1";
+    await seedCloneJob("A sentence about farmland. ".repeat(700));
+    warmPool(4);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+    const row = await jobRow(JOB_ID);
+
+    expect(row?.provider_pin).toBe("fish");
+    expect(String(row?.warning ?? "")).toMatch(/budget/i);
+    // Never Drama 3: there is no third engine and no substitute voice.
+    expect(String(row?.warning ?? "")).not.toMatch(/drama/i);
+    delete process.env.FISH_API_KEY;
+  });
+
   it("does not publish a book missing half its sections as complete", async () => {
     // `mostIndexesReady` assembles once more than half are ready, so a book with
     // six holes went `ready` with an 8-minute file against a 19-minute source.

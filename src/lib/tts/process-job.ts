@@ -1784,25 +1784,32 @@ async function runClaimedTick(
     // already stored. The snapshot, if one was abandoned, is the off-path RPC.
     if (cloneBudgetBlocked && clonePin === "modal") {
       // The budget gate refused the whole book, so nothing about any section
-      // can change the answer. Park it with the reason recorded — and do not
-      // mark it failed, because this is a spend decision that a later day's
-      // budget clears, not a broken book. Before this, six sections each
-      // retried three times in a second and the book went `ready` at 5/11.
+      // can change the answer this tick.
+      //
+      // Do **not** park on a retry clock. A daily cap does not clear in 25
+      // minutes; parking would re-claim the job every drain for the rest of the
+      // day, and the warning would promise a fallback that never happens.
+      // Take the documented same-voice fallback if one exists, and otherwise
+      // fail the book with the real reason — a spend decision is not a broken
+      // provider, and it must say so.
       const reason = describeCloneBudgetBlock(cloneBudgetBlocked);
-      console.warn(`[Job ${jobId}] clone budget refused — parking: ${reason}`);
-      await execute(
-        `UPDATE jobs SET warning = ?, updated_at = unixepoch()
-         WHERE id = ? AND status NOT IN ('cancelled', 'ready')`,
-        [reason, jobId]
-      ).catch(() => undefined);
-      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
-      return {
-        done: false,
-        busy: true,
-        deferred: true,
-        nextIndex: job.next_section_index ?? 0,
-        total: job.total_sections ?? 0,
-      };
+      console.warn(`[Job ${jobId}] clone budget refused: ${reason}`);
+      if (fishFallbackAvailable()) {
+        await execute(
+          `UPDATE jobs SET provider_pin = 'fish', warning = ?, updated_at = unixepoch()
+           WHERE id = ? AND status NOT IN ('cancelled', 'ready')`,
+          [reason, jobId]
+        ).catch(() => undefined);
+        clonePin = "fish";
+        cloneBudgetBlocked = null;
+      } else {
+        await failJob(jobId, lease, reason).catch(() => undefined);
+        return {
+          done: true,
+          nextIndex: job.next_section_index ?? 0,
+          total: job.total_sections ?? 0,
+        };
+      }
     }
 
     if (cloneColdSeen) {
