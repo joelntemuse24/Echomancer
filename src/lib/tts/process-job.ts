@@ -91,6 +91,7 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
+import { SOWELL_CACHE_VARIANT } from "@/lib/tts/sowell-voice";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -446,6 +447,7 @@ export function takehomeCacheVariant(
   // Paragraph-level packing with trimmed joins. Bumped so takes from the
   // per-sentence pipeline are never replayed.
   if (providerId === "paradee") return "paradee-paragraph-v1";
+  if (providerId === "sowell") return SOWELL_CACHE_VARIANT;
   return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
 }
 
@@ -1436,6 +1438,8 @@ async function runClaimedTick(
           ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
+            : providerId === "sowell"
+              ? await holdNamedProviderSlot("sowell", 1)
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(

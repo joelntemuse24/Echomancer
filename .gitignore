@@ -86,3 +86,6 @@ src/app/dashboard/player-preview/
 
 # onnxruntime-node for the worker clone reference gate (scripts/install-reference-quality.sh)
 /.reference-quality-ort/
+
+# Sowell voice pack. The repo is public. The hash lives in voices/sowell/manifest.json.
+/voices/sowell/*.pt

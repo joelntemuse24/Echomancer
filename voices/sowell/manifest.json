@@ -1,0 +1,24 @@
+{
+  "id": "sowell",
+  "displayName": "Sowell",
+  "packFile": "am_sowell_avg.pt",
+  "sha256": "a9fa4422864e0048d035ead9ad6a304170f73aec409271903b05c9a789c7510d",
+  "bytes": 523859,
+  "dtype": "float32",
+  "shape": [510, 1, 256],
+  "index": "pack[phoneme_count - 1]",
+  "phonemeCap": 510,
+  "maxChars": 280,
+  "base": {
+    "repo": "hexgrad/Kokoro-82M",
+    "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+    "weights": "kokoro-v1_0.pth",
+    "configStyleDim": 128,
+    "packStyleDim": 256,
+    "split": "decoder uses [:, :128], predictor uses [:, 128:]",
+    "package": "kokoro==0.9.4",
+    "packageCommit": "dfb907a02bba8152ca444717ca5d78747ccb4bec"
+  },
+  "trainerCheckpointSha256": null,
+  "baseNote": "The pack is only a tensor. It does not name a checkpoint. The shape matches Kokoro-82M v1.0, which indexes 510 styles and splits a 256-d vector into two 128-d halves. The runtime loads that revision and no other. If the laptop exported against a different base, this pin is wrong and the sample will not be that voice."
+}

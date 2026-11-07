@@ -91,6 +91,7 @@ const MODEL_LIMITS = [
   { engine: "gemini", matches: ["gemini"], maxChars: 2800, modelMaxChars: 3000 },
   { engine: "fish", matches: ["fish", "s2.1-pro"], maxChars: FISH_TARGET_CHARS },
   { engine: "edge", matches: ["edge"], maxChars: 2000 },
+  { engine: "sowell", matches: ["sowell/"], maxChars: 280 },
   { engine: "google", matches: ["google/en-"], maxChars: 4500 },
   { engine: "minimax", matches: ["minimax"], maxChars: 2000 },
   { engine: "zonos", matches: ["zonos"], maxChars: 350 },
@@ -115,6 +116,7 @@ export function hardMaxCharsForModel(opts: {
   if (provider === "google" || model.startsWith("google/en-")) {
     return GOOGLE_SSML_HARD_MAX_BYTES;
   }
+  if (provider === "sowell") return Math.min(target, 280);
   return Math.min(target, maxCharsForModel(opts));
 }
 

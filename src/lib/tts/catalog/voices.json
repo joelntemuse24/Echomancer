@@ -95,6 +95,25 @@
     "qualityNotes": "UK male stock narrator. Edge online TTS (en-GB-RyanNeural). Live Listen may use browser TTS when Ryan Neural is available."
   },
   {
+    "id": "sowell",
+    "provider": "sowell",
+    "providerVoiceId": "am_sowell_avg",
+    "displayName": "Sowell",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "male",
+    "style": "narration",
+    "tags": ["sowell", "self-hosted", "audiobook", "male"],
+    "latencyClass": "balanced",
+    "model": "sowell/am_sowell_avg",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": false,
+    "maxCharsPerRequest": 280,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "Sowell, a separate Kokoro-82M voice pack. Listed only when the Modal endpoint is configured. It does not replace Andrew, Ava, Libby, Ryan, or a clone."
+  },
+  {
     "id": "clara",
     "provider": "fish",
     "providerVoiceId": "a50f1ee074124ba2b1dc44623f99abbe",

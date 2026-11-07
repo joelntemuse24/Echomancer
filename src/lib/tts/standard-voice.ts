@@ -183,6 +183,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
+  if (voice.provider === "sowell" || voice.id === "sowell") return false;
   if (isEchomancerAndrewVoice(voice)) return false;
   if (
     isStandardVoice(voice) ||

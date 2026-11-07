@@ -17,6 +17,11 @@ export type StockProvider =
    * Runs on the Contabo worker CPU behind `scripts/paradee/server.py`.
    */
   | "paradee"
+  /**
+   * Sowell, a Kokoro-82M voice pack. Modal CPU, scale to zero.
+   * Not the Contabo worker and not an OpenRouter voice.
+   */
+  | "sowell"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;

@@ -1,0 +1,4 @@
+# CPU Kokoro for the Sowell pack only. Installed in the Sowell image,
+# which is the official Python image, not Debian's apt Python.
+kokoro==0.9.4
+huggingface_hub==0.36.2
