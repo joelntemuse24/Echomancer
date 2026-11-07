@@ -16,7 +16,7 @@ read the child waits until this process has accepted listen-prep. Cloudflare
 returns 503. Vercel is the last resort. No extra apt package: the parse is
 the same unpdf / mammoth / JSZip pipeline, not Poppler.
 
-TTS still happens at Fish / Edge / Google APIs. The VM only orchestrates:
+TTS for stock voices still happens at Edge, Fish, or Paradee. Google Cloud TTS is not called. Clone synthesis is Modal (or direct Fish), not a model on this VM. The VM only orchestrates:
 enqueue → freeze `speakable.txt` / `sections.json` → `process-job` loop →
 retries → Turso progress → remux / crossfade / podcast delivery encode (DFN opt-in) → R2.
 It does **not** self-host Fish.

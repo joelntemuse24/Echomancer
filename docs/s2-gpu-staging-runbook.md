@@ -3,14 +3,25 @@
 The self-hosted clone path (`modal/s2_clone_service.py`) was proven on staging
 on build `2c43f284208e` (commit `e4e2d54`): **one-GPU restore** and **4-GPU
 fanout** both passed, which is the snapshot/restore and lane evidence from steps
-3–6. Staging did **not** run an end-to-end book through the worker, so step 7's
-checklist is still the thing to record before sending real books down this path.
+3–6 of that older image. Staging did **not** run an end-to-end book through the
+worker. That staging build is not the current production recipe.
 
-Production promotes the same build, but its lane count is raised **at runtime**
+As of 2026-11-07 the fingerprint of the current source defaults
+(`snapshot_fingerprint`: `S2C_VERSION` 9, unit ceiling 560, merge 260, history
+anchor first, pauses 0.22/0.4/0.96) is `aa02126d8267`. Operators reported the
+live app still on that id, unchanged since #246, with a runtime autoscaler of
+`min_containers=0`, `max_containers=4`, `scaledown_window=180`. This file does
+not prove the live `/ready` body. Cover calls that answer from an already-warm
+container id do not prove that every GPU type has a snapshot of this recipe.
+There are no always-on GPUs.
+
+Production lane count is raised **at runtime**
 after the deploy — see step 8. The code default stays `max_containers=1`, and
-every production deploy leaves it there.
+every production deploy leaves it there. A plain `modal deploy` resets the
+runtime override, so step 8c has to be repeated.
 
-Target shape, and the thing this runbook proves:
+Target shape. The table is the intended shape, not a record that every box
+was ticked for the current image:
 
 | Property | Target |
 |---|---|
@@ -18,7 +29,7 @@ Target shape, and the thing this runbook proves:
 | Containers | up to 4 independent **one-GPU** containers |
 | `min_containers` | `0` (scale to zero when idle) |
 | `max_containers` | 4 in production, raised by a **runtime override** after each deploy (the deploy-time env stays 1) |
-| Cold start | snapshot restore, ~90 s |
+| Cold start | snapshot restore. ~90 s is a planning figure, not a measured duration of every cold start. A measured restore cited for the 2026-11-06 books was ~57 s. |
 | User-facing | book generation is asynchronous; the browser never waits |
 
 Multi-GPU inside one container is deliberately not used. Modal documents GPU
@@ -118,12 +129,13 @@ worker against staging.
 **`MODAL_S2_READY_URL` is not optional on Vercel.** It is what lets a saved
 clone's preview tell "a container is warm" from "nothing is running" without
 opening a 150 s restore wait inside a 60 s function. On 2026-11-06 production had
-`MODAL_S2_TTS_URL` and `MODAL_S2_TOKEN` but not this one, so
-`synthesizeModalClonePreview` treats the pool as unprovably cold, answers
-`503 PREVIEW_ENGINE_COLD`, and starts a restore instead of blocking. The preview
-still works — it just takes a warm-up on the first tap after idle — but the fix
-for the two-minute stall is only complete once the ready endpoint is set on the
-Vercel project (Production **and** Preview). Read the hostname from
+`MODAL_S2_TTS_URL` and `MODAL_S2_TOKEN` but not the ready URL, so
+`synthesizeModalClonePreview` treated the pool as unprovably cold. Operators
+reported on 2026-11-07 that Vercel production has `MODAL_S2_READY_URL` and
+`MODAL_S2_SYNTHESIZE_URL` set. This repo does not store those hostnames, and
+this audit did not read the Vercel dashboard. The ready URL must still be set
+on Production and Preview or the preview path reports `503 PREVIEW_ENGINE_COLD`
+and starts a restore instead of blocking. Read the hostname from
 `modal app list` / the deploy output and set it in the dashboard; nothing in
 this repo can, and no config is changed by code.
 
@@ -625,9 +637,12 @@ While the pool is cold, a tick must:
 - **not** switch engine until `MODAL_S2_DEFER_MS` has passed
 - kick `modal run …::cover` (RPC) when a token is configured, and not wait for it
 
-Once the budget is gone it pins the book to `drama3` for the rest of the book and
-writes `CLONE_COLD_TIMEOUT_WARNING` onto the job, so the person sees why the
-voice changed.
+Once the budget is gone, and `FISH_API_KEY` is set, the book is pinned to
+direct **Fish** for the rest of the book — the same reference, not a different
+narrator — and `CLONE_COLD_TIMEOUT_WARNING` is written so the person sees why
+the engine changed. A hard provider fault uses `CLONE_PROVIDER_FAULT_WARNING`
+instead. Drama 3 is not called. With no Fish key the book parks again rather
+than substituting a voice.
 
 ---
 
@@ -983,10 +998,10 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 
 | Symptom | Action |
 |---|---|
-| Clone audio is wrong / silent | `CLONE_TTS_PROVIDER=openrouter` on the worker → Drama 3 only. No deploy needed. |
-| Clone path errors | remove `MODAL_S2_TTS_URL` → clones use Drama 3 automatically. |
+| Clone audio is wrong / silent | `CLONE_TTS_PROVIDER=fish` on the worker. A leftover `openrouter` value is read as `fish` (`resolveCloneProviderPin`). It does not select Drama 3. No deploy needed. |
+| Clone path errors | remove `MODAL_S2_TTS_URL` → a book that is not already pinned uses direct Fish. An existing `modal` pin is kept. |
 | Cost or container runaway | live: `update_autoscaler(max_containers=1)` on `echomancer-s2-clone.S2CloneWorker` (see "Rolling the lane count back") — no redeploy, snapshots survive. The dashboard's autoscaler panel does the same thing. |
-| Books stuck parked | `MODAL_S2_DEFER_MS=0` → old fail-fast behaviour (switches to Drama 3 on the first cold answer). |
+| Books stuck parked | `MODAL_S2_DEFER_MS=0` skips the park and continues the tick. It does not rewrite `provider_pin` on that branch and it does not call Drama 3. After the normal defer budget, with `FISH_API_KEY` set, the rest of the book is pinned to direct Fish (the same voice). With no Fish key the book stays parked. |
 | Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply the runtime override (or redeploy with the env you want). |
 
 A book that is already `ready` is never re-synthesized by any of these.
