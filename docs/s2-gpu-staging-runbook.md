@@ -597,7 +597,9 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 - [ ] the job leaves `queued` and the **browser is not waiting** on any request
 - [ ] `pm2 logs echomancer-takehome` shows `clone provider pinned to modal`
 - [ ] a `[modal-clone] pre-warm started` line appears before the book is packed
-- [ ] `S2 lanes=4 batch=24 staged=N/M containers=… builds=… boot=… gen=… first=0:staged@Ns`
+- [ ] `S2 lanes=4 batch=24 staged=N/M cacheSkip=K containers=… builds=… boot=… gen=… first=0:staged@Ns`
+      (`cacheSkip` is indexes already in the section cache and not sent again;
+      `S2 lane staged` is a GPU row, not a cache hit)
 - [ ] the **first** batch call carried section 0 alone (`[S2 lanes] first light
       section 0 staged in Ns`), and it arrived before any other lane opened
 - [ ] every remaining section rode **one** page — not one page per section

@@ -389,6 +389,18 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   `[[0],[1],[2],[3]]` + `[4]` deferred — one row per call, and all four calls
   landed on the same container (`36459a5cb16f`), so 246s of audio took 84s of
   GPU wall at 2.93x instead of ~24s.
+- **A staged take is not rendered again.** The batch is 24 sections and the
+  publish window is 8, so a tick used to leave ~16 takes in the section cache
+  and the next tick sent those same indexes to the GPU. `S2 lane staged` is
+  written only after a row comes back, so a repeated line is another
+  synthesis (the stored duration can change), not a cache read. The tick now
+  renders only indexes that miss `takehomeSectionCacheKey` and masters the
+  already-staged prefix while that render is in flight. A tick that starts
+  with an empty cache still publishes one window of 8 after the GPU returns.
+  Playback order is unchanged: publishing stops at the first index that is
+  not cached yet. Retry rows are not reused. Modal does not receive
+  `narrationSpeed`, and a clone tick does not calibrate it, because that
+  moved the cache key off the take that was just staged.
 - **A lane is capped by the wait it can be granted, not by a made-up rate.**
   `modalLaneCharCap` is the generation budget (`MODAL_S2_COLD_WAIT_MS` minus a
   70s restore+prep margin) times a conservative aggregate rate, and it lands on

@@ -178,10 +178,10 @@ function vdhSource(): string {
     "But they do use brilliantly the landscape of contemporary eighteenth-century " +
     "agriculture to demonstrate how the natural bounty of America molded the European " +
     "religious and political heritage into something far more dynamic. ";
-  // Each paragraph is distinct. The provider attempt ledger and the section
-  // cache are both keyed on the text, so identical paragraphs would share one
-  // entry — a real book does not repeat 32 identical paragraphs, and sharing
-  // the entry would make this test measure the ledger instead of coverage.
+  // Each paragraph is distinct, including the repeated openers. The section
+  // cache is keyed on the text, so a later section with the same words is one
+  // take, not a second request. A unique token in each paragraph keeps this fixture from
+  // collapsing onto that key and measuring the ledger instead of coverage.
   const openers = [
     "The argument began with soil.",
     "What followed was a political culture.",
@@ -194,7 +194,7 @@ function vdhSource(): string {
   ];
   return Array.from(
     { length: 32 },
-    (_, i) => `${openers[i % openers.length]} ${sentence.repeat(4)}`
+    (_, i) => `${openers[i % openers.length]} uniq${i}token ${sentence.repeat(4)}`
   ).join("\n\n");
 }
 

@@ -939,6 +939,362 @@ describe("lane staging", () => {
   });
 });
 
+describe("staged clone takes are not rendered again", () => {
+  const LONG = "A sentence. ".repeat(6000);
+  /** Every sentence names its place, so two sections cannot share a cache key. */
+  const UNIQUE = Array.from({ length: 48 }, (_, index) =>
+    `Paragraph ${index} is only this paragraph. `.repeat(30)
+  ).join("\n\n");
+
+  function keysOf(body: string | undefined): number[] {
+    const parsed = JSON.parse(String(body ?? "{}"));
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    return items.map((item: { key: string }) => Number(item.key));
+  }
+
+  async function readyIndexes(): Promise<number[]> {
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as Array<{
+      index: number;
+      status: string;
+    }>;
+    return segments
+      .filter((segment) => segment.status === "ready")
+      .map((segment) => segment.index)
+      .sort((a, b) => a - b);
+  }
+
+  beforeEach(() => {
+    process.env.TTS_SECTION_CACHE = "1";
+    process.env.TTS_SECTION_QA_ENABLED = "0";
+    process.env.TTS_QA_PROVIDER = "off";
+    process.env.MODAL_S2_BATCH_SIZE = "24";
+    process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
+    process.env.MODAL_S2_FIRST_LIGHT = "1";
+  });
+
+  afterEach(() => {
+    delete process.env.TTS_SECTION_QA_ENABLED;
+    delete process.env.TTS_QA_PROVIDER;
+    delete process.env.MODAL_S2_BATCH_SIZE;
+    delete process.env.MODAL_S2_SECTION_CONCURRENCY;
+    delete process.env.MODAL_S2_FIRST_LIGHT;
+    delete process.env.CPU_YIELD_SEC;
+  });
+
+  it("does not send a staged index on the next tick, including across a restart", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    const seen: number[][] = [];
+    let gpu = 0;
+    let publishing = 0;
+    let overlapped = false;
+    let delayMs = 0;
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      seen.push(keysOf(typeof init?.body === "string" ? init.body : undefined));
+      gpu += 1;
+      if (gpu > 0 && publishing > 0) overlapped = true;
+      try {
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return await base(url, init);
+      } finally {
+        gpu -= 1;
+      }
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sectionPublish = await import("@/lib/cpu/section-publish");
+    const commit = sectionPublish.commitSectionAudio;
+    vi.spyOn(sectionPublish, "commitSectionAudio").mockImplementation(async (input) => {
+      publishing += 1;
+      if (gpu > 0) overlapped = true;
+      try {
+        return await commit(input);
+      } finally {
+        publishing -= 1;
+      }
+    });
+    await seedCloneJob(LONG);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, {});
+    const first = seen.flat();
+    expect(first.length).toBeGreaterThan(8);
+    const ready = await readyIndexes();
+    expect(ready[0]).toBe(0);
+    for (let i = 0; i < ready.length; i++) expect(ready[i]).toBe(i);
+    expect(ready.length).toBeLessThan(new Set(first).size);
+
+    delayMs = 50;
+    overlapped = false;
+    const mark = seen.length;
+    await processTakehomeTick(JOB_ID, {});
+    const second = seen.slice(mark).flat();
+    const again = second.filter((index) => first.includes(index));
+    expect(again).toEqual([]);
+    expect(second.length).toBeGreaterThan(0);
+    expect(overlapped).toBe(true);
+    const readyAfter = await readyIndexes();
+    for (let i = 0; i < readyAfter.length; i++) expect(readyAfter[i]).toBe(i);
+    expect(readyAfter.length).toBeGreaterThan(ready.length);
+  }, 60_000);
+
+  it("keeps a staged take across a CPU yield and publishes a late master without rendering it", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    process.env.CPU_YIELD_SEC = "1";
+    const seen: number[][] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") {
+        seen.push(keysOf(typeof init?.body === "string" ? init.body : undefined));
+      }
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sectionPublish = await import("@/lib/cpu/section-publish");
+    const { uploadFile } = await import("@/lib/storage");
+    vi.spyOn(sectionPublish, "commitSectionAudio").mockImplementation(async (input) => {
+      const uploaded = await uploadFile(
+        `audiobooks/${input.jobId}`,
+        `raw/${String(input.index).padStart(4, "0")}.${input.extension}`,
+        input.audio,
+        input.contentType
+      );
+      return {
+        ready: false,
+        path: "",
+        rawPath: uploaded.path,
+        contentType: input.contentType,
+        mastered: false,
+      };
+    });
+    await seedCloneJob(LONG);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const first = await processTakehomeTick(JOB_ID, {});
+    expect(first.yieldSlot).toBe(true);
+    const rendered = new Set(seen.flat());
+    expect(rendered.size).toBeGreaterThan(1);
+
+    await execute(
+      `UPDATE jobs SET sched_not_before = NULL, status = 'queued' WHERE id = ?`,
+      [JOB_ID]
+    );
+    const mark = seen.length;
+    await processTakehomeTick(JOB_ID, {});
+    const second = seen.slice(mark).flat();
+    expect(second.filter((index) => rendered.has(index))).toEqual([]);
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as Array<{
+      index: number;
+      status: string;
+    }>;
+    const head = segments.find((segment) => segment.index === 0);
+    expect(head?.status).toBe("ready");
+    expect(second).not.toContain(0);
+    expect(row?.status).not.toBe("failed");
+  }, 60_000);
+
+  it("refuses a cache entry for a different voice and a silent take", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    const seen: number[][] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") {
+        seen.push(keysOf(typeof init?.body === "string" ? init.body : undefined));
+      }
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob(UNIQUE);
+    await fakeAdapter();
+    const { processTakehomeTick, takehomeSectionCacheKey } = await import(
+      "@/lib/tts/process-job"
+    );
+    const { fishSpeedForRequest, initialNarrationSpeed } = await import(
+      "@/lib/tts/narration-pace"
+    );
+    const { deleteFile } = await import("@/lib/storage");
+    const { writeSectionCache } = await import("@/lib/tts/section-cache");
+    const { loadFrozenScript } = await import("@/lib/tts/frozen-script");
+    const { emptyWav } = await import("@/test/harness");
+
+    await processTakehomeTick(JOB_ID, {});
+    const ready = new Set(await readyIndexes());
+    const staged = [...new Set(seen.flat())].filter((index) => !ready.has(index));
+    expect(staged.length).toBeGreaterThanOrEqual(3);
+    const frozen = await loadFrozenScript(JOB_ID);
+    expect(frozen).toBeTruthy();
+    const speed = fishSpeedForRequest(
+      initialNarrationSpeed({ catalogVoiceId: CLONE_ID, text: frozen!.speakable })
+    );
+    const { fileExists } = await import("@/lib/storage");
+    const keyFor = (index: number, voice: string) =>
+      takehomeSectionCacheKey({
+        text: frozen!.sections[index]!.text,
+        voiceId: voice,
+        model: "s2.1-pro-base",
+        index,
+        speed,
+        providerId: "openrouter",
+        catalogVoiceId: CLONE_ID,
+      });
+    const cachedStaged: number[] = [];
+    for (const index of staged) {
+      if (await fileExists(`tts-cache/${keyFor(index, "clone-ref")}.mp3`)) {
+        cachedStaged.push(index);
+      }
+    }
+    expect(cachedStaged.length).toBeGreaterThanOrEqual(3);
+    const [victim, silent, keeper] = cachedStaged;
+    await deleteFile(`tts-cache/${keyFor(victim!, "clone-ref")}.mp3`);
+    await writeSectionCache(keyFor(victim!, "other-voice"), "mp3", fakeMp3(), "audio/mpeg");
+    await writeSectionCache(keyFor(silent!, "clone-ref"), "mp3", emptyWav(), "audio/wav");
+
+    const mark = seen.length;
+    await processTakehomeTick(JOB_ID, {});
+    const second = new Set(seen.slice(mark).flat());
+    expect(second.has(victim!)).toBe(true);
+    expect(second.has(silent!)).toBe(true);
+    expect(second.has(keeper!)).toBe(false);
+  }, 60_000);
+
+  it("retries a failed row without repeating the rows that were staged beside it", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    const seen: number[][] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      const keys = keysOf(typeof init?.body === "string" ? init.body : undefined);
+      seen.push(keys);
+      const response = await base(url, init);
+      const payload = await response.json();
+      payload.items = payload.items.map((item: { key: string }) =>
+        item.key === "5"
+          ? { key: item.key, error: "row failed", error_code: "row" }
+          : item
+      );
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob(UNIQUE);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, {});
+    const first = seen.flat();
+    expect(first).toContain(5);
+    const staged = first.filter((index) => index !== 5);
+
+    const mark = seen.length;
+    await processTakehomeTick(JOB_ID, {});
+    const second = seen.slice(mark).flat();
+    expect(second).toContain(5);
+    expect(second.filter((index) => staged.includes(index))).toEqual([]);
+  }, 60_000);
+
+  it("does not repeat rows from a call that finished when a later call drops", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let batches = 0;
+    const seen: number[][] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      const keys = keysOf(typeof init?.body === "string" ? init.body : undefined);
+      seen.push(keys);
+      batches += 1;
+      if (batches > 2) throw new TypeError("socket hang up");
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob(UNIQUE);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, {});
+    const staged = seen.slice(0, 2).flat();
+    expect(staged.length).toBeGreaterThan(0);
+    const dropped = seen.slice(2).flat();
+    expect(dropped.length).toBeGreaterThan(0);
+
+    const mark = seen.length;
+    await processTakehomeTick(JOB_ID, {});
+    const second = seen.slice(mark).flat();
+    expect(second.filter((index) => staged.includes(index))).toEqual([]);
+    expect(second.some((index) => dropped.includes(index))).toBe(true);
+  }, 60_000);
+
+  it("does not put a cached index on a busy lane, and a held lease sends nothing", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let busy = false;
+    const seen: number[][] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      const keys = keysOf(typeof init?.body === "string" ? init.body : undefined);
+      seen.push(keys);
+      if (busy) return new Response("lane busy", { status: 429 });
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob(UNIQUE);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, {});
+    const staged = new Set(seen.flat());
+    busy = true;
+    const mark = seen.length;
+    const duringBusy = await processTakehomeTick(JOB_ID, {});
+    const requested = seen.slice(mark).flat();
+    expect(requested.filter((index) => staged.has(index))).toEqual([]);
+    const busyRow = await jobRow(JOB_ID);
+    expect(busyRow?.error_message ?? busyRow?.status).not.toBe("failed");
+    expect(busyRow?.status).not.toBe("failed");
+    expect(duringBusy.done).toBe(false);
+
+    const calls = seen.length;
+    await execute(
+      `UPDATE jobs SET status = 'processing', processing_lease_token = 'held-by-other',
+         lease_expires_at = unixepoch() + 600 WHERE id = ?`,
+      [JOB_ID]
+    );
+    const blocked = await processTakehomeTick(JOB_ID, {});
+    expect(blocked.busy).toBe(true);
+    expect(seen.length).toBe(calls);
+  }, 60_000);
+});
+
 describe("a parked provider fault does not fail the book on a later tick", () => {
   function faultyPool() {
     return vi.fn<typeof fetch>().mockImplementation(async (url) => {

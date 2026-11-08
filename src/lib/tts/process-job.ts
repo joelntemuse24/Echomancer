@@ -53,6 +53,10 @@ import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
+  selectClonePublishBatch,
+  selectCloneRenderIndexes,
+} from "@/lib/tts/providers/modal-clone-prefetch";
+import {
   CLONE_COLD_TIMEOUT_WARNING,
   CLONE_PROVIDER_FAULT_WARNING,
   modalCloneDeferMs,
@@ -114,6 +118,7 @@ import {
   allIndexesReady,
   claimIndexSet,
   claimableIndexes,
+  SECTION_FANOUT_HARD_MAX,
   createAsyncMutex,
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
@@ -1433,6 +1438,10 @@ async function runClaimedTick(
      * worker reuses what is stored and re-claims only unfinished sections.
      */
     let cloneColdSeen = false;
+    // Set when this tick already rendered and published the clone batch.
+    // The generic claim below would otherwise speak the same sections again,
+    // one row per call, including takes that are already in the section cache.
+    let modalPrefetchHandled = false;
     // A shared cap that is only partly free. Sections that already hold a
     // slot finish and write before the tick returns the book to the queue.
     let providerCapFull = false;
@@ -1547,6 +1556,10 @@ async function runClaimedTick(
           return synthesized;
         }
         if (
+          // Modal never receives narrationSpeed. Calibrating from that
+          // duration moves the cache key and the staged take looks missing,
+          // so the next section pays for the same audio again.
+          clonePin !== "modal" &&
           provider.id !== "paradee" &&
           synthesized.durationHintSeconds &&
           synthesized.durationHintSeconds > 0
@@ -1667,11 +1680,13 @@ async function runClaimedTick(
       }
     };
 
-    // Self-hosted clones: render this tick's sections across the GPU lanes
-    // BEFORE they are claimed. The container decodes each section as its own
-    // row of one batch, so GPU cost is nearly flat in rows-per-call (measured
-    // 2.9x realtime one-per-call, 35x at 24 per call), and four lanes means
-    // four independent one-GPU containers.
+    // Self-hosted clones: render this tick's uncached sections across the GPU
+    // lanes. The container decodes each section as its own row of one batch,
+    // so GPU cost is nearly flat in rows-per-call (measured 2.9x realtime
+    // one-per-call, 35x at 24 per call), and four lanes means four independent
+    // one-GPU containers. Indexes that already have a take are not sent again:
+    // the publish window is 8 and the batch is 24, so the next tick used to
+    // re-render the staged tail (`S2 lane staged` is a GPU row, not a cache hit).
     //
     // Section 0 goes first, alone, and is published before any other lane
     // opens. Nothing is playable until it is, and a lane call answers all of
@@ -1682,124 +1697,192 @@ async function runClaimedTick(
     // book, section 0 not first).
     //
     // Each rendered section lands in the same object the per-section path
-    // reads, so nothing downstream changes. A section the batch did not return
-    // is simply not cached, and the per-section path retries it.
+    // reads. A section the batch did not return stays uncached and is tried
+    // again on the next batch. The one-row path runs only when the dispatch
+    // itself throws before staging anything.
     //
     // A cold pool parks the book instead of switching narrator: the job is
     // asynchronous, so "come back in a minute" is strictly better than
     // "different voice from section 7".
     if (clonePin === "modal") {
-      const pending = claimableIndexes(segments, total).slice(0, maxClaim);
-      if (pending.length >= 1) {
-        const lanes = Math.max(1, Math.min(modalCloneLaneCount(), pending.length));
+      const pendingAll = claimableIndexes(segments, total);
+      if (pendingAll.length >= 1) {
         const batch = modalCloneBatchSize();
-        // The player starts at section 0 and cannot skip ahead, so nothing is
-        // playable until it is done. `pending` is ascending and `0` is only in
-        // it when section 0 is still claimable, so this is exactly "the tick
-        // that can deliver the first audio".
-        const needsFirstLight =
-          modalCloneFirstLightEnabled() && pending[0] === 0;
-        // A call is worth a GPU only when it carries many rows: the container
-        // decodes them in one batch, so more rows per call is a much better use
-        // of the GPU. But a call must also *finish*: the limit is the narration
-        // one lane can deliver inside the wait it is granted, at a conservative
-        // measured rate. See `modalLaneCharLimit` — an 87,000-character cap
-        // packed 31k characters into one call that never returned
-        // (`job 7e4a8b48`, 2026-11-06).
         const maxLaneChars = modalLaneCharLimit();
+        // Frozen for the tick. Modal does not receive this speed; letting a
+        // later calibration change it would store the take where the publish
+        // path does not look.
+        const prefetchSpeed = fishSpeedForRequest(ttsOptions.narrationSpeed);
+        const cacheOn =
+          process.env.TTS_SECTION_CACHE !== "0" &&
+          !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
+        const cacheKeyFor = (index: number) =>
+          takehomeSectionCacheKey({
+            text: sections[index]!,
+            voiceId,
+            model: modelSlug ?? "",
+            index,
+            speed: prefetchSpeed,
+            providerId: provider.id,
+            catalogVoiceId: catalog?.id ?? job.catalog_voice_id,
+          });
+        const reusable = async (index: number): Promise<boolean> => {
+          if (!cacheOn) return false;
+          // A retry wants a new take. The previous one is why it is marked.
+          if (segments.some((segment) => segment.index === index && segment.status === "retry")) {
+            return false;
+          }
+          const audio = await readSectionCache(cacheKeyFor(index), "mp3");
+          return Boolean(audio && !isEmptyOrSilentAudio(audio));
+        };
         try {
-          // Prefer the resolved catalog id, but fall back to the id stored on
-          // the row: a clone whose catalog entry cannot be resolved must still
-          // render rather than throw here.
           const referenceId = catalog?.id ?? job.catalog_voice_id;
           if (!referenceId) throw new Error("clone voice id is missing");
-          // Started above, beside packing. A missing or unusable sample is
-          // `ModalCloneReferenceError`, which is not the same thing as cold.
           const loadedReference = earlyReference
             ? await earlyReference
             : await loadCloneReference(referenceId, voiceId);
           if (loadedReference instanceof Error) throw loadedReference;
           const reference = loadedReference;
           const seedEpoch = cloneSeedEpoch(segments);
-          /**
-           * Cache one rendered section so the per-section path reuses the take
-           * instead of paying the GPU for it a second time.
-           *
-           * The key comes from `takehomeSectionCacheKey`, the same builder the
-           * per-section read uses. Building it here by hand is how the
-           * prefetched section 0 used to be stored under a different key than
-           * the one it was looked up with (`normal` latency instead of
-           * `balanced`), making every prefetch a miss.
-           */
+          const cachedAtStart = new Set<number>();
+          if (cacheOn) {
+            let misses = 0;
+            for (const index of pendingAll) {
+              if (misses >= maxClaim) break;
+              if (await reusable(index)) cachedAtStart.add(index);
+              else misses += 1;
+            }
+          }
+          const { render, skippedCached } = selectCloneRenderIndexes(
+            pendingAll,
+            (index) => cachedAtStart.has(index),
+            maxClaim
+          );
+          const lanes = Math.max(
+            1,
+            Math.min(modalCloneLaneCount(), Math.max(render.length, 1))
+          );
+          // Section 0 is alone only when this tick is the one that renders it.
+          const needsFirstLight = modalCloneFirstLightEnabled() && render[0] === 0;
+          const stagedNow = new Set<number>();
           const stageSection = async (
             index: number,
             audio: Buffer,
             durationSeconds: number
           ): Promise<void> => {
-            await writeSectionCache(
-              takehomeSectionCacheKey({
-                text: sections[index]!,
-                voiceId,
-                model: modelSlug ?? "",
-                index,
-                speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
-                providerId: provider.id,
-                catalogVoiceId: catalog?.id ?? job.catalog_voice_id,
-              }),
-              "mp3",
-              audio,
-              "audio/mpeg"
-            );
+            await writeSectionCache(cacheKeyFor(index), "mp3", audio, "audio/mpeg");
+            stagedNow.add(index);
             console.log(
               `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
             );
           };
-          const dispatch = await withCloneBatchSlot(() =>
-            dispatchModalCloneLanes({
-              indexes: pending,
-              textAt: (index) => sections[index]!,
-              lanes,
-              batch,
-              maxLaneChars,
-              seedEpoch,
-              firstLight: needsFirstLight,
-              // Section 0 goes through the real per-section path so mastering,
-              // upload, `segments_json` and `first_section_at` all happen for
-              // it while the other lanes are still rendering.
-              publishFirstLight: async (index) => {
-                // Transcript QA spawns a fresh Whisper process. That model
-                // load sits between the GPU returning and `first_section_at`.
-                // Section 0 is published without it; every later section is
-                // still checked. The take is not swapped afterwards, because
-                // the player may already be reading the object.
-                await workSection(
-                  index,
-                  () => lowestUnreadyIndex(segments, total),
-                  { skipSectionQa: true }
-                );
-              },
-              render: (items, epoch, renderOpts) =>
-                renderModalCloneBatch(items, reference, undefined, jobId, {
-                  seedEpoch: epoch,
-                  raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
-                  workMs: renderOpts?.workMs,
-                }),
-              stage: stageSection,
-              log: (message) => console.log(`[Job ${jobId}] ${message}`),
-            })
-          );
-          console.log(
-            `[Job ${jobId}] S2 lanes=${lanes} batch=${batch} staged=${dispatch.staged}/${pending.length} ` +
-              `containers=${dispatch.containers.join(",") || "-"} ` +
-              `builds=${dispatch.builds.join(",") || "-"} ` +
-              `boot=${dispatch.boot.join(",") || "-"} gen=${dispatch.generateSeconds}s` +
-              (dispatch.firstLight
-                ? ` first=${dispatch.firstLight.index}:` +
-                  `${dispatch.firstLight.staged ? "staged" : "missed"}` +
-                  `@${Math.round(dispatch.firstLight.elapsedMs / 1000)}s`
-                : "")
-          );
-          if (dispatch.cold) {
+          const publishIndexes = async (indexes: number[]) => {
+            if (indexes.length === 0) return;
+            const nextUnclaimed = lowestUnclaimedAfter(segments, total, indexes);
+            await writeWithLease(
+              jobId,
+              lease,
+              `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+                 status = 'processing', updated_at = unixepoch()
+               WHERE id = ? AND processing_lease_token = ?`,
+              [nextUnclaimed, total]
+            );
+            console.log(
+              `[Job ${jobId}] publishing staged sections [${indexes.join(",")}]`
+            );
+            await runIndexBoundFanout(
+              indexes,
+              (index) => workSection(index, () => nextUnclaimed),
+              indexes.length
+            );
+          };
+
+          let dispatch: Awaited<ReturnType<typeof dispatchModalCloneLanes>> | null = null;
+          const renderPromise =
+            render.length === 0
+              ? Promise.resolve(null)
+              : withCloneBatchSlot(() =>
+                  dispatchModalCloneLanes({
+                    indexes: render,
+                    textAt: (index) => sections[index]!,
+                    lanes,
+                    batch,
+                    maxLaneChars,
+                    seedEpoch,
+                    firstLight: needsFirstLight,
+                    // Section 0 goes through the real per-section path so mastering,
+                    // upload, `segments_json` and `first_section_at` all happen for
+                    // it while the other lanes are still rendering.
+                    publishFirstLight: async (index) => {
+                      // Transcript QA spawns a fresh Whisper process. That model
+                      // load sits between the GPU returning and `first_section_at`.
+                      // Section 0 is published without it; every later section is
+                      // still checked. The take is not swapped afterwards, because
+                      // the player may already be reading the object.
+                      await workSection(
+                        index,
+                        () => lowestUnreadyIndex(segments, total),
+                        { skipSectionQa: true }
+                      );
+                    },
+                    render: (items, epoch, renderOpts) =>
+                      renderModalCloneBatch(items, reference, undefined, jobId, {
+                        seedEpoch: epoch,
+                        raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
+                        workMs: renderOpts?.workMs,
+                      }),
+                    stage: stageSection,
+                    log: (message) => console.log(`[Job ${jobId}] ${message}`),
+                  })
+                ).catch((err: unknown) => {
+                  console.warn(
+                    `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
+                    err instanceof Error ? err.message : err
+                  );
+                  return null;
+                });
+
+          // Already-staged takes are mastered while the next batch renders.
+          // The GPU call is not awaited until that prefix is published, or
+          // until there is nothing staged yet.
+          let publishedFromCache = 0;
+          const attempted = new Set<number>();
+          const blocked = new Set(render);
+          try {
+            while (!cpuBacklog && !(stopAt && Date.now() >= stopAt)) {
+              const batchIndexes = selectClonePublishBatch(
+                claimableIndexes(segments, total).filter((index) => !attempted.has(index)),
+                (index) => cachedAtStart.has(index),
+                blocked,
+                SECTION_FANOUT_HARD_MAX
+              );
+              if (batchIndexes.length === 0) break;
+              for (const index of batchIndexes) attempted.add(index);
+              await publishIndexes(batchIndexes);
+              publishedFromCache += batchIndexes.length;
+            }
+          } finally {
+            dispatch = await renderPromise;
+          }
+
+          if (dispatch) {
+            console.log(
+              `[Job ${jobId}] S2 lanes=${lanes} batch=${batch} staged=${dispatch.staged}/${render.length} ` +
+                `cacheSkip=${skippedCached} ` +
+                `containers=${dispatch.containers.join(",") || "-"} ` +
+                `builds=${dispatch.builds.join(",") || "-"} ` +
+                `boot=${dispatch.boot.join(",") || "-"} gen=${dispatch.generateSeconds}s` +
+                (dispatch.firstLight
+                  ? ` first=${dispatch.firstLight.index}:` +
+                    `${dispatch.firstLight.staged ? "staged" : "missed"}` +
+                    `@${Math.round(dispatch.firstLight.elapsedMs / 1000)}s`
+                  : "")
+            );
+          } else if (render.length === 0 && skippedCached > 0) {
+            console.log(`[Job ${jobId}] S2 cacheSkip=${skippedCached} render=0`);
+          }
+
+          if (dispatch?.cold) {
             const outcome = await deferForColdClonePool({
               jobId,
               lease,
@@ -1822,7 +1905,33 @@ async function runClaimedTick(
               clonePin = "fish";
             }
           }
+
+          if (clonePin === "modal") {
+            // Nothing was staged at the start of the tick, so the player still
+            // needs a window of the takes this GPU call just wrote. Later
+            // ticks master that tail while the next batch is rendering.
+            if (
+              publishedFromCache === 0 &&
+              !cpuBacklog &&
+              !(stopAt && Date.now() >= stopAt)
+            ) {
+              const fresh = selectClonePublishBatch(
+                claimableIndexes(segments, total).filter((index) => !attempted.has(index)),
+                (index) => stagedNow.has(index),
+                new Set(),
+                SECTION_FANOUT_HARD_MAX
+              );
+              if (fresh.length > 0) await publishIndexes(fresh);
+            }
+            // A dispatch that neither staged nor published did not take the
+            // book forward. The per-section path still has to see a cold pool
+            // or a hard provider fault. Once a take is staged, or an older
+            // take was published, that path would speak the misses one row at
+            // a time, so the next batch does it.
+            modalPrefetchHandled = stagedNow.size > 0 || publishedFromCache > 0;
+          }
         } catch (err) {
+          if (err instanceof LeaseLostError) throw err;
           console.warn(
             `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
             err instanceof Error ? err.message : err
@@ -1877,7 +1986,7 @@ async function runClaimedTick(
             () => lowestUnclaimedAfter(segments, total, [...claimedSet])
           ),
       });
-    } else {
+    } else if (!modalPrefetchHandled) {
       const claimed = claimIndexSet({
         segments,
         total,
