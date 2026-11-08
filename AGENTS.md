@@ -473,9 +473,11 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   the worker starts it when extract is accepted (`prewarmClonePoolForUpload`),
   and the voice list asks the worker (`POST /clone-prewarm`) when
   `GET /api/tts/voices` sees a trained clone. Vercel does not hold
-  `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. The tick still
-  pre-warms at the top, so a miss overlaps packing with whatever restore is
-  left.
+  `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. A tick pre-warms
+  only when it will send uncached S2 narration: a new book with no outline
+  yet, so the restore overlaps packing, or a later tick that still has a
+  cache miss. Concat, saved-raw mastering, a fish pin, a retry of that CPU
+  work, and a tick whose remaining sections are all cached do not.
   A container that **finished** restoring before the first HTTP call is a warm
   first light: ~14s of section 0 at the one-row rate plus the section
   loudnorm, about **16–20s** to `first_section_at`. A restore still in
