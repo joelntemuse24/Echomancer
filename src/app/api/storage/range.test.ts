@@ -61,6 +61,36 @@ beforeEach(async () => {
 });
 
 describe("GET /api/storage R2 ranges", () => {
+  it("caps an open-ended range before it is read, and does not redirect it", async () => {
+    const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
+    const slice = new Uint8Array(8);
+    openObjectMock.mockResolvedValue({
+      statusCode: 206,
+      contentType: "audio/mpeg",
+      contentLength: slice.byteLength,
+      contentRange: `bytes 0-${PLAYBACK_OPEN_RANGE_BYTES - 1}/575515806`,
+      body: sliceStream(slice),
+    });
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const response = await GET(
+      await buildRequest(`/api/storage/${FULL}`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-" },
+      }),
+      routeParams({ path: FULL.split("/") })
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe(
+      `bytes 0-${PLAYBACK_OPEN_RANGE_BYTES - 1}/575515806`
+    );
+    expect(openObjectMock).toHaveBeenCalledWith(
+      FULL,
+      `bytes=0-${PLAYBACK_OPEN_RANGE_BYTES - 1}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(getFileMock).not.toHaveBeenCalled();
+  });
+
   it("streams the seek slice and does not download the whole object", async () => {
     const slice = new Uint8Array([1, 2, 3, 4]);
     openObjectMock.mockResolvedValue({

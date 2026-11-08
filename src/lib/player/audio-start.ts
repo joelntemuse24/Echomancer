@@ -58,6 +58,11 @@ export interface MediaSnapshot {
   networkState: number;
   /** `HTMLMediaElement.error.code`, or null. */
   errorCode: number | null;
+  /**
+   * Latest buffered end, in seconds. A long file can sit below
+   * `HAVE_FUTURE_DATA` at 0:00 while this is still moving.
+   */
+  bufferedEnd: number;
 }
 
 export function mediaSnapshot(audio: {
@@ -66,13 +71,23 @@ export function mediaSnapshot(audio: {
   readyState: number;
   networkState: number;
   error?: { code: number } | null;
+  buffered?: { length: number; end: (index: number) => number };
 }): MediaSnapshot {
+  let bufferedEnd = 0;
+  const ranges = audio.buffered;
+  if (ranges) {
+    for (let i = 0; i < ranges.length; i++) {
+      const end = ranges.end(i);
+      if (Number.isFinite(end) && end > bufferedEnd) bufferedEnd = end;
+    }
+  }
   return {
     paused: audio.paused,
     currentTime: audio.currentTime,
     readyState: audio.readyState,
     networkState: audio.networkState,
     errorCode: audio.error?.code ?? null,
+    bufferedEnd,
   };
 }
 
@@ -107,6 +122,9 @@ export function planStart(
  *
  * The playhead is compared with where it was when the request began, so a
  * start that resumes mid-section is judged on movement, not on being at 0:00.
+ * A buffer that is still growing is movement too: a multi-hour file can sit
+ * at 0:00 below `HAVE_FUTURE_DATA` while the first window arrives, and
+ * reloading that element aborts a start that is working.
  */
 export function startIsStuck(
   startedAt: MediaSnapshot,
@@ -115,6 +133,9 @@ export function startIsStuck(
 ): boolean {
   if (waitedMs < START_WATCHDOG_MS) return false;
   if (now.readyState >= HAVE_FUTURE_DATA) return false;
+  // Bytes are still arriving. Reloading here aborts a healthy uncached
+  // start, and that abort is reported as "Couldn't play this part."
+  if (now.bufferedEnd > startedAt.bufferedEnd + PLAYHEAD_EPSILON_SECONDS) return false;
   return now.currentTime <= startedAt.currentTime + PLAYHEAD_EPSILON_SECONDS;
 }
 

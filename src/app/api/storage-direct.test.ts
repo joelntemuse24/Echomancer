@@ -46,6 +46,59 @@ beforeEach(async () => {
 });
 
 describe("GET /api/storage direct R2", () => {
+  it("answers an open-ended range with a finished window instead of the whole file", async () => {
+    const { uploadFile } = await import("@/lib/storage");
+    const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
+    const total = PLAYBACK_OPEN_RANGE_BYTES + 4096;
+    await uploadFile(
+      `audiobooks/${JOB_A}`,
+      "full.mp3",
+      fakeMp3(total),
+      "audio/mpeg"
+    );
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    await seedOwnedJob();
+    const response = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-type")).toBe("audio/mpeg");
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
+    expect(response.headers.get("content-length")).toBe(String(PLAYBACK_OPEN_RANGE_BYTES));
+    expect(response.headers.get("content-range")).toBe(
+      `bytes 0-${PLAYBACK_OPEN_RANGE_BYTES - 1}/${total}`
+    );
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    directObjectUrl.mockClear();
+    const late = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=1000-" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(late.status).toBe(206);
+    expect(late.headers.get("content-range")).toBe(
+      `bytes 1000-${1000 + PLAYBACK_OPEN_RANGE_BYTES - 1}/${total}`
+    );
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    const tail = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=-32" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(tail.status).toBe(302);
+    expect(tail.headers.get("location")).toBe(SIGNED);
+  });
+
   it("redirects the owner to R2 with a reusable private redirect", async () => {
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     await seedOwnedJob();

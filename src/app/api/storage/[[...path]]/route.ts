@@ -23,6 +23,7 @@ import {
   PLAYBACK_CACHE_CONTROL,
   RangeNotSatisfiableError,
   isAbortError,
+  openEndedPlaybackWindow,
   parseByteRange,
   playbackHeaders,
 } from "@/lib/storage/byte-range";
@@ -44,14 +45,15 @@ export const maxDuration = 300;
  * The player fetches these URLs from the same origin, so the session cookie
  * rides along on `<audio src>` and range requests without any extra plumbing.
  *
- * With R2 configured, an authorized request is answered with a 302 to a
- * presigned R2 URL. The bytes go browser ↔ R2 and never through this
- * function: piping every range of a multi-hour book through Vercel is what
- * spent the Hobby origin-transfer and CPU allowance. The redirect is
- * `private, max-age=3600`, so repeated range requests reuse it without a new
- * invocation. Raw `.pcm` sections still need the WAV wrapper and stay on the
- * proxy, as do local disk (dev/tests) and the `STORAGE_DIRECT_R2=0` kill
- * switch. Proxied R2 seeks stream the requested range.
+ * With R2 configured, an authorized closed range is a 302 to a presigned R2
+ * URL. Those bytes go browser ↔ R2. An open-ended range is a short window
+ * from this function: a 206 that runs to the last byte of a multi-hour file
+ * never finishes, and the element errors while the body is still arriving.
+ * The redirect is `private, max-age=3600`, so repeated closed ranges reuse it
+ * without a new invocation. Raw `.pcm` sections still need the WAV wrapper
+ * and stay on the proxy, as do local disk (dev/tests) and the
+ * `STORAGE_DIRECT_R2=0` kill switch. Proxied R2 seeks stream the requested
+ * range.
  */
 
 // Playback issues many range requests per section, so the ceiling is generous;
@@ -195,8 +197,13 @@ export async function GET(
     const contentDisposition = downloadName
       ? `attachment; filename="${sanitizeFilename(downloadName)}"`
       : undefined;
+    // A named download wants the whole object. Playback that asks for
+    // `bytes=start-` must not: that 206 runs to the last byte, and a
+    // multi-hour file errors before the response finishes.
+    const playbackWindow = downloadName ? null : openEndedPlaybackWindow(rangeHeader);
+    const effectiveRange = playbackWindow ?? rangeHeader;
 
-    if (!storagePath.endsWith(".pcm")) {
+    if (!playbackWindow && !storagePath.endsWith(".pcm")) {
       try {
         const direct = await directObjectUrl(storagePath, {
           downloadName: downloadName ? sanitizeFilename(downloadName) : undefined,
@@ -225,10 +232,10 @@ export async function GET(
         if (storagePath.endsWith(".pcm")) {
           const raw = await r2GetFile(storagePath);
           const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
-          return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
+          return audioResponse(buffer, contentType, effectiveRange, contentDisposition);
         }
 
-        const opened = await openObject(storagePath, rangeHeader, {
+        const opened = await openObject(storagePath, effectiveRange, {
           signal: request.signal,
         });
         return new Response(opened.body, {
@@ -283,7 +290,7 @@ export async function GET(
       return audioResponse(
         buffer,
         downloadName ? "application/octet-stream" : contentType,
-        rangeHeader,
+        effectiveRange,
         contentDisposition
       );
     }
@@ -294,8 +301,8 @@ export async function GET(
       Boolean(downloadName)
     );
 
-    if (rangeHeader) {
-      const range = parseByteRange(rangeHeader, metadata.size);
+    if (effectiveRange) {
+      const range = parseByteRange(effectiveRange, metadata.size);
       if (range === "unsatisfiable") return rangeNotSatisfiable(metadata.size);
       if (range) {
         const stream = createReadStream(fullPath, {

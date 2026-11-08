@@ -1077,20 +1077,26 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    That response is `application/octet-stream` with `X-Content-Type-Options: nosniff`
    so iOS Safari saves the file instead of playing `audio/mpeg` inline.
    Playback requests omit `?download=` and keep the real audio type.
-6. **R2 (production): 302 to a presigned R2 GET** (`directObjectUrl` →
-   `getPlaybackUrl`). The browser fetches bytes and ranges from R2 directly, so
-   audio never flows through a Vercel function (that was most of the Hobby
-   Fast Origin Transfer and a large share of Active CPU). The URL is valid
-   12–13h (signing time floored to the hour, so a whole hour shares one URL
-   and the browser cache can reuse bytes). The `<audio>` element keeps ranging
-   against that R2 URL, so a network error reloads `/api/storage` once and
-   restores the playhead: the new request checks ownership and mints a fresh
-   signature. The 302 itself is
-   `Cache-Control: private, max-age=3600`, so repeated range requests reuse
-   it without a new invocation. `?download=` becomes
-   `response-content-disposition: attachment` + `response-content-type:
-   application/octet-stream` on the signed URL. A presign error falls through
-   to the proxy below.
+6. **R2 (production): a closed `Range` 302s to a presigned R2 GET**
+   (`directObjectUrl` → `getPlaybackUrl`). The browser fetches that slice from
+   R2 directly. The URL is valid 12–13h (signing time floored to the hour, so
+   a whole hour shares one URL and the browser cache can reuse bytes). The
+   `<audio>` element keeps ranging against that R2 URL, so a network error
+   reloads `/api/storage` once and restores the playhead: the new request
+   checks ownership and mints a fresh signature. The 302 itself is
+   `Cache-Control: private, max-age=3600`, so repeated closed ranges reuse it
+   without a new invocation. An **open-ended** range (`bytes=start-`) is not
+   redirected. Chrome's first request for a book is `bytes=0-`, and R2 answers
+   with a 206 whose `Content-Range` runs to the last byte. A 575 MB file stays
+   on that one response: metadata never lands, and the element errors while
+   the body is still arriving (a completed copy of the same 206 plays from
+   disk cache). `openEndedPlaybackWindow` answers 256 KiB
+   (`PLAYBACK_OPEN_RANGE_BYTES`) through `openObject`, with the real total in
+   `Content-Range`, so the response finishes and the next closed range can
+   302. A suffix probe (`bytes=-N`) stays closed and still redirects. A named
+   `?download=` is the whole object: `response-content-disposition: attachment`
+   + `response-content-type: application/octet-stream` on the signed URL. A
+   presign error on a closed range falls through to the proxy below.
 7. Proxy fallback: `.pcm` (wrapped as WAV, full buffer, small sections), local
    disk (dev/tests), and `STORAGE_DIRECT_R2=0` (kill switch). MP3 / WAV / Ogg
    on R2 stream `openObject` — the `Range` is forwarded and the response is 206
@@ -2584,7 +2590,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 7. **Shared PDF folders survive** until the last sibling job is deleted.
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
-10. **`/api/storage` is the only browser file path** — ownership checked every time, then a 302 to a presigned R2 URL (bytes skip Vercel). Finished-book downloads use a presigned `download_url` minted on the owned job routes.
+10. **`/api/storage` is the only browser file path** — ownership checked every time. A closed range 302s to a presigned R2 URL. An open-ended range is a 256 KiB window from the function, so a multi-hour file can start before that response would have finished. Finished-book downloads use a presigned `download_url` minted on the owned job routes.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2. Extract runs on the VM child first, then Cloudflare, then Vercel.
 12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast or S2 delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in. The clone GPU is Modal, not the VM and not Vercel.
 13. **`WORKER_CONCURRENCY=1`** until a full book masters without the OOM killer.
