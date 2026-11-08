@@ -49,7 +49,7 @@ def _authorized(request: Request) -> bool:
     timeout=180,
     min_containers=0,
     max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2")),
-    scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60")),
+    scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "300")),
     secrets=[modal.Secret.from_name("echomancer-sowell")],
 )
 @modal.concurrent(max_inputs=1)
@@ -69,6 +69,14 @@ class Speaker:
 
         if not _authorized(request):
             return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        # Same container as speech, no audio. Enter has already loaded Kokoro.
+        if item.get("warm") is True:
+            if not self.gate.acquire(blocking=False):
+                return {"ok": True, "state": "busy"}
+            try:
+                return {"ok": True, "state": "warm"}
+            finally:
+                self.gate.release()
         text = str(item.get("text") or "")
         if not text.strip() or len(text) > MAX_CHARS:
             return JSONResponse({"ok": False, "error": "text cap"}, status_code=400)

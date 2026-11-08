@@ -136,6 +136,13 @@ CREATE TABLE IF NOT EXISTS cpu_tasks (
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status);
 CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at);
+
+-- One shared warm per pool. A live row is not extended by another click.
+CREATE TABLE IF NOT EXISTS capacity_warms (
+  pool TEXT PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path);

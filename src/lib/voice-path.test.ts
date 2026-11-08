@@ -1,5 +1,8 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   isListedSowellVoice,
   isPersistableStandardVoiceId,
@@ -56,6 +59,14 @@ describe("voicesForPath", () => {
     ]);
     expect(listed.at(-1)?.displayName).toBe("Sowell");
     expect(stockCardAudition(sowell)).toBe("select-only");
+    expect(stockPreviewUrl("sowell")).toBeNull();
+    expect(existsSync(path.join(process.cwd(), "public/voice-previews/sowell.mp3"))).toBe(
+      false
+    );
+    expect(stockPreviewUrl("george")).toBe("/voice-previews/george.mp3");
+    expect(existsSync(path.join(process.cwd(), "public/voice-previews/george.mp3"))).toBe(
+      true
+    );
     expect(isPersistableStandardVoiceId("sowell")).toBe(true);
     expect(isListedSowellVoice(sowell)).toBe(true);
   });

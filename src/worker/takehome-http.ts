@@ -41,6 +41,13 @@ export interface RouteTakehomeWorkerInput {
    * clone. The voice list calls this; the handler checks the clone itself.
    */
   prewarmClonePool?: (userId: string) => Promise<boolean> | boolean;
+  /**
+   * One no-task POST per pool. The caller already holds the shared lease.
+   * Busy is reported as ready. This does not insert a task.
+   */
+  warmCapacity?: (
+    pools: string[]
+  ) => Promise<Record<string, string>> | Record<string, string>;
 }
 
 function json(
@@ -202,6 +209,32 @@ export async function routeTakehomeWorkerRequest(
     }
     const started = await input.prewarmClonePool(userId);
     return json(202, { ok: true, started: Boolean(started) });
+  }
+
+  if (method === "POST" && path === "/capacity-warm") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    if (!input.warmCapacity) {
+      return json(503, { ok: false, error: "Not available" });
+    }
+    let pools: string[] = [];
+    try {
+      const parsed = JSON.parse(input.bodyText || "{}") as { pools?: unknown };
+      if (Array.isArray(parsed.pools)) {
+        pools = parsed.pools.filter((pool) => pool === "cpu" || pool === "kokoro");
+      }
+    } catch {
+      pools = [];
+    }
+    const results = await input.warmCapacity(pools);
+    return json(200, { ok: true, results });
   }
 
   if (method === "POST" && path === "/clips/wake") {

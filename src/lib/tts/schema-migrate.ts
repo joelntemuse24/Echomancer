@@ -406,6 +406,13 @@ CREATE TABLE IF NOT EXISTS provider_throttle (
   expires_at INTEGER NOT NULL
 )`;
 
+const CREATE_CAPACITY_WARMS_SQL = `
+CREATE TABLE IF NOT EXISTS capacity_warms (
+  pool TEXT PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
 const CREATE_CPU_TASKS_SQL = `
 CREATE TABLE IF NOT EXISTS cpu_tasks (
   id TEXT PRIMARY KEY,
@@ -445,7 +452,7 @@ SELECT
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
-    'provider_throttle', 'cpu_tasks'
+    'provider_throttle', 'cpu_tasks', 'capacity_warms'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -595,7 +602,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 15 &&
+      Number(row?.tables_ok || 0) >= 16 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -635,6 +642,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_TAKEHOME_FAIRNESS_SQL },
         { sql: CREATE_PROVIDER_THROTTLE_SQL },
         { sql: CREATE_CPU_TASKS_SQL },
+        { sql: CREATE_CAPACITY_WARMS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -652,6 +660,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_TAKEHOME_FAIRNESS_SQL);
       await execute(CREATE_PROVIDER_THROTTLE_SQL);
       await execute(CREATE_CPU_TASKS_SQL);
+      await execute(CREATE_CAPACITY_WARMS_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

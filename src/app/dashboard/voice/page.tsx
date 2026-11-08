@@ -56,6 +56,7 @@ import {
   isSlimStockVoiceId,
   SLIM_STOCK_VOICE_IDS,
 } from "@/lib/tts/standard-voice";
+import { requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   readStockVoicePick,
@@ -545,6 +546,9 @@ function VoiceSelectionContent() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
+    if (id === "sowell" || id === "george") {
+      requestCapacityWarm({ voiceId: id, reason: "voice" });
+    }
     if (activePath === "clone") setVoicePath(null);
   };
 

@@ -1914,7 +1914,7 @@ books or doubling provider calls:
   It deletes only that job's rows and `audiobooks/<id>/` keys.
   `min_containers=0`. `CPU_MAX_CONTAINERS` (default 4),
   `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB` (default 4096),
-  and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs. The container
+  and `CPU_SCALEDOWN_SECONDS` (default 300) are the knobs. The container
   cap is not a dollar cap. Cold start, idle before scaledown, and a burst
   up to the cap are the spend. No dollar figure is recorded here.
 - **Unmastered audio is not a ready section.** When mastering is on, the
