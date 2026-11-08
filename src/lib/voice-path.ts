@@ -55,11 +55,13 @@ export function isPersistableStandardVoiceId(id?: string | null): boolean {
 }
 
 /**
- * Sowell has no committed sample. The card selects the voice and does not
- * ask the server to synthesize one.
+ * Sowell's sample is a static file. Play is a separate control from the
+ * selection, and a tap on play does not ask the server to synthesize.
  */
-export function stockCardAudition(voice: PathVoice): "play" | "select-only" {
-  return isListedSowellVoice(voice) ? "select-only" : "play";
+export function stockCardAudition(
+  voice: PathVoice
+): "play" | "select-only" | "static" {
+  return isListedSowellVoice(voice) ? "static" : "play";
 }
 
 /** Standard = slim stock in picker order, then Sowell when the server listed it. */

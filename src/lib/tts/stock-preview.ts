@@ -1,3 +1,4 @@
+import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import {
   coercePlainCatalogVoiceId,
   isSlimStockVoiceId,
@@ -15,6 +16,6 @@ export const STOCK_PREVIEW_PUBLIC_DIR = "voice-previews";
  */
 export function stockPreviewUrl(catalogVoiceId: string): string | null {
   const id = coercePlainCatalogVoiceId(catalogVoiceId);
-  if (!isSlimStockVoiceId(id)) return null;
+  if (!isSlimStockVoiceId(id) && id !== SOWELL_CATALOG_VOICE_ID) return null;
   return `/${STOCK_PREVIEW_PUBLIC_DIR}/${id}.mp3`;
 }

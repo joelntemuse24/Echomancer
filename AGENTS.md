@@ -236,12 +236,14 @@ females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
 not listed. `SLIM_STOCK_VOICE_IDS` lists Andrew, Echomancer Andrew, Ava,
 Libby, and George. The customer UI renders George only when the voices
 response includes provider `george`, then a Sowell card only when it
-includes provider `sowell`. Sowell's card has no sample. George's sample
+includes provider `sowell`. Sowell's sample is the committed
+`am_sowell` MP3 of the standard preview line; the play control is
+separate from the selection and does not synthesize. George's sample
 is the committed `bm_george` MP3. When the response omits either card it
 is absent, and a saved pick of that voice does not highlight Andrew.
 Picker samples for the listed stock voices are committed recordings at
 `public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
-`libby`, `george`). `ryan.mp3` remains for a stored Ryan book. Re-record
+`libby`, `george`, `sowell`). `ryan.mp3` remains for a stored Ryan book. Re-record
 them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 

@@ -162,10 +162,11 @@ repeats the thread comparison. It does not call Modal.
 
 On the voice page, Sowell is a named card after the stock voices only when
 `GET /api/tts/voices` includes provider `sowell`. The other stock voices
-and any clones stay where they were. The card has no play control: there
-is no file at `public/voice-previews/sowell.mp3`, and the tap does not
-ask the server to synthesize one. George has `public/voice-previews/george.mp3`
-and a play control. Choosing Sowell and pressing Make audiobook sends
+and any clones stay where they were. The play control is separate from the name. It plays
+`public/voice-previews/sowell.mp3`, a local CPU take of the standard
+preview line with `am_sowell`, and it does not synthesize or start a
+container. George has `public/voice-previews/george.mp3`. Choosing Sowell
+and pressing Make audiobook sends
 `catalogVoiceId: "sowell"`. With the flag off, that response omits
 Sowell, the card is absent, and a saved Sowell pick does not highlight
 Andrew.
