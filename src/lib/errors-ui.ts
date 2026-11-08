@@ -55,7 +55,18 @@ export function userFriendlyError(rawError: string | null): string {
     return "Listen limit reached. Save the book.";
   if (lower.includes("stream session is not in a streamable") || lower.includes("not a stream"))
     return "This listen isn't ready. Open it from your library.";
-  if (lower.includes("too many") || lower.includes("rate") || lower.includes("429"))
+  // The book shortfall is our own sentence. It contains "narrated" and
+  // "generate", and the old matcher treated any "rate" inside those words
+  // as a 429. The player then showed "Too fast. Wait a minute." for a
+  // failed section. A real rate limit still matches below.
+  if (lower.includes("could not be narrated")) return rawError;
+  if (
+    lower.includes("too many") ||
+    lower.includes("rate limit") ||
+    lower.includes("ratelimit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("429")
+  )
     return "Too fast. Wait a minute.";
   if (lower.includes("hd voices") || lower.includes("premium"))
     return "Pick Andrew, Ava, Libby, or Ryan.";

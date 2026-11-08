@@ -58,9 +58,12 @@ and, after the Sowell image is deployed, `inferMs`, `loadMs`, and
 keeps posting after a container answers 429, so the second section
 does not wait until the first master has exited. Zero posts once. A section may be up to 2,000
 characters. Kokoro then splits that text on its own 510-phoneme
-boundary and refuses the call if a run would have to drop words. A
-2,699-character prose probe made 6 runs, none over 510 phonemes, and
-the word list matched. The old 280-character section cap is not used.
+boundary. A run of 511 still comes out (`en_tokenize` does not guarantee
+the cap, and Kokoro's own generator would truncate it). The engine splits
+that run and keeps every phoneme character; it still refuses a piece that
+would have to drop text. A 2,699-character prose probe made 6 runs, none
+over 510 phonemes, and the word list matched. The old 280-character
+section cap is not used.
 
 A 429 is retried a few times so the other container can take the
 section. A 500 fails the take. Nothing is concatenated from a failed

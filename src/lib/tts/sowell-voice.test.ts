@@ -230,6 +230,17 @@ describe("sowell voice", () => {
     expect(engine).toContain("refusing to drop text");
   });
 
+  it("splits a 511-phoneme run when Kokoro is installed", () => {
+    const probe = spawnSync("python3", ["-c", "import kokoro"], { encoding: "utf8" });
+    if (probe.status !== 0) return;
+    const run = spawnSync(
+      "python3",
+      [path.join(process.cwd(), "scripts/sowell/test_phoneme_runs.py")],
+      { encoding: "utf8" }
+    );
+    expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
+  }, 20_000);
+
   it("rejects a malformed pack when torch is installed", () => {
     const probe = spawnSync("python3", ["-c", "import torch"], { encoding: "utf8" });
     if (probe.status !== 0) return;
