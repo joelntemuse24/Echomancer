@@ -9,6 +9,38 @@
 
 export const PLAYBACK_CACHE_CONTROL = "private, no-store";
 
+/**
+ * How much of an open-ended `Range: bytes=start-` playback may answer.
+ *
+ * Chrome follows `/api/storage` and asks for `bytes=0-`. R2 then answers
+ * `206` with `Content-Range` running to the last byte. A 575 MB book stays
+ * on that one response: the element never reaches metadata, and it errors
+ * while the body is still arriving (observed at ~15 s and ~3 MB). The same
+ * bytes play once that response is already complete in the disk cache.
+ * One window is enough of a 128 kbps file to start, and it finishes on a
+ * slow link before that give-up. The next slice, and a tail probe, name
+ * their own end and go straight to R2.
+ */
+export const PLAYBACK_OPEN_RANGE_BYTES = 256 * 1024;
+
+/**
+ * A bounded `Range` for an open-ended playback request, or null when the
+ * request already names its end (including a suffix probe, `bytes=-N`).
+ */
+export function openEndedPlaybackWindow(
+  rangeHeader: string | null | undefined
+): string | null {
+  const header = singleByteRangeHeader(rangeHeader);
+  if (!header) return null;
+  const spec = header.slice("bytes=".length);
+  if (spec.startsWith("-")) return null;
+  const dash = spec.indexOf("-");
+  if (spec.slice(dash + 1) !== "") return null;
+  const start = Number.parseInt(spec.slice(0, dash) || "0", 10);
+  if (!Number.isFinite(start) || start < 0) return null;
+  return `bytes=${start}-${start + PLAYBACK_OPEN_RANGE_BYTES - 1}`;
+}
+
 export class RangeNotSatisfiableError extends Error {
   readonly totalSize?: number;
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  PLAYBACK_OPEN_RANGE_BYTES,
+  openEndedPlaybackWindow,
   parseByteRange,
   playbackHeaders,
   singleByteRangeHeader,
@@ -49,6 +51,27 @@ describe("parseByteRange", () => {
     expect(parseByteRange("bytes=5000-5001", 4096)).toBe("unsatisfiable");
     expect(parseByteRange("bytes=80-10", 100)).toBe("unsatisfiable");
     expect(parseByteRange("bytes=0-1", 0)).toBe("unsatisfiable");
+  });
+});
+
+describe("openEndedPlaybackWindow", () => {
+  const end = PLAYBACK_OPEN_RANGE_BYTES - 1;
+
+  it("caps an open-ended media range so the 206 can finish", () => {
+    // Chrome's first request is `bytes=0-`. A 206 that runs to the last
+    // byte of a multi-hour file never completes, and the element errors
+    // while the body is still arriving. The same bytes play from disk cache.
+    expect(openEndedPlaybackWindow("bytes=0-")).toBe(`bytes=0-${end}`);
+    expect(openEndedPlaybackWindow("bytes=450000000-")).toBe(
+      `bytes=450000000-${450000000 + end}`
+    );
+  });
+
+  it("leaves a closed range and a tail probe alone so they can redirect", () => {
+    expect(openEndedPlaybackWindow("bytes=0-99")).toBeNull();
+    expect(openEndedPlaybackWindow("bytes=8000000-8000003")).toBeNull();
+    expect(openEndedPlaybackWindow("bytes=-32")).toBeNull();
+    expect(openEndedPlaybackWindow(null)).toBeNull();
   });
 });
 

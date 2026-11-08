@@ -26,6 +26,7 @@ function failedSource(code = 4): MediaSnapshot {
     readyState: 0,
     networkState: 3,
     errorCode: code,
+    bufferedEnd: 0,
   };
 }
 
@@ -37,6 +38,7 @@ function playing(at = 12.4): MediaSnapshot {
     readyState: 4,
     networkState: 1,
     errorCode: null,
+    bufferedEnd: at,
   };
 }
 
@@ -48,6 +50,7 @@ function pending(at = 0): MediaSnapshot {
     readyState: 2,
     networkState: 2,
     errorCode: null,
+    bufferedEnd: 0,
   };
 }
 
@@ -90,6 +93,13 @@ describe("startIsStuck", () => {
   it("flags a start that never moved and never buffered", () => {
     // The production shape: paused is already false, nothing else happened.
     expect(startIsStuck(pending(0), pending(0), START_WATCHDOG_MS)).toBe(true);
+  });
+
+  it("leaves a start alone while the buffer is still growing", () => {
+    // A long uncached file can sit below HAVE_FUTURE_DATA at 0:00 while
+    // bytes are arriving. Aborting that load is the "couldn't play" notice.
+    const growing = { ...pending(0), bufferedEnd: 4 };
+    expect(startIsStuck(pending(0), growing, START_WATCHDOG_MS)).toBe(false);
   });
 
   it("leaves a start alone once the playhead moves", () => {
@@ -154,7 +164,18 @@ describe("mediaSnapshot", () => {
       readyState: 4,
       networkState: 1,
       errorCode: null,
+      bufferedEnd: 0,
     });
+    expect(
+      mediaSnapshot({
+        paused: true,
+        currentTime: 3,
+        readyState: 4,
+        networkState: 1,
+        error: null,
+        buffered: { length: 1, end: () => 8 },
+      }).bufferedEnd
+    ).toBe(8);
   });
 
   it("carries the media error code through", () => {
