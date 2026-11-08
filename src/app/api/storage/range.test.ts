@@ -14,6 +14,8 @@ import {
   seedJob,
 } from "@/test/harness";
 import { RangeNotSatisfiableError } from "@/lib/storage/byte-range";
+import { clearPlaybackTagCache } from "@/lib/storage/playback-tag";
+import { buildId3ChapterTag } from "@/lib/tts/id3-chapters";
 
 const { openObjectMock, getFileMock } = vi.hoisted(() => ({
   openObjectMock: vi.fn(),
@@ -44,7 +46,23 @@ function sliceStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
+/** Each open is a new stream. A tag probe reads the first one and must not drain the answer. */
+function answerWith(options: {
+  bytes: Uint8Array;
+  contentRange?: string;
+  statusCode?: 200 | 206;
+}) {
+  openObjectMock.mockImplementation(async () => ({
+    statusCode: options.statusCode ?? 206,
+    contentType: "audio/mpeg",
+    contentLength: options.bytes.byteLength,
+    contentRange: options.contentRange,
+    body: sliceStream(options.bytes),
+  }));
+}
+
 beforeEach(async () => {
+  clearPlaybackTagCache();
   openObjectMock.mockReset();
   getFileMock.mockReset();
   getFileMock.mockImplementation(async () => {
@@ -64,12 +82,9 @@ describe("GET /api/storage R2 ranges", () => {
   it("caps an open-ended range before it is read, and does not redirect it", async () => {
     const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
     const slice = new Uint8Array(8);
-    openObjectMock.mockResolvedValue({
-      statusCode: 206,
-      contentType: "audio/mpeg",
-      contentLength: slice.byteLength,
+    answerWith({
+      bytes: slice,
       contentRange: `bytes 0-${PLAYBACK_OPEN_RANGE_BYTES - 1}/575515806`,
-      body: sliceStream(slice),
     });
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     const response = await GET(
@@ -94,12 +109,9 @@ describe("GET /api/storage R2 ranges", () => {
   it("answers the next open range and a tail probe here, not with a redirect", async () => {
     const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
     const slice = new Uint8Array(4);
-    openObjectMock.mockResolvedValue({
-      statusCode: 206,
-      contentType: "audio/mpeg",
-      contentLength: slice.byteLength,
+    answerWith({
+      bytes: slice,
       contentRange: `bytes 262144-${262144 + PLAYBACK_OPEN_RANGE_BYTES - 1}/575515806`,
-      body: sliceStream(slice),
     });
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     const followUp = await GET(
@@ -118,12 +130,9 @@ describe("GET /api/storage R2 ranges", () => {
     );
 
     openObjectMock.mockClear();
-    openObjectMock.mockResolvedValue({
-      statusCode: 206,
-      contentType: "audio/mpeg",
-      contentLength: 32,
+    answerWith({
+      bytes: slice,
       contentRange: "bytes 575515774-575515805/575515806",
-      body: sliceStream(slice),
     });
     const tail = await GET(
       await buildRequest(`/api/storage/${FULL}`, {
@@ -142,12 +151,9 @@ describe("GET /api/storage R2 ranges", () => {
 
   it("streams the seek slice and does not download the whole object", async () => {
     const slice = new Uint8Array([1, 2, 3, 4]);
-    openObjectMock.mockResolvedValue({
-      statusCode: 206,
-      contentType: "audio/mpeg",
-      contentLength: slice.byteLength,
+    answerWith({
+      bytes: slice,
       contentRange: "bytes 8000000-8000003/42000000",
-      body: sliceStream(slice),
     });
 
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
@@ -191,12 +197,7 @@ describe("GET /api/storage R2 ranges", () => {
 
   it("serves a named download as an attachment without buffering the book", async () => {
     const slice = new Uint8Array([9, 8, 7, 6]);
-    openObjectMock.mockResolvedValue({
-      statusCode: 200,
-      contentType: "audio/mpeg",
-      contentLength: slice.byteLength,
-      body: sliceStream(slice),
-    });
+    answerWith({ bytes: slice, statusCode: 200 });
 
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     const response = await GET(
@@ -232,6 +233,50 @@ describe("GET /api/storage R2 ranges", () => {
     );
     expect(response.status).toBe(416);
     expect(response.headers.get("content-range")).toBe("bytes */42000000");
+    expect(getFileMock).not.toHaveBeenCalled();
+  });
+
+  it("serves a finished book after its ID3 tag so a seek to zero is audio", async () => {
+    const tag = buildId3ChapterTag([{ title: "One", startMs: 0, endMs: 1000 }]);
+    const audio = Buffer.concat([
+      Buffer.from([0xff, 0xfb, 0x90, 0xc4]),
+      Buffer.alloc(300, 0x22),
+    ]);
+    const file = Buffer.concat([tag, audio]);
+    openObjectMock.mockImplementation(async (_key: string, range: string | null) => {
+      const spec = (range ?? "").replace(/^bytes=/, "");
+      const [startRaw, endRaw] = spec.split("-");
+      const start = Number(startRaw);
+      const end = Number(endRaw);
+      const slice = file.subarray(start, end + 1);
+      return {
+        statusCode: 206 as const,
+        contentType: "audio/mpeg",
+        contentLength: slice.byteLength,
+        contentRange: `bytes ${start}-${end}/${file.length}`,
+        body: sliceStream(slice),
+      };
+    });
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const response = await GET(
+      await buildRequest(`/api/storage/${FULL}`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-3" },
+      }),
+      routeParams({ path: FULL.split("/") })
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe(
+      `bytes 0-3/${file.length - tag.length}`
+    );
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(
+      Buffer.from([0xff, 0xfb, 0x90, 0xc4])
+    );
+    expect(openObjectMock).toHaveBeenCalledWith(
+      FULL,
+      `bytes=${tag.length}-${tag.length + 3}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(getFileMock).not.toHaveBeenCalled();
   });
 

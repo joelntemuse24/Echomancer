@@ -16,6 +16,8 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
+import { clearPlaybackTagCache } from "@/lib/storage/playback-tag";
+import { buildId3ChapterTag } from "@/lib/tts/id3-chapters";
 
 const directObjectUrl = vi.hoisted(() =>
   vi.fn<(key: string, opts?: { downloadName?: string }) => Promise<string | null>>()
@@ -40,6 +42,7 @@ async function seedOwnedJob(overrides: Partial<Parameters<typeof seedJob>[0]> = 
 }
 
 beforeEach(async () => {
+  clearPlaybackTagCache();
   directObjectUrl.mockReset();
   directObjectUrl.mockResolvedValue(SIGNED);
   await resetDatabase();
@@ -123,6 +126,44 @@ describe("GET /api/storage direct R2", () => {
     expect(followUp.headers.get("content-range")).toBe(
       `bytes 262144-${total - 1}/${total}`
     );
+    expect(directObjectUrl).not.toHaveBeenCalled();
+  });
+
+  it("hides a leading chapter tag from playback ranges and leaves the object in place", async () => {
+    const { uploadFile, downloadFile } = await import("@/lib/storage");
+    const tag = buildId3ChapterTag([{ title: "Chapter", startMs: 0, endMs: 1000 }]);
+    const audio = Buffer.concat([
+      Buffer.from([0xff, 0xfb, 0x90, 0xc4]),
+      Buffer.alloc(80, 0x44),
+    ]);
+    const file = Buffer.concat([tag, audio]);
+    await uploadFile(`audiobooks/${JOB_A}`, "full.mp3", file, "audio/mpeg");
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    await seedOwnedJob();
+    const start = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-3" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(start.status).toBe(206);
+    expect(start.headers.get("content-range")).toBe(`bytes 0-3/${audio.length}`);
+    expect(Buffer.from(await start.arrayBuffer())).toEqual(audio.subarray(0, 4));
+
+    const tail = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=-4" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(tail.status).toBe(206);
+    expect(tail.headers.get("content-range")).toBe(
+      `bytes ${audio.length - 4}-${audio.length - 1}/${audio.length}`
+    );
+    expect(Buffer.from(await tail.arrayBuffer())).toEqual(audio.subarray(audio.length - 4));
+    expect(await downloadFile(`audiobooks/${JOB_A}/full.mp3`)).toEqual(file);
     expect(directObjectUrl).not.toHaveBeenCalled();
   });
 
