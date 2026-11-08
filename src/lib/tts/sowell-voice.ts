@@ -12,10 +12,11 @@ export const SOWELL_PACK_SHA256 =
 /** Cache identity. The pack hash is in it so another file cannot replay. */
 export const SOWELL_CACHE_VARIANT = `sowell-kokoro82m-v1_0-${SOWELL_PACK_SHA256.slice(0, 12)}`;
 /**
- * One HTTP call. Kokoro splits this into phoneme runs under 510 and does
- * not drop words on ordinary prose (measured at 2,699 characters). The
- * book packer uses the same ceiling, so a section is not a 280-character
- * shard. A whole book still cannot be one call.
+ * One HTTP call. Kokoro aims at 510 phonemes and can still emit 511.
+ * That run is split so every phoneme is kept; a piece that would have to
+ * drop text is still refused. Ordinary prose does not drop words (measured
+ * at 2,699 characters). The book packer uses the same ceiling, so a section
+ * is not a 280-character shard. A whole book still cannot be one call.
  */
 export const SOWELL_MAX_CHARS = 2000;
 /**
