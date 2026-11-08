@@ -144,7 +144,7 @@ for clone emotion, for Fish generation speed (`prosody.speed` is chosen in
 `src/app/dashboard/narration-delivery-controls.tsx` only reads a leftover
 `localStorage` pref; no screen renders those controls. The Seminar / Plain
 toggle is gone. The player does have a listen-time `playbackRate` (0.8–1.5,
-default 1.15×, `src/components/player-speed-control.tsx`). That control does
+default 1×, `src/components/player-speed-control.tsx`). That control does
 not re-synthesize.
 
 A take-home book pins its engine once (`jobs.provider_pin`) and keeps it for the
@@ -841,9 +841,11 @@ speed (`latency: "balanced"`). Persist `narrationSpeed` on `tts_options` and
 recalibrate after measured sections.
 
 Player speed cycle (`src/lib/player/playback-speed.ts`) is listen-time
-`playbackRate` (not Fish generation speed): **0.8–1.5** in fine steps
-including **1.15** and **1.25**. A fresh player starts at **1.15×**
-(`DEFAULT_PLAYBACK_SPEED`). One quiet tap control, not a pill row.
+`playbackRate` (not Fish generation speed): **0.8–1.5** in **0.05** steps,
+including **0.95×** and **1.35×**. A fresh player starts at **1×**
+(`DEFAULT_PLAYBACK_SPEED`). The choice is not stored, so a reload does not
+restore the old 1.15× start; a rate picked in the visit, including 1.15×,
+stays on the element until then. One quiet tap control, not a pill row.
 
 ### Document upload — presign + R2 PUT + near-request extract
 
@@ -2237,8 +2239,8 @@ A queued take-home whose upload is not ready yet shows **Reading your book**
 (`Preparing audio…` / `Generating`), play with thin pause bars, ±10s skip
 icons, a thin-line seek
 scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
-**1.15×**: tap the compact label to cycle, or a small chevron to pick any
-rate (`0.8` … `1.15` / `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
+**1×**: tap the compact label to cycle, or a small chevron to pick any
+rate from **0.8×** to **1.5×** in **0.05** steps. One `max-w-2xl` column: transport spacing and play size
 step up at `md`, and the cluster is vertically centered on desktop so it
 does not read as a stretched phone. The speed list opens up on mobile
 (above the tab bar) and down on desktop. Mobile uses a solid overlay so

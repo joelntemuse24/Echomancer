@@ -953,7 +953,7 @@ src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
 src/lib/paragraph-spans.ts # Blank-line paragraph offsets, one copy
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
-src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
+src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 in 0.05 steps, default 1× (not Fish speed)
 src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list

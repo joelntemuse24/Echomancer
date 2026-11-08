@@ -9,7 +9,8 @@ const DEFAULT_ELEMENT_VOLUME = 0.75;
 /**
  * Player audio helper: element volume plus the remembered playback speed so
  * the quiet cycle control can show the active rate. A fresh player starts at
- * 1.15×; a later choice replaces that until reload. Speed itself is applied
+ * 1×. A later choice stays for this visit and is not written to storage, so
+ * a reload does not bring back the old 1.15× start. Speed itself is applied
  * via `audio.playbackRate`.
  *
  * The element is no longer routed through Web Audio
