@@ -57,6 +57,10 @@ import {
 import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
+import {
+  shouldPrewarmBeforeOutline,
+  shouldPrewarmModalNarration,
+} from "@/lib/tts/modal-narration-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   selectClonePublishBatch,
@@ -1041,17 +1045,23 @@ async function runClaimedTick(
   const jobId = job.id;
   const providerId = job.tts_provider || "";
 
-  // A clone book restores a GPU snapshot before its first section can render.
-  // Start that restore now, at the top of the tick, so it overlaps whatever
-  // this tick still has to do — waiting for extract, packing the script,
-  // downloading the reference — instead of running after all of it. A book
-  // that arrives while its file is still being read is the best case: an
-  // extract is tens of seconds, which is most of a restore.
-  //
-  // It is one cheap RPC, it is never awaited, and the app is
-  // `min_containers=0`, so it cannot leave a GPU running and cannot make this
-  // book wait for a compile (#237).
-  if (usesModalClone(job.catalog_voice_id)) {
+  // A new clone book restores a GPU snapshot before its first section can
+  // render, so the restore overlaps packing. A book that already has an
+  // outline does not: concat, saved raw, and a later cache check must not
+  // start a container. The call is one RPC, never awaited, and the app stays
+  // `min_containers=0`.
+  const knownTotal = job.total_sections ?? 0;
+  if (
+    shouldPrewarmBeforeOutline({
+      modalVoice: usesModalClone(job.catalog_voice_id),
+      clonePin: parseCloneProviderPin(job.provider_pin),
+      totalSections: knownTotal,
+      claimableCount:
+        knownTotal > 0
+          ? claimableIndexes(parseSegments(job.segments_json), knownTotal).length
+          : 0,
+    })
+  ) {
     prewarmModalCloneSnapshot(`book ${jobId} is starting`);
   }
 
@@ -1824,6 +1834,17 @@ async function runClaimedTick(
           };
 
           let dispatch: Awaited<ReturnType<typeof dispatchModalCloneLanes>> | null = null;
+          // Cache hits and a tick with nothing left to render must not start
+          // a restore. A real miss still starts one before the GPU call.
+          if (
+            shouldPrewarmModalNarration({
+              modalVoice: usesModalClone(job.catalog_voice_id),
+              clonePin,
+              uncachedRenderCount: render.length,
+            })
+          ) {
+            prewarmModalCloneSnapshot(`book ${jobId} has uncached narration`);
+          }
           const renderPromise =
             render.length === 0
               ? Promise.resolve(null)
