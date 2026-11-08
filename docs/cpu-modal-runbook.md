@@ -34,9 +34,21 @@ That is not the container budget.
 |--|--|--|
 | timeout, reset, or live lease | kept | does not POST |
 | 200/202 and the row is not `done` yet | kept | does not POST |
-| 429, 400, 401 | released | may POST |
+| 429, 400, 401 | released, attempt undone | may POST |
+| completed 404 / 500 / other HTTP error | rejected, attempt undone, row `failed` | does not POST |
+| body says the workspace is disabled | released, attempt undone, book `failed` | does not POST until usage is allowed |
 | `ECONNREFUSED` / `ENOTFOUND` | released | may POST |
 | row `done` and the object exists | finished | does not run again |
+
+A disabled-workspace body is the platform refusing the deployed hostname.
+Our handler does not return it. In November 2026 the budgets tab showed
+a user-set workspace budget fully used, with usage stopped. That was not
+a payment error. The tab does not name the request that crossed the cap,
+and this repo does not invent one. CPU spend on that cycle was $0.31,
+so the stop was not the CPU app's own bill. Recovery of raw takes
+is `scripts/repair-raw-masters.ts`. It is dry-run unless the operator
+passes `--confirm-service-available` or `--approve-local` after a backup.
+It does not call Modal and it does not change the budget.
 
 The container adopts `CPU_TASK_OWNER`. It does not claim a second token.
 It does not return until the child exits, so the orchestrator hanging up

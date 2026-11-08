@@ -48,6 +48,12 @@ import {
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
+import {
+  CpuProviderUnavailableError,
+  MASTERING_UNFINISHED_MESSAGE,
+  MODAL_WORKSPACE_DISABLED_MESSAGE,
+  ModalWorkspaceDisabledError,
+} from "@/lib/modal/workspace-disabled";
 import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
@@ -959,6 +965,17 @@ export async function processTakehomeTick(
     );
   } catch (err) {
     if (
+      err instanceof ModalWorkspaceDisabledError ||
+      err instanceof CpuProviderUnavailableError
+    ) {
+      await stopBook(jobId, lease, MODAL_WORKSPACE_DISABLED_MESSAGE, null).catch(() => {});
+      return {
+        done: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+    if (
       err instanceof ListenPrepDeferredError ||
       err instanceof ProviderSlotBusyError ||
       err instanceof CpuBacklogError
@@ -1322,6 +1339,14 @@ async function runClaimedTick(
       [JSON.stringify(segments)]
     );
   }
+  if (promoted.unavailable) {
+    await stopBook(jobId, lease, MODAL_WORKSPACE_DISABLED_MESSAGE, null);
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? 0,
+      total: job.total_sections ?? 0,
+    };
+  }
   let cpuBacklog = promoted.waiting;
 
   const provider = resolveStockAdapter({
@@ -1620,6 +1645,7 @@ async function runClaimedTick(
               ]
             );
           });
+          if (stored.unavailable) throw new CpuProviderUnavailableError();
           if (!stored.regen) cpuBacklog = true;
           return synthesized;
         }
@@ -1835,6 +1861,7 @@ async function runClaimedTick(
                     log: (message) => console.log(`[Job ${jobId}] ${message}`),
                   })
                 ).catch((err: unknown) => {
+                  if (err instanceof ModalWorkspaceDisabledError) throw err;
                   console.warn(
                     `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
                     err instanceof Error ? err.message : err
@@ -1931,6 +1958,7 @@ async function runClaimedTick(
             modalPrefetchHandled = stagedNow.size > 0 || publishedFromCache > 0;
           }
         } catch (err) {
+          if (err instanceof ModalWorkspaceDisabledError) throw err;
           if (err instanceof LeaseLostError) throw err;
           console.warn(
             `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
@@ -2123,6 +2151,30 @@ async function runClaimedTick(
 
   if (canAssemble && doneCount > 0 && stillClaimable.length === 0) {
     const holesLeft = total - doneCount;
+    if (holesLeft > 0) {
+      // A partial book is not concatenated and is not marked ready.
+      // Sections that already have a raw take were spoken; mastering
+      // did not finish. Sections with no raw take were not narrated.
+      const withRaw = segments.filter(
+        (segment) => segment.status === "failed" && Boolean(segment.rawPath)
+      );
+      const message =
+        holesLeft - withRaw.length <= 0 && withRaw.length > 0
+          ? MASTERING_UNFINISHED_MESSAGE
+          : `${holesLeft} of ${total} sections could not be narrated. ` +
+            `Only ${doneCount} section${doneCount === 1 ? "" : "s"} of this book exist, ` +
+            `so it is not a complete audiobook. Retry to generate the rest.`;
+      await stopBook(
+        jobId,
+        lease,
+        message,
+        Math.min(99, Math.round((doneCount / total) * 100))
+      );
+      console.log(
+        `[Job ${jobId}] only ${doneCount}/${total} sections are ready — marking FAILED, not concatenating`
+      );
+      return { done: true, nextIndex: total, total };
+    }
     const warning =
       holesLeft > 0
         ? `${holesLeft} section${holesLeft === 1 ? "" : "s"} could not be narrated; the rest of the book is ready.`
@@ -2217,6 +2269,18 @@ async function runClaimedTick(
     // heartbeat renewing for as long as it runs, or the sweeper reclaims the
     // job mid-finalize.
     const concatHold = await holdBookConcat(jobId);
+    if (concatHold.kind === "unavailable") {
+      await stopBook(jobId, lease, MODAL_WORKSPACE_DISABLED_MESSAGE, null);
+      return { done: true, nextIndex: total, total };
+    }
+    if (concatHold.kind === "failed") {
+      await failJob(
+        jobId,
+        lease,
+        "Could not assemble the full audiobook — remux failed"
+      );
+      return { done: true, nextIndex, total };
+    }
     if (concatHold.kind === "deferred") throw new CpuBacklogError();
     const finalizing = markJobFinalizing(jobId);
     try {
@@ -2391,6 +2455,33 @@ async function parkStoredGoogleJob(
     nextIndex: job.next_section_index ?? 0,
     total,
   };
+}
+
+/**
+ * Terminal stop that does not rewrite section audio, `provider_pin`,
+ * or `audio_storage_path`. `progress` is left as it was when null.
+ */
+async function stopBook(
+  jobId: string,
+  lease: string,
+  message: string,
+  progress: number | null
+): Promise<void> {
+  console.error(`[Job ${jobId}] ${message}`);
+  const progressSql = progress == null ? "" : ", progress = ?";
+  const args =
+    progress == null
+      ? [message, jobId, lease]
+      : [message, progress, jobId, lease];
+  await execute(
+    `UPDATE jobs SET status = 'failed', error_message = ?, warning = NULL${progressSql},
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, sched_not_before = NULL,
+       updated_at = unixepoch()
+     WHERE id = ? AND status NOT IN ('ready', 'cancelled')
+       AND (processing_lease_token IS NULL OR processing_lease_token = ?)`,
+    args
+  );
 }
 
 async function failJob(
@@ -2791,6 +2882,9 @@ async function synthesizeSection(args: {
           // tick: every attempt would open another container that is still
           // restoring, and the book is parked by the caller.
           return { ok: false, error: err.message, cold: true };
+        }
+        if (err instanceof ModalWorkspaceDisabledError) {
+          throw err;
         }
         if (err instanceof ModalCloneProviderError) {
           // Modal answered, and the answer was an error (`job 5f09ee0e`: the

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { userFriendlyError } from "./errors-ui";
+import { MODAL_WORKSPACE_DISABLED_MESSAGE } from "./modal/workspace-disabled";
 import { CLONE_SAMPLE_QUALITY_COPY } from "./tts/clone-sample-quality";
 
 describe("userFriendlyError", () => {
@@ -50,6 +51,15 @@ describe("userFriendlyError", () => {
     expect(userFriendlyError("upstream RATE_LIMIT")).toBe(
       "Too fast. Wait a minute."
     );
+  });
+
+  it("shows the workspace-disabled stop instead of a generic failure", () => {
+    expect(MODAL_WORKSPACE_DISABLED_MESSAGE.length).toBeGreaterThan(120);
+    expect(userFriendlyError(MODAL_WORKSPACE_DISABLED_MESSAGE)).toBe(
+      MODAL_WORKSPACE_DISABLED_MESSAGE
+    );
+    expect(userFriendlyError(MODAL_WORKSPACE_DISABLED_MESSAGE)).not.toMatch(/payment/i);
+    expect(userFriendlyError(MODAL_WORKSPACE_DISABLED_MESSAGE)).not.toMatch(/\$/);
   });
 
   it("passes clone quality fail copy through without rewriting or truncating", () => {

@@ -36,6 +36,7 @@ import {
   type CloneBatchItem,
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
+import { ModalWorkspaceDisabledError } from "@/lib/modal/workspace-disabled";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
   modalLaneWorkMs,
@@ -466,6 +467,7 @@ async function runWave(
         }
         return { lane, error: null as unknown };
       } catch (error) {
+        if (error instanceof ModalWorkspaceDisabledError) throw error;
         return { lane, error };
       } finally {
         await slot.release();

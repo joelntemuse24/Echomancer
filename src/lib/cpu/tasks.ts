@@ -126,17 +126,31 @@ export async function enqueueCpuTask(input: {
        input_path = excluded.input_path,
        output_path = excluded.output_path,
        payload_json = excluded.payload_json,
-       status = 'queued',
+       status = CASE
+         WHEN cpu_tasks.attempts >= ? AND cpu_tasks.input_path = excluded.input_path THEN 'failed'
+         ELSE 'queued'
+       END,
        owner_token = NULL,
        lease_expires_at = NULL,
-       error_message = NULL,
+       error_message = CASE
+         WHEN cpu_tasks.attempts >= ? AND cpu_tasks.input_path = excluded.input_path
+           THEN COALESCE(cpu_tasks.error_message, 'cpu attempts exhausted')
+         ELSE NULL
+       END,
        attempts = CASE
          WHEN cpu_tasks.input_path = excluded.input_path THEN cpu_tasks.attempts
          ELSE 0
        END,
+       finished_at = CASE
+         WHEN cpu_tasks.attempts >= ? AND cpu_tasks.input_path = excluded.input_path
+           THEN COALESCE(cpu_tasks.finished_at, unixepoch())
+         ELSE NULL
+       END,
        updated_at = unixepoch()
      WHERE (cpu_tasks.status != 'done' OR cpu_tasks.input_path != excluded.input_path)
-       AND (cpu_tasks.status != 'claimed' OR cpu_tasks.lease_expires_at <= unixepoch())`,
+       AND (cpu_tasks.status != 'claimed' OR cpu_tasks.lease_expires_at <= unixepoch())
+       AND cpu_tasks.status != 'failed'
+       AND cpu_tasks.status != 'cancelled'`,
     [
       input.id,
       input.kind,
@@ -146,6 +160,9 @@ export async function enqueueCpuTask(input: {
       input.inputPath ?? null,
       input.outputPath ?? null,
       payload,
+      CPU_TASK_MAX_ATTEMPTS,
+      CPU_TASK_MAX_ATTEMPTS,
+      CPU_TASK_MAX_ATTEMPTS,
     ]
   );
 }
@@ -177,7 +194,6 @@ export async function claimCpuTask(
        AND attempts < ?
        AND (
          status = 'queued'
-         OR status = 'failed'
          OR (status = 'claimed' AND lease_expires_at <= unixepoch())
        )`,
     [ownerToken, ttlSeconds, deadline, deadline, id, CPU_TASK_MAX_ATTEMPTS]
@@ -232,6 +248,127 @@ export async function completeCpuTask(id: string, ownerToken: string): Promise<b
     [id, ownerToken]
   );
   return result.rowsAffected === 1;
+}
+
+/**
+ * The platform refused the placement. The claim's attempt increment is
+ * undone and the row goes back to `queued` with the reason kept. A
+ * disabled workspace is not an execution attempt.
+ */
+export async function releaseCpuPlacement(
+  id: string,
+  ownerToken: string,
+  message: string
+): Promise<void> {
+  await ensureCpuTaskTable();
+  await execute(
+    `UPDATE cpu_tasks SET
+       status = 'queued',
+       owner_token = NULL,
+       lease_expires_at = NULL,
+       attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+       error_message = ?,
+       updated_at = unixepoch()
+     WHERE id = ? AND owner_token = ? AND status = 'claimed'`,
+    [message.slice(0, 500), id, ownerToken]
+  );
+}
+
+/**
+ * A completed HTTP error that is not a disabled workspace. The placement
+ * was not accepted, so the attempt increment is undone, and the row is
+ * `failed` so the next caller does not POST it again.
+ */
+export async function rejectCpuPlacement(
+  id: string,
+  ownerToken: string,
+  message: string
+): Promise<void> {
+  await ensureCpuTaskTable();
+  await execute(
+    `UPDATE cpu_tasks SET
+       status = 'failed',
+       owner_token = NULL,
+       lease_expires_at = NULL,
+       attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+       error_message = ?,
+       finished_at = unixepoch(),
+       updated_at = unixepoch()
+     WHERE id = ? AND owner_token = ? AND status = 'claimed'`,
+    [message.slice(0, 500), id, ownerToken]
+  );
+}
+
+/**
+ * A queued row that already spent its attempts is not runnable. Normalize
+ * it to `failed` and keep `finished_at`. A live claim is left alone.
+ */
+export async function normalizeExhaustedCpuTask(id: string): Promise<void> {
+  await ensureCpuTaskTable();
+  await execute(
+    `UPDATE cpu_tasks SET
+       status = 'failed',
+       owner_token = NULL,
+       lease_expires_at = NULL,
+       error_message = COALESCE(error_message, 'cpu attempts exhausted'),
+       finished_at = COALESCE(finished_at, unixepoch()),
+       updated_at = unixepoch()
+     WHERE id = ?
+       AND attempts >= ?
+       AND status NOT IN ('done', 'cancelled', 'failed')
+       AND (status != 'claimed' OR lease_expires_at <= unixepoch())`,
+    [id, CPU_TASK_MAX_ATTEMPTS]
+  );
+}
+
+/**
+ * Explicit repair of one raw master. Not used by enqueue. A `done` row
+ * is not reopened. Caller has already verified the raw object.
+ */
+export async function reopenCpuTaskForRaw(input: {
+  id: string;
+  kind: CpuTaskKind;
+  jobId: string;
+  sectionIndex?: number | null;
+  inputPath: string;
+  outputPath: string;
+  payload?: unknown;
+}): Promise<void> {
+  await ensureCpuTaskTable();
+  const payload = input.payload == null ? null : JSON.stringify(input.payload);
+  const existing = await getCpuTask(input.id);
+  if (!existing) {
+    await enqueueCpuTask({
+      id: input.id,
+      kind: input.kind,
+      jobId: input.jobId,
+      sectionIndex: input.sectionIndex ?? null,
+      inputPath: input.inputPath,
+      outputPath: input.outputPath,
+      payload: input.payload,
+    });
+    return;
+  }
+  if (existing.status === "done" || existing.status === "cancelled") return;
+  await execute(
+    `UPDATE cpu_tasks SET
+       status = 'queued',
+       owner_token = NULL,
+       lease_expires_at = NULL,
+       attempts = 0,
+       error_message = NULL,
+       started_at = NULL,
+       finished_at = NULL,
+       placed_at = NULL,
+       input_path = ?,
+       output_path = ?,
+       payload_json = ?,
+       updated_at = unixepoch()
+     WHERE id = ?
+       AND status NOT IN ('done', 'cancelled')
+       AND (status != 'claimed' OR lease_expires_at <= unixepoch())`,
+    [input.inputPath, input.outputPath, payload, input.id]
+  );
 }
 
 /** Saturation is not a failed attempt. The claim's attempt increment is undone. */

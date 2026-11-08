@@ -8,6 +8,10 @@ import {
   usesModalClone,
 } from "./modal-clone";
 import {
+  ModalWorkspaceDisabledError,
+  resetModalWorkspaceDisabled,
+} from "@/lib/modal/workspace-disabled";
+import {
   MODAL_CLONE_COVER_ARGS,
   setModalCloneWarmSpawnerForTests,
 } from "./modal-clone-warm";
@@ -73,6 +77,7 @@ function synthesizeCalls(fetchMock: ReturnType<typeof setup>) {
 }
 
 afterEach(() => {
+  resetModalWorkspaceDisabled();
   resetModalCloneRuntimeForTests();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -479,5 +484,42 @@ describe("Modal hard provider faults", () => {
     const err = await synthesizeModalClone(input).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ModalCloneProviderError);
     expect(String(err)).toContain("invalid MP3");
+  });
+
+  it("does not treat a disabled workspace as a cold pool or a wrong hostname", async () => {
+    const body = "workspace ac-disabledtest is disabled.";
+    for (const status of [404, 502]) {
+      const fetchMock = setup();
+      fetchMock.mockImplementation(async (url) => {
+        if (endpointOf(String(url)) === "ready") return readyResponse();
+        return new Response(body, { status });
+      });
+      const err = await synthesizeModalClone(input).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ModalWorkspaceDisabledError);
+      expect(err).not.toBeInstanceOf(ModalCloneColdError);
+      expect(err).not.toBeInstanceOf(ModalCloneProviderError);
+      expect(String(err)).not.toMatch(/ac-disabledtest/);
+      expect(String(err)).not.toMatch(/endpoint not found/);
+      resetModalWorkspaceDisabled();
+      resetModalCloneRuntimeForTests();
+    }
+  });
+
+  it("still treats a plain 404 as a hostname miss and a plain 502 as cold", async () => {
+    const missing = setup();
+    missing.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response("no such function", { status: 404 });
+    });
+    const notFound = await synthesizeModalClone(input).catch((e: unknown) => e);
+    expect(notFound).not.toBeInstanceOf(ModalWorkspaceDisabledError);
+    expect(String(notFound)).toMatch(/endpoint not found/);
+
+    const gateway = setup();
+    gateway.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response("bad gateway", { status: 502 });
+    });
+    await expect(synthesizeModalClone(input)).rejects.toBeInstanceOf(ModalCloneColdError);
   });
 });

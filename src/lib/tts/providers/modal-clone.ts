@@ -50,6 +50,10 @@
 import { createHash } from "crypto";
 import type { SynthesizeInput } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
+import {
+  modalPlatformRefusal,
+  redactModalAccount,
+} from "@/lib/modal/workspace-disabled";
 import { MODAL_S2_SAMPLING } from "@/lib/tts/providers/s2-sampling";
 import {
   cloneTakeIsTruncated,
@@ -1154,8 +1158,18 @@ async function postModal(
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    // 404 on an endpoint origin means the configured host is wrong (a stale
-    // deploy or a pasted function URL), not that the container is cold.
+    const refused = modalPlatformRefusal(response.status, detail);
+    if (refused) {
+      // The body can carry an account id. Log the redacted sentence only.
+      console.warn(
+        `[modal] workspace disabled http=${response.status} ${redactModalAccount(detail).slice(0, 160)}`
+      );
+      throw refused;
+    }
+    // A 404 that is not a disabled workspace still means this hostname is
+    // not the deployed web endpoint. It is not a cold container. The
+    // platform's "workspace is disabled" body is handled above and is not
+    // this case.
     if (response.status === 404) {
       throw new Error(
         `Modal clone endpoint not found at ${new URL(url).host}. Each web endpoint is its own hostname; check MODAL_S2_TTS_URL and MODAL_S2_READY_URL.`
