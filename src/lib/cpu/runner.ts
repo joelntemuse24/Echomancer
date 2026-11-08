@@ -25,17 +25,33 @@ import {
   failCpuTask,
   getCpuTask,
   heartbeatCpuTask,
+  normalizeExhaustedCpuTask,
+  rejectCpuPlacement,
+  releaseCpuPlacement,
   requeueCpuTask,
   type CpuTaskKind,
   type CpuTaskRow,
 } from "@/lib/cpu/tasks";
+import {
+  isModalWorkspaceDisabled,
+  modalWorkspaceDisabledActive,
+  noteModalWorkspaceDisabled,
+  redactModalAccount,
+} from "@/lib/modal/workspace-disabled";
 import { runInsideCpuTask, tryCpuSlot, type LocalCpuKind } from "@/lib/cpu/task-slot";
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { queryOne } from "@/lib/turso";
 import { masterSectionBuffer } from "@/lib/tts/section-master";
 import { checkTranscriptAlignment, transcribeLocally } from "@/lib/tts/transcript-qa";
 
-export type CpuRunResult = "done" | "accepted" | "deferred" | "failed" | "lost" | "cancelled";
+export type CpuRunResult =
+  | "done"
+  | "accepted"
+  | "deferred"
+  | "failed"
+  | "unavailable"
+  | "lost"
+  | "cancelled";
 
 export function cpuRunner(): "local" | "modal" {
   return process.env.CPU_RUNNER === "modal" ? "modal" : "local";
@@ -152,8 +168,12 @@ async function executeConcat(row: CpuTaskRow): Promise<void> {
   }
   const segments = parseSegmentMap(job.segments_json);
   const total = job.total_sections ?? segments.length;
+  const ready = segments.filter((segment) => segment.status === "ready").length;
+  if (ready !== total || segments.some((segment) => segment.status !== "ready")) {
+    throw new Error("concat refused: the book is not complete");
+  }
   const produced = await materializeFullAudiobook(row.job_id, segments, total, {
-    allowHoles: segments.some((segment) => segment.status !== "ready"),
+    allowHoles: false,
   });
   if (!produced) throw new Error("concat produced no file");
 }
@@ -163,6 +183,10 @@ async function executeExtract(row: CpuTaskRow): Promise<void> {
   if (!uploadId) throw new Error("extract task is missing an upload");
   const { runExtractOnce } = await import("@/lib/uploads/extract");
   await runExtractOnce(uploadId);
+}
+
+function approvedLocalRunner(row: CpuTaskRow): boolean {
+  return parsePayload(row.payload_json).approvedLocal === true;
 }
 
 function parsePayload(json: string | null): Record<string, unknown> {
@@ -212,16 +236,27 @@ async function resultFromRow(taskId: string): Promise<CpuRunResult> {
   if (!row) return "failed";
   if (row.status === "done") return "done";
   if (row.status === "cancelled") return "cancelled";
-  if (row.status === "failed" && row.attempts >= CPU_TASK_MAX_ATTEMPTS) return "failed";
+  if (row.status === "failed") return "failed";
   if (await cpuTaskLeaseLive(taskId)) return "accepted";
+  if (row.attempts >= CPU_TASK_MAX_ATTEMPTS) return "failed";
   return "deferred";
+}
+
+async function placementBody(response: Response): Promise<string> {
+  try {
+    return (await response.text()).slice(0, 500);
+  } catch {
+    return "";
+  }
 }
 
 /**
  * Place one owner, then POST. The accept timeout is not the container
- * budget. A timeout or a non-done response leaves that owner in place so
- * a second caller cannot start another container. A 429 or a refused
- * connection releases the placement. Late completion stays owner-fenced.
+ * budget. A timeout or a lost connection leaves that owner in place so
+ * a late completion can still finish, owner-fenced. A 429 or a refused
+ * connection releases the placement. A completed HTTP error was not
+ * accepted: the attempt is undone. A disabled workspace backs off
+ * instead of burning the attempt budget.
  */
 async function postCpuPlacement(
   taskId: string,
@@ -288,6 +323,33 @@ async function postCpuPlacement(
     });
     return "deferred";
   }
+  const body = response.ok ? "" : await placementBody(response);
+  if (isModalWorkspaceDisabled(body)) {
+    await releaseCpuPlacement(taskId, owner, "cpu provider unavailable: workspace disabled");
+    noteModalWorkspaceDisabled();
+    logCpu({
+      event: "cpu_dispatch",
+      id: taskId,
+      kind,
+      result: "unavailable",
+      http: response.status,
+      reason: "workspace_disabled",
+      detail: redactModalAccount(body).slice(0, 160),
+    });
+    return "unavailable";
+  }
+  if (!response.ok) {
+    await rejectCpuPlacement(taskId, owner, `cpu placement rejected: HTTP ${response.status}`);
+    logCpu({
+      event: "cpu_dispatch",
+      id: taskId,
+      kind,
+      result: "failed",
+      http: response.status,
+      posted: true,
+    });
+    return "failed";
+  }
   const result = await resultFromRow(taskId);
   logCpu({ event: "cpu_dispatch", id: taskId, kind, result, http: response.status, posted: true });
   return result;
@@ -301,6 +363,17 @@ async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunR
     if (await cpuTaskLeaseLive(taskId)) {
       logCpu({ event: "cpu_dispatch", id: taskId, kind, result: "accepted", posted: false });
       return "accepted";
+    }
+    if (modalWorkspaceDisabledActive()) {
+      logCpu({
+        event: "cpu_dispatch",
+        id: taskId,
+        kind,
+        result: "unavailable",
+        posted: false,
+        reason: "workspace_disabled",
+      });
+      return "unavailable";
     }
     const outcome = await postCpuPlacement(taskId, kind, url);
     if (outcome !== "busy") return outcome;
@@ -440,7 +513,19 @@ export async function runCpuTask(
   if (!existing) return "failed";
   if (existing.status === "done") return "done";
   if (existing.status === "cancelled") return "cancelled";
+  if (existing.status === "failed") return "failed";
+  if (
+    existing.attempts >= CPU_TASK_MAX_ATTEMPTS &&
+    !(await cpuTaskLeaseLive(taskId))
+  ) {
+    await normalizeExhaustedCpuTask(taskId);
+    return "failed";
+  }
   if (opts?.adoptOwner) return adoptCpuTask(taskId, opts.adoptOwner, existing);
+  // Set only by the raw-remaster tool after an explicit local approval.
+  // The worker does not set this on its own, and it does not switch a
+  // book to another speech engine.
+  if (approvedLocalRunner(existing)) return runLocal(taskId, existing);
   if (cpuRunner() === "modal") return dispatchModal(taskId, existing.kind);
   return runLocal(taskId, existing);
 }
@@ -467,6 +552,8 @@ export async function readWhisperVerdict(
 export async function holdBookConcat(jobId: string): Promise<
   | { kind: "already"; path: string }
   | { kind: "deferred" }
+  | { kind: "failed" }
+  | { kind: "unavailable" }
   | {
       kind: "local";
       release: () => Promise<void>;
@@ -487,11 +574,22 @@ export async function holdBookConcat(jobId: string): Promise<
   if (row?.status === "done" && (await fileExists(output))) {
     return { kind: "already", path: output };
   }
+  if (row?.status === "failed") return { kind: "failed" };
+  if (
+    row &&
+    row.attempts >= CPU_TASK_MAX_ATTEMPTS &&
+    row.status !== "claimed" &&
+    !(await cpuTaskLeaseLive(id))
+  ) {
+    return { kind: "failed" };
+  }
   if (cpuRunner() === "modal") {
     const result = await runCpuTask(id);
     if (result === "done" && (await fileExists(output))) {
       return { kind: "already", path: output };
     }
+    if (result === "failed") return { kind: "failed" };
+    if (result === "unavailable") return { kind: "unavailable" };
     return { kind: "deferred" };
   }
   const slot = await tryCpuSlot("ffmpeg", 0);

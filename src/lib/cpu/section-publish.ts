@@ -22,6 +22,8 @@ export interface SectionCommit {
   mastered: boolean;
   /** The transcript rejected the take. The caller may speak it once more. */
   regen?: boolean;
+  /** The CPU workspace refused the placement. Do not speak the section again. */
+  unavailable?: boolean;
 }
 
 export async function commitSectionAudio(input: {
@@ -126,6 +128,16 @@ export async function commitSectionAudio(input: {
     payload: { chain: input.chain, extension: input.extension },
   });
   const ran = await runCpuTask(masterId);
+  if (ran === "unavailable") {
+    return {
+      ready: false,
+      path: "",
+      rawPath: raw.path,
+      contentType: input.contentType,
+      mastered: false,
+      unavailable: true,
+    };
+  }
   if (ran !== "done" || !(await fileExists(output))) {
     return {
       ready: false,
@@ -152,11 +164,17 @@ export async function commitSectionAudio(input: {
 export async function promoteFinishedSections(
   jobId: string,
   segments: JobSegment[]
-): Promise<{ segments: JobSegment[]; waiting: boolean; changed: boolean }> {
+): Promise<{
+  segments: JobSegment[];
+  waiting: boolean;
+  changed: boolean;
+  unavailable?: boolean;
+}> {
   let waiting = false;
   let changed = false;
   const next: JobSegment[] = [];
-  for (const segment of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]!;
     if (segment.status !== "mastering") {
       next.push(segment);
       continue;
@@ -166,6 +184,9 @@ export async function promoteFinishedSections(
     const whisper = await getCpuTask(whisperId);
     if (whisper && whisper.status !== "done" && whisper.status !== "failed" && whisper.status !== "cancelled") {
       const ran = await runCpuTask(whisperId);
+      if (ran === "unavailable") {
+        return finishPromote(next, segments, i, segment, { waiting: true, changed, unavailable: true });
+      }
       if (ran !== "done") {
         waiting = true;
         next.push(segment);
@@ -201,7 +222,10 @@ export async function promoteFinishedSections(
       master = await getCpuTask(masterId);
     }
     if (master && master.status !== "done" && master.status !== "failed" && master.status !== "cancelled") {
-      await runCpuTask(masterId);
+      const ran = await runCpuTask(masterId);
+      if (ran === "unavailable") {
+        return finishPromote(next, segments, i, segment, { waiting: true, changed, unavailable: true });
+      }
       master = await getCpuTask(masterId);
     }
     if (master?.status === "done" && master.output_path && (await fileExists(master.output_path))) {
@@ -249,6 +273,26 @@ export async function promoteFinishedSections(
     waiting = true;
     next.push(segment);
   }
+  return foldPromote(next, waiting, changed);
+}
+
+function finishPromote(
+  next: JobSegment[],
+  segments: JobSegment[],
+  index: number,
+  current: JobSegment,
+  flags: { waiting: boolean; changed: boolean; unavailable: boolean }
+): { segments: JobSegment[]; waiting: boolean; changed: boolean; unavailable: boolean } {
+  next.push(current);
+  for (let j = index + 1; j < segments.length; j++) next.push(segments[j]!);
+  return { ...foldPromote(next, flags.waiting, flags.changed), unavailable: true };
+}
+
+function foldPromote(
+  next: JobSegment[],
+  waiting: boolean,
+  changed: boolean
+): { segments: JobSegment[]; waiting: boolean; changed: boolean } {
   return {
     segments: next.reduce((acc, segment) => upsertSegment(acc, segment), [] as JobSegment[]),
     waiting,

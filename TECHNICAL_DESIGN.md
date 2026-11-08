@@ -1891,11 +1891,23 @@ books or doubling provider calls:
   `CPU_PLACEMENT_LEASE_S` (default 180) and `deadline_at` set to the
   kind's budget, then POSTs `{ taskId, ownerToken }` to `MODAL_CPU_URL`
   (host only, no path). The client waits `CPU_DISPATCH_ACCEPT_MS`
-  (default 20s), not the container budget. A timeout, a reset, or any
-  HTTP status that leaves the lease live returns `accepted` and does not
-  POST again. `429`, `400`, and `401` release that placement. A
-  connection that never opened (`ECONNREFUSED`, `ENOTFOUND`) releases it
-  too. The container adopts `CPU_TASK_OWNER` and does not claim a second
+  (default 20s), not the container budget. A timeout, a reset, or a
+  response that never completed leaves the lease live and returns
+  `accepted`, so a late owner can still finish and a second caller does
+  not POST. `429`, `400`, and `401` release that placement. A connection
+  that never opened (`ECONNREFUSED`, `ENOTFOUND`) releases it too. A
+  completed HTTP error, including 404 and 500, is rejected: the attempt
+  increment is undone, the row is `failed`, and it is not posted again.
+  A body that says the workspace is disabled is not that rejection and
+  not a cold GPU. The attempt is undone, the process stops posting for
+  15 minutes, and the book is `failed` with the usage-stopped message.
+  Spoken takes and `provider_pin` stay. Enqueue does not reopen a
+  `failed` row or a row that already used its three attempts. A book
+  with holes is not concatenated. Concat runs only when every section
+  is ready. `scripts/repair-raw-masters.ts` remasters verified raw
+  objects after a backup, and only with `--confirm-service-available`
+  or `--approve-local`. It does not synthesize and does not call Modal.
+  The container adopts `CPU_TASK_OWNER` and does not claim a second
   token. It keeps the invocation until the child exits, so a client that
   already gave up does not cancel the work. Late `completeCpuTask` from
   any other token is a no-op. Section children are killed at

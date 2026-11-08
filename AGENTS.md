@@ -88,7 +88,14 @@ places each task (`ownerToken` plus a placement lease) and POSTs it to
 `min_containers=0`). The HTTP accept wait is `CPU_DISPATCH_ACCEPT_MS`
 (default 20s). The container budget is `CPU_FUNCTION_TIMEOUT_S` (900) for
 a section and `CPU_CONCAT_TIMEOUT_S` (3600) for concat. A timed-out POST
-keeps the placement; it does not start a second container. That Modal app
+keeps the placement; it does not start a second container. A completed
+HTTP error, including 404 and 500, is not an accepted placement and does
+not spend an execution attempt. A body that says the workspace is
+disabled stops the book: usage is stopped, spoken takes stay, and the
+worker does not switch engine or hammer the endpoint. The November 2026
+confirmation of that body was a user-set workspace budget at its cap
+(UsageStopped), not a payment error. The budgets tab does not name the
+request that crossed the cap. That Modal app
 is not deployed by a git push. With `CPU_RUNNER=modal` and
 `WORKER_CONCURRENCY` unset, this process opens `ORCH_CONCURRENCY` slots
 (default 8). `TAKEHOME_GLOBAL_ACTIVE` (default 16) is the cluster lease

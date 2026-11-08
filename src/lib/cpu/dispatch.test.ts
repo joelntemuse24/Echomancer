@@ -32,6 +32,7 @@ import {
   requeueExpiredCpuTasks,
 } from "@/lib/cpu/tasks";
 import { runCpuTask } from "@/lib/cpu/runner";
+import { resetModalWorkspaceDisabled } from "@/lib/modal/workspace-disabled";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
@@ -125,6 +126,7 @@ async function close(server: Server): Promise<void> {
 }
 
 beforeEach(async () => {
+  resetModalWorkspaceDisabled();
   await resetDatabase();
   delete process.env.CPU_RUNNER;
   delete process.env.MODAL_CPU_URL;
@@ -255,7 +257,7 @@ describe("modal placement", () => {
     }
   });
 
-  it("treats a non-done response as still in flight", async () => {
+  it("rejects a completed HTTP 500 instead of treating it as accepted", async () => {
     process.env.CPU_RUNNER = "modal";
     process.env.CPU_DISPATCH_ACCEPT_MS = "2000";
     const live = await listen(async () => ({ status: 500, json: { ok: false } }));
@@ -268,17 +270,110 @@ describe("modal placement", () => {
         outputPath: "audiobooks/job-500/full.mp3",
       });
       const result = await runCpuTask("concat:job-500");
-      expect(result).toBe("accepted");
+      expect(result).toBe("failed");
       const row = await getCpuTask("concat:job-500");
-      expect(row?.status).toBe("claimed");
-      expect(row?.status).not.toBe("failed");
-      expect(Number(row?.deadline_at)).toBeGreaterThan(Number(row?.placed_at));
+      expect(row?.status).toBe("failed");
+      expect(row?.owner_token).toBeNull();
+      expect(row?.lease_expires_at).toBeNull();
+      expect(Number(row?.attempts)).toBe(0);
+      expect(String(row?.error_message)).toMatch(/HTTP 500/);
       const again = await runCpuTask("concat:job-500");
-      expect(again).toBe("accepted");
+      expect(again).toBe("failed");
       expect(live.posts()).toBe(1);
     } finally {
       await close(live.server);
     }
+  });
+
+  it("does not accept a disabled-workspace 404 or spend an attempt", async () => {
+    process.env.CPU_RUNNER = "modal";
+    process.env.CPU_DISPATCH_ACCEPT_MS = "2000";
+    const live = await listen(async () => ({
+      status: 404,
+      json: { error: "workspace ac-disabledtest is disabled." },
+    }));
+    process.env.MODAL_CPU_URL = live.url;
+    try {
+      await enqueueCpuTask({
+        id: "master:job-disabled:113",
+        kind: "master",
+        jobId: "job-disabled",
+        sectionIndex: 113,
+        inputPath: "audiobooks/job-disabled/raw/0113.mp3",
+        outputPath: "audiobooks/job-disabled/sections/0113.mp3",
+      });
+      await enqueueCpuTask({
+        id: "master:job-disabled:120",
+        kind: "master",
+        jobId: "job-disabled",
+        sectionIndex: 120,
+        inputPath: "audiobooks/job-disabled/raw/0120.mp3",
+        outputPath: "audiobooks/job-disabled/sections/0120.mp3",
+      });
+      expect(await runCpuTask("master:job-disabled:113")).toBe("unavailable");
+      const row = await getCpuTask("master:job-disabled:113");
+      expect(row?.status).toBe("queued");
+      expect(Number(row?.attempts)).toBe(0);
+      expect(row?.started_at ?? null).toBeNull();
+      expect(String(row?.error_message)).toMatch(/workspace disabled/);
+      expect(await runCpuTask("master:job-disabled:120")).toBe("unavailable");
+      expect((await getCpuTask("master:job-disabled:120"))?.status).toBe("queued");
+      expect(live.posts()).toBe(1);
+    } finally {
+      await close(live.server);
+      resetModalWorkspaceDisabled();
+    }
+  });
+
+  it("rejects a plain HTTP 404 and does not post it again", async () => {
+    process.env.CPU_RUNNER = "modal";
+    process.env.CPU_DISPATCH_ACCEPT_MS = "2000";
+    const live = await listen(async () => ({ status: 404, json: { ok: false } }));
+    process.env.MODAL_CPU_URL = live.url;
+    try {
+      await enqueueCpuTask({
+        id: "master:job-404:0",
+        kind: "master",
+        jobId: "job-404",
+        sectionIndex: 0,
+      });
+      expect(await runCpuTask("master:job-404:0")).toBe("failed");
+      const row = await getCpuTask("master:job-404:0");
+      expect(row?.status).toBe("failed");
+      expect(Number(row?.attempts)).toBe(0);
+      expect(await runCpuTask("master:job-404:0")).toBe("failed");
+      expect(live.posts()).toBe(1);
+    } finally {
+      await close(live.server);
+    }
+  });
+
+  it("does not resurrect an exhausted concat row into a runnable queue", async () => {
+    const id = "concat:job-exhausted";
+    await enqueueCpuTask({
+      id,
+      kind: "concat",
+      jobId: "job-exhausted",
+      inputPath: "audiobooks/job-exhausted",
+      outputPath: "audiobooks/job-exhausted/full.mp3",
+    });
+    await execute(
+      `UPDATE cpu_tasks SET status = 'queued', attempts = 3, finished_at = 1794116698,
+         error_message = NULL, started_at = NULL WHERE id = ?`,
+      [id]
+    );
+    await enqueueCpuTask({
+      id,
+      kind: "concat",
+      jobId: "job-exhausted",
+      inputPath: "audiobooks/job-exhausted",
+      outputPath: "audiobooks/job-exhausted/full.mp3",
+    });
+    const row = await getCpuTask(id);
+    expect(row?.status).toBe("failed");
+    expect(Number(row?.attempts)).toBe(3);
+    expect(Number(row?.finished_at)).toBe(1794116698);
+    expect(row?.error_message).toBeTruthy();
   });
 
   it("releases a busy container so a later placement can post once", async () => {

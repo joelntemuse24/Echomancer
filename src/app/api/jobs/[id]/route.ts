@@ -30,6 +30,7 @@ import {
   readyCount,
 } from "@/lib/tts/section-index";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
+import { recoveryHoldReason } from "@/lib/modal/workspace-disabled";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -306,6 +307,18 @@ export async function PATCH(
       return NextResponse.json(
         { error: "Can only retry failed jobs" },
         { status: 400 }
+      );
+    }
+    const held = recoveryHoldReason(
+      typeof job.error_message === "string" ? job.error_message : null
+    );
+    if (held) {
+      return NextResponse.json(
+        {
+          error: held,
+          recovery: "wait",
+        },
+        { status: 409 }
       );
     }
 

@@ -99,6 +99,8 @@ export function userFriendlyError(rawError: string | null): string {
     return "This audiobook is gone.";
   if (lower.includes("live stream") || lower.includes("live listen"))
     return "Couldn't play that. Try again.";
+  if (lower.includes("spoken takes are kept") || lower.includes("workspace is disabled"))
+    return rawError;
   // Truncate very long / provider-leaky errors
   if (rawError.length > 120) return "Something went wrong. Try again.";
   return rawError;
