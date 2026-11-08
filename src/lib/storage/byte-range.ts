@@ -17,9 +17,12 @@ export const PLAYBACK_CACHE_CONTROL = "private, no-store";
  * on that one response: the element never reaches metadata, and it errors
  * while the body is still arriving (observed at ~15 s and ~3 MB). The same
  * bytes play once that response is already complete in the disk cache.
- * One window is enough of a 128 kbps file to start, and it finishes on a
- * slow link before that give-up. The next slice, and a tail probe, name
- * their own end and go straight to R2.
+ * One window is enough of a 128 kbps file to start. The bytes that follow
+ * stay on this same URL: a later range that 302s to R2 is a different
+ * origin, and Chrome then raises a network error on the element. The player
+ * reloads, the clock returns to 0:00, and the listener sees "Couldn't play
+ * this part." A missing Xing header is not what stops the start; Chrome
+ * reads the duration from the first frames and this total.
  */
 export const PLAYBACK_OPEN_RANGE_BYTES = 256 * 1024;
 
@@ -38,6 +41,40 @@ export function openEndedPlaybackWindow(
   if (spec.slice(dash + 1) !== "") return null;
   const start = Number.parseInt(spec.slice(0, dash) || "0", 10);
   if (!Number.isFinite(start) || start < 0) return null;
+  return `bytes=${start}-${start + PLAYBACK_OPEN_RANGE_BYTES - 1}`;
+}
+
+/**
+ * The range this origin will actually read for a playback request.
+ *
+ * Open-ended ranges are capped at one window. A closed range that already
+ * fits is kept. A closed range larger than a window is capped too, so one
+ * invocation never streams the rest of a multi-hour file. A short suffix
+ * (`bytes=-N`) is the tail probe and stays exact; a huge suffix is the last
+ * window. Null means the header is not a single byte range.
+ *
+ * Every non-null result is served here. Redirecting it would change origin
+ * under an element that already has bytes from this URL.
+ */
+export function cappedPlaybackRange(
+  rangeHeader: string | null | undefined
+): string | null {
+  const header = singleByteRangeHeader(rangeHeader);
+  if (!header) return null;
+  const open = openEndedPlaybackWindow(header);
+  if (open) return open;
+  const spec = header.slice("bytes=".length);
+  if (spec.startsWith("-")) {
+    const suffix = Number.parseInt(spec.slice(1), 10);
+    if (!Number.isFinite(suffix) || suffix <= 0) return null;
+    if (suffix <= PLAYBACK_OPEN_RANGE_BYTES) return header;
+    return `bytes=-${PLAYBACK_OPEN_RANGE_BYTES}`;
+  }
+  const dash = spec.indexOf("-");
+  const start = Number.parseInt(spec.slice(0, dash) || "0", 10);
+  const end = Number.parseInt(spec.slice(dash + 1), 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  if (end - start + 1 <= PLAYBACK_OPEN_RANGE_BYTES) return header;
   return `bytes=${start}-${start + PLAYBACK_OPEN_RANGE_BYTES - 1}`;
 }
 
@@ -116,9 +153,11 @@ export function playbackHeaders(options: {
     "Content-Length": String(options.contentLength),
     "Accept-Ranges": "bytes",
     // Private and uncached so a later visitor on the same browser cannot
-    // replay someone else's bytes from the HTTP cache. The media element's
-    // own buffer still covers short skips inside already-fetched audio.
+    // replay someone else's bytes from the HTTP cache. Vary on Range so a
+    // cache that does keep the response cannot hand the first window back
+    // for a later slice of the same URL.
     "Cache-Control": PLAYBACK_CACHE_CONTROL,
+    Vary: "Range",
     "X-Accel-Buffering": "no",
   };
   if (options.contentRange) headers["Content-Range"] = options.contentRange;

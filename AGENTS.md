@@ -47,13 +47,15 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   is reported as **404**, never 403, so ids cannot be enumerated.
 - `/api/storage/**` resolves each key back to its owning job or upload. Object
   keys are guessable, so the key is never treated as a secret.
-  After that check a bounded `Range` 302s to a presigned R2 URL (12–13h,
-  redirect cached `private, max-age=3600`). An open-ended range
-  (`bytes=start-`, which is what Chrome sends first for a book) is not
-  redirected: that 206 would run to the last byte, and a multi-hour file
-  errors while the body is still arriving. The same bytes play once that
-  response is already complete in the disk cache. The route answers one
-  256 KiB window instead, then the browser's next closed range 302s.
+  After that check a playback `Range` is answered here. Chrome's first
+  request is `bytes=0-`; a 206 that runs to the last byte of a multi-hour
+  file stays open, and the next read is another `Range` on this same URL
+  (`bytes=262144-`, a closed slice, or a tail probe). That read stays here
+  too, capped at 256 KiB. A 302 of a later range points at R2, which is a
+  different origin, and Chrome raises a network error. The player reloads,
+  the clock returns to 0:00, and the notice is "Couldn't play this part."
+  A request with no `Range`, and a named download, still 302 to a presigned
+  URL (12–13h, redirect cached `private, max-age=3600`).
   `.pcm`, local disk, and `STORAGE_DIRECT_R2=0` keep the proxy. A
   ready book's `download_url` (on `GET /api/jobs` and `/api/jobs/[id]`) is a
   presigned R2 attachment link. The player does not use Web Audio, because a
