@@ -39,6 +39,7 @@ import {
 } from "@/lib/player/chapter-nav";
 import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
+import { assignPlaybackRate } from "@/lib/player/playback-speed";
 import { PlayerTransport } from "@/components/player-transport";
 import {
   NowPlayingLine,
@@ -569,7 +570,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     resetAudioStart();
   }, [audioUrl, resetAudioStart]);
 
-  // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
+  // HTML audio starts at 1×. Re-apply the visit's rate (1× until the
   // listener picks another) whenever the element or the choice changes.
   // Pitch correction is asked for explicitly: browsers default it on today,
   // but the narration voice is the product, and a rate that shifts pitch
@@ -577,9 +578,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    audio.defaultPlaybackRate = speed;
-    audio.playbackRate = speed;
-    audio.preservesPitch = true;
+    assignPlaybackRate(audio, speed);
   }, [speed, audioUrl]);
 
   // Audio event listeners
@@ -967,9 +966,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       setSpeed(next);
       const audio = audioRef.current;
       if (!audio) return;
-      audio.defaultPlaybackRate = next;
-      audio.playbackRate = next;
-      audio.preservesPitch = true;
+      assignPlaybackRate(audio, next);
     },
     [setSpeed]
   );

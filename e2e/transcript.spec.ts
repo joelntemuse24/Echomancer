@@ -127,7 +127,7 @@ test("focus mode fills the viewport with a slim player bar, and Esc exits", asyn
   await expect(focus.getByRole("button", { name: "Back 15 seconds" })).toBeVisible();
   await expect(focus.getByRole("button", { name: "Forward 15 seconds" })).toBeVisible();
   await expect(focus.getByRole("slider").first()).toBeVisible();
-  await expect(focus.getByRole("button", { name: "Playback speed" })).toHaveText("1.15×");
+  await expect(focus.getByRole("button", { name: "Playback speed" })).toHaveText("1×");
   await expect(focus.getByText("Chapter One")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(focus).toHaveCount(0);

@@ -6,6 +6,8 @@ import {
   PLAYBACK_SPEED_PRESETS,
   formatPlaybackSpeed,
   nextPlaybackSpeed,
+  playbackSpeedsMatch,
+  previousPlaybackSpeed,
 } from "@/lib/player/playback-speed";
 
 export function PlayerSpeedControl({
@@ -24,7 +26,15 @@ export function PlayerSpeedControl({
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      onSpeedChange(
+        event.key === "ArrowDown" ? nextPlaybackSpeed(speed) : previousPlaybackSpeed(speed)
+      );
     };
     document.addEventListener("mousedown", onPointer);
     document.addEventListener("keydown", onKey);
@@ -32,7 +42,7 @@ export function PlayerSpeedControl({
       document.removeEventListener("mousedown", onPointer);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, onSpeedChange, speed]);
 
   return (
     <div ref={rootRef} className="relative z-30 inline-flex items-center">
@@ -74,7 +84,7 @@ export function PlayerSpeedControl({
             className="absolute left-1/2 z-30 max-h-[min(22rem,55vh)] min-w-[5.5rem] -translate-x-1/2 overflow-y-auto rounded-md border border-border/50 bg-background py-1 shadow-xl bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
           >
             {PLAYBACK_SPEED_PRESETS.map((rate) => {
-              const selected = Math.abs(rate - speed) < 0.001;
+              const selected = playbackSpeedsMatch(rate, speed);
               return (
                 <li key={rate} role="none">
                   <button

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ReadAlongTranscript } from "../src/components/read-along-transcript";
 import { ReadAlongFocus } from "../src/components/read-along-focus";
 import { useReadAlongFocus } from "../src/hooks/use-read-along-focus";
+import { DEFAULT_PLAYBACK_SPEED } from "../src/lib/player/playback-speed";
 import { buildReadAlongDocument, passageSeekForChar } from "../src/lib/player/read-along";
 
 const DURATION = 2400;
@@ -17,7 +18,7 @@ function Harness() {
   const [seek, setSeek] = useState(-1);
   const [stream, setStream] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1.15);
+  const [speed, setSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
   // The same remembered preference the player page uses.
   const { focus, setFocus } = useReadAlongFocus();
   // Same clock the player uses, so a tap lands on the words under the finger.
