@@ -91,6 +91,55 @@ describe("GET /api/storage R2 ranges", () => {
     expect(getFileMock).not.toHaveBeenCalled();
   });
 
+  it("answers the next open range and a tail probe here, not with a redirect", async () => {
+    const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
+    const slice = new Uint8Array(4);
+    openObjectMock.mockResolvedValue({
+      statusCode: 206,
+      contentType: "audio/mpeg",
+      contentLength: slice.byteLength,
+      contentRange: `bytes 262144-${262144 + PLAYBACK_OPEN_RANGE_BYTES - 1}/575515806`,
+      body: sliceStream(slice),
+    });
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const followUp = await GET(
+      await buildRequest(`/api/storage/${FULL}`, {
+        userId: USER_A,
+        headers: { range: "bytes=262144-" },
+      }),
+      routeParams({ path: FULL.split("/") })
+    );
+    expect(followUp.status).toBe(206);
+    expect(followUp.headers.get("vary")).toBe("Range");
+    expect(openObjectMock).toHaveBeenCalledWith(
+      FULL,
+      `bytes=262144-${262144 + PLAYBACK_OPEN_RANGE_BYTES - 1}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+
+    openObjectMock.mockClear();
+    openObjectMock.mockResolvedValue({
+      statusCode: 206,
+      contentType: "audio/mpeg",
+      contentLength: 32,
+      contentRange: "bytes 575515774-575515805/575515806",
+      body: sliceStream(slice),
+    });
+    const tail = await GET(
+      await buildRequest(`/api/storage/${FULL}`, {
+        userId: USER_A,
+        headers: { range: "bytes=-32" },
+      }),
+      routeParams({ path: FULL.split("/") })
+    );
+    expect(tail.status).toBe(206);
+    expect(openObjectMock).toHaveBeenCalledWith(
+      FULL,
+      "bytes=-32",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
   it("streams the seek slice and does not download the whole object", async () => {
     const slice = new Uint8Array([1, 2, 3, 4]);
     openObjectMock.mockResolvedValue({

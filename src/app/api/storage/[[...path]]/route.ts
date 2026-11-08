@@ -23,7 +23,7 @@ import {
   PLAYBACK_CACHE_CONTROL,
   RangeNotSatisfiableError,
   isAbortError,
-  openEndedPlaybackWindow,
+  cappedPlaybackRange,
   parseByteRange,
   playbackHeaders,
 } from "@/lib/storage/byte-range";
@@ -45,15 +45,14 @@ export const maxDuration = 300;
  * The player fetches these URLs from the same origin, so the session cookie
  * rides along on `<audio src>` and range requests without any extra plumbing.
  *
- * With R2 configured, an authorized closed range is a 302 to a presigned R2
- * URL. Those bytes go browser ↔ R2. An open-ended range is a short window
- * from this function: a 206 that runs to the last byte of a multi-hour file
- * never finishes, and the element errors while the body is still arriving.
- * The redirect is `private, max-age=3600`, so repeated closed ranges reuse it
- * without a new invocation. Raw `.pcm` sections still need the WAV wrapper
- * and stay on the proxy, as do local disk (dev/tests) and the
- * `STORAGE_DIRECT_R2=0` kill switch. Proxied R2 seeks stream the requested
- * range.
+ * A playback `Range` is answered here, capped to one window when the
+ * request is open-ended or larger than that. The element has already
+ * received bytes from this URL; a later 302 to R2 is a different origin,
+ * and Chrome reports that as a network error. The player reloads, the
+ * clock returns to 0:00, and the notice is "Couldn't play this part."
+ * A request with no `Range`, and a named `?download=`, still 302 to a
+ * presigned URL. Raw `.pcm` sections need the WAV wrapper and stay on
+ * the proxy, as do local disk (dev/tests) and `STORAGE_DIRECT_R2=0`.
  */
 
 // Playback issues many range requests per section, so the ceiling is generous;
@@ -200,10 +199,14 @@ export async function GET(
     // A named download wants the whole object. Playback that asks for
     // `bytes=start-` must not: that 206 runs to the last byte, and a
     // multi-hour file errors before the response finishes.
-    const playbackWindow = downloadName ? null : openEndedPlaybackWindow(rangeHeader);
-    const effectiveRange = playbackWindow ?? rangeHeader;
+    // Any playback Range stays on this origin. Chrome's next read after the
+    // first window is another Range on the same URL (`bytes=262144-`, a
+    // closed slice, or a tail probe). Redirecting that read is a network
+    // error on the element.
+    const playbackRange = downloadName ? null : cappedPlaybackRange(rangeHeader);
+    const effectiveRange = playbackRange ?? rangeHeader;
 
-    if (!playbackWindow && !storagePath.endsWith(".pcm")) {
+    if (!playbackRange && !storagePath.endsWith(".pcm")) {
       try {
         const direct = await directObjectUrl(storagePath, {
           downloadName: downloadName ? sanitizeFilename(downloadName) : undefined,

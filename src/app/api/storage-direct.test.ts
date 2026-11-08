@@ -95,17 +95,43 @@ describe("GET /api/storage direct R2", () => {
       }),
       routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
     );
-    expect(tail.status).toBe(302);
-    expect(tail.headers.get("location")).toBe(SIGNED);
+    expect(tail.status).toBe(206);
+    expect(tail.headers.get("content-range")).toBe(
+      `bytes ${total - 32}-${total - 1}/${total}`
+    );
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    const closed = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-99" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(closed.status).toBe(206);
+    expect(closed.headers.get("content-range")).toBe(`bytes 0-99/${total}`);
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    const followUp = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=262144-" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
+    );
+    expect(followUp.status).toBe(206);
+    expect(followUp.headers.get("content-range")).toBe(
+      `bytes 262144-${total - 1}/${total}`
+    );
+    expect(directObjectUrl).not.toHaveBeenCalled();
   });
 
-  it("redirects the owner to R2 with a reusable private redirect", async () => {
+  it("redirects a request with no range to R2", async () => {
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     await seedOwnedJob();
     const response = await GET(
       await buildRequest(`/api/storage/audiobooks/${JOB_A}/full.mp3`, {
         userId: USER_A,
-        headers: { range: "bytes=0-99" },
       }),
       routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
     );

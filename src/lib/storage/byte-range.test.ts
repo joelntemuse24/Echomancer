@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PLAYBACK_OPEN_RANGE_BYTES,
+  cappedPlaybackRange,
   openEndedPlaybackWindow,
   parseByteRange,
   playbackHeaders,
@@ -67,11 +68,35 @@ describe("openEndedPlaybackWindow", () => {
     );
   });
 
-  it("leaves a closed range and a tail probe alone so they can redirect", () => {
+  it("leaves a closed range and a tail probe alone", () => {
     expect(openEndedPlaybackWindow("bytes=0-99")).toBeNull();
     expect(openEndedPlaybackWindow("bytes=8000000-8000003")).toBeNull();
     expect(openEndedPlaybackWindow("bytes=-32")).toBeNull();
     expect(openEndedPlaybackWindow(null)).toBeNull();
+  });
+});
+
+describe("cappedPlaybackRange", () => {
+  const end = PLAYBACK_OPEN_RANGE_BYTES - 1;
+
+  it("keeps the follow-up Chrome sends after the first window on this origin", () => {
+    // After `bytes=0-` returns 256 KiB, Chrome asks for `bytes=262144-`.
+    // That read has to be answered here. A 302 to R2 is a network error.
+    expect(cappedPlaybackRange("bytes=262144-")).toBe(`bytes=262144-${262144 + end}`);
+    expect(cappedPlaybackRange("bytes=0-")).toBe(`bytes=0-${end}`);
+  });
+
+  it("keeps a short closed range and a tail probe, and caps a huge slice", () => {
+    expect(cappedPlaybackRange("bytes=0-99")).toBe("bytes=0-99");
+    expect(cappedPlaybackRange("bytes=8000000-8000003")).toBe("bytes=8000000-8000003");
+    expect(cappedPlaybackRange("bytes=-32")).toBe("bytes=-32");
+    expect(cappedPlaybackRange(`bytes=0-${PLAYBACK_OPEN_RANGE_BYTES * 4}`)).toBe(
+      `bytes=0-${end}`
+    );
+    expect(cappedPlaybackRange(`bytes=-${PLAYBACK_OPEN_RANGE_BYTES * 4}`)).toBe(
+      `bytes=-${PLAYBACK_OPEN_RANGE_BYTES}`
+    );
+    expect(cappedPlaybackRange(null)).toBeNull();
   });
 });
 
@@ -87,6 +112,7 @@ describe("playbackHeaders", () => {
     expect(headers["Accept-Ranges"]).toBe("bytes");
     expect(headers["Cache-Control"]).toContain("private");
     expect(headers["Cache-Control"]).toContain("no-store");
+    expect(headers["Vary"]).toBe("Range");
     expect(headers["Content-Type"]).toBe("audio/mpeg");
   });
 });
