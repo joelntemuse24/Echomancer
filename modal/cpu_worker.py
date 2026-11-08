@@ -11,9 +11,10 @@ directory with the take-home VM.
 
 Scale to zero: `min_containers` is 0. `CPU_MAX_CONTAINERS` (default 4)
 is the fleet cap. `CPU_FUNCTION_CPU` and `CPU_FUNCTION_MEMORY_MB` are the
-per-container billing dimensions. `CPU_SCALEDOWN_SECONDS` (default 60) is
+per-container billing dimensions. `CPU_SCALEDOWN_SECONDS` (default 300) is
 how long an idle container stays up. Idle cost is zero once the container
-is gone. This file does not record a measured dollar figure.
+is gone. This file does not record a measured dollar figure. A body of
+`{"warm": true}` starts the container and returns without a task.
 
 The image does not download Whisper weights. The first QA task on a
 deployed container fetches the `base` model into that container. That
@@ -59,7 +60,7 @@ MEMORY_MB = int(os.environ.get("CPU_FUNCTION_MEMORY_MB", "4096"))
 TIMEOUT_S = int(os.environ.get("CPU_FUNCTION_TIMEOUT_S", "900"))
 CONCAT_TIMEOUT_S = int(os.environ.get("CPU_CONCAT_TIMEOUT_S", "3600"))
 MAX_CONTAINERS = int(os.environ.get("CPU_MAX_CONTAINERS", "4"))
-SCALEDOWN_S = int(os.environ.get("CPU_SCALEDOWN_SECONDS", "60"))
+SCALEDOWN_S = int(os.environ.get("CPU_SCALEDOWN_SECONDS", "300"))
 # The function stays alive for the longest task. Section children are
 # killed at TIMEOUT_S. This number is not a dollar cap.
 FUNCTION_TIMEOUT_S = max(TIMEOUT_S, CONCAT_TIMEOUT_S)
@@ -124,6 +125,14 @@ def run(item: dict, request: Request):
 
     if not _authorized(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    # No task row and no child. A busy container is already capacity.
+    if item.get("warm") is True:
+        if not _gate.acquire(blocking=False):
+            return {"ok": True, "state": "busy"}
+        try:
+            return {"ok": True, "state": "warm"}
+        finally:
+            _gate.release()
     task_id = str(item.get("taskId") or "")
     owner = str(item.get("ownerToken") or "")
     if not task_id or "/" in task_id or ".." in task_id or len(task_id) > 200:

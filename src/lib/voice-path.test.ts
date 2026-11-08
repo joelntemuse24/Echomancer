@@ -1,5 +1,9 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   isListedSowellVoice,
   isPersistableStandardVoiceId,
@@ -55,9 +59,34 @@ describe("voicesForPath", () => {
       "sowell",
     ]);
     expect(listed.at(-1)?.displayName).toBe("Sowell");
-    expect(stockCardAudition(sowell)).toBe("select-only");
+    expect(stockCardAudition(sowell)).toBe("static");
+    expect(stockPreviewUrl("sowell")).toBe("/voice-previews/sowell.mp3");
+    expect(existsSync(path.join(process.cwd(), "public/voice-previews/sowell.mp3"))).toBe(
+      true
+    );
+    expect(stockPreviewUrl("george")).toBe("/voice-previews/george.mp3");
+    expect(existsSync(path.join(process.cwd(), "public/voice-previews/george.mp3"))).toBe(
+      true
+    );
     expect(isPersistableStandardVoiceId("sowell")).toBe(true);
     expect(isListedSowellVoice(sowell)).toBe(true);
+    const probe = spawnSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path.join(process.cwd(), "public/voice-previews/sowell.mp3"),
+      ],
+      { encoding: "utf8" }
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    const duration = Number(probe.stdout.trim());
+    expect(duration).toBeGreaterThan(1);
+    expect(duration).toBeLessThan(15);
   });
 
   it("hides Sowell when the server omitted it and ignores another provider on that id", () => {

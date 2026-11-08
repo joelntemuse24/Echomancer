@@ -56,6 +56,7 @@ import {
   isSlimStockVoiceId,
   SLIM_STOCK_VOICE_IDS,
 } from "@/lib/tts/standard-voice";
+import { requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   readStockVoicePick,
@@ -401,7 +402,7 @@ function VoiceSelectionContent() {
 
   useEffect(() => {
     const warmed: HTMLAudioElement[] = [];
-    for (const id of SLIM_STOCK_VOICE_IDS) {
+    for (const id of [...SLIM_STOCK_VOICE_IDS, "sowell"]) {
       const url = stockPreviewUrl(id);
       if (!url) continue;
       const audio = new Audio();
@@ -545,6 +546,9 @@ function VoiceSelectionContent() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
+    if (id === "sowell" || id === "george") {
+      requestCapacityWarm({ voiceId: id, reason: "voice" });
+    }
     if (activePath === "clone") setVoicePath(null);
   };
 
@@ -676,6 +680,43 @@ function VoiceSelectionContent() {
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
+    if (stockCardAudition(voice) === "static") {
+      const recorded = stockPreviewUrl(voice.id);
+      if (!recorded) return;
+      if (
+        previewingId === voice.id &&
+        (previewAudioRef.current?.active || previewLoading === voice.id)
+      ) {
+        stopPreviewPlayback();
+        setPreviewingId(null);
+        setPreviewLoading(null);
+        return;
+      }
+      if (Date.now() < previewCooldownUntil) {
+        toast.error("Wait a moment.");
+        return;
+      }
+      stopPreviewPlayback();
+      setPreviewingId(voice.id);
+      setPreviewLoading(voice.id);
+      const outcome = await getPreviewAudio().play([recorded], {
+        onStart: () => setPreviewLoading(null),
+        onEnd: () => {
+          setPreviewingId(null);
+          setPreviewLoading(null);
+        },
+        onError: () => {
+          setPreviewingId(null);
+          setPreviewLoading(null);
+          toast.error("Couldn't play the sample. Try again.");
+        },
+      });
+      if (outcome !== "played" && outcome !== "interrupted") {
+        setPreviewingId(null);
+        setPreviewLoading(null);
+      }
+      return;
+    }
     if (stockCardAudition(voice) === "select-only") {
       stopPreviewPlayback();
       selectVoice(voice.id, { dismissSample: true });
@@ -1077,7 +1118,9 @@ function VoiceSelectionContent() {
 
   const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
-    const selectOnly = stockCardAudition(voice) === "select-only";
+    const audition = stockCardAudition(voice);
+    const selectOnly = audition === "select-only";
+    const staticPreview = audition === "static";
     const isPlaying = previewingId === voice.id;
     const isSelected = selectedVoiceId === voice.id && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
@@ -1181,6 +1224,36 @@ function VoiceSelectionContent() {
                   {label}
                 </button>
               )}
+              {isSelected ? (
+                <Check
+                  aria-hidden="true"
+                  className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
+                  strokeWidth={1.35}
+                />
+              ) : null}
+            </div>
+          ) : staticPreview ? (
+            <div className={lineClass(isSelected)} style={{ fontWeight: 300 }}>
+              <button
+                type="button"
+                disabled={previewBusyElsewhere}
+                aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
+                onClick={() => {
+                  void previewVoice(voice);
+                }}
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
+              >
+                {glyph(isLoadingPreview, isPlaying)}
+              </button>
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                aria-label={label}
+                onClick={() => selectVoice(voice.id, { dismissSample: true })}
+                className="min-w-0 flex-1 truncate text-left"
+              >
+                {label}
+              </button>
               {isSelected ? (
                 <Check
                   aria-hidden="true"

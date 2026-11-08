@@ -16,6 +16,7 @@ import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
+import { openNewAudiobook } from "@/lib/capacity/client";
 import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
@@ -618,7 +619,7 @@ export default function QueuePage() {
           <div className="text-center py-24">
             <button
               type="button"
-              onClick={() => router.push("/")}
+              onClick={() => openNewAudiobook((href) => router.push(href))}
               className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               New audiobook

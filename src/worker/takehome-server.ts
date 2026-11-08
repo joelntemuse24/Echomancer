@@ -332,6 +332,15 @@ async function handle(
         );
         return prewarmClonePoolForUser(userId, "voice list");
       },
+      warmCapacity: async (pools) => {
+        const { postWarm } = await import("@/lib/capacity/warm");
+        const results: Record<string, string> = {};
+        for (const pool of pools) {
+          if (pool !== "cpu" && pool !== "kokoro") continue;
+          results[pool] = await postWarm(pool, process.env, fetch);
+        }
+        return results;
+      },
       startListenPrep: (uploadId) => {
         void prepareUploadForListening(uploadId).catch((err) => {
           console.warn(

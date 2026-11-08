@@ -317,4 +317,30 @@ describe("takehome worker HTTP routes", () => {
     expect(ok.body).toMatchObject({ ok: true, started: true });
     expect(prewarmClonePool).toHaveBeenCalledWith(userId);
   });
+
+  it("POST /capacity-warm is one no-task call and stays unauthorized without the secret", async () => {
+    setSecret("s3cret");
+    const denied = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/capacity-warm",
+      bodyText: JSON.stringify({ pools: ["cpu"] }),
+      loop: loop(),
+      startedAt: Date.now(),
+      warmCapacity: async () => ({ cpu: "ready" }),
+    });
+    expect(denied.status).toBe(401);
+
+    const warmCapacity = vi.fn(async () => ({ cpu: "ready", kokoro: "ready" }));
+    const ok = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/capacity-warm",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({ pools: ["cpu", "kokoro", "gpu"] }),
+      loop: loop(),
+      startedAt: Date.now(),
+      warmCapacity,
+    });
+    expect(ok.status).toBe(200);
+    expect(warmCapacity).toHaveBeenCalledWith(["cpu", "kokoro"]);
+  });
 });

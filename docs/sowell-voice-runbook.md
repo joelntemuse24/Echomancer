@@ -88,12 +88,15 @@ Create Modal secret `echomancer-sowell` with `SOWELL_TOKEN`. Then:
 
 ```bash
 SOWELL_MAX_CONTAINERS=2 \
-SOWELL_SCALEDOWN_SECONDS=60 \
+SOWELL_SCALEDOWN_SECONDS=300 \
 modal deploy modal/sowell_worker.py
 ```
 
 This app is `echomancer-sowell`. It does not deploy `echomancer-cpu` or
-`echomancer-s2-clone`. `min_containers` is 0.
+`echomancer-s2-clone`. `min_containers` is 0. A create-flow click can POST
+`{"warm": true}` to this endpoint. That starts the container, loads Kokoro
+in `@modal.enter`, and returns without audio. It does not call
+`update_autoscaler`. The cap stays 2. Idle scale-down is 300 seconds.
 
 On Vercel, after the endpoint exists:
 
@@ -157,11 +160,13 @@ repeats the thread comparison. It does not call Modal.
 
 ## Smoke
 
-On the voice page, Sowell is a named card after Ryan only when
-`GET /api/tts/voices` includes provider `sowell`. The five stock voices
-and any clones stay where they were. The card has no play control: no
-sample is stored, and the tap does not ask the server to synthesize
-one. Choosing it and pressing Make audiobook sends
+On the voice page, Sowell is a named card after the stock voices only when
+`GET /api/tts/voices` includes provider `sowell`. The other stock voices
+and any clones stay where they were. The play control is separate from the name. It plays
+`public/voice-previews/sowell.mp3`, a local CPU take of the standard
+preview line with `am_sowell`, and it does not synthesize or start a
+container. George has `public/voice-previews/george.mp3`. Choosing Sowell
+and pressing Make audiobook sends
 `catalogVoiceId: "sowell"`. With the flag off, that response omits
 Sowell, the card is absent, and a saved Sowell pick does not highlight
 Andrew.

@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Mic2, Library } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Mic2, Library, Plus } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
 import { Wordmark } from "@/components/wordmark";
+import { openNewAudiobook } from "@/lib/capacity/client";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import { NAV } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ export function DashboardChrome({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
 
   return (
     <div className="min-h-screen bg-background flex flex-col font-sans">
@@ -55,6 +57,14 @@ export function DashboardChrome({
                   );
                 })}
               </nav>
+              <button
+                type="button"
+                aria-label="New audiobook"
+                onClick={() => openNewAudiobook((href) => router.push(href))}
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+              </button>
               <AuthControls
                 identity={identity}
                 callbackUrl={pathname || "/dashboard/queue"}
