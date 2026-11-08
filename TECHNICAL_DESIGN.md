@@ -1088,7 +1088,15 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    then raises `MEDIA_ERR_NETWORK` (code 2). The player reloads, the clock
    returns to 0:00, and the notice is "Couldn't play this part." A missing
    Xing/Info/VBRI header does not stop the start: the duration comes from
-   the first frames plus the `Content-Range` total. A request with no
+   the first frames plus the `Content-Range` total. A finished book's
+   `full.mp3` playback range is shifted past a leading ID3 tag. The stored
+   object is not rewritten, and a named download still 302s to that object.
+   Chapter titles are UTF-16, so the tag contains `FF FE` pairs that parse
+   as MPEG-1 Layer I frames. The demuxer skips the tag on the first open,
+   then a seek back to zero scans those bytes and Symphonia stops with
+   "unexpected end of bitstream" (media error 3). Hiding the tag makes byte
+   0 the first audio frame. The `Content-Range` total is the audio length.
+   A request with no
    `Range`, and a named `?download=`, still 302 to a presigned GET
    (`directObjectUrl` → `getPlaybackUrl`, 12–13h, signing time floored to
    the hour). The 302 is `Cache-Control: private, max-age=3600`. The
@@ -2588,7 +2596,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 7. **Shared PDF folders survive** until the last sibling job is deleted.
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
-10. **`/api/storage` is the only browser file path** — ownership checked every time. A playback `Range` is a same-origin 206, capped at 256 KiB when the request is open-ended or larger. A later range stays on that URL; redirecting it makes Chrome raise a network error and the player returns to 0:00. A request with no `Range`, and a named download, 302 to a presigned R2 URL. Finished-book downloads use a presigned `download_url` minted on the owned job routes.
+10. **`/api/storage` is the only browser file path** — ownership checked every time. A playback `Range` is a same-origin 206, capped at 256 KiB when the request is open-ended or larger. A later range stays on that URL; redirecting it makes Chrome raise a network error and the player returns to 0:00. `full.mp3` playback is served after a leading ID3 tag so a seek to zero does not read the chapter tag; the stored object is unchanged. A request with no `Range`, and a named download, 302 to a presigned R2 URL. Finished-book downloads use a presigned `download_url` minted on the owned job routes.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2. Extract runs on the VM child first, then Cloudflare, then Vercel.
 12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast or S2 delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in. The clone GPU is Modal, not the VM and not Vercel.
 13. **`WORKER_CONCURRENCY=1`** until a full book masters without the OOM killer.

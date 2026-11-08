@@ -54,6 +54,10 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   too, capped at 256 KiB. A 302 of a later range points at R2, which is a
   different origin, and Chrome raises a network error. The player reloads,
   the clock returns to 0:00, and the notice is "Couldn't play this part."
+  `full.mp3` playback is answered after a leading ID3 tag. The tag stays on
+  the stored object and on the download. Chapter titles are UTF-16 (`FF FE`),
+  which a seek back to zero can parse as Layer I frames; Symphonia then
+  stops. The playback byte 0 is the first audio frame.
   A request with no `Range`, and a named download, still 302 to a presigned
   URL (12–13h, redirect cached `private, max-age=3600`).
   `.pcm`, local disk, and `STORAGE_DIRECT_R2=0` keep the proxy. A

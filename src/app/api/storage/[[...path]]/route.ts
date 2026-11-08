@@ -8,7 +8,7 @@ import {
 import { PLAYBACK_REDIRECT_MAX_AGE_SECONDS } from "@/lib/r2-storage";
 import { isR2Configured, getFile as r2GetFile, openObject } from "@/lib/r2-storage";
 import { createReadStream } from "fs";
-import { readFile } from "fs/promises";
+import { open as openFile, readFile } from "fs/promises";
 import path from "path";
 import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
@@ -27,6 +27,15 @@ import {
   parseByteRange,
   playbackHeaders,
 } from "@/lib/storage/byte-range";
+import {
+  fileSizeFromProbeRange,
+  playbackTagLength,
+  readPrefix,
+  recallPlaybackTag,
+  rememberPlaybackTag,
+  shiftClientRange,
+  type PlaybackTag,
+} from "@/lib/storage/playback-tag";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,6 +59,9 @@ export const maxDuration = 300;
  * received bytes from this URL; a later 302 to R2 is a different origin,
  * and Chrome reports that as a network error. The player reloads, the
  * clock returns to 0:00, and the notice is "Couldn't play this part."
+ * A finished `full.mp3` is served after its leading ID3 tag. The stored
+ * object is not rewritten. A seek back to zero would otherwise scan the
+ * chapter tag, whose UTF-16 text parses as MPEG Layer I frames.
  * A request with no `Range`, and a named `?download=`, still 302 to a
  * presigned URL. Raw `.pcm` sections need the WAV wrapper and stay on
  * the proxy, as do local disk (dev/tests) and `STORAGE_DIRECT_R2=0`.
@@ -137,6 +149,55 @@ function audioResponse(
       contentDisposition,
     }),
   });
+}
+
+function isFullBook(storagePath: string): boolean {
+  return storagePath.endsWith("/full.mp3");
+}
+
+/**
+ * Leading ID3 size for a finished book, or null when playback should send
+ * the stored bytes unchanged. A failed probe does not fail the request.
+ */
+async function leadingPlaybackTag(
+  storagePath: string,
+  fileSize: number,
+  header: Uint8Array
+): Promise<PlaybackTag | null> {
+  const tagBytes = playbackTagLength(header, fileSize);
+  const tag = { fileSize, tagBytes };
+  rememberPlaybackTag(storagePath, tag);
+  return tagBytes > 0 ? tag : null;
+}
+
+async function r2LeadingTag(
+  storagePath: string,
+  signal: AbortSignal | undefined
+): Promise<PlaybackTag | null> {
+  const cached = recallPlaybackTag(storagePath);
+  if (cached) return cached.tagBytes > 0 ? cached : null;
+  const opened = await openObject(storagePath, "bytes=0-9", { signal });
+  const header = await readPrefix(opened.body, 10);
+  const fileSize = fileSizeFromProbeRange(opened.contentRange);
+  if (fileSize == null || header.byteLength < 10) return null;
+  return leadingPlaybackTag(storagePath, fileSize, header);
+}
+
+async function localLeadingTag(
+  storagePath: string,
+  fullPath: string,
+  fileSize: number
+): Promise<PlaybackTag | null> {
+  const cached = recallPlaybackTag(storagePath);
+  if (cached) return cached.tagBytes > 0 ? cached : null;
+  const handle = await openFile(fullPath, "r");
+  try {
+    const buf = Buffer.alloc(10);
+    const { bytesRead } = await handle.read(buf, 0, 10, 0);
+    return leadingPlaybackTag(storagePath, fileSize, buf.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
 }
 
 function notFound(): NextResponse {
@@ -238,6 +299,40 @@ export async function GET(
           return audioResponse(buffer, contentType, effectiveRange, contentDisposition);
         }
 
+        if (playbackRange && isFullBook(storagePath)) {
+          let tag: PlaybackTag | null = null;
+          try {
+            tag = await r2LeadingTag(storagePath, request.signal);
+          } catch (probeErr: unknown) {
+            if (probeErr instanceof RangeNotSatisfiableError) throw probeErr;
+            console.error(
+              `[Storage API] ID3 probe failed for ${storagePath}, sending stored bytes:`,
+              probeErr instanceof Error ? probeErr.message : probeErr
+            );
+          }
+          if (tag) {
+            const shifted = shiftClientRange(playbackRange, tag);
+            if (shifted === "unsatisfiable") {
+              return rangeNotSatisfiable(tag.fileSize - tag.tagBytes);
+            }
+            const opened = await openObject(storagePath, shifted.fileRange, {
+              signal: request.signal,
+            });
+            return new Response(opened.body, {
+              status: 206,
+              headers: playbackHeaders({
+                contentType: contentTypeForDelivery(
+                  storagePath,
+                  opened.contentType,
+                  false
+                ),
+                contentLength: shifted.contentLength,
+                contentRange: shifted.contentRange,
+              }),
+            });
+          }
+        }
+
         const opened = await openObject(storagePath, effectiveRange, {
           signal: request.signal,
         });
@@ -305,23 +400,58 @@ export async function GET(
     );
 
     if (effectiveRange) {
-      const range = parseByteRange(effectiveRange, metadata.size);
-      if (range === "unsatisfiable") return rangeNotSatisfiable(metadata.size);
-      if (range) {
-        const stream = createReadStream(fullPath, {
-          start: range.start,
-          end: range.end,
-        });
-        return new NextResponse(stream as unknown as BodyInit, {
-          status: 206,
-          headers: playbackHeaders({
-            contentType,
-            contentLength: range.end - range.start + 1,
-            contentRange: `bytes ${range.start}-${range.end}/${metadata.size}`,
-            contentDisposition,
-          }),
-        });
+      let rangeStart = 0;
+      let rangeEnd = 0;
+      let contentLength = 0;
+      let contentRange = "";
+      if (playbackRange && isFullBook(storagePath)) {
+        const tag = await localLeadingTag(storagePath, fullPath, metadata.size);
+        if (tag) {
+          const shifted = shiftClientRange(playbackRange, tag);
+          if (shifted === "unsatisfiable") {
+            return rangeNotSatisfiable(tag.fileSize - tag.tagBytes);
+          }
+          const parsed = parseByteRange(shifted.fileRange, metadata.size);
+          if (parsed === "unsatisfiable" || parsed === null) {
+            return rangeNotSatisfiable(tag.fileSize - tag.tagBytes);
+          }
+          rangeStart = parsed.start;
+          rangeEnd = parsed.end;
+          contentLength = shifted.contentLength;
+          contentRange = shifted.contentRange;
+        }
       }
+      if (!contentRange) {
+        const range = parseByteRange(effectiveRange, metadata.size);
+        if (range === "unsatisfiable") return rangeNotSatisfiable(metadata.size);
+        if (!range) {
+          const stream = createReadStream(fullPath);
+          return new NextResponse(stream as unknown as BodyInit, {
+            headers: playbackHeaders({
+              contentType,
+              contentLength: metadata.size,
+              contentDisposition,
+            }),
+          });
+        }
+        rangeStart = range.start;
+        rangeEnd = range.end;
+        contentLength = range.end - range.start + 1;
+        contentRange = `bytes ${range.start}-${range.end}/${metadata.size}`;
+      }
+      const stream = createReadStream(fullPath, {
+        start: rangeStart,
+        end: rangeEnd,
+      });
+      return new NextResponse(stream as unknown as BodyInit, {
+        status: 206,
+        headers: playbackHeaders({
+          contentType,
+          contentLength,
+          contentRange,
+          contentDisposition,
+        }),
+      });
     }
 
     const stream = createReadStream(fullPath);
