@@ -276,6 +276,9 @@ describe("narrationScriptForSynthesis", () => {
       "The U.K. vote and e.g. this note and i.e. that clause stayed.",
     ]);
     expect(
+      splitSentences("But Xenophon (ca. 430–454) traveled. Then he wrote.")
+    ).toEqual(["But Xenophon (ca. 430–454) traveled.", "Then he wrote."]);
+    expect(
       narrationScriptForSynthesis("[confident] The harbor was quiet.", "fish")
     ).toBe("The harbor was quiet.");
     const paragraph = [

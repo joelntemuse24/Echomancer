@@ -178,7 +178,8 @@ describe("GET /api/storage direct R2", () => {
     );
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe(SIGNED);
-    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("vary")).toBe("Range");
     expect(directObjectUrl).toHaveBeenCalledWith(`audiobooks/${JOB_A}/full.mp3`, {
       downloadName: undefined,
     });
@@ -217,6 +218,7 @@ describe("GET /api/storage direct R2", () => {
       routeParams({ path: ["audiobooks", JOB_A, "full.mp3"] })
     );
     expect(response.status).toBe(302);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(directObjectUrl).toHaveBeenCalledWith(`audiobooks/${JOB_A}/full.mp3`, {
       downloadName: "my _book_.mp3",
     });

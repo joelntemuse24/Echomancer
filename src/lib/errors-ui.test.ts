@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { userFriendlyError } from "./errors-ui";
+import {
+  customerBookStatus,
+  incompleteAudiobookMessage,
+  userFriendlyError,
+} from "./errors-ui";
 import { MODAL_WORKSPACE_DISABLED_MESSAGE } from "./modal/workspace-disabled";
 import { CLONE_SAMPLE_QUALITY_COPY } from "./tts/clone-sample-quality";
 
@@ -21,18 +25,29 @@ describe("userFriendlyError", () => {
     expect(friendly).not.toMatch(/could not find file in options/i);
   });
 
-  it("shows a missing-section failure instead of a rate-limit warning", () => {
-    // Job 4f8df6f0, status failed, one section missing. The player renders
-    // error_message through this function. Both sentences contain "rate"
-    // inside "narrated" / "generate", which is not a 429.
+  it("states one section count and hides infra wording", () => {
+    // Job 4f8df6f0 stored both the hole and the remainder. The library
+    // shows one count. A ready badge does not also say the book failed.
     const error =
       "1 of 19 sections could not be narrated. Only 18 sections of this book exist, so it is not a complete audiobook. Retry to generate the rest.";
     const warning =
       "1 section could not be narrated; the rest of the book is ready.";
+    const shown = userFriendlyError(error);
     expect(error.length).toBeGreaterThan(120);
-    expect(userFriendlyError(error)).toBe(error);
-    expect(userFriendlyError(warning)).toBe(warning);
-    expect(userFriendlyError(error)).not.toMatch(/too fast/i);
+    expect(shown).toBe(incompleteAudiobookMessage(18, 19));
+    expect(shown).not.toMatch(/1 of 19/);
+    expect(shown).not.toMatch(/Only 18/);
+    expect(shown).not.toMatch(/\bModal\b/);
+    expect(shown).not.toMatch(/Section\s+0:/i);
+    expect(shown).not.toMatch(/too fast/i);
+    expect(userFriendlyError("Section 0: Modal clone already retried")).toBe(
+      "This voice couldn't finish the book. Try again."
+    );
+    expect(userFriendlyError("Modal clone already retried")).not.toMatch(
+      /\bModal\b|Section\s+\d+:/i
+    );
+    expect(customerBookStatus(warning, "ready")).toBeNull();
+    expect(customerBookStatus(error, "failed")).toBe(shown);
     expect(userFriendlyError("Retry to generate the rest.")).toBe(
       "Retry to generate the rest."
     );

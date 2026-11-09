@@ -28,7 +28,11 @@ export const YOUTUBE_COPY = {
   orUpload: "Upload a recording",
   previewFailed: "Player didn't start. Set the clip anyway.",
   unavailable: "YouTube isn't available right now.",
-  clippingUnavailable: "YouTube clipping is unavailable for this account. Upload a recording to create a voice.",
+  clippingUnavailable:
+    "YouTube clips aren't available. Upload a recording to create a voice.",
+  searchEmpty: "Enter a YouTube link or a few words.",
+  sampleGuide:
+    "One person speaking, 10 seconds to 3 minutes. WAV, MP3, M4A, or a phone recording, up to 32 MB. A YouTube clip is 10 to 40 seconds.",
   clipUnavailable: "This clip is no longer available for this account. Choose another sample.",
   music:
     "Mostly music. Move the clip to one person speaking.",

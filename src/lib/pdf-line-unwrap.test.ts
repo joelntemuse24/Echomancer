@@ -123,6 +123,15 @@ describe("unwrapPdfLines", () => {
 });
 
 describe("unwrapPdfPages", () => {
+  it("joins a circa date split across a page break", () => {
+    const text = unwrapPdfPages([
+      "But Xenophon (ca.",
+      "430–454) traveled, fought, wrote, and hobnobbed more than almost any other Greek.",
+    ]);
+    expect(text).toContain("But Xenophon (ca. 430–454) traveled");
+    expect(text).not.toMatch(/\(ca\.\n\n430/);
+  });
+
   it("joins a sentence that crosses a page and keeps the next heading", () => {
     const text = unwrapPdfPages([
       "Chapter One\nThe lamps were lit along the quay and the tide was",

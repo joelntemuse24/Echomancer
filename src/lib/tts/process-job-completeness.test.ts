@@ -320,9 +320,12 @@ describe("a failed section is never presented as a complete book", () => {
     expect(ready).toBeLessThan(total);
 
     // Not "ready with a warning": a book missing sections is not the book.
+    // One count: how many sections were narrated. Not a second "only N exist".
     expect(row?.status).toBe("failed");
-    expect(String(row?.error_message)).toContain(`${total - ready} of ${total}`);
+    expect(String(row?.error_message)).toContain(`${ready} of ${total}`);
+    expect(String(row?.error_message)).not.toContain(`${total - ready} of ${total}`);
     expect(String(row?.error_message)).toMatch(/not a complete audiobook/i);
+    expect(String(row?.error_message)).not.toMatch(/\bModal\b|Section\s+0:/i);
     // The sections that exist are still stored and still playable.
     expect(segments.some((segment) => segment.status === "ready")).toBe(true);
     // Progress is not 100% on an incomplete book.

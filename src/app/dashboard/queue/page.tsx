@@ -13,7 +13,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
-import { userFriendlyError } from "@/lib/errors-ui";
+import { customerBookStatus } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { openNewAudiobook } from "@/lib/capacity/client";
@@ -469,12 +469,12 @@ export default function QueuePage() {
                     );
                   })()}
                 </div>
-                {job.status === "failed" && job.error_message && (
-                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
-                )}
-                {job.status === "ready" && job.warning && (
-                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.warning)}</p>
-                )}
+                {job.status === "failed" && customerBookStatus(job.error_message, "failed") ? (
+                  <p className="text-xs text-muted-foreground mt-1">{customerBookStatus(job.error_message, "failed")}</p>
+                ) : null}
+                {job.status === "ready" && customerBookStatus(job.warning, "ready") ? (
+                  <p className="text-xs text-muted-foreground mt-1">{customerBookStatus(job.warning, "ready")}</p>
+                ) : null}
                 {notices[job.id] && (
                   <p className="text-xs text-muted-foreground mt-1" role="status">
                     {notices[job.id]}

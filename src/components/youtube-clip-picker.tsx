@@ -366,7 +366,11 @@ export function YoutubeClipPicker({
 
   const search = async () => {
     const text = query.trim();
-    if (!text || searching || busy) return;
+    if (searching || busy) return;
+    if (!text) {
+      setError(YOUTUBE_COPY.searchEmpty);
+      return;
+    }
     setSearching(true);
     setError(null);
     setResults(null);
@@ -610,7 +614,7 @@ export function YoutubeClipPicker({
           />
           <button
             type="submit"
-            disabled={disabled || busy || searching || !query.trim()}
+            disabled={disabled || busy || searching}
             className="inline-flex min-h-12 shrink-0 items-center px-1 text-sm text-foreground hover:opacity-70 disabled:opacity-30"
           >
             {searching ? YOUTUBE_COPY.searching : YOUTUBE_COPY.search}

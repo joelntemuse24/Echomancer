@@ -273,11 +273,19 @@ export async function GET(
           downloadName: downloadName ? sanitizeFilename(downloadName) : undefined,
         });
         if (direct) {
+          // A playback 302 must not be stored. Chrome reuses a cached
+          // redirect for a later Range request, follows it to R2, and then
+          // decodes the file including its ID3 tag. A named download is a
+          // different URL (`?download=`) and can stay cacheable. The stored
+          // object is unchanged.
           return new Response(null, {
             status: 302,
             headers: {
               Location: direct,
-              "Cache-Control": `private, max-age=${PLAYBACK_REDIRECT_MAX_AGE_SECONDS}`,
+              "Cache-Control": downloadName
+                ? `private, max-age=${PLAYBACK_REDIRECT_MAX_AGE_SECONDS}`
+                : "private, no-store",
+              Vary: "Range",
             },
           });
         }

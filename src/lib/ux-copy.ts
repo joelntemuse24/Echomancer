@@ -44,6 +44,8 @@ export const VOICE_PATH = {
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
   createCta: "Choose a voice",
+  needBook: "Choose a book.",
+  needLink: "Paste a full http or https link.",
   signInCta: "Sign in",
   uploadTab: "Upload",
   pasteTab: "Paste",
@@ -62,6 +64,7 @@ export const SIGN_IN = {
   sentTitle: "Check your inbox",
   sentBody: "A link is coming. Once, for 15 minutes.",
   sentRetry: "Different address",
+  how: "No password. Google, or a one-time link to your email.",
   divider: "or",
   expired: "That link expired. Request a new one.",
   invalid: "Sign-in didn't finish. Request a new link.",

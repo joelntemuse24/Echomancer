@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Upload, Loader2 } from "lucide-react";
+import { Upload, Loader2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -18,7 +18,8 @@ import {
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
-import { LANDING } from "@/lib/ux-copy";
+import { openNewAudiobook } from "@/lib/capacity/client";
+import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
@@ -183,6 +184,15 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     }
   };
 
+  const chooseHint = (() => {
+    if (isUploading || canSubmit) return null;
+    if (mode === "document") return bookReading ? null : LANDING.needBook;
+    if (pasteKind === "url") {
+      return pasteUrl.trim() ? null : LANDING.needLink;
+    }
+    return pasteLen > 0 ? null : `At least ${PASTE_MIN_CHARS} characters.`;
+  })();
+
   const ctaLabel = isUploading
     ? mode === "paste"
       ? pasteKind === "url"
@@ -197,7 +207,31 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
-      <nav className="px-8 py-8 flex justify-end items-center font-sans">
+      <nav className="flex items-center justify-end gap-6 px-8 py-8 font-sans">
+        {identity.signedIn ? (
+          <>
+            <Link
+              href="/dashboard/voice"
+              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {NAV.voices}
+            </Link>
+            <Link
+              href="/dashboard/queue"
+              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {NAV.library}
+            </Link>
+            <button
+              type="button"
+              aria-label="New audiobook"
+              onClick={() => openNewAudiobook((href) => router.push(href))}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+          </>
+        ) : null}
         <AuthControls identity={identity} callbackUrl="/" />
       </nav>
 
@@ -207,6 +241,11 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
             <h1>
               <Wordmark size="hero" />
             </h1>
+            {!identity.signedIn ? (
+              <p className="mt-6 font-sans text-sm text-muted-foreground">
+                {PRIVACY.intro}
+              </p>
+            ) : null}
           </div>
 
           <div className="space-y-8 font-sans">
@@ -365,6 +404,9 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               ) : null}
               {ctaLabel}
             </button>
+            {chooseHint ? (
+              <p className="text-xs text-muted-foreground">{chooseHint}</p>
+            ) : null}
           </div>
         </div>
       </section>

@@ -88,6 +88,7 @@ export function clonedVoiceToCatalog(row: ClonedVoiceRow): EnrichedCatalogVoice 
     usdPerMillionChars: 0,
     accentHint: accent,
     qualityNotes: "Your Fish Audio cloned voice.",
+    createdAt: row.created_at,
   };
   return enrichCatalogVoice(base);
 }

@@ -2,8 +2,55 @@
  * Translate raw backend error messages into user-friendly strings.
  * Shared between queue page and player page.
  */
+
+/** One count. The old sentence named the hole and the remainder separately. */
+export function incompleteAudiobookMessage(done: number, total: number): string {
+  const verb = done === 1 ? "was" : "were";
+  return `${done} of ${total} sections ${verb} narrated. This is not a complete audiobook. Retry to generate the rest.`;
+}
+
+const VOICE_COULD_NOT_FINISH = "This voice couldn't finish the book. Try again.";
+
+const OLD_INCOMPLETE =
+  /^(\d+) of (\d+) sections could not be narrated\. Only (\d+) sections? of this book exist/i;
+
+const READY_HOLE_WARNING =
+  /^\d+ sections? could not be narrated; the rest of the book is ready\.?$/i;
+
+function rewriteStoredBookError(rawError: string): string | null {
+  const incomplete = OLD_INCOMPLETE.exec(rawError.trim());
+  if (incomplete) {
+    return incompleteAudiobookMessage(Number(incomplete[3]), Number(incomplete[2]));
+  }
+  const lower = rawError.toLowerCase();
+  if (
+    /^section\s+\d+\s*:/i.test(rawError) ||
+    lower.includes("modal clone already retried")
+  ) {
+    return VOICE_COULD_NOT_FINISH;
+  }
+  return null;
+}
+
+/**
+ * What the library and the player show under a status badge.
+ * A ready book does not also say sections could not be narrated.
+ */
+export function customerBookStatus(
+  raw: string | null | undefined,
+  status?: string | null
+): string | null {
+  const text = raw?.trim() ?? "";
+  if (!text) return null;
+  if (status === "ready" && READY_HOLE_WARNING.test(text)) return null;
+  const shown = userFriendlyError(text);
+  return shown.trim() ? shown : null;
+}
+
 export function userFriendlyError(rawError: string | null): string {
   if (!rawError) return "Couldn't generate. Try again.";
+  const rewritten = rewriteStoredBookError(rawError);
+  if (rewritten) return rewritten;
   const lower = rawError.toLowerCase();
   if (
     lower.includes("isn't good enough to clone") ||

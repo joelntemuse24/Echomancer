@@ -1099,7 +1099,11 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    A request with no
    `Range`, and a named `?download=`, still 302 to a presigned GET
    (`directObjectUrl` → `getPlaybackUrl`, 12–13h, signing time floored to
-   the hour). The 302 is `Cache-Control: private, max-age=3600`. The
+   the hour). A playback 302 (no `download` name) is
+   `Cache-Control: private, no-store` and `Vary: Range`, so a cached
+   redirect cannot satisfy a later Range and send Chrome to the tagged
+   object on R2. A named download stays `private, max-age=3600` on its
+   own URL. The
    download signs `response-content-disposition: attachment` and
    `response-content-type: application/octet-stream`. A presign error falls
    through to the proxy below.
@@ -1109,11 +1113,20 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    of that slice only. Local files stream with `createReadStream`.
 8. Suffix ranges (`bytes=-N`) are the last N bytes.
 
-Proxy headers: `Cache-Control: private, no-store` (so a shared browser cannot replay
-another session's audio from the HTTP cache), `Accept-Ranges: bytes`,
+Proxy headers: `Cache-Control: private, max-age=3600` and
+`Vary: Range, Cookie`. `no-store` makes Chrome's media element fail on a
+normal cached load (the same bytes play with DevTools "Disable cache").
+The private max-age lets each Range window be reused. Vary on Range keeps
+one window from answering a later slice. Vary on Cookie keeps a different
+session on this browser from replaying the bytes. `Accept-Ranges: bytes`,
 `X-Accel-Buffering: no`. `maxDuration` 300 so a long progressive read is not
-cut at the platform default. Seeks assign `currentTime` on the existing
-`<audio>` (`preload="auto"`); they do not change `src` or call `load()`.
+cut at the platform default. The player src carries `pb=2` (see
+`src/lib/player/playback-url.ts`) so a browser that already cached
+`?v=<updated_at>` misses. A media error (network, decode, or unsupported
+src) reloads that URL once with `r=1` before the notice. A successful
+seek or `canplay` clears a leftover notice. Seeks assign `currentTime` on
+the existing `<audio>` (`preload="auto"`); they do not change `src` except
+for that one recovery.
 
 ---
 

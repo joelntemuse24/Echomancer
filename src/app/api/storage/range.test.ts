@@ -122,7 +122,7 @@ describe("GET /api/storage R2 ranges", () => {
       routeParams({ path: FULL.split("/") })
     );
     expect(followUp.status).toBe(206);
-    expect(followUp.headers.get("vary")).toBe("Range");
+    expect(followUp.headers.get("vary")).toBe("Range, Cookie");
     expect(openObjectMock).toHaveBeenCalledWith(
       FULL,
       `bytes=262144-${262144 + PLAYBACK_OPEN_RANGE_BYTES - 1}`,

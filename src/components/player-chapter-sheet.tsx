@@ -129,7 +129,7 @@ function RowButton({
           </span>
         ) : null}
       </span>
-      <span className="shrink-0 text-right font-mono text-[11px] leading-4 text-muted-foreground tabular-nums">
+      <span className="w-[4.75rem] shrink-0 whitespace-nowrap text-right font-mono text-[11px] leading-4 text-muted-foreground tabular-nums">
         <span className="block">{formatPlayClock(row.start)}</span>
         <span className="block">{formatChapterSpan(row.length)}</span>
       </span>

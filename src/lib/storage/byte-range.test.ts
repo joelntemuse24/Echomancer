@@ -111,8 +111,9 @@ describe("playbackHeaders", () => {
     expect(headers["Content-Range"]).toBe("bytes 100-149/40000000");
     expect(headers["Accept-Ranges"]).toBe("bytes");
     expect(headers["Cache-Control"]).toContain("private");
-    expect(headers["Cache-Control"]).toContain("no-store");
-    expect(headers["Vary"]).toBe("Range");
+    expect(headers["Cache-Control"]).toContain("max-age=3600");
+    expect(headers["Cache-Control"]).not.toContain("no-store");
+    expect(headers["Vary"]).toBe("Range, Cookie");
     expect(headers["Content-Type"]).toBe("audio/mpeg");
   });
 });
