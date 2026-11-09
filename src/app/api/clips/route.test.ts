@@ -71,11 +71,15 @@ describe("proxy clip routes", () => {
 
   it("hides the path from other accounts", async () => {
     const anon = await GET(await buildRequest("/api/clips", { userId: USER_A }));
-    expect(await anon.json()).toEqual({ enabled: false });
+    expect(await anon.json()).toEqual({ enabled: false, reason: "sign-in" });
     process.env.YT_SERVER_CLIPS_EMAILS = "someone-else@example.com";
     resetClipProxyCache();
     const hidden = await GET(await buildRequest("/api/clips", { userId: USER }));
-    expect(await hidden.json()).toEqual({ enabled: false, ownerContext: null });
+    expect(await hidden.json()).toEqual({
+      enabled: false,
+      ownerContext: null,
+      reason: "unavailable",
+    });
     const denied = await post(USER, {
       videoId: VIDEO,
       startSeconds: 10,

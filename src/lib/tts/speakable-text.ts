@@ -1646,7 +1646,7 @@ export function isAbbreviationBoundary(chunk: string, next: string): boolean {
     return true;
   }
   if (
-    /\b(?:No|p|pp|Fig|vol|ch|cf)\.$/i.test(chunk) &&
+    /\b(?:No|p|pp|Fig|vol|ch|cf|ca)\.$/i.test(chunk) &&
     /^\d/.test(next)
   ) {
     return true;

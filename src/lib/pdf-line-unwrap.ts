@@ -23,8 +23,17 @@ export function isPdfFurnitureLine(line: string): boolean {
   return false;
 }
 
+/** "ca." before a year is circa, not the end of the sentence. */
+function endsWithAbbreviation(line: string): boolean {
+  return /(?:\b(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc|ca|cf|ed|ibid|approx)|(?:\be\.g|\bi\.e))\.$/i.test(
+    line.trim()
+  );
+}
+
 function endsSentence(line: string): boolean {
-  return /[.!?]["'”’)\]]*$/u.test(line.trim());
+  const t = line.trim();
+  if (endsWithAbbreviation(t)) return false;
+  return /[.!?]["'”’)\]]*$/u.test(t);
 }
 
 function medianLength(lines: string[]): number {

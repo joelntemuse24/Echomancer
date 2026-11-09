@@ -72,6 +72,8 @@ export interface CatalogVoice {
   usdPerMillionChars?: number;
   /** Approx USD per audio hour (token-billed engines like Gemini TTS) */
   usdPerAudioHour?: number;
+  /** Unix seconds or milliseconds. Set for a user's clone so duplicate names can show a date. */
+  createdAt?: number | null;
 }
 
 export interface SynthesizeInput {

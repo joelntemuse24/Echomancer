@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Mic2, Library, Plus } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
+import { ViewerIdentityProvider } from "@/components/viewer-identity";
 import { Wordmark } from "@/components/wordmark";
 import { openNewAudiobook } from "@/lib/capacity/client";
 import type { ViewerIdentity } from "@/lib/auth/identity";
@@ -68,13 +69,16 @@ export function DashboardChrome({
               <AuthControls
                 identity={identity}
                 callbackUrl={pathname || "/dashboard/queue"}
+                menu={false}
               />
             </div>
           </div>
         </div>
       </header>
 
-      <main className="container mx-auto flex-1 px-6 py-12 md:px-8 md:py-16">{children}</main>
+      <main className="container mx-auto flex-1 px-6 py-12 md:px-8 md:py-16">
+        <ViewerIdentityProvider identity={identity}>{children}</ViewerIdentityProvider>
+      </main>
 
       <footer className="container mx-auto px-4 pb-24 md:pb-8">
         <div className="flex justify-end">

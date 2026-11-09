@@ -43,6 +43,13 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   browsers shares one `user_*`.
 - Sign-out issues a **fresh** `anon_*` cookie so the previous library is not
   leaked.
+- Signed-out home, library, and voice say what privacy already says: a cookie
+  on this browser holds the library until sign-in, and signing in moves those
+  books. `POST /api/jobs` accepts that cookie, so Make audiobook does not ask
+  for Google or email. `/` shows Voices, Library, and New audiobook for a
+  signed-out visitor. The Sign in control on those pages is the link itself.
+  `/terms` is not a page. An unknown address gets the dark not-found screen.
+  No terms text is written.
 - Ownership checks live in `src/lib/auth/guard.ts`. A job owned by someone else
   is reported as **404**, never 403, so ids cannot be enumerated.
 - `/api/storage/**` resolves each key back to its owning job or upload. Object
@@ -58,8 +65,14 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   the stored object and on the download. Chapter titles are UTF-16 (`FF FE`),
   which a seek back to zero can parse as Layer I frames; Symphonia then
   stops. The playback byte 0 is the first audio frame.
-  A request with no `Range`, and a named download, still 302 to a presigned
-  URL (12–13h, redirect cached `private, max-age=3600`).
+  A request with no `Range` still 302s to a presigned URL, and that playback
+  redirect is `private, no-store` with `Vary: Range` so a cached 302 cannot
+  answer a later Range (Chrome would follow it to R2 and decode the ID3 tag).
+  A named download is a different URL and stays `private, max-age=3600`.
+  Playback 206s are `private, max-age=3600` and `Vary: Range, Cookie`.
+  `no-store` on those slices makes Chrome's media element fail when the HTTP
+  cache is on. The player src includes `pb=2` so an already-cached
+  `?v=<updated_at>` misses.
   `.pcm`, local disk, and `STORAGE_DIRECT_R2=0` keep the proxy. A
   ready book's `download_url` (on `GET /api/jobs` and `/api/jobs/[id]`) is a
   presigned R2 attachment link. The player does not use Web Audio, because a
@@ -68,8 +81,9 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   5s→30s, live stream 10s). A hidden tab does not poll, except the player
   while audio is playing or the next section is not ready yet. Document-extract
   polls every 2s, and `src/proxy.ts` skips static public files. A media error
-  on `/api/storage` reloads that URL once so a signature older than 12–13h
-  can be minted again. Ready-book `download_url` values refresh on tab return
+  on `/api/storage` (network, decode, or unsupported source) reloads once
+  with a new `r` query so a cached 206 or 302 is not played again. A
+  successful seek or canplay clears a leftover notice. Ready-book `download_url` values refresh on tab return
   and every 30 minutes; a click will not use one in its last minute.
 - `POST /api/jobs` rejects any `pdfStoragePath` with no `uploads` row for the
   caller.
@@ -737,7 +751,7 @@ $0.004 per 10-minute block; `video-started` $0.05 plus
 `audio-minute-processed` $0.04 per started minute). A successful download
 records at least the floor ($0.015 link, $0.09 segment) when the charge has
 not settled. A missing or blocked video fails at no charge. Someone who
-cannot use the server clip uploads a file instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
+cannot use the server clip uploads a file instead. `GET /api/clips` for an anonymous session is `{ enabled: false, reason: "sign-in" }`; the picker says to sign in. A signed-in account that is not allowlisted is `reason: "unavailable"`. The voice page is the one upload control. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
 cookieless request cannot spend quota. `search.list` (`part=snippet`, 100
 units) supplies the title, channel, and thumbnail. `videos.list` asks only

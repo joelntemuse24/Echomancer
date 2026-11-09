@@ -7,7 +7,16 @@
  * the end of an MP3 — and must not be rewritten as a range from the start.
  */
 
-export const PLAYBACK_CACHE_CONTROL = "private, no-store";
+/**
+ * Playback slices are private and reusable for this browser session.
+ *
+ * `no-store` makes Chrome's media pipeline fail the element on a normal
+ * cached load (the same file plays with DevTools "Disable cache"). A
+ * private max-age lets that pipeline keep each Range window. `Vary: Range,
+ * Cookie` keeps one window from answering a later slice, and keeps a
+ * different session on this browser from replaying the bytes.
+ */
+export const PLAYBACK_CACHE_CONTROL = "private, max-age=3600";
 
 /**
  * How much of an open-ended `Range: bytes=start-` playback may answer.
@@ -152,12 +161,12 @@ export function playbackHeaders(options: {
     "Content-Type": options.contentType,
     "Content-Length": String(options.contentLength),
     "Accept-Ranges": "bytes",
-    // Private and uncached so a later visitor on the same browser cannot
-    // replay someone else's bytes from the HTTP cache. Vary on Range so a
-    // cache that does keep the response cannot hand the first window back
-    // for a later slice of the same URL.
+    // Private and reusable for this session. Chrome's media element errors
+    // on `no-store` when the HTTP cache is on. Vary on Range so one window
+    // is not replayed as a later slice, and on Cookie so a different
+    // session on this browser does not receive the bytes.
     "Cache-Control": PLAYBACK_CACHE_CONTROL,
-    Vary: "Range",
+    Vary: "Range, Cookie",
     "X-Accel-Buffering": "no",
   };
   if (options.contentRange) headers["Content-Range"] = options.contentRange;

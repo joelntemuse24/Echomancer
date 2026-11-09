@@ -444,11 +444,12 @@ describe("processTakehomeTick", () => {
     // exploited: 5 of 11 sections, published `ready`, 55% of the book absent.
     // The status must say incomplete and the message must state the shortfall.
     expect(row?.status).toBe("failed");
-    expect(String(row?.error_message ?? "")).toMatch(/could not be narrated/i);
     expect(String(row?.error_message ?? "")).toMatch(/not a complete audiobook/i);
+    expect(String(row?.error_message ?? "")).not.toMatch(/could not be narrated/i);
+    expect(String(row?.error_message ?? "")).not.toMatch(/Only \d+ section/i);
     const ready = segments.filter((s) => s.status === "ready").length;
     const total = Number(row?.total_sections ?? 0);
-    expect(String(row?.error_message ?? "")).toContain(`${total - ready} of ${total}`);
+    expect(String(row?.error_message ?? "")).toContain(`${ready} of ${total}`);
   });
 
   it("claims six Edge sections and does not take a Fish slot", async () => {    const text = Array.from(

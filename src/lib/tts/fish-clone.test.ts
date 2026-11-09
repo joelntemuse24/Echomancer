@@ -61,6 +61,7 @@ describe("fish-clone helpers", () => {
     expect(card.provider).toBe("fish");
     expect(card.providerVoiceId).toBe(row.fish_voice_id);
     expect(card.displayName).toBe("Alex");
+    expect(card.createdAt).toBe(1);
     expect(card.locale).toBe("en-US");
     expect(card.accentHint).toBe("american");
     expect(card.accent).toBe("american");

@@ -13,11 +13,12 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
-import { userFriendlyError } from "@/lib/errors-ui";
+import { customerBookStatus } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { openNewAudiobook } from "@/lib/capacity/client";
-import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
+import { GUEST, libraryStatus, SIGN_IN, UX, WAIT } from "@/lib/ux-copy";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
 import {
@@ -86,6 +87,8 @@ interface Job {
 
 export default function QueuePage() {
   const router = useRouter();
+  const identity = useViewerIdentity();
+  const signedOut = identity?.signedIn === false;
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -388,6 +391,9 @@ export default function QueuePage() {
         <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
+        {signedOut && jobs.length > 0 ? (
+          <p className="mt-4 text-sm text-muted-foreground">{SIGN_IN.confirmBody}</p>
+        ) : null}
       </div>
 
       <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
@@ -469,12 +475,12 @@ export default function QueuePage() {
                     );
                   })()}
                 </div>
-                {job.status === "failed" && job.error_message && (
-                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
-                )}
-                {job.status === "ready" && job.warning && (
-                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.warning)}</p>
-                )}
+                {job.status === "failed" && customerBookStatus(job.error_message, "failed") ? (
+                  <p className="text-xs text-muted-foreground mt-1">{customerBookStatus(job.error_message, "failed")}</p>
+                ) : null}
+                {job.status === "ready" && customerBookStatus(job.warning, "ready") ? (
+                  <p className="text-xs text-muted-foreground mt-1">{customerBookStatus(job.warning, "ready")}</p>
+                ) : null}
                 {notices[job.id] && (
                   <p className="text-xs text-muted-foreground mt-1" role="status">
                     {notices[job.id]}
@@ -616,7 +622,10 @@ export default function QueuePage() {
         ))}
 
         {jobs.length === 0 && !isLoading && (
-          <div className="text-center py-24">
+          <div className="space-y-6 py-24 text-center">
+            {signedOut ? (
+              <p className="text-sm text-muted-foreground">{GUEST.holds}</p>
+            ) : null}
             <button
               type="button"
               onClick={() => openNewAudiobook((href) => router.push(href))}

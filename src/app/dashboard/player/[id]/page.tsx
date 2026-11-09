@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
-import { userFriendlyError } from "@/lib/errors-ui";
+import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { UX } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
@@ -20,6 +20,11 @@ import {
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
+import {
+  cacheBustPlaybackUrl,
+  playbackRecoveryCount,
+  versionedAudioUrl,
+} from "@/lib/player/playback-url";
 import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
 import { charIndexForPlayback, passageSeekForChar, sectionHandoffSeconds, sectionSeekSeconds } from "@/lib/player/read-along";
 import {
@@ -51,21 +56,6 @@ import { ReadAlongFocus } from "@/components/read-along-focus";
 import { useReadAlongFocus } from "@/hooks/use-read-along-focus";
 import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import type { ReadAlongDocument, ReadAlongMode, ReadAlongPosition } from "@/lib/player/read-along";
-
-/**
- * Storage URL with a version stamp. A browser reusing a cached redirect or
- * byte range from an older `full.mp3` would seek inside the wrong bytes.
- */
-function versionedAudioUrl(
-  url: string | null | undefined,
-  updatedAt?: string | null
-): string | null {
-  if (!url) return null;
-  if (!url.startsWith("/api/storage/")) return url;
-  // No stamp to add: a bare `?v=` would only make the URL look versioned.
-  if (!updatedAt) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(updatedAt)}`;
-}
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -616,7 +606,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       }
     };
     const onDurationChange = () => applyDuration(audio.duration);
+    const clearNoticeIfHealthy = () => {
+      if (!audio.error) setNotice(null);
+    };
     const onLoadedMetadata = () => {
+      clearNoticeIfHealthy();
       applyDuration(audio.duration);
       const pending = pendingChapterSeekRef.current;
       const total = effectiveDuration(audio.duration);
@@ -633,6 +627,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       }
     };
     const onCanPlay = () => {
+      clearNoticeIfHealthy();
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
         // Same guarded start as the transport: this is the reload path, and a
@@ -700,11 +695,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     const onError = () => {
       const code = audio.error?.code ?? null;
+      const src = audioUrlRef.current;
       if (
+        src &&
         shouldReloadStorageAfterError({
-          src: audioUrlRef.current,
+          src,
           errorCode: code,
-          alreadyReloaded: storageReloadRef.current >= 1,
+          alreadyReloaded: playbackRecoveryCount(src) >= 1,
         })
       ) {
         storageReloadRef.current += 1;
@@ -717,10 +714,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         playAfterLoadRef.current =
           heardPlayingRef.current || at > 0.05;
         setIsPlaying(false);
-        // src stays the same-origin storage path. load() asks for it again,
-        // which mints a new signature. The element had been ranging against
-        // the R2 URL from the previous redirect.
-        audio.load();
+        // A new query misses a cached 206 or 302. load() on the same URL
+        // would play that entry again.
+        setNotice(null);
+        setAudioUrl(cacheBustPlaybackUrl(src));
         return;
       }
       pendingChapterSeekRef.current = null;
@@ -736,7 +733,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    const onSeeked = () => {
+      clearNoticeIfHealthy();
+    };
+
     audio.addEventListener("canplay", onCanPlay);
+    audio.addEventListener("seeked", onSeeked);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("playing", onPlaying);
@@ -748,6 +750,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("canplay", onCanPlay);
+      audio.removeEventListener("seeked", onSeeked);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("playing", onPlaying);
@@ -942,6 +945,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     lastRequestedSeekRef.current = targetSeconds;
     audio.currentTime = targetSeconds;
     setCurrentTime(targetSeconds);
+    if (!audio.error) setNotice(null);
     if (audio.paused) {
       audio.play().catch(() => {});
     }
@@ -1147,7 +1151,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     );
   }
 
-  const panelOpen = chaptersOpen && chapterNav;
   // While generating, the line reads "42% · ~2 min left" (or "… · Estimating…").
   const etaSuffix = job.waiting_for_text
     ? "Estimating…"
@@ -1156,8 +1159,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       : "Estimating…";
 
   return (
-    <div className={panelOpen ? "md:pr-80" : undefined}>
-    <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
+    <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -1177,7 +1179,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       <div className="md:flex md:min-h-[min(32rem,calc(100dvh-14rem))] md:flex-col md:justify-center">
         <div className="mb-10 space-y-2 text-center md:mb-14">
-        <div className="flex min-w-0 items-center justify-center gap-1 px-4">
+        <div className="flex min-w-0 items-start justify-center gap-1 px-4">
           <EditableBookTitle
             jobId={job.id}
             title={job.book_title}
@@ -1187,8 +1189,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             inputClassName="text-center font-serif text-4xl tracking-tight md:text-5xl"
           >
             <h1
-              className="min-w-0 truncate font-serif text-4xl tracking-tight text-foreground md:text-5xl"
+              className="text-balance font-serif text-4xl tracking-tight text-foreground md:text-5xl"
               style={{ fontWeight: 300 }}
+              title={job.book_title}
             >
               {job.book_title}
             </h1>
@@ -1210,13 +1213,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         ) : null}
         {job.status === "failed" ? (
           <p className="text-xs text-muted-foreground" role="alert">
-            {job.error_message
-              ? userFriendlyError(job.error_message)
-              : UX.failed}
+            {customerBookStatus(job.error_message, "failed") ?? UX.failed}
           </p>
-        ) : job.warning ? (
+        ) : customerBookStatus(job.warning, job.status) ? (
           <p className="text-xs text-muted-foreground" role="status">
-            {userFriendlyError(String(job.warning))}
+            {customerBookStatus(job.warning, job.status)}
           </p>
         ) : null}
         {notice ? (
@@ -1451,7 +1452,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           </button>
         </div>
       )}
-    </div>
     </div>
   );
 }

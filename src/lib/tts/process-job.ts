@@ -54,6 +54,7 @@ import {
   MODAL_WORKSPACE_DISABLED_MESSAGE,
   ModalWorkspaceDisabledError,
 } from "@/lib/modal/workspace-disabled";
+import { incompleteAudiobookMessage, userFriendlyError } from "@/lib/errors-ui";
 import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
@@ -2182,9 +2183,7 @@ async function runClaimedTick(
       const message =
         holesLeft - withRaw.length <= 0 && withRaw.length > 0
           ? MASTERING_UNFINISHED_MESSAGE
-          : `${holesLeft} of ${total} sections could not be narrated. ` +
-            `Only ${doneCount} section${doneCount === 1 ? "" : "s"} of this book exist, ` +
-            `so it is not a complete audiobook. Retry to generate the rest.`;
+          : incompleteAudiobookMessage(doneCount, total);
       await stopBook(
         jobId,
         lease,
@@ -2228,9 +2227,7 @@ async function runClaimedTick(
       const publishedStatus = complete ? "ready" : "failed";
       const failureMessage = complete
         ? null
-        : `${total - doneCount} of ${total} sections could not be narrated. ` +
-          `Only ${doneCount} section${doneCount === 1 ? "" : "s"} of this book exist, ` +
-          `so it is not a complete audiobook. Retry to generate the rest.`;
+        : incompleteAudiobookMessage(doneCount, total);
       const readySql = `UPDATE jobs SET status = ?, progress = ?, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = ?,
@@ -2404,7 +2401,7 @@ async function runClaimedTick(
     await failJob(
       jobId,
       lease,
-      firstError ? `Section ${segments[0]?.index}: ${firstError}` : "No audio was produced"
+      firstError ? userFriendlyError(firstError) : "No audio was produced"
     );
     return { done: true, nextIndex, total };
   }

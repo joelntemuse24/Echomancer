@@ -1099,7 +1099,11 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    A request with no
    `Range`, and a named `?download=`, still 302 to a presigned GET
    (`directObjectUrl` → `getPlaybackUrl`, 12–13h, signing time floored to
-   the hour). The 302 is `Cache-Control: private, max-age=3600`. The
+   the hour). A playback 302 (no `download` name) is
+   `Cache-Control: private, no-store` and `Vary: Range`, so a cached
+   redirect cannot satisfy a later Range and send Chrome to the tagged
+   object on R2. A named download stays `private, max-age=3600` on its
+   own URL. The
    download signs `response-content-disposition: attachment` and
    `response-content-type: application/octet-stream`. A presign error falls
    through to the proxy below.
@@ -1109,11 +1113,20 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    of that slice only. Local files stream with `createReadStream`.
 8. Suffix ranges (`bytes=-N`) are the last N bytes.
 
-Proxy headers: `Cache-Control: private, no-store` (so a shared browser cannot replay
-another session's audio from the HTTP cache), `Accept-Ranges: bytes`,
+Proxy headers: `Cache-Control: private, max-age=3600` and
+`Vary: Range, Cookie`. `no-store` makes Chrome's media element fail on a
+normal cached load (the same bytes play with DevTools "Disable cache").
+The private max-age lets each Range window be reused. Vary on Range keeps
+one window from answering a later slice. Vary on Cookie keeps a different
+session on this browser from replaying the bytes. `Accept-Ranges: bytes`,
 `X-Accel-Buffering: no`. `maxDuration` 300 so a long progressive read is not
-cut at the platform default. Seeks assign `currentTime` on the existing
-`<audio>` (`preload="auto"`); they do not change `src` or call `load()`.
+cut at the platform default. The player src carries `pb=2` (see
+`src/lib/player/playback-url.ts`) so a browser that already cached
+`?v=<updated_at>` misses. A media error (network, decode, or unsupported
+src) reloads that URL once with `r=1` before the notice. A successful
+seek or `canplay` clears a leftover notice. Seeks assign `currentTime` on
+the existing `<audio>` (`preload="auto"`); they do not change `src` except
+for that one recovery.
 
 ---
 
@@ -2156,6 +2169,12 @@ the player. A stream still requires `uploads.status = ready`
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.
+Signed-out home also shows Voices, Library, and New audiobook, plus
+`PRIVACY.intro` and the cookie sentence from `GUEST` / `SIGN_IN.confirmBody`.
+A disabled Choose a voice says why (`LANDING.needBook`, `needLink`, or the
+50-character paste floor). Make audiobook stays available on the anonymous
+cookie. `/terms` has no page; `src/app/not-found.tsx` is the dark screen for
+an unknown address, and it does not invent terms.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
@@ -2176,7 +2195,11 @@ corner of the landing and dashboard footers, at low opacity.
   upload or paste that id stays selected; the narrator suggestion does not
   replace it. **Clone a voice** is a row under the stock list
   (`?path=clone`, `src/lib/voice-path.ts`). It opens the clone form on the
-  same screen. The stock names stay.
+  same screen. The stock names stay. Opening it does not change the selected
+  voice (`voiceIdAfterPathChange`). A signed-out visitor sees
+  `SIGN_IN.confirmBody` above the book. YouTube clipping for an anonymous
+  session says to sign in (`GET /api/clips` `reason: "sign-in"`). The upload
+  control is the one on this page.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
 - Standard: slim stock only (Andrew, Echomancer Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Echomancer Andrew is `echomancer-andrew` (Paradee). Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default

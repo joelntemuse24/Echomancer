@@ -19,7 +19,17 @@ describe("shouldReloadStorageAfterError", () => {
     ).toBe(true);
   });
 
-  it("does not reload twice, or for a stream, or for a decode error", () => {
+  it("reloads a storage URL once after a decode error from a cached body", () => {
+    expect(
+      shouldReloadStorageAfterError({
+        src: "/api/storage/audiobooks/j/full.mp3",
+        errorCode: 3,
+        alreadyReloaded: false,
+      })
+    ).toBe(true);
+  });
+
+  it("does not reload twice, or for a stream, or for an abort", () => {
     expect(
       shouldReloadStorageAfterError({
         src: "/api/storage/audiobooks/j/full.mp3",
@@ -38,7 +48,7 @@ describe("shouldReloadStorageAfterError", () => {
       shouldReloadStorageAfterError({
         src: "/api/storage/audiobooks/j/full.mp3",
         errorCode: 3,
-        alreadyReloaded: false,
+        alreadyReloaded: true,
       })
     ).toBe(false);
     expect(

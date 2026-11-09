@@ -1,13 +1,15 @@
-/** HTMLMediaElement.error.code. Expired R2 signatures surface as 2 or 4. */
+/** HTMLMediaElement.error.code. */
 const MEDIA_ERR_NETWORK = 2;
+const MEDIA_ERR_DECODE = 3;
 const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
 
 /**
- * One reload of the same-origin `/api/storage` URL after a network failure.
- * The element keeps seeking against the presigned R2 URL it followed, and
- * that signature dies after 12–13h. `load()` asks for `/api/storage` again,
- * which checks ownership and mints a new URL. A decode error or an abort
- * is not a stale signature.
+ * One recovery of a same-origin `/api/storage` URL.
+ *
+ * Network and unsupported-src (2, 4) are how an expired signature or a
+ * cached redirect onto R2 shows up. Decode (3) is how a cached body that
+ * still includes the ID3 tag fails before a click. The player asks again
+ * with a new cache key. An abort (1) is not that.
  */
 export function shouldReloadStorageAfterError(input: {
   src: string | null;
@@ -18,6 +20,7 @@ export function shouldReloadStorageAfterError(input: {
   if (!input.src?.startsWith("/api/storage/")) return false;
   return (
     input.errorCode === MEDIA_ERR_NETWORK ||
+    input.errorCode === MEDIA_ERR_DECODE ||
     input.errorCode === MEDIA_ERR_SRC_NOT_SUPPORTED
   );
 }

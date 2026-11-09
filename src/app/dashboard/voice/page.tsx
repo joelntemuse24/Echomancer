@@ -65,10 +65,14 @@ import {
 } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
-import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
+import { SIGN_IN, UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
+import { duplicateCloneDateLabel } from "@/lib/clone-list-label";
+import { ECHOMANCER_ANDREW_CATALOG_VOICE_ID } from "@/lib/tts/standard-voice";
+import { voiceIdAfterPathChange } from "@/lib/voice-path-selection";
 import {
   isPersistableStandardVoiceId,
   isUserCloneVoice,
@@ -130,6 +134,7 @@ interface CatalogVoice {
   model: string;
   latencyClass: string;
   listenRecommended?: boolean;
+  createdAt?: number | null;
 }
 
 function voiceTitle(v: CatalogVoice): string {
@@ -230,6 +235,7 @@ export default function VoiceSelectionPage() {
 
 function VoiceSelectionContent() {
   const router = useRouter();
+  const signedOut = useViewerIdentity()?.signedIn === false;
   const searchParams = useSearchParams();
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
@@ -483,17 +489,13 @@ function VoiceSelectionContent() {
     }
     if (loading) return;
     if (activePath === "clone") {
-      if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
-      // A tap on a stock name leaves the clone row. Don't snap back to a clone
-      // before the path query updates.
-      if (
-        selectedVoiceId &&
-        isPersistableStandardVoiceId(selectedVoiceId) &&
-        narratorTouchedRef.current
-      ) {
-        return;
-      }
-      setSelectedVoiceId(pathVoices[0]?.id ?? null);
+      // Opening the clone list does not select the first clone.
+      const next = voiceIdAfterPathChange({
+        path: "clone",
+        selectedId: selectedVoiceId,
+        pathIds: pathVoices.map((voice) => voice.id),
+      });
+      if (next !== selectedVoiceId) setSelectedVoiceId(next);
       return;
     }
     const explicitId = narratorTouchedRef.current
@@ -511,7 +513,6 @@ function VoiceSelectionContent() {
 
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
-    if (path === "clone") narratorTouchedRef.current = false;
     const q = withVoicePathParam(
       new URLSearchParams(window.location.search),
       path
@@ -1094,6 +1095,8 @@ function VoiceSelectionContent() {
 
   const deleteClone = async (voice: CatalogVoice) => {
     if (!isClonedVoice(voice)) return;
+    const name = voiceTitle(voice);
+    if (!window.confirm(`Delete ${name}? Books already made with it stay.`)) return;
     setDeletingCloneId(voice.id);
     try {
       const res = await fetch(`/api/tts/clones/${encodeURIComponent(voice.id)}`, {
@@ -1128,6 +1131,10 @@ function VoiceSelectionContent() {
       voiceTitle(voice),
       narrator ? narratorMarksVoice(narrator, voice.id) : false
     );
+    const voiceNote =
+      voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
+        ? "Same delivery as Andrew, generated on our own machine."
+        : duplicateCloneDateLabel(cloneVoices, voice);
     const previewBusyElsewhere =
       (!!previewLoading && previewLoading !== voice.id) ||
       (previewOnCooldown && previewingId !== voice.id);
@@ -1291,6 +1298,9 @@ function VoiceSelectionContent() {
             ) : null}
           </button>
           )}
+          {voiceNote ? (
+            <p className="pl-11 text-xs leading-snug text-muted-foreground">{voiceNote}</p>
+          ) : null}
         </div>
         {cloned ? (
           <button
@@ -1342,6 +1352,11 @@ function VoiceSelectionContent() {
         </h1>
       </motion.div>
 
+      {signedOut ? (
+        <p className="mb-8 text-center text-sm text-muted-foreground">
+          {SIGN_IN.confirmBody}
+        </p>
+      ) : null}
       {pdfName && (
         <div className="mb-10 flex justify-center">
           <button
@@ -1393,9 +1408,12 @@ function VoiceSelectionContent() {
         </p>
       ) : !soloVoice ? (
         <>
-          {showNarratorWait ? (
-            <div className="flex justify-center pb-10">
-              <WaitMark phrases={WAIT.ingest} />
+          {uploadId ? (
+            <div
+              className="flex h-10 items-center justify-center"
+              aria-live="polite"
+            >
+              {showNarratorWait ? <WaitMark phrases={WAIT.ingest} /> : null}
             </div>
           ) : null}
           <div className="mx-auto max-w-sm divide-y divide-border/40">
@@ -1428,6 +1446,7 @@ function VoiceSelectionContent() {
           animate={{ opacity: 1, y: 0 }}
           className="mx-auto mb-6 mt-8 max-w-sm space-y-6"
         >
+          <p className="text-sm text-muted-foreground">{YOUTUBE_COPY.sampleGuide}</p>
           <YoutubeClipPicker
             disabled={cloning || creating}
             onBusy={setCloning}
