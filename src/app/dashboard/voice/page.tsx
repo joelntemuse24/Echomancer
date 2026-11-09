@@ -65,7 +65,8 @@ import {
 } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
-import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
+import { SIGN_IN, UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
@@ -234,6 +235,7 @@ export default function VoiceSelectionPage() {
 
 function VoiceSelectionContent() {
   const router = useRouter();
+  const signedOut = useViewerIdentity()?.signedIn === false;
   const searchParams = useSearchParams();
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
@@ -1350,6 +1352,11 @@ function VoiceSelectionContent() {
         </h1>
       </motion.div>
 
+      {signedOut ? (
+        <p className="mb-8 text-center text-sm text-muted-foreground">
+          {SIGN_IN.confirmBody}
+        </p>
+      ) : null}
       {pdfName && (
         <div className="mb-10 flex justify-center">
           <button

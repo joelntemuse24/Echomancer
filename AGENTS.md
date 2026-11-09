@@ -43,6 +43,13 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   browsers shares one `user_*`.
 - Sign-out issues a **fresh** `anon_*` cookie so the previous library is not
   leaked.
+- Signed-out home, library, and voice say what privacy already says: a cookie
+  on this browser holds the library until sign-in, and signing in moves those
+  books. `POST /api/jobs` accepts that cookie, so Make audiobook does not ask
+  for Google or email. `/` shows Voices, Library, and New audiobook for a
+  signed-out visitor. The Sign in control on those pages is the link itself.
+  `/terms` is not a page. An unknown address gets the dark not-found screen.
+  No terms text is written.
 - Ownership checks live in `src/lib/auth/guard.ts`. A job owned by someone else
   is reported as **404**, never 403, so ids cannot be enumerated.
 - `/api/storage/**` resolves each key back to its owning job or upload. Object
@@ -744,7 +751,7 @@ $0.004 per 10-minute block; `video-started` $0.05 plus
 `audio-minute-processed` $0.04 per started minute). A successful download
 records at least the floor ($0.015 link, $0.09 segment) when the charge has
 not settled. A missing or blocked video fails at no charge. Someone who
-cannot use the server clip uploads a file instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
+cannot use the server clip uploads a file instead. `GET /api/clips` for an anonymous session is `{ enabled: false, reason: "sign-in" }`; the picker says to sign in. A signed-in account that is not allowlisted is `reason: "unavailable"`. The voice page is the one upload control. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
 cookieless request cannot spend quota. `search.list` (`part=snippet`, 100
 units) supplies the title, channel, and thumbnail. `videos.list` asks only

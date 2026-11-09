@@ -28,6 +28,7 @@ export const YOUTUBE_COPY = {
   orUpload: "Upload a recording",
   previewFailed: "Player didn't start. Set the clip anyway.",
   unavailable: "YouTube isn't available right now.",
+  clippingNeedsSignIn: "Sign in to clip from YouTube. Or upload a recording.",
   clippingUnavailable:
     "YouTube clips aren't available. Upload a recording to create a voice.",
   searchEmpty: "Enter a YouTube link or a few words.",

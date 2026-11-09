@@ -150,6 +150,7 @@ export function YoutubeClipPicker({
   const [waitRatio, setWaitRatio] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [clipReason, setClipReason] = useState<string | null>(null);
   const [accessChecked, setAccessChecked] = useState(false);
   const [ownerContext, setOwnerContext] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingClip | null>(null);
@@ -192,11 +193,13 @@ export function YoutubeClipPicker({
       setSampleUrl(null);
       setRisk(null);
       setProxyEnabled(false);
+      setClipReason(null);
       try {
-        const { response, data } = await clipJson<{ enabled?: boolean; ownerContext?: string }>("/api/clips", {}, controller.signal);
+        const { response, data } = await clipJson<{ enabled?: boolean; ownerContext?: string; reason?: string }>("/api/clips", {}, controller.signal);
         if (controller.signal.aborted || version !== checkVersion) return;
         const owner = response.ok && data.enabled && typeof data.ownerContext === "string" ? data.ownerContext : null;
         setProxyEnabled(response.ok && data.enabled === true && owner != null);
+        setClipReason(typeof data.reason === "string" ? data.reason : null);
         setAccessChecked(true);
         setOwnerContext(owner);
         if (owner) {
@@ -775,10 +778,11 @@ export function YoutubeClipPicker({
       ) : null}
 
       {accessChecked && !proxyEnabled ? (
-        <div role="status" className="text-sm">
-          <p>{YOUTUBE_COPY.clippingUnavailable}</p>
-          <button type="button" onClick={onUploadInstead} className="min-h-12 underline">{YOUTUBE_COPY.uploadInstead}</button>
-        </div>
+        <p role="status" className="text-sm">
+          {clipReason === "sign-in"
+            ? YOUTUBE_COPY.clippingNeedsSignIn
+            : YOUTUBE_COPY.clippingUnavailable}
+        </p>
       ) : null}
       {sampleUrl ? (
         <div className="space-y-2">

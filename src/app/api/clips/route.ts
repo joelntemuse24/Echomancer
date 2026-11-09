@@ -34,16 +34,22 @@ export async function GET(request: NextRequest) {
     await ensureTtsJobColumns();
     const session = await requireSession(request);
     if (!isDurableUserId(session.userId)) {
-      return NextResponse.json({ enabled: false });
+      return NextResponse.json({ enabled: false, reason: "sign-in" });
     }
     const enabled = await proxyClipsEnabled(session.userId);
     const secret = process.env.SESSION_SECRET || process.env.INTERNAL_JOB_SECRET;
     const ownerContext = enabled && secret
       ? createHmac("sha256", secret).update(`clip-owner:${session.userId}`).digest("hex")
       : null;
-    return NextResponse.json({ enabled: enabled && ownerContext != null, ownerContext }, {
-      headers: { "Cache-Control": "private, no-store" },
-    });
+    const allowed = enabled && ownerContext != null;
+    return NextResponse.json(
+      {
+        enabled: allowed,
+        ownerContext,
+        ...(allowed ? {} : { reason: "unavailable" }),
+      },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   } catch (error) {
     return handleApiError(error);
   }

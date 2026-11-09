@@ -17,7 +17,8 @@ import { customerBookStatus } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { openNewAudiobook } from "@/lib/capacity/client";
-import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
+import { GUEST, libraryStatus, SIGN_IN, UX, WAIT } from "@/lib/ux-copy";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
 import {
@@ -86,6 +87,8 @@ interface Job {
 
 export default function QueuePage() {
   const router = useRouter();
+  const identity = useViewerIdentity();
+  const signedOut = identity?.signedIn === false;
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -388,6 +391,9 @@ export default function QueuePage() {
         <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
+        {signedOut && jobs.length > 0 ? (
+          <p className="mt-4 text-sm text-muted-foreground">{SIGN_IN.confirmBody}</p>
+        ) : null}
       </div>
 
       <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
@@ -616,7 +622,10 @@ export default function QueuePage() {
         ))}
 
         {jobs.length === 0 && !isLoading && (
-          <div className="text-center py-24">
+          <div className="space-y-6 py-24 text-center">
+            {signedOut ? (
+              <p className="text-sm text-muted-foreground">{GUEST.holds}</p>
+            ) : null}
             <button
               type="button"
               onClick={() => openNewAudiobook((href) => router.push(href))}

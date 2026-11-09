@@ -54,6 +54,14 @@ export const LANDING = {
   pasteUrlPlaceholder: "https://",
 } as const;
 
+/**
+ * Guest library. The same facts as PRIVACY.accounts: the cookie holds books
+ * until sign-in, and sign-in moves them. Not a separate guest policy.
+ */
+export const GUEST = {
+  holds: "A cookie on this browser holds your library until you sign in.",
+} as const;
+
 /** /sign-in and the emailed-link confirm page. */
 export const SIGN_IN = {
   title: "Sign in",

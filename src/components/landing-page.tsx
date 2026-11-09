@@ -19,7 +19,7 @@ import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { openNewAudiobook } from "@/lib/capacity/client";
-import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
+import { GUEST, LANDING, NAV, PRIVACY, SIGN_IN } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
@@ -208,31 +208,27 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   return (
     <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
       <nav className="flex items-center justify-end gap-6 px-8 py-8 font-sans">
-        {identity.signedIn ? (
-          <>
-            <Link
-              href="/dashboard/voice"
-              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {NAV.voices}
-            </Link>
-            <Link
-              href="/dashboard/queue"
-              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {NAV.library}
-            </Link>
-            <button
-              type="button"
-              aria-label="New audiobook"
-              onClick={() => openNewAudiobook((href) => router.push(href))}
-              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-            </button>
-          </>
-        ) : null}
-        <AuthControls identity={identity} callbackUrl="/" />
+        <Link
+          href="/dashboard/voice"
+          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {NAV.voices}
+        </Link>
+        <Link
+          href="/dashboard/queue"
+          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {NAV.library}
+        </Link>
+        <button
+          type="button"
+          aria-label="New audiobook"
+          onClick={() => openNewAudiobook((href) => router.push(href))}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+        </button>
+        <AuthControls identity={identity} callbackUrl="/" menu={false} />
       </nav>
 
       <section className="px-8 pb-28 pt-28 sm:pt-36">
@@ -242,9 +238,12 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <Wordmark size="hero" />
             </h1>
             {!identity.signedIn ? (
-              <p className="mt-6 font-sans text-sm text-muted-foreground">
-                {PRIVACY.intro}
-              </p>
+              <div className="mt-6 space-y-3 font-sans text-sm text-muted-foreground">
+                <p>{PRIVACY.intro}</p>
+                <p>
+                  {GUEST.holds} {SIGN_IN.confirmBody}
+                </p>
+              </div>
             ) : null}
           </div>
 
