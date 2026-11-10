@@ -2169,8 +2169,10 @@ the player. A stream still requires `uploads.status = ready`
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.
-Signed-out home also shows Voices, Library, and New audiobook, plus
-`PRIVACY.intro` and the cookie sentence from `GUEST` / `SIGN_IN.confirmBody`.
+Signed-out home shows Voices and Library, plus `PRIVACY.intro`. It does not
+show `GUEST.holds`, `SIGN_IN.confirmBody`, or the circled plus. That plus
+stays in the dashboard chrome (Library, Voices, player). `/sign-in` is the
+title and the Google / email controls, with no password or cookie explanation.
 A disabled Choose a voice says why (`LANDING.needBook`, `needLink`, or the
 50-character paste floor). Make audiobook stays available on the anonymous
 cookie. `/terms` has no page; `src/app/not-found.tsx` is the dark screen for

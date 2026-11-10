@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Upload, Loader2, Plus } from "lucide-react";
+import { Upload, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -18,8 +18,7 @@ import {
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
-import { openNewAudiobook } from "@/lib/capacity/client";
-import { GUEST, LANDING, NAV, PRIVACY, SIGN_IN } from "@/lib/ux-copy";
+import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
@@ -220,14 +219,6 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         >
           {NAV.library}
         </Link>
-        <button
-          type="button"
-          aria-label="New audiobook"
-          onClick={() => openNewAudiobook((href) => router.push(href))}
-          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-        </button>
         <AuthControls identity={identity} callbackUrl="/" menu={false} />
       </nav>
 
@@ -238,12 +229,9 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <Wordmark size="hero" />
             </h1>
             {!identity.signedIn ? (
-              <div className="mt-6 space-y-3 font-sans text-sm text-muted-foreground">
-                <p>{PRIVACY.intro}</p>
-                <p>
-                  {GUEST.holds} {SIGN_IN.confirmBody}
-                </p>
-              </div>
+              <p className="mt-6 font-sans text-sm text-muted-foreground">
+                {PRIVACY.intro}
+              </p>
             ) : null}
           </div>
 

@@ -43,11 +43,14 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   browsers shares one `user_*`.
 - Sign-out issues a **fresh** `anon_*` cookie so the previous library is not
   leaked.
-- Signed-out home, library, and voice say what privacy already says: a cookie
-  on this browser holds the library until sign-in, and signing in moves those
-  books. `POST /api/jobs` accepts that cookie, so Make audiobook does not ask
-  for Google or email. `/` shows Voices, Library, and New audiobook for a
-  signed-out visitor. The Sign in control on those pages is the link itself.
+- Signed-out library and voice still say a cookie on this browser holds the
+  library until sign-in, and that signing in moves those books. Home and
+  `/sign-in` do not. `/privacy` states the cookie. The emailed confirm page
+  still says books on this browser will move to the account. `POST /api/jobs`
+  accepts that cookie, so Make audiobook does not ask for Google or email.
+  `/` shows Voices and Library for a signed-out visitor. The circled plus
+  for a new audiobook stays in the dashboard chrome and is absent from `/`.
+  The Sign in control on those pages is the link itself.
   `/terms` is not a page. An unknown address gets the dark not-found screen.
   No terms text is written.
 - Ownership checks live in `src/lib/auth/guard.ts`. A job owned by someone else
@@ -1184,3 +1187,13 @@ database and a temp storage directory; only the speech provider is faked
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
