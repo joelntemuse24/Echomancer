@@ -6,7 +6,6 @@ import {
   isDurableUserId,
   verifySessionToken,
 } from "@/lib/auth/session";
-import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 
 export type ViewerIdentity =
   | { signedIn: false; googleEnabled: boolean; emailEnabled: boolean }
@@ -26,7 +25,9 @@ export async function getViewerIdentity(): Promise<ViewerIdentity> {
     return { signedIn: false, googleEnabled, emailEnabled };
   }
   try {
-    await ensureTtsJobColumns();
+    // No schema migration here. Home and sign-in only need the cookie, and
+    // a signed-in lookup goes through getUserById, which migrates itself.
+    // Running the jobs migrator first made every screen wait on Turso.
     const token = (await cookies()).get(SESSION_COOKIE)?.value;
     const session = await verifySessionToken(token);
     if (!session || !isDurableUserId(session.userId)) {

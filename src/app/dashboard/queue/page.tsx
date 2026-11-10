@@ -11,12 +11,20 @@ import {
 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { motion } from "motion/react";
 import { customerBookStatus } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { openNewAudiobook } from "@/lib/capacity/client";
+import { prepareNewAudiobook } from "@/lib/capacity/client";
+import { CREATE_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
+import {
+  SCREEN_JOBS,
+  forgetJob,
+  invalidateScreen,
+  loadScreen,
+  onScreenCacheReset,
+  peekScreen,
+  rememberJobsList,
+} from "@/lib/nav/screen-cache";
 import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
@@ -85,9 +93,9 @@ interface Job {
 }
 
 export default function QueuePage() {
-  const router = useRouter();
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const cachedJobs = peekScreen<{ jobs?: Job[] }>(SCREEN_JOBS);
+  const [jobs, setJobs] = useState<Job[]>(cachedJobs?.jobs ?? []);
+  const [isLoading, setIsLoading] = useState(!cachedJobs);
   const [fetchError, setFetchError] = useState<string | null>(null);
   /** One quiet line per card for the last action on that book. */
   const [notices, setNotices] = useState<Record<string, string>>({});
@@ -101,19 +109,20 @@ export default function QueuePage() {
       return next;
     });
 
-  // Initial fetch — shows the full-page loader
+  // First paint uses the cache. A miss shows the heading and a quiet mark.
   const fetchJobs = useCallback(async () => {
-    setIsLoading(true);
+    if (!peekScreen(SCREEN_JOBS)) setIsLoading(true);
     setFetchError(null);
     try {
-      const response = await fetch("/api/jobs");
-      if (!response.ok) throw new Error("Couldn't load your library.");
-      const data = await response.json();
-      setJobs(data.jobs || []);
+      const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
+      const next = data.jobs || [];
+      setJobs(next);
       setFetchError(null);
     } catch (error) {
       console.error("Failed to fetch jobs:", error);
-      setFetchError(error instanceof Error ? error.message : "Couldn't load your library.");
+      if (!peekScreen(SCREEN_JOBS)) {
+        setFetchError(error instanceof Error ? error.message : "Couldn't load your library.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -124,9 +133,7 @@ export default function QueuePage() {
   const lastProgressRef = useRef<string>("");
   const refreshJobs = useCallback(async (): Promise<boolean> => {
     try {
-      const response = await fetch("/api/jobs");
-      if (!response.ok) return false;
-      const data = await response.json();
+      const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
       const next: Job[] = data.jobs || [];
       setJobs(next);
       const signature = progressSignature(next);
@@ -142,6 +149,21 @@ export default function QueuePage() {
   // Initial fetch
   useEffect(() => {
     fetchJobs();
+  }, [fetchJobs]);
+
+  // Keep the painted list in step with rename, delete, and polls.
+  // This does not count as a fetch, so the next visit still revalidates.
+  useEffect(() => {
+    if (isLoading) return;
+    rememberJobsList({ jobs });
+  }, [jobs, isLoading]);
+
+  useEffect(() => {
+    return onScreenCacheReset(() => {
+      setJobs([]);
+      setIsLoading(true);
+      void fetchJobs();
+    });
   }, [fetchJobs]);
 
   const refreshRef = useRef(refreshJobs);
@@ -304,6 +326,8 @@ export default function QueuePage() {
         const data = await response.json();
         throw new Error(data.error || "Couldn't delete. Try again.");
       }
+      forgetJob(jobId);
+      invalidateScreen(SCREEN_JOBS);
       setJobs(prev => prev.filter(job => job.id !== jobId));
       setNotice(jobId, null);
     });
@@ -318,6 +342,7 @@ export default function QueuePage() {
         throw new Error(data.error || "Couldn't cancel. Try again.");
       }
       setNotice(jobId, null);
+      invalidateScreen(SCREEN_JOBS);
       refreshJobs();
     });
   };
@@ -337,6 +362,7 @@ export default function QueuePage() {
       }
 
       setNotice(job.id, null);
+      invalidateScreen(SCREEN_JOBS);
       refreshJobs();
     });
   };
@@ -356,33 +382,8 @@ export default function QueuePage() {
 
   const statusFor = (job: Job) => libraryStatus(job);
 
-  if (isLoading && !fetchError) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (fetchError) {
-    return (
-        <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
-        <div>
-          <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
-        </div>
-        <div className="text-center py-24 space-y-3">
-          <p className="text-sm text-destructive">{fetchError}</p>
-          <button
-            type="button"
-            onClick={fetchJobs}
-            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const showBlockingError = Boolean(fetchError) && jobs.length === 0;
+  const showPending = isLoading && jobs.length === 0 && !fetchError;
 
   return (
         <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
@@ -390,13 +391,31 @@ export default function QueuePage() {
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
       </div>
 
+      {showPending ? (
+        <div className="flex items-center justify-center py-20" aria-busy="true">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          <span className="sr-only">Loading</span>
+        </div>
+      ) : null}
+
+      {showBlockingError ? (
+        <div className="text-center py-24 space-y-3">
+          <p className="text-sm text-destructive">{fetchError}</p>
+          <button
+            type="button"
+            onClick={() => fetchJobs()}
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {!showPending && !showBlockingError ? (
       <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
-        {jobs.map((job, idx) => (
-          <motion.div
+        {jobs.map((job) => (
+          <div
             key={job.id}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: idx * 0.05 }}
             className={`w-full min-w-0 p-6 rounded-sm border transition-all ${
               canOpen(job)
                 ? "border-border/50 hover:border-foreground/30 bg-card group"
@@ -612,21 +631,23 @@ export default function QueuePage() {
                 )}
               </div>
             </div>
-          </motion.div>
+          </div>
         ))}
 
         {jobs.length === 0 && !isLoading && (
           <div className="py-24 text-center">
-            <button
-              type="button"
-              onClick={() => openNewAudiobook((href) => router.push(href))}
+            <Link
+              href={CREATE_HREF}
+              prefetch={PREFETCH_SCREEN}
+              onClick={() => prepareNewAudiobook()}
               className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               New audiobook
-            </button>
+            </Link>
           </div>
         )}
       </div>
+      ) : null}
     </div>
   );
 }

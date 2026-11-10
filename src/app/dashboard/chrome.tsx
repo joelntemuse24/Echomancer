@@ -1,37 +1,58 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Mic2, Library, Plus } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
-import { ViewerIdentityProvider } from "@/components/viewer-identity";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { Wordmark } from "@/components/wordmark";
-import { openNewAudiobook } from "@/lib/capacity/client";
-import type { ViewerIdentity } from "@/lib/auth/identity";
+import { prepareNewAudiobook } from "@/lib/capacity/client";
+import {
+  CREATE_HREF,
+  DASHBOARD_NAV,
+  LIBRARY_HREF,
+  PREFETCH_SCREEN,
+  VOICES_HREF,
+} from "@/lib/nav/routes";
+import { warmJobs, warmVoices } from "@/lib/nav/screen-cache";
 import { NAV } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "/dashboard/voice", label: NAV.voices, icon: Mic2 },
-  { href: "/dashboard/queue", label: NAV.library, icon: Library },
-];
+const navItems = DASHBOARD_NAV.map((item) => ({
+  href: item.href,
+  label: item.href === VOICES_HREF ? NAV.voices : NAV.library,
+  icon: item.href === VOICES_HREF ? Mic2 : Library,
+}));
+
+function voicesIntent(href: string): { onMouseEnter?: () => void; onFocus?: () => void } {
+  if (href !== VOICES_HREF) return {};
+  const warm = () => warmVoices();
+  return { onMouseEnter: warm, onFocus: warm };
+}
 
 export function DashboardChrome({
-  identity,
   children,
 }: {
-  identity: ViewerIdentity;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
+  const identity = useViewerIdentity();
+
+  useEffect(() => {
+    warmJobs();
+  }, []);
 
   return (
     <div className="min-h-screen bg-background flex flex-col font-sans">
       <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
-            <Link href="/" className="text-foreground hover:opacity-70 transition-opacity">
+            <Link
+              href={CREATE_HREF}
+              prefetch={PREFETCH_SCREEN}
+              className="text-foreground hover:opacity-70 transition-opacity"
+            >
               <Wordmark size="nav" />
             </Link>
 
@@ -40,12 +61,14 @@ export function DashboardChrome({
                 {navItems.map((item) => {
                   const isActive =
                     pathname.startsWith(item.href) ||
-                    (item.href === "/dashboard/queue" &&
+                    (item.href === LIBRARY_HREF &&
                       pathname.startsWith("/dashboard/player"));
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
+                      prefetch={PREFETCH_SCREEN}
+                      {...voicesIntent(item.href)}
                       className={cn(
                         "text-sm transition-colors pb-0.5",
                         isActive
@@ -58,14 +81,15 @@ export function DashboardChrome({
                   );
                 })}
               </nav>
-              <button
-                type="button"
+              <Link
+                href={CREATE_HREF}
+                prefetch={PREFETCH_SCREEN}
                 aria-label="New audiobook"
-                onClick={() => openNewAudiobook((href) => router.push(href))}
+                onClick={() => prepareNewAudiobook()}
                 className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-              </button>
+              </Link>
               <AuthControls
                 identity={identity}
                 callbackUrl={pathname || "/dashboard/queue"}
@@ -77,7 +101,7 @@ export function DashboardChrome({
       </header>
 
       <main className="container mx-auto flex-1 px-6 py-12 md:px-8 md:py-16">
-        <ViewerIdentityProvider identity={identity}>{children}</ViewerIdentityProvider>
+        {children}
       </main>
 
       <footer className="container mx-auto px-4 pb-24 md:pb-8">
@@ -96,12 +120,14 @@ export function DashboardChrome({
           {navItems.map((item) => {
             const isActive =
               pathname.startsWith(item.href) ||
-              (item.href === "/dashboard/queue" &&
+              (item.href === LIBRARY_HREF &&
                 pathname.startsWith("/dashboard/player"));
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={PREFETCH_SCREEN}
+                {...voicesIntent(item.href)}
                 className={cn(
                   "flex flex-col items-center gap-1 px-3 py-2 text-xs",
                   isActive ? "font-medium text-foreground" : "text-muted-foreground"

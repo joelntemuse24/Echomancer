@@ -1,9 +1,21 @@
 "use client";
 
 import { ArrowLeft, Loader2, List } from "lucide-react";
-import React, { useState, useEffect, useRef, use, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { seededTakehomePlayback } from "@/lib/nav/cached-playback";
+import { detailFailureIsFinal } from "@/lib/nav/detail-failure";
+import { useClientSearchParams } from "@/lib/nav/client-search";
+import { playerIdFromPathname } from "@/lib/nav/player-path";
+import { LIBRARY_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
+import {
+  SCREEN_JOBS,
+  forgetJob,
+  invalidateScreen,
+  peekJob,
+  rememberJobDetail,
+} from "@/lib/nav/screen-cache";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
@@ -138,30 +150,40 @@ interface Job {
   eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
 }
 
-export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
+function PlayerLoadingShell() {
   return (
-    <React.Suspense
-      fallback={
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      }
-    >
-      <PlayerPageInner params={params} />
-    </React.Suspense>
+    <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans" aria-busy="true">
+      <Link
+        href={LIBRARY_HREF}
+        prefetch={PREFETCH_SCREEN}
+        className="tap mb-8 inline-flex items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />
+        Library
+      </Link>
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <span className="sr-only">Loading</span>
+      </div>
+    </div>
   );
 }
 
-function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+export default function PlayerPage() {
+  const id = playerIdFromPathname(usePathname());
+  if (!id) return <PlayerLoadingShell />;
+  return <PlayerPageInner id={id} />;
+}
+
+function PlayerPageInner({ id }: { id: string }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useClientSearchParams();
   const forceStream = searchParams.get("mode") === "stream";
   const forceSegments = searchParams.get("mode") === "segments";
   const audioRef = useRef<HTMLAudioElement>(null);
   const processorInitialized = useRef(false);
 
-  const [job, setJob] = useState<Job | null>(null);
+  const [job, setJob] = useState<Job | null>(() => peekJob<Job>(id));
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -208,9 +230,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const storageReloadRef = useRef(0);
   const heardPlayingRef = useRef(false);
 
-  // Reset all audio state when audiobook id changes
+  // Reset audio when the book id changes. The first run keeps a library
+  // row already on screen so the title does not flash back to a spinner.
   useEffect(() => {
-    setJob(null);
+    setJob(peekJob<Job>(id));
     setTranscript(null);
     setTranscriptError(false);
     setShowTranscript(false);
@@ -257,15 +280,35 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     return streamUrlWithConn(base, conn);
   }, []);
 
-  // Fetch job data via REST API
+  // Fetch job data via REST API. A library row already on screen starts
+  // its file now; the detail request fills chapters in behind it. A network
+  // or server failure keeps that row and says so. 401, 403, and 404 clear
+  // it: the book is gone, and a seeded file with no explanation is worse.
   useEffect(() => {
     let stopped = false;
+    const cached = peekJob<Job>(id);
+    const seeded = seededTakehomePlayback(cached, { forceStream, forceSegments });
+    if (seeded) {
+      setAudioUrl(seeded.url);
+      if (seeded.segmentIndex != null) setSegmentIndex(seeded.segmentIndex);
+    }
     async function fetchJob() {
       try {
         const response = await fetch(`/api/jobs/${id}`);
-        if (!response.ok) throw new Error("Failed to fetch job");
+        if (!response.ok) {
+          if (detailFailureIsFinal(response.status)) {
+            forgetJob(id);
+            if (stopped) return;
+            setJob(null);
+            setAudioUrl(null);
+            setError("Couldn't load this audiobook.");
+            return;
+          }
+          throw new Error(String(response.status));
+        }
         const data = await response.json();
         const j = data.job as Job;
+        rememberJobDetail(id, { job: j });
         if (stopped) return;
         setJob(j);
 
@@ -291,7 +334,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       } catch (err) {
         if (stopped) return;
         console.error("Failed to fetch job:", err);
-        setError("Couldn't load this audiobook.");
+        if (!cached) setError("Couldn't load this audiobook.");
+        else setNotice("Couldn't load this audiobook.");
       }
     }
 
@@ -536,6 +580,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       setNotice(null);
+      invalidateScreen(SCREEN_JOBS);
       // Stay with the new take-home job so progress is visible immediately.
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
@@ -1132,23 +1177,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
         <p className="text-sm text-muted-foreground">{error}</p>
-        <button
-          type="button"
-          onClick={() => router.push("/dashboard/queue")}
+        <Link
+          href={LIBRARY_HREF}
+          prefetch={PREFETCH_SCREEN}
           className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           Library
-        </button>
+        </Link>
       </div>
     );
   }
 
   if (!job) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PlayerLoadingShell />;
   }
 
   // While generating, the line reads "42% · ~2 min left" (or "… · Estimating…").
@@ -1170,7 +1211,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       {/* Back button */}
       <Link
-        href="/dashboard/queue"
+        href={LIBRARY_HREF}
+        prefetch={PREFETCH_SCREEN}
         className="tap inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />

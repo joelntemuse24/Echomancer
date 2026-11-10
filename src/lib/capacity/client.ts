@@ -20,12 +20,11 @@ export function requestCapacityWarm(input: {
   }).catch(() => {});
 }
 
-/** Open the create flow and warm the shared pools for the saved voice. */
-export function openNewAudiobook(navigate: (href: string) => void): void {
+/** Warm the shared pools for the saved voice. Navigation does not wait on it. */
+export function prepareNewAudiobook(): void {
   const pick = readStockVoicePick();
   requestCapacityWarm({
     voiceId: pick?.catalogVoiceId ?? null,
     reason: "create",
   });
-  navigate("/");
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
+import { AUTH_HINT_COOKIE } from "@/lib/auth/auth-hint";
 import {
   SESSION_COOKIE,
   SESSION_HEADER,
@@ -177,6 +178,9 @@ describe("cookie attributes", () => {
     expect(cookie?.httpOnly).toBe(true);
     expect(cookie?.sameSite).toBe("lax");
     expect(cookie?.path).toBe("/");
+    const hint = response.cookies.get(AUTH_HINT_COOKIE);
+    expect(hint?.httpOnly).toBe(false);
+    expect(hint?.value).toBe("0");
   });
 });
 

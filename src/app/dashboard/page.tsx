@@ -1,12 +1,6 @@
-"use client";
-
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { redirect } from "next/navigation";
+import { VOICES_HREF } from "@/lib/nav/routes";
 
 export default function DashboardPage() {
-  const router = useRouter();
-  useEffect(() => {
-    router.replace("/dashboard/voice");
-  }, [router]);
-  return null;
+  redirect(VOICES_HREF);
 }

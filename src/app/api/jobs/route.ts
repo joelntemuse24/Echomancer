@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
@@ -21,7 +21,7 @@ import {
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
-import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
+import { nudgeStaleTakehomeJobs, pollSweepDue } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
@@ -393,6 +393,22 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function deferLeaseSweep(): void {
+  const run = () =>
+    nudgeStaleTakehomeJobs(1).catch((err) => {
+      console.error("[jobs] lease sweep failed:", err);
+    });
+  try {
+    // `after` keeps the sweep alive after the JSON is sent. It does not
+    // delay that response. Returning the promise is what stops a frozen
+    // isolate from dropping the write.
+    after(run);
+  } catch {
+    // The handler is invoked outside a Next request scope in unit tests.
+    void run();
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
@@ -430,9 +446,20 @@ export async function GET(request: NextRequest) {
     // Cheap lease sweep so a crashed worker's job is queued again. This only
     // synthesizes when TTS_POLL_NUDGE_BUDGET_MS is non-zero (see process-job).
     // One job per list poll — keeps Hobby under the 60s function timeout.
-    if (jobs.some((j) => j.job_kind === "takehome" && j.status !== "ready")) {
-      await nudgeStaleTakehomeJobs(1);
-    }
+    // The rows above were already read; awaiting the sweep held the library
+    // on a write that does not change this response. It still runs after
+    // the JSON is sent, and the next poll sees the requeued status.
+    // Failed and cancelled rows are finished. Sweeping them on every library
+    // read rewrote leases for books that will not run. The same 30s throttle
+    // as a player poll keeps a long list from writing on each visit.
+    const sweepable = jobs.some(
+      (j) =>
+        j.job_kind === "takehome" &&
+        (j.status === "queued" ||
+          j.status === "waiting" ||
+          j.status === "processing")
+    );
+    if (sweepable && pollSweepDue()) deferLeaseSweep();
 
     return NextResponse.json({
       jobs: await Promise.all(

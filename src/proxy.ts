@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   SESSION_HEADER,
+  attachAuthHint,
   attachSessionCookie,
   isSessionConfigured,
   mintSession,
@@ -27,6 +28,11 @@ export async function proxy(request: NextRequest) {
 
   const response = NextResponse.next({ request: { headers } });
   if (!existing) attachSessionCookie(response, session);
+  else if (!request.nextUrl.pathname.startsWith("/api/auth/")) {
+    // Login and logout set the hint on their own response. Setting it here
+    // from the incoming session would race that Set-Cookie.
+    attachAuthHint(response, session.userId);
+  }
   return response;
 }
 
