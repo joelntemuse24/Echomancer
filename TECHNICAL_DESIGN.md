@@ -2169,8 +2169,12 @@ the player. A stream still requires `uploads.status = ready`
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.
-Signed-out home also shows Voices, Library, and New audiobook, plus
-`PRIVACY.intro` and the cookie sentence from `GUEST` / `SIGN_IN.confirmBody`.
+Signed-out home shows Voices and Library, plus `PRIVACY.intro`. It does not
+show a cookie or “books will move” sentence, or the circled plus. That plus
+stays in the dashboard chrome (Library, Voices, player). `/sign-in` is the
+title and the Google / email controls, with no password or cookie explanation.
+Those cookie facts stay on `/privacy` only. Library, Voices, and the emailed
+confirm page do not repeat them. An empty signed-out library is just empty.
 A disabled Choose a voice says why (`LANDING.needBook`, `needLink`, or the
 50-character paste floor). Make audiobook stays available on the anonymous
 cookie. `/terms` has no page; `src/app/not-found.tsx` is the dark screen for
@@ -2196,8 +2200,7 @@ corner of the landing and dashboard footers, at low opacity.
   replace it. **Clone a voice** is a row under the stock list
   (`?path=clone`, `src/lib/voice-path.ts`). It opens the clone form on the
   same screen. The stock names stay. Opening it does not change the selected
-  voice (`voiceIdAfterPathChange`). A signed-out visitor sees
-  `SIGN_IN.confirmBody` above the book. YouTube clipping for an anonymous
+  voice (`voiceIdAfterPathChange`). YouTube clipping for an anonymous
   session says to sign in (`GET /api/clips` `reason: "sign-in"`). The upload
   control is the one on this page.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.

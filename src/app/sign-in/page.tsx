@@ -47,10 +47,6 @@ export default async function SignInPage({
         >
           {SIGN_IN.title}
         </h1>
-        <div className="space-y-3 text-sm text-muted-foreground">
-          <p>{SIGN_IN.how}</p>
-          <p>{SIGN_IN.confirmBody}</p>
-        </div>
 
         {notice ? (
           <p role="alert" className="text-sm text-muted-foreground">

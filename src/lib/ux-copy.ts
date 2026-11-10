@@ -44,7 +44,7 @@ export const VOICE_PATH = {
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
   createCta: "Choose a voice",
-  needBook: "Choose a book.",
+  needBook: "Upload a book to choose a voice.",
   needLink: "Paste a full http or https link.",
   signInCta: "Sign in",
   uploadTab: "Upload",
@@ -54,15 +54,7 @@ export const LANDING = {
   pasteUrlPlaceholder: "https://",
 } as const;
 
-/**
- * Guest library. The same facts as PRIVACY.accounts: the cookie holds books
- * until sign-in, and sign-in moves them. Not a separate guest policy.
- */
-export const GUEST = {
-  holds: "A cookie on this browser holds your library until you sign in.",
-} as const;
-
-/** /sign-in and the emailed-link confirm page. */
+/** /sign-in controls and the emailed-link confirm page. */
 export const SIGN_IN = {
   title: "Sign in",
   google: "Google",
@@ -72,12 +64,10 @@ export const SIGN_IN = {
   sentTitle: "Check your inbox",
   sentBody: "A link is coming. Once, for 15 minutes.",
   sentRetry: "Different address",
-  how: "No password. Google, or a one-time link to your email.",
   divider: "or",
   expired: "That link expired. Request a new one.",
   invalid: "Sign-in didn't finish. Request a new link.",
   confirmTitle: "Sign in",
-  confirmBody: "Books on this browser will move to your account.",
   confirmCta: "Sign in",
   confirmMissing: "This link is incomplete. Request a new one.",
   unavailable: "Sign-in isn't available right now.",
