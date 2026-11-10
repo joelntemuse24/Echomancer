@@ -47,7 +47,6 @@ export default async function ConfirmSignInPage({
 
         {looksValid ? (
           <form action="/api/auth/email/verify" method="POST" className="space-y-6">
-            <p className="text-sm text-muted-foreground">{SIGN_IN.confirmBody}</p>
             <input type="hidden" name="token" value={token} />
             <input type="hidden" name="next" value={next} />
             <button

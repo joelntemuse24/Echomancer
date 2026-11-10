@@ -43,11 +43,11 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   browsers shares one `user_*`.
 - Sign-out issues a **fresh** `anon_*` cookie so the previous library is not
   leaked.
-- Signed-out library and voice still say a cookie on this browser holds the
-  library until sign-in, and that signing in moves those books. Home and
-  `/sign-in` do not. `/privacy` states the cookie. The emailed confirm page
-  still says books on this browser will move to the account. `POST /api/jobs`
-  accepts that cookie, so Make audiobook does not ask for Google or email.
+- The anonymous cookie still holds this browser's library until sign-in, and
+  signing in still moves those books. That is stated on `/privacy` only.
+  Home, `/sign-in`, Library, Voices, and the emailed confirm page do not
+  explain it. `POST /api/jobs` accepts that cookie, so Make audiobook does not ask
+  for Google or email.
   `/` shows Voices and Library for a signed-out visitor. The circled plus
   for a new audiobook stays in the dashboard chrome and is absent from `/`.
   The Sign in control on those pages is the link itself.

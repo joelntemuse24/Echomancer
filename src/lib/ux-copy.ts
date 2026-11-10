@@ -54,14 +54,6 @@ export const LANDING = {
   pasteUrlPlaceholder: "https://",
 } as const;
 
-/**
- * Empty signed-out library. The same facts as PRIVACY.accounts.
- * Not shown on the home page.
- */
-export const GUEST = {
-  holds: "A cookie on this browser holds your library until you sign in.",
-} as const;
-
 /** /sign-in controls and the emailed-link confirm page. */
 export const SIGN_IN = {
   title: "Sign in",
@@ -76,7 +68,6 @@ export const SIGN_IN = {
   expired: "That link expired. Request a new one.",
   invalid: "Sign-in didn't finish. Request a new link.",
   confirmTitle: "Sign in",
-  confirmBody: "Books on this browser will move to your account.",
   confirmCta: "Sign in",
   confirmMissing: "This link is incomplete. Request a new one.",
   unavailable: "Sign-in isn't available right now.",
