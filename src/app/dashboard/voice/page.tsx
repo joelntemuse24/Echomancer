@@ -71,8 +71,11 @@ import { CREATE_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
 import { useClientSearchParams } from "@/lib/nav/client-search";
 import {
   SCREEN_VOICES,
+  invalidateScreen,
   loadScreen,
+  onScreenCacheReset,
   peekScreen,
+  replaceScreenValue,
 } from "@/lib/nav/screen-cache";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
@@ -459,11 +462,18 @@ export default function VoiceSelectionPage() {
   void cooldownTick;
 
   useEffect(() => {
+    return onScreenCacheReset(() => {
+      setAllVoices([]);
+      setLoading(true);
+      setVoicesReloadToken((n) => n + 1);
+    });
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
+    if (voicesReloadToken > 0) invalidateScreen(SCREEN_VOICES);
     if (!peekScreen(SCREEN_VOICES)) setLoading(true);
-    loadScreen<VoicesPayload>(SCREEN_VOICES, "/api/tts/voices", {
-      force: voicesReloadToken > 0,
-    })
+    loadScreen<VoicesPayload>(SCREEN_VOICES, "/api/tts/voices")
       .then((data) => {
         if (cancelled) return;
         setAllVoices(data.voices || []);
@@ -1217,6 +1227,17 @@ export default function VoiceSelectionPage() {
               : item
           )
         );
+        const cached = peekScreen<VoicesPayload>(SCREEN_VOICES);
+        if (cached?.voices) {
+          replaceScreenValue(SCREEN_VOICES, {
+            ...cached,
+            voices: cached.voices.map((item) =>
+              item.id === voice.id
+                ? { ...item, displayName: name, friendlyName: name }
+                : item
+            ),
+          });
+        }
       } catch (err) {
         toast.error(
           userFriendlyError(err instanceof Error ? err.message : "Couldn't rename. Try again.")

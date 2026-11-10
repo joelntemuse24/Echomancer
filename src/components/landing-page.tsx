@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Upload, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -19,6 +19,7 @@ import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { LIBRARY_HREF, PREFETCH_SCREEN, VOICES_HREF } from "@/lib/nav/routes";
+import { warmJobs, warmVoices } from "@/lib/nav/screen-cache";
 import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
@@ -39,6 +40,10 @@ export function LandingPage() {
   const [isDraggingBook, setIsDraggingBook] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
+
+  useEffect(() => {
+    warmJobs();
+  }, []);
 
   const pasteLen = pastedText.trim().length;
   const urlCheck = checkPublicHttpUrl(pasteUrl);
@@ -212,6 +217,8 @@ export function LandingPage() {
         <Link
           href={VOICES_HREF}
           prefetch={PREFETCH_SCREEN}
+          onMouseEnter={() => warmVoices()}
+          onFocus={() => warmVoices()}
           className="text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           {NAV.voices}
@@ -232,11 +239,9 @@ export function LandingPage() {
             <h1>
               <Wordmark size="hero" />
             </h1>
-            {identity && !identity.signedIn ? (
-              <p className="mt-6 font-sans text-sm text-muted-foreground">
-                {PRIVACY.intro}
-              </p>
-            ) : null}
+            <p className="home-intro mt-6 font-sans text-sm text-muted-foreground">
+              {PRIVACY.intro}
+            </p>
           </div>
 
           <div className="space-y-8 font-sans">

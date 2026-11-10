@@ -13,6 +13,7 @@
  */
 
 import type { NextRequest, NextResponse } from "next/server";
+import { AUTH_HINT_COOKIE } from "@/lib/auth/auth-hint";
 
 export const SESSION_COOKIE = "ec_session";
 
@@ -264,11 +265,35 @@ export function sessionCookieOptions() {
   };
 }
 
+export function authHintCookieOptions() {
+  return {
+    httpOnly: false,
+    sameSite: "lax" as const,
+    secure: isProductionRuntime(),
+    path: "/",
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  };
+}
+
+/** `1` for a durable account, `0` for an anonymous session. No personal data. */
+export function attachAuthHint<T extends NextResponse>(
+  response: T,
+  userId: string
+): T {
+  response.cookies.set(
+    AUTH_HINT_COOKIE,
+    isDurableUserId(userId) ? "1" : "0",
+    authHintCookieOptions()
+  );
+  return response;
+}
+
 export function attachSessionCookie<T extends NextResponse>(
   response: T,
   session: Session
 ): T {
   response.cookies.set(SESSION_COOKIE, session.token, sessionCookieOptions());
+  attachAuthHint(response, session.userId);
   return response;
 }
 

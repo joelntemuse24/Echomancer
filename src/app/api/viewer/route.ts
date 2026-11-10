@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getUserById, isGoogleOAuthConfigured } from "@/lib/auth/google";
 import { isEmailLoginConfigured } from "@/lib/auth/email-login";
@@ -5,11 +6,7 @@ import {
   isDurableUserId,
   resolveSessionUserId,
 } from "@/lib/auth/session";
-import {
-  operatorEmailAllowlist,
-  operatorToolsEnabled,
-  operatorUserIdAllowlist,
-} from "@/lib/operator/tools";
+import { isMarkupOperator } from "@/lib/operator/tools";
 
 export const runtime = "nodejs";
 
@@ -18,62 +15,58 @@ export const runtime = "nodejs";
  *
  * Home and the dashboard used to await this on the server before sending
  * any HTML, so a click sat on the previous screen until Turso answered.
- * The shell renders without it. Signed-out visitors never touch the
- * database: the session cookie is verified locally. A signed-in visitor
- * is one primary-key read. `markup` is the operator Voice text link;
- * everyone else gets false, and the markup page still 404s on its own.
+ * The shell renders without it. Signed-out visitors never touch the user
+ * table: the session cookie is verified locally. A signed-in visitor is a
+ * user-row read. `key` changes when the session does, so the tab can drop
+ * another person's library. A database error is 503 and must not be stored
+ * as signed-out. `markup` is the operator Voice text link; the markup page
+ * still 404s on its own.
  */
 export async function GET(request: NextRequest) {
   const googleEnabled = isGoogleOAuthConfigured();
   const emailEnabled = isEmailLoginConfigured();
   const userId = await resolveSessionUserId(request);
-  if (!userId || !isDurableUserId(userId)) {
+  if (!userId) {
     return json({
       signedIn: false,
       googleEnabled,
       emailEnabled,
       markup: false,
+      key: viewerKey("none"),
+    });
+  }
+  const key = viewerKey(userId);
+  if (!isDurableUserId(userId)) {
+    return json({
+      signedIn: false,
+      googleEnabled,
+      emailEnabled,
+      markup: await isMarkupOperator(userId),
+      key,
     });
   }
   try {
     const user = await getUserById(userId);
-    if (!user) {
-      return json({
-        signedIn: false,
-        googleEnabled,
-        emailEnabled,
-        markup: false,
-      });
-    }
     return json({
       signedIn: true,
       googleEnabled,
       emailEnabled,
-      name: user.name ?? null,
-      email: user.email ?? null,
-      image: user.image ?? null,
-      markup: markupAllowed(user.id, user.email, user.email_verified),
+      name: user?.name ?? null,
+      email: user?.email ?? null,
+      image: user?.image ?? null,
+      markup: await isMarkupOperator(userId),
+      key,
     });
   } catch {
-    return json({
-      signedIn: false,
-      googleEnabled,
-      emailEnabled,
-      markup: false,
-    });
+    return NextResponse.json(
+      { error: "Couldn't confirm this session." },
+      { status: 503, headers: { "Cache-Control": "private, no-store" } }
+    );
   }
 }
 
-function markupAllowed(
-  userId: string,
-  email: string | null,
-  emailVerified: number | null
-): boolean {
-  if (!operatorToolsEnabled()) return false;
-  if (operatorUserIdAllowlist().includes(userId)) return true;
-  if (emailVerified !== 1) return false;
-  const normalized = email?.trim().toLowerCase() ?? "";
-  return normalized.length > 0 && operatorEmailAllowlist().includes(normalized);
+function viewerKey(userId: string): string {
+  return createHash("sha256").update(userId).digest("hex").slice(0, 16);
 }
 
 function json(body: unknown): NextResponse {

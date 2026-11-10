@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("client search subscription", () => {
-  it("hears replaceState, which the clone tab uses", () => {
+  it("hears replaceState, which the clone tab uses", async () => {
     let search = "";
     vi.stubGlobal("history", {
       pushState() {},
@@ -26,6 +26,7 @@ describe("client search subscription", () => {
         },
       },
       addEventListener() {},
+      removeEventListener() {},
     });
 
     const seen: string[] = [];
@@ -34,13 +35,14 @@ describe("client search subscription", () => {
     });
 
     history.replaceState(null, "", "/dashboard/voice?path=clone");
+    await Promise.resolve();
 
     expect(seen).toEqual(["?path=clone"]);
     expect(new URLSearchParams(seen[0]).get("path")).toBe("clone");
     stop();
   });
 
-  it("hears popstate for Back", () => {
+  it("hears popstate for Back", async () => {
     let search = "?path=clone";
     let onPop: (() => void) | null = null;
     vi.stubGlobal("history", {
@@ -56,6 +58,7 @@ describe("client search subscription", () => {
       addEventListener(type: string, listener: () => void) {
         if (type === "popstate") onPop = listener;
       },
+      removeEventListener() {},
     });
 
     const seen: string[] = [];
@@ -64,6 +67,7 @@ describe("client search subscription", () => {
     });
     search = "";
     onPop?.();
+    await Promise.resolve();
 
     expect(seen).toEqual([""]);
   });

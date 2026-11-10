@@ -2,17 +2,15 @@
 
 import { useEffect } from "react";
 import { loadViewerIdentity } from "@/components/viewer-identity";
-import { warmAppScreens } from "@/lib/nav/screen-cache";
 
 /**
- * Start identity, the library, and the voice catalog as soon as the shell
- * is on screen. The root layout does not remount between Home, Library,
- * and Voices, so this runs once per visit and the next click reads the cache.
+ * Start the header read once per document. Jobs and voices are not warmed
+ * here: the voice catalog can start a GPU restore, and this layout is also
+ * Privacy, sign-in, and the player.
  */
 export function NavigationWarmup() {
   useEffect(() => {
-    void loadViewerIdentity();
-    warmAppScreens();
+    void loadViewerIdentity().catch(() => {});
   }, []);
   return null;
 }

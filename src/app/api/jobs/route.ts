@@ -21,7 +21,7 @@ import {
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
-import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
+import { nudgeStaleTakehomeJobs, pollSweepDue } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
@@ -449,9 +449,17 @@ export async function GET(request: NextRequest) {
     // The rows above were already read; awaiting the sweep held the library
     // on a write that does not change this response. It still runs after
     // the JSON is sent, and the next poll sees the requeued status.
-    if (jobs.some((j) => j.job_kind === "takehome" && j.status !== "ready")) {
-      deferLeaseSweep();
-    }
+    // Failed and cancelled rows are finished. Sweeping them on every library
+    // read rewrote leases for books that will not run. The same 30s throttle
+    // as a player poll keeps a long list from writing on each visit.
+    const sweepable = jobs.some(
+      (j) =>
+        j.job_kind === "takehome" &&
+        (j.status === "queued" ||
+          j.status === "waiting" ||
+          j.status === "processing")
+    );
+    if (sweepable && pollSweepDue()) deferLeaseSweep();
 
     return NextResponse.json({
       jobs: await Promise.all(

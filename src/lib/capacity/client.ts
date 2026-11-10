@@ -28,9 +28,3 @@ export function prepareNewAudiobook(): void {
     reason: "create",
   });
 }
-
-/** Open the create flow and warm the shared pools for the saved voice. */
-export function openNewAudiobook(navigate: (href: string) => void): void {
-  prepareNewAudiobook();
-  navigate("/");
-}

@@ -18,7 +18,10 @@ import { prepareNewAudiobook } from "@/lib/capacity/client";
 import { CREATE_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
 import {
   SCREEN_JOBS,
+  forgetJob,
+  invalidateScreen,
   loadScreen,
+  onScreenCacheReset,
   peekScreen,
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
@@ -107,13 +110,11 @@ export default function QueuePage() {
     });
 
   // First paint uses the cache. A miss shows the heading and a quiet mark.
-  const fetchJobs = useCallback(async (force = false) => {
+  const fetchJobs = useCallback(async () => {
     if (!peekScreen(SCREEN_JOBS)) setIsLoading(true);
     setFetchError(null);
     try {
-      const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs", {
-        force,
-      });
+      const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
       const next = data.jobs || [];
       setJobs(next);
       setFetchError(null);
@@ -132,9 +133,7 @@ export default function QueuePage() {
   const lastProgressRef = useRef<string>("");
   const refreshJobs = useCallback(async (): Promise<boolean> => {
     try {
-      const response = await fetch("/api/jobs");
-      if (!response.ok) return false;
-      const data = await response.json();
+      const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
       const next: Job[] = data.jobs || [];
       setJobs(next);
       const signature = progressSignature(next);
@@ -152,11 +151,20 @@ export default function QueuePage() {
     fetchJobs();
   }, [fetchJobs]);
 
-  // Keep the next screen's copy in step with rename, delete, and polls.
+  // Keep the painted list in step with rename, delete, and polls.
+  // This does not count as a fetch, so the next visit still revalidates.
   useEffect(() => {
     if (isLoading) return;
     rememberJobsList({ jobs });
   }, [jobs, isLoading]);
+
+  useEffect(() => {
+    return onScreenCacheReset(() => {
+      setJobs([]);
+      setIsLoading(true);
+      void fetchJobs();
+    });
+  }, [fetchJobs]);
 
   const refreshRef = useRef(refreshJobs);
   refreshRef.current = refreshJobs;
@@ -318,6 +326,8 @@ export default function QueuePage() {
         const data = await response.json();
         throw new Error(data.error || "Couldn't delete. Try again.");
       }
+      forgetJob(jobId);
+      invalidateScreen(SCREEN_JOBS);
       setJobs(prev => prev.filter(job => job.id !== jobId));
       setNotice(jobId, null);
     });
@@ -332,6 +342,7 @@ export default function QueuePage() {
         throw new Error(data.error || "Couldn't cancel. Try again.");
       }
       setNotice(jobId, null);
+      invalidateScreen(SCREEN_JOBS);
       refreshJobs();
     });
   };
@@ -351,6 +362,7 @@ export default function QueuePage() {
       }
 
       setNotice(job.id, null);
+      invalidateScreen(SCREEN_JOBS);
       refreshJobs();
     });
   };
@@ -391,7 +403,7 @@ export default function QueuePage() {
           <p className="text-sm text-destructive">{fetchError}</p>
           <button
             type="button"
-            onClick={() => fetchJobs(true)}
+            onClick={() => fetchJobs()}
             className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             Retry
@@ -427,7 +439,6 @@ export default function QueuePage() {
                     {canOpen(job) ? (
                       <Link
                         href={playerHref(job)}
-                        prefetch={PREFETCH_SCREEN}
                         className={`${bookTitleClass} transition-colors hover:text-foreground/70`}
                       >
                         {job.book_title}
@@ -596,7 +607,6 @@ export default function QueuePage() {
                     {canPlay(job) && (
                       <Link
                         href={playerHref(job)}
-                        prefetch={PREFETCH_SCREEN}
                         className="inline-flex min-h-11 items-center gap-2 text-sm font-medium rounded-sm"
                         aria-label={`Listen to ${job.book_title}`}
                       >

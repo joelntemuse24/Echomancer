@@ -10,6 +10,7 @@
  */
 
 import { userFriendlyError } from "@/lib/errors-ui";
+import { invalidateScreen, SCREEN_JOBS } from "@/lib/nav/screen-cache";
 
 export const JOB_CREATE_TIMEOUT_MS = 20_000;
 
@@ -72,6 +73,7 @@ export async function startStockBook(
     if (!data.jobId) {
       throw new Error(userFriendlyError("Couldn't start. Try again."));
     }
+    invalidateScreen(SCREEN_JOBS);
     return {
       jobId: data.jobId,
       status: data.status || "queued",

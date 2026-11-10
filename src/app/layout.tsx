@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
+import { AUTH_HINT_BOOT } from "@/lib/auth/auth-hint";
 import { NavigationWarmup } from "@/components/navigation-warmup";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
@@ -36,6 +37,7 @@ export default function RootLayout({
       <body
         className={`${cormorantGaramond.variable} ${inter.variable} antialiased min-h-screen bg-background font-serif`}
       >
+        <script dangerouslySetInnerHTML={{ __html: AUTH_HINT_BOOT }} />
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

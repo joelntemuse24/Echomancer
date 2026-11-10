@@ -5,10 +5,17 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { seededTakehomePlayback } from "@/lib/nav/cached-playback";
+import { detailFailureIsFinal } from "@/lib/nav/detail-failure";
 import { useClientSearchParams } from "@/lib/nav/client-search";
 import { playerIdFromPathname } from "@/lib/nav/player-path";
 import { LIBRARY_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
-import { peekJob, rememberJobDetail } from "@/lib/nav/screen-cache";
+import {
+  SCREEN_JOBS,
+  forgetJob,
+  invalidateScreen,
+  peekJob,
+  rememberJobDetail,
+} from "@/lib/nav/screen-cache";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
@@ -274,9 +281,9 @@ function PlayerPageInner({ id }: { id: string }) {
   }, []);
 
   // Fetch job data via REST API. A library row already on screen starts
-  // its file now; the detail request fills chapters in behind it. A failed
-  // refresh keeps that row. Wiping it for an error is the flash this page
-  // used to show on the way in.
+  // its file now; the detail request fills chapters in behind it. A network
+  // or server failure keeps that row and says so. 401, 403, and 404 clear
+  // it: the book is gone, and a seeded file with no explanation is worse.
   useEffect(() => {
     let stopped = false;
     const cached = peekJob<Job>(id);
@@ -288,7 +295,17 @@ function PlayerPageInner({ id }: { id: string }) {
     async function fetchJob() {
       try {
         const response = await fetch(`/api/jobs/${id}`);
-        if (!response.ok) throw new Error("Failed to fetch job");
+        if (!response.ok) {
+          if (detailFailureIsFinal(response.status)) {
+            forgetJob(id);
+            if (stopped) return;
+            setJob(null);
+            setAudioUrl(null);
+            setError("Couldn't load this audiobook.");
+            return;
+          }
+          throw new Error(String(response.status));
+        }
         const data = await response.json();
         const j = data.job as Job;
         rememberJobDetail(id, { job: j });
@@ -318,7 +335,7 @@ function PlayerPageInner({ id }: { id: string }) {
         if (stopped) return;
         console.error("Failed to fetch job:", err);
         if (!cached) setError("Couldn't load this audiobook.");
-        else if (!seeded) setNotice("Couldn't load this audiobook.");
+        else setNotice("Couldn't load this audiobook.");
       }
     }
 
@@ -563,6 +580,7 @@ function PlayerPageInner({ id }: { id: string }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       setNotice(null);
+      invalidateScreen(SCREEN_JOBS);
       // Stay with the new take-home job so progress is visible immediately.
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {

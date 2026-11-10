@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { signInWithGoogle } from "@/lib/auth/actions";
+import { publishAuthChangeFromHere } from "@/components/viewer-identity";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import { LANDING, NAV } from "@/lib/ux-copy";
 import { DarkModeToggle } from "@/components/dark-mode-toggle";
@@ -20,13 +21,10 @@ export function AuthControls({
   /** Signed out: open a small menu from "Sign in" instead of signing in directly. */
   menu?: boolean;
 }) {
-  if (!identity) return null;
-  if (!identity.googleEnabled && !identity.emailEnabled) return null;
-  if (identity.signedIn) {
-    return <AccountMenu identity={identity} />;
-  }
-  if (menu) {
-    return (
+  const providersOff =
+    identity != null && !identity.googleEnabled && !identity.emailEnabled;
+  const signIn = providersOff ? null : identity?.signedIn ? null : identity ? (
+    menu ? (
       <HeaderMenu label={LANDING.signInCta}>
         {(close) => (
           <>
@@ -46,14 +44,37 @@ export function AuthControls({
           </>
         )}
       </HeaderMenu>
-    );
-  }
-  return (
-    <SignInAction
-      identity={identity}
-      callbackUrl={callbackUrl}
+    ) : (
+      <SignInAction
+        identity={identity}
+        callbackUrl={callbackUrl}
+        className="text-sm text-muted-foreground hover:text-foreground"
+      />
+    )
+  ) : (
+    <Link
+      href={
+        callbackUrl ? `/sign-in?next=${encodeURIComponent(callbackUrl)}` : "/sign-in"
+      }
       className="text-sm text-muted-foreground hover:text-foreground"
-    />
+    >
+      {LANDING.signInCta}
+    </Link>
+  );
+
+  return (
+    <div className="auth-slot inline-flex items-center justify-end">
+      <div className="auth-pane auth-pane-out">{signIn}</div>
+      <div className="auth-pane auth-pane-in">
+        {identity?.signedIn ? (
+          <AccountMenu identity={identity} />
+        ) : (
+          <span className="text-sm text-muted-foreground" aria-hidden="true">
+            {NAV.account}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -138,7 +159,11 @@ function AccountMenu({
             role="menuitem"
             className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm text-foreground/90 hover:text-foreground"
           />
-          <form action="/api/auth/logout" method="POST">
+          <form
+            action="/api/auth/logout"
+            method="POST"
+            onSubmit={() => publishAuthChangeFromHere()}
+          >
             <button
               type="submit"
               role="menuitem"

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Mic2, Library, Plus } from "lucide-react";
@@ -7,14 +8,28 @@ import { AuthControls } from "@/components/auth-controls";
 import { useViewerIdentity } from "@/components/viewer-identity";
 import { Wordmark } from "@/components/wordmark";
 import { prepareNewAudiobook } from "@/lib/capacity/client";
-import { CREATE_HREF, DASHBOARD_NAV, LIBRARY_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
+import {
+  CREATE_HREF,
+  DASHBOARD_NAV,
+  LIBRARY_HREF,
+  PREFETCH_SCREEN,
+  VOICES_HREF,
+} from "@/lib/nav/routes";
+import { warmJobs, warmVoices } from "@/lib/nav/screen-cache";
 import { NAV } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: DASHBOARD_NAV[0].href, label: NAV.voices, icon: Mic2 },
-  { href: DASHBOARD_NAV[1].href, label: NAV.library, icon: Library },
-];
+const navItems = DASHBOARD_NAV.map((item) => ({
+  href: item.href,
+  label: item.href === VOICES_HREF ? NAV.voices : NAV.library,
+  icon: item.href === VOICES_HREF ? Mic2 : Library,
+}));
+
+function voicesIntent(href: string): { onMouseEnter?: () => void; onFocus?: () => void } {
+  if (href !== VOICES_HREF) return {};
+  const warm = () => warmVoices();
+  return { onMouseEnter: warm, onFocus: warm };
+}
 
 export function DashboardChrome({
   children,
@@ -23,6 +38,10 @@ export function DashboardChrome({
 }) {
   const pathname = usePathname();
   const identity = useViewerIdentity();
+
+  useEffect(() => {
+    warmJobs();
+  }, []);
 
   return (
     <div className="min-h-screen bg-background flex flex-col font-sans">
@@ -49,6 +68,7 @@ export function DashboardChrome({
                       key={item.href}
                       href={item.href}
                       prefetch={PREFETCH_SCREEN}
+                      {...voicesIntent(item.href)}
                       className={cn(
                         "text-sm transition-colors pb-0.5",
                         isActive
@@ -107,6 +127,7 @@ export function DashboardChrome({
                 key={item.href}
                 href={item.href}
                 prefetch={PREFETCH_SCREEN}
+                {...voicesIntent(item.href)}
                 className={cn(
                   "flex flex-col items-center gap-1 px-3 py-2 text-xs",
                   isActive ? "font-medium text-foreground" : "text-muted-foreground"

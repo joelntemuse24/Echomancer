@@ -2167,25 +2167,46 @@ the player. A stream still requires `uploads.status = ready`
 (`TEXT_NOT_READY` 409 while extracting).
 
 Moving between Home, Library, Voices, and a player does not wait on a
-server render of the viewer. Those shells are client pages. `GET /api/viewer`
-(`src/app/api/viewer/route.ts`) answers the header after paint: a signed-out
-cookie never touches Turso, and a signed-in one is a single user-row read.
-`src/components/navigation-warmup.tsx` starts that read, `GET /api/jobs`, and
-`GET /api/tts/voices` once per document. `src/lib/nav/screen-cache.ts` keeps
-the payloads for the tab, so the next click paints the heading and the list
-from memory and revalidates quietly. A library row is enough to paint the
-player title and, for a take-home, to start the file already listed. The
-detail request still loads chapters. The player reads its id from the
-pathname, so it does not suspend on `use(params)` into a spinner. The circled
-plus is a prefetched `Link` to `/` and is not rendered on Home. Voices and
-the player do not use `useSearchParams` around the whole screen, which had
-suspended into a spinner. The query string is read on the client
-(`useSyncExternalStore`), including `replaceState` for the clone tab. `GET /api/jobs` still releases expired take-home leases when
-the list contains one that is not ready, but that write runs in `after()`
-so it does not hold the JSON. Sign-in still reads `getViewerIdentity()` so a
-signed-in visitor is redirected before the form. Account uses the same
-viewer payload as the header. That helper no longer runs the jobs schema
-migrator first.
+server render of the viewer. Those shells are client pages. The first paint
+reads a non-HttpOnly `ec_signed_in` hint (`1` or `0`, no name or email)
+that the proxy sets from the already-verified session. An inline script
+sets `html[data-auth]` before paint, so Sign in and `PRIVACY.intro` show
+for a signed-out visitor without `GET /api/viewer`, and a signed-in visitor
+does not flash either. The header slot keeps its size. Unknown stays blank
+until the viewer answers. `GET /api/viewer` (`src/app/api/viewer/route.ts`)
+then fills the name: a signed-out cookie never touches Turso, and a
+signed-in one is a user-row read plus `isMarkupOperator`. A missing user
+row is still signed in, with a blank name. A database error is 503 and is
+not stored as signed out. The payload includes a `key` (a hash of the
+session id). When that key changes, the tab drops its screen cache.
+`src/components/navigation-warmup.tsx` starts only that viewer read. Jobs
+are warmed from Home and the dashboard chrome. Voices are warmed from the
+Voices page and from a hover or focus on the Voices link, because
+`GET /api/tts/voices` can start a GPU restore. `src/lib/nav/screen-cache.ts`
+paints the last payload immediately. A page mount always revalidates. The
+20s window only skips a second warmup. Editing the list locally does not
+refresh that timestamp. Creating, deleting, cancelling, or retrying a book
+drops the jobs entry, and a fresh list removes books that left it. A
+library row is enough to paint the player title and, for a take-home, to
+start the file already listed. A later 401, 403, or 404 clears that row
+and shows the error. A network or 5xx failure keeps the row and shows a
+notice. The detail request still loads chapters. The player reads its id
+from the pathname, so it does not suspend on `use(params)` into a spinner.
+The circled plus is a prefetched `Link` to `/` and is not rendered on Home.
+Library rows use the default prefetch. Voices and the player do not use
+`useSearchParams` around the whole screen, which had suspended into a
+spinner. The query string is read on the client (`useSyncExternalStore`).
+History updates notify on a microtask, because Next writes the URL in an
+insertion effect after the new page renders, and that includes
+`replaceState` for the clone tab. `GET /api/jobs` releases expired
+take-home leases when the list contains one that is queued, waiting, or
+processing. Failed and cancelled books do not sweep, and the sweep shares
+the 30s poll throttle. The write runs in `after()` so it does not hold the
+JSON. Sign-in still reads `getViewerIdentity()` so a signed-in visitor is
+redirected before the form. Account uses the same viewer payload as the
+header. That helper no longer runs the jobs schema migrator first. The
+viewer revalidates on focus and when the tab becomes visible, and a
+BroadcastChannel message asks other tabs to do the same.
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,

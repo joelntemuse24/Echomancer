@@ -3285,7 +3285,7 @@ export function resetPollSweepThrottle(): void {
   lastPollSweepAt = 0;
 }
 
-function pollSweepDue(now = Date.now()): boolean {
+export function pollSweepDue(now = Date.now()): boolean {
   if (lastPollSweepAt !== 0 && now - lastPollSweepAt < POLL_SWEEP_INTERVAL_MS) {
     return false;
   }

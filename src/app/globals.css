@@ -188,3 +188,22 @@ body {
 .glow-green {
   box-shadow: 0 0 20px rgba(122, 143, 126, 0.3);
 }
+
+/* Signed-in hint is on <html data-auth> before paint. The slot stays put. */
+.auth-slot {
+  min-width: 4.5rem;
+  min-height: 2.75rem;
+}
+.auth-pane {
+  display: none;
+}
+html[data-auth="out"] .auth-pane-out,
+html[data-auth="in"] .auth-pane-in {
+  display: contents;
+}
+.home-intro {
+  display: none;
+}
+html[data-auth="out"] .home-intro {
+  display: block;
+}
