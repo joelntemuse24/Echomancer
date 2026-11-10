@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
+import { NavigationWarmup } from "@/components/navigation-warmup";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
@@ -41,6 +42,7 @@ export default function RootLayout({
           enableSystem={false}
           disableTransitionOnChange={false}
         >
+          <NavigationWarmup />
           {children}
           <Toaster position="bottom-right" />
         </ThemeProvider>

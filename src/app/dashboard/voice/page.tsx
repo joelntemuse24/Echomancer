@@ -9,8 +9,10 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { cloneNameOrFallback } from "@/lib/clone-name";
 import {
@@ -39,7 +41,6 @@ import {
   VIDEO_AUDIO_DECODE_FAILED_MESSAGE,
 } from "@/lib/file-pick";
 import { toast } from "sonner";
-import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import { PreviewAudioController } from "@/lib/preview-audio";
 import {
@@ -66,7 +67,13 @@ import {
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
 import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
-import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
+import { CREATE_HREF, PREFETCH_SCREEN } from "@/lib/nav/routes";
+import { useClientSearchParams } from "@/lib/nav/client-search";
+import {
+  SCREEN_VOICES,
+  loadScreen,
+  peekScreen,
+} from "@/lib/nav/screen-cache";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import { duplicateCloneDateLabel } from "@/lib/clone-list-label";
@@ -93,6 +100,24 @@ import {
   type CloneSampleQualityReport,
 } from "@/lib/tts/clone-sample-quality";
 import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
+
+const YoutubeClipPicker = dynamic(
+  () =>
+    import("@/components/youtube-clip-picker").then((mod) => mod.YoutubeClipPicker),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-16" aria-busy="true">
+        <span className="sr-only">Loading</span>
+      </div>
+    ),
+  }
+);
+
+type VoicesPayload = {
+  voices?: CatalogVoice[];
+  fishCloneConfigured?: boolean;
+};
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -219,30 +244,19 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
 }
 
 export default function VoiceSelectionPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      }
-    >
-      <VoiceSelectionContent />
-    </Suspense>
-  );
-}
-
-function VoiceSelectionContent() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useClientSearchParams();
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
   const charCount = Number(searchParams.get("charCount") || "0");
   const uploadId =
     searchParams.get("uploadId") || uploadIdFromStoragePath(pdfPath) || "";
 
-  const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedVoices = peekScreen<VoicesPayload>(SCREEN_VOICES);
+  const [allVoices, setAllVoices] = useState<CatalogVoice[]>(
+    cachedVoices?.voices ?? []
+  );
+  const [loading, setLoading] = useState(!cachedVoices);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   /** After a clone, show only that voice until they ask for the rest. */
@@ -252,7 +266,11 @@ function VoiceSelectionContent() {
   const renameCancelRef = useRef(false);
   const [creating, setCreating] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
+  const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(
+    typeof cachedVoices?.fishCloneConfigured === "boolean"
+      ? cachedVoices.fishCloneConfigured
+      : null
+  );
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
@@ -321,7 +339,12 @@ function VoiceSelectionContent() {
       setNarratorSettled(true);
       return;
     }
-    if (extractStatus !== "ready") return;
+    // The query string is empty on the server render. Once the upload id
+    // arrives, this pass is still open so the waiting line can show.
+    if (extractStatus !== "ready") {
+      setNarratorSettled(false);
+      return;
+    }
     let cancelled = false;
     let timer = 0;
     let stopTimer = 0;
@@ -406,15 +429,28 @@ function VoiceSelectionContent() {
 
   useEffect(() => {
     const warmed: HTMLAudioElement[] = [];
-    for (const id of [...SLIM_STOCK_VOICE_IDS, "sowell"]) {
-      const url = stockPreviewUrl(id);
-      if (!url) continue;
-      const audio = new Audio();
-      audio.preload = "auto";
-      audio.src = url;
-      warmed.push(audio);
-    }
+    let cancelled = false;
+    const start = () => {
+      if (cancelled) return;
+      for (const id of [...SLIM_STOCK_VOICE_IDS, "sowell"]) {
+        const url = stockPreviewUrl(id);
+        if (!url) continue;
+        const audio = new Audio();
+        audio.preload = "auto";
+        audio.src = url;
+        warmed.push(audio);
+      }
+    };
+    // After the screen's own fetch. Preloading every sample on mount
+    // competed with the next navigation.
+    const idleId = window.requestIdleCallback
+      ? window.requestIdleCallback(start, { timeout: 2000 })
+      : null;
+    const timerId = idleId == null ? window.setTimeout(start, 200) : null;
     return () => {
+      cancelled = true;
+      if (idleId != null) window.cancelIdleCallback(idleId);
+      if (timerId != null) window.clearTimeout(timerId);
       for (const audio of warmed) audio.src = "";
     };
   }, []);
@@ -423,10 +459,13 @@ function VoiceSelectionContent() {
   void cooldownTick;
 
   useEffect(() => {
-    setLoading(true);
-    fetch("/api/tts/voices")
-      .then((r) => r.json())
+    let cancelled = false;
+    if (!peekScreen(SCREEN_VOICES)) setLoading(true);
+    loadScreen<VoicesPayload>(SCREEN_VOICES, "/api/tts/voices", {
+      force: voicesReloadToken > 0,
+    })
       .then((data) => {
+        if (cancelled) return;
         setAllVoices(data.voices || []);
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
@@ -434,8 +473,17 @@ function VoiceSelectionContent() {
             : null
         );
       })
-      .catch(() => toast.error("Couldn't load voices. Refresh and try again."))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled && !peekScreen(SCREEN_VOICES)) {
+          toast.error("Couldn't load voices. Refresh and try again.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [voicesReloadToken]);
 
   // The clone tab is client state with the URL param kept in step: switching
@@ -1176,7 +1224,7 @@ function VoiceSelectionContent() {
       }
     };
     return (
-      <motion.div key={voice.id} layout className="flex items-start gap-1 py-3">
+      <div key={voice.id} className="flex items-start gap-1 py-3">
         <div className="min-w-0 flex-1 text-left">
           {cloned ? (
             <div className={lineClass(isSelected)} style={{ fontWeight: 300 }}>
@@ -1318,7 +1366,7 @@ function VoiceSelectionContent() {
             )}
           </button>
         ) : null}
-      </motion.div>
+      </div>
     );
   };
 
@@ -1337,30 +1385,26 @@ function VoiceSelectionContent() {
 
   return (
     <div className="mx-auto max-w-xl px-2 pb-28 pt-10 font-sans md:pb-20">
-      <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-16 text-center"
-      >
+      <div className="mb-16 text-center">
         <h1
           className="font-serif text-5xl tracking-tight md:text-6xl"
           style={{ fontWeight: 300 }}
         >
           {VOICE_PATH.title}
         </h1>
-      </motion.div>
+      </div>
 
       {pdfName && (
         <div className="mb-10 flex justify-center">
-          <button
-            type="button"
+          <Link
+            href={CREATE_HREF}
+            prefetch={PREFETCH_SCREEN}
             aria-label={`Back, ${bookLinkLabel(pdfName)}`}
             className="inline-flex min-h-11 max-w-full touch-manipulation items-center gap-2 px-3 text-sm text-foreground/80 transition-colors hover:text-foreground"
-            onClick={() => router.push("/")}
           >
             <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{bookLinkLabel(pdfName)}</span>
-          </button>
+          </Link>
         </div>
       )}
       {extractStatus === "failed" && extractError ? (
@@ -1434,11 +1478,7 @@ function VoiceSelectionContent() {
       ) : null}
 
       {!soloVoice && activePath === "clone" && fishCloneConfigured && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mx-auto mb-6 mt-8 max-w-sm space-y-6"
-        >
+        <div className="mx-auto mb-6 mt-8 max-w-sm space-y-6">
           <p className="text-sm text-muted-foreground">{YOUTUBE_COPY.sampleGuide}</p>
           <YoutubeClipPicker
             disabled={cloning || creating}
@@ -1541,7 +1581,7 @@ function VoiceSelectionContent() {
               </p>
             </div>
           )}
-        </motion.div>
+        </div>
       )}
 
       {!soloVoice && activePath === "clone" && fishCloneConfigured === false && (

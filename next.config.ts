@@ -36,6 +36,7 @@ const TRIGGER_SDK = ["node_modules/@trigger.dev/**"];
 /** Routes that never parse a PDF/DOCX/EPUB and never call Trigger. */
 const SLIM_ROUTES = [
   "/api/auth/**",
+  "/api/viewer",
   "/api/cron/**",
   "/api/health",
   "/api/storage/**",

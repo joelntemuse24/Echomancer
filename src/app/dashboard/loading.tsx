@@ -1,25 +1,15 @@
-import { Loader2 } from "lucide-react";
-
-/** Shown while a dashboard route's first payload is on the wire. */
+/**
+ * Shown only while the next dashboard segment's code is still arriving.
+ * A short bar, not a fake list: the real page paints its own heading, and
+ * a skeleton that doesn't match that heading reads as a flash.
+ */
 export default function DashboardLoading() {
   return (
     <div
-      className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans"
+      className="mx-auto w-full min-w-0 max-w-3xl pb-16"
       aria-busy="true"
-      aria-live="polite"
     >
-      <div className="h-12 w-48 animate-pulse rounded-sm bg-accent/60" />
-      <div className="space-y-4">
-        {[0, 1, 2].map((row) => (
-          <div
-            key={row}
-            className="h-24 w-full animate-pulse rounded-sm border border-border/20 bg-accent/20"
-          />
-        ))}
-      </div>
-      <div className="flex justify-center">
-        <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-muted-foreground" />
-      </div>
+      <div className="h-12 w-40 rounded-sm bg-accent/40" />
       <span className="sr-only">Loading</span>
     </div>
   );

@@ -12,8 +12,8 @@ async function bundle(entryPoints, navigation = false) {
         build.onResolve({ filter: /^next\/(navigation|link)$/ }, (args) => ({ path: args.path, namespace: "next-stub" }));
         build.onLoad({ filter: /.*/, namespace: "next-stub" }, (args) => ({
           contents: args.path === "next/navigation"
-            ? 'export const useRouter = () => ({ push() {} }); export const useSearchParams = () => new URLSearchParams(location.search);'
-            : 'import React from "react"; export default function Link({href,children,...props}) {return React.createElement("a",{href,...props},children)}',
+            ? 'export const useRouter = () => ({ push() {} }); export const usePathname = () => "/dashboard/player/audit-book"; export const useSearchParams = () => new URLSearchParams(location.search);'
+            : 'import React from "react"; export default function Link({href,children,prefetch,...props}) {return React.createElement("a",{href,...props},children)}',
           loader: "js", resolveDir: process.cwd(),
         }));
       },

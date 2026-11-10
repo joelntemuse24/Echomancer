@@ -2166,6 +2166,27 @@ upload id exists. One `waitForUploadExtract` poller runs on the voice step
 the player. A stream still requires `uploads.status = ready`
 (`TEXT_NOT_READY` 409 while extracting).
 
+Moving between Home, Library, Voices, and a player does not wait on a
+server render of the viewer. Those shells are client pages. `GET /api/viewer`
+(`src/app/api/viewer/route.ts`) answers the header after paint: a signed-out
+cookie never touches Turso, and a signed-in one is a single user-row read.
+`src/components/navigation-warmup.tsx` starts that read, `GET /api/jobs`, and
+`GET /api/tts/voices` once per document. `src/lib/nav/screen-cache.ts` keeps
+the payloads for the tab, so the next click paints the heading and the list
+from memory and revalidates quietly. A library row is enough to paint the
+player title and, for a take-home, to start the file already listed. The
+detail request still loads chapters. The player reads its id from the
+pathname, so it does not suspend on `use(params)` into a spinner. The circled
+plus is a prefetched `Link` to `/` and is not rendered on Home. Voices and
+the player do not use `useSearchParams` around the whole screen, which had
+suspended into a spinner. The query string is read on the client
+(`useSyncExternalStore`), including `replaceState` for the clone tab. `GET /api/jobs` still releases expired take-home leases when
+the list contains one that is not ready, but that write runs in `after()`
+so it does not hold the JSON. Sign-in still reads `getViewerIdentity()` so a
+signed-in visitor is redirected before the form. Account uses the same
+viewer payload as the header. That helper no longer runs the jobs schema
+migrator first.
+
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.

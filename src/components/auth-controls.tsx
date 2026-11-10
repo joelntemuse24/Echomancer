@@ -15,11 +15,12 @@ export function AuthControls({
   callbackUrl,
   menu = true,
 }: {
-  identity: ViewerIdentity;
+  identity: ViewerIdentity | null;
   callbackUrl?: string;
   /** Signed out: open a small menu from "Sign in" instead of signing in directly. */
   menu?: boolean;
 }) {
+  if (!identity) return null;
   if (!identity.googleEnabled && !identity.emailEnabled) return null;
   if (identity.signedIn) {
     return <AccountMenu identity={identity} />;

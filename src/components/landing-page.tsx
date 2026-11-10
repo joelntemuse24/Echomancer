@@ -6,8 +6,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AuthControls } from "@/components/auth-controls";
+import { useViewerIdentity } from "@/components/viewer-identity";
 import { Wordmark } from "@/components/wordmark";
-import type { ViewerIdentity } from "@/lib/auth/identity";
 import {
   SUPPORTED_DOCUMENT_ACCEPT,
 } from "@/lib/document-formats";
@@ -18,13 +18,15 @@ import {
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
+import { LIBRARY_HREF, PREFETCH_SCREEN, VOICES_HREF } from "@/lib/nav/routes";
 import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
 
-export function LandingPage({ identity }: { identity: ViewerIdentity }) {
+export function LandingPage() {
   const router = useRouter();
+  const identity = useViewerIdentity();
   const [mode, setMode] = useState<IntakeMode>("document");
   const [bookFile, setBookFile] = useState<File | null>(null);
   const [bookReading, setBookReading] = useState(false);
@@ -208,13 +210,15 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
       <nav className="flex items-center justify-end gap-6 px-8 py-8 font-sans">
         <Link
-          href="/dashboard/voice"
+          href={VOICES_HREF}
+          prefetch={PREFETCH_SCREEN}
           className="text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           {NAV.voices}
         </Link>
         <Link
-          href="/dashboard/queue"
+          href={LIBRARY_HREF}
+          prefetch={PREFETCH_SCREEN}
           className="text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           {NAV.library}
@@ -228,7 +232,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
             <h1>
               <Wordmark size="hero" />
             </h1>
-            {!identity.signedIn ? (
+            {identity && !identity.signedIn ? (
               <p className="mt-6 font-sans text-sm text-muted-foreground">
                 {PRIVACY.intro}
               </p>
