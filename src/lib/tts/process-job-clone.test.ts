@@ -615,7 +615,7 @@ describe("lane staging", () => {
           (item: { key: string }) => Number(item.key)
         );
         batchCalls.push(keys);
-        // Both attempts at section 0 miss the restore budget.
+        // The worker drops this wait. The handler would still be rendering.
         throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -625,9 +625,11 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
-      // Section 0 and its one retry. Sections 1..N never open a lane: on a pool
-      // that could not restore one call, four calls are four more failures.
-      expect(batchCalls.length).toBe(2);
+      // The worker dropped the HTTP wait. The sync handler keeps rendering
+      // section 0, so those sections are not posted again in this dispatch
+      // (a second POST would be another container and a second bill).
+      // Sections 1..N never open a lane either.
+      expect(batchCalls.length).toBe(1);
       for (const keys of batchCalls) expect(keys).toEqual([0]);
       expect(result.deferred).toBe(true);
       // Book keeps its narrator and the compile is finished off this path.

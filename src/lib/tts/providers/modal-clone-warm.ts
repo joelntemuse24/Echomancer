@@ -11,17 +11,21 @@
  * - **A cold placement** (`prewarm: false`). The 150 s budget was spent, so a
  *   compile may be in progress. This one is allowed to sit through it, because
  *   the book has already parked.
- * - **A book that is about to need GPUs** (`prewarm: true`, from enqueue and
- *   from the start of a clone tick). The 150 s restore budget is too long to
- *   spend watching a compile, and a book that starts a few seconds after this
- *   book would otherwise pay its own restore. This one starts the restore
- *   *now* so the container is already mid-restore when the first call lands,
- *   and it never waits.
+ * - **A book that is about to need a GPU** (`prewarm: true`). A book-start
+ *   call passes `jobId`. That book's restore starts even when another book
+ *   prewarmed seconds ago, and it still refuses when `modal_gpu_leases` is
+ *   already at `MODAL_S2_MAX_GPUS` or that user's cap. Voice-list and extract
+ *   prewarms pass no job id and stay on the shared 3-minute clock, so they
+ *   do not stack a second container on one that just started.
  *
- * One kick at a time. A compile is 8–16 min; stacking them is how the October
- * run spent a fleet of H100s on the same cold boot.
+ * A compile kick stays one per process. A compile is 8–16 min; stacking them
+ * is how the October run spent a fleet of H100s on the same cold boot.
  */
 import { spawn } from "node:child_process";
+import {
+  modalCloneMaxGpus,
+  modalCloneMaxGpusPerUser,
+} from "@/lib/tts/providers/modal-gpu-lease";
 
 /** Long enough that a second book does not start a second compile. */
 export const MODAL_CLONE_WARM_COOLDOWN_MS = 20 * 60_000;
@@ -58,11 +62,25 @@ type Spawner = (command: string, args: string[], cwd: string) => void;
 let spawner: Spawner = defaultSpawn;
 let nextKickAt = 0;
 let nextPreWarmAt = 0;
+/** Book-start restores. A second book is not swallowed by the first. */
+const prewarmAtByJob = new Map<string, number>();
 let loggedUnconfigured = false;
+
+export type ModalClonePrewarmOptions = {
+  jobId?: string;
+  userId?: string;
+  /**
+   * Live `modal_gpu_leases` rows. Omitted (a ledger the worker could not
+   * read, or a unit test of the clock) skips the cap. Passed and already
+   * at the ceiling, the kick does not start another restore.
+   */
+  leases?: ReadonlyArray<{ jobId: string; userId: string }>;
+};
 
 export function resetModalCloneWarmForTests(): void {
   nextKickAt = 0;
   nextPreWarmAt = 0;
+  prewarmAtByJob.clear();
   loggedUnconfigured = false;
   spawner = defaultSpawn;
 }
@@ -111,26 +129,53 @@ export function kickModalCloneSnapshotWarm(reason: string, now = Date.now()): bo
  */
 export function prewarmModalCloneSnapshot(
   reason: string,
-  now = Date.now()
+  now = Date.now(),
+  opts?: ModalClonePrewarmOptions
 ): boolean {
-  return startWarm(reason, now, "prewarm");
+  return startWarm(reason, now, "prewarm", opts);
+}
+
+/**
+ * A book-start restore still has to fit under the GPU ceiling. The lease
+ * rows are the shared count across workers. No rows means the caller did
+ * not ask for the check.
+ */
+function prewarmWithinGpuCap(opts: ModalClonePrewarmOptions): boolean {
+  if (!opts.leases) return true;
+  if (opts.leases.length >= modalCloneMaxGpus()) return false;
+  if (opts.userId) {
+    const used = opts.leases.filter((row) => row.userId === opts.userId).length;
+    if (used >= modalCloneMaxGpusPerUser()) return false;
+  }
+  return true;
 }
 
 function startWarm(
   reason: string,
   now: number,
-  kind: "kick" | "prewarm"
+  kind: "kick" | "prewarm",
+  opts?: ModalClonePrewarmOptions
 ): boolean {
   if (process.env.MODAL_S2_WARM_HOOK === "0") return false;
+  const jobId = kind === "prewarm" ? opts?.jobId : undefined;
   const cooldown =
     kind === "prewarm"
       ? MODAL_CLONE_PREWARM_COOLDOWN_MS
       : MODAL_CLONE_WARM_COOLDOWN_MS;
-  // A pre-warm must not be swallowed by a long compile cooldown, and a compile
-  // kick must not be swallowed by a recent pre-warm: they are different jobs.
-  // Either one claims both clocks, so the book never starts two restores at
-  // once, but a pre-warm is allowed after the shorter pre-warm cooldown.
-  if (now < (kind === "prewarm" ? nextPreWarmAt : nextKickAt)) return false;
+  if (jobId) {
+    // This book's own clock. Another book's prewarm, and the compile
+    // kick's clock, do not hold it. The GPU cap is the bound.
+    if (now < (prewarmAtByJob.get(jobId) ?? 0)) return false;
+    if (opts && !prewarmWithinGpuCap(opts)) {
+      console.log(`[modal-clone] pre-warm skipped (${reason}): GPU cap`);
+      return false;
+    }
+  } else if (now < (kind === "prewarm" ? nextPreWarmAt : nextKickAt)) {
+    // Voice-list and extract prewarms share one clock. A compile kick
+    // claims that clock too, so those prewarms do not stack on it. A kick
+    // reads only its own clock, so a recent prewarm does not cancel it.
+    return false;
+  }
   if (!modalCloneWarmConfigured()) {
     if (!loggedUnconfigured) {
       loggedUnconfigured = true;
@@ -140,9 +185,24 @@ function startWarm(
     }
     return false;
   }
-  // Claim the cooldown before spawn so parallel lanes share one RPC.
-  nextPreWarmAt = now + Math.max(cooldown, MODAL_CLONE_PREWARM_COOLDOWN_MS);
-  if (kind === "kick") nextKickAt = now + MODAL_CLONE_WARM_COOLDOWN_MS;
+  // Claim the cooldown before spawn so a repeat of this same kick shares
+  // one RPC. A job-scoped prewarm also moves the shared clock, so the
+  // voice list does not stack a container on a book that just started.
+  // It does not move the compile clock, and it does not block another book.
+  if (jobId) {
+    prewarmAtByJob.set(jobId, now + MODAL_CLONE_PREWARM_COOLDOWN_MS);
+    if (prewarmAtByJob.size > 4_000) {
+      const oldest = prewarmAtByJob.keys().next().value;
+      if (oldest) prewarmAtByJob.delete(oldest);
+    }
+    nextPreWarmAt = Math.max(
+      nextPreWarmAt,
+      now + MODAL_CLONE_PREWARM_COOLDOWN_MS
+    );
+  } else {
+    nextPreWarmAt = now + Math.max(cooldown, MODAL_CLONE_PREWARM_COOLDOWN_MS);
+    if (kind === "kick") nextKickAt = now + MODAL_CLONE_WARM_COOLDOWN_MS;
+  }
   const cwd = process.env.MODAL_S2_WARM_CWD?.trim() || process.cwd();
   try {
     const custom = process.env.MODAL_S2_WARM_CMD?.trim();

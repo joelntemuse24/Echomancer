@@ -44,7 +44,7 @@ import {
   ModalCloneColdError,
   ModalCloneProviderError,
   ModalCloneReferenceError,
-  modalClonePoolIsWarm,
+  modalCloneBookContainerWarm,
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
@@ -78,6 +78,7 @@ import {
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   admitModalCloneGpu,
+  listLiveModalGpuLeases,
   releaseModalGpuLease,
   releaseModalGpuLeasesForOwner,
   renewModalGpuLeases,
@@ -1108,6 +1109,29 @@ async function writeWithLease(
   if (result.rowsAffected === 0) throw new LeaseLostError(jobId);
 }
 
+/**
+ * Start this book's restore. Keyed by job id, so a second book is not
+ * swallowed by the first book's 3-minute clock. The live lease rows are
+ * the GPU cap. A ledger the worker cannot read is omitted, and the kick
+ * then has no cap check rather than refusing every book.
+ */
+async function prewarmCloneBook(
+  jobId: string,
+  userId: string,
+  reason: string
+): Promise<void> {
+  let leases: Awaited<ReturnType<typeof listLiveModalGpuLeases>> | undefined;
+  try {
+    leases = await listLiveModalGpuLeases();
+  } catch (err) {
+    console.warn(
+      `[Job ${jobId}] GPU lease ledger unreadable; prewarm cap skipped`,
+      err instanceof Error ? err.message : err
+    );
+  }
+  prewarmModalCloneSnapshot(reason, Date.now(), { jobId, userId, leases });
+}
+
 export async function processTakehomeTick(
   jobId: string,
   opts?: { deadlineMs?: number; sectionsPerTick?: number }
@@ -1269,7 +1293,7 @@ async function runClaimedTick(
           : 0,
     })
   ) {
-    prewarmModalCloneSnapshot(`book ${jobId} is starting`);
+    await prewarmCloneBook(jobId, job.user_id, `book ${jobId} is starting`);
   }
 
   // A job may be created while its upload is still extracting, so the first
@@ -2147,7 +2171,7 @@ async function runClaimedTick(
                       firstLight: !otherPlay.started,
                     },
                   ],
-                  poolWarm: modalClonePoolIsWarm(),
+                  poolWarm: modalCloneBookContainerWarm(jobId),
                   batch,
                 });
                 if (turn.bookId !== jobId || !turn.call) {
@@ -2185,7 +2209,11 @@ async function runClaimedTick(
               uncachedRenderCount: render.length,
             })
           ) {
-            prewarmModalCloneSnapshot(`book ${jobId} has uncached narration`);
+            await prewarmCloneBook(
+              jobId,
+              job.user_id,
+              `book ${jobId} has uncached narration`
+            );
           }
           if (gpuIndexes.length > 0) bookWaveAttempted = true;
           const renderPromise =
@@ -2201,6 +2229,7 @@ async function runClaimedTick(
                     seedEpoch,
                     firstLight: needsFirstLight && gpuIndexes[0] === 0,
                     bookWave: true,
+                    jobId,
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
                     maxCalls: oneCall ? 1 : undefined,
@@ -2346,9 +2375,11 @@ async function runClaimedTick(
               if (fresh.length > 0) await enqueuePublish(fresh);
             }
             // Once a book wave was attempted, this tick does not POST again.
-            // A 429, a thrown call, or a batch that dropped every row used
-            // to fall through into per-section synthesizeModalClone, which
-            // holds up to modalCloneLanes() slots and starts more H100s.
+            // A client timeout leaves the sync Modal handler rendering;
+            // dispatch does not send those sections again, and the per-job
+            // backoff holds the next POST. A 429 is busy, not cold. Falling
+            // through into per-section synthesizeModalClone used to hold up
+            // to modalCloneLanes() slots and start more H100s.
             if (
               dispatch &&
               !dispatch.cold &&
@@ -3414,6 +3445,9 @@ export async function runTakehomeWave(
         return { deferred: false, changed: true, yieldSlot: true };
       }
       if (result.deferred) {
+        // A cold park returns here. This invocation does not claim the book
+        // again and post the same sections while an aborted call is still
+        // rendering on Modal. The per-job backoff is in this process.
         console.log(
           `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
         );
