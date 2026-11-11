@@ -413,18 +413,29 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
 - **One H100, filled.** `min_containers` stays 0. A book does not keep a GPU
   waiting, and it does not open a second one. `planModalCloneBookWave` sends
   one call at a time. The first call of a book is section 0, cold-sized
-  (`modalLaneCharCap`, 8,000 characters, restore budget). Once that container
-  has answered, later calls fill one batch (default 24 sections, engine batch
-  32) while the answer is inside the scaledown hold
-  (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production 180s
-  scaledown). A longer gap is one cold-sized call again, then fat batches
-  resume. Warmth is in-process memory: a worker restart costs one cold call.
-  Two books on the default worker alternate waves. They do not POST together.
-  Each wave is section 0 (when that book has not played) plus at most one fat
-  batch, then the worker yields if another take-home is queued. The other
-  book's own first call is still one section, even if the pool is already
-  warm. A second worker can still hold a second slot (`modalCloneLanes()`
-  stays 4); with `S2C_MAX_CONTAINERS=1` that POST gets 429. Do not raise the
+  (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
+  every row together, so the time until the next audio is the whole call.
+  Each later call is the largest prefix that finishes, with margin, before
+  the audio already buffered ahead of a 1× listener runs out. A single row
+  is ~50 chars/s. A wider call is packed at 150 chars/s, plus warm prep
+  (5s; the container has cached the reference), transfer at 4 MiB/s, and
+  publish. One row is legal when it finishes strictly before the buffer
+  ends. A wider call also keeps `cloneRampSlackMs` (at least 4s, or 10% of
+  the buffer). The prefix grows as that buffer grows — after an 800-character
+  section 0 the next call is one 2,000-character row, then 8, then full
+  batches of 24 — and the next call starts when the previous one returns.
+  Playback does not stall once it has started. A gap longer than the
+  scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
+  180s scaledown) is one cold-sized call again, then the ramp resumes.
+  Warmth is in-process memory: a worker restart costs one cold call.
+  Two books share the GPU. They do not POST together. A book that has not
+  started gets the next call once every listener who has already started
+  can spare that one section and still cover their own next row. After
+  that, the book closer to a stall is served, and a call is sent only when
+  it also leaves the other listener enough audio for their next section.
+  The second book's first call is still one section, even on a warm pool.
+  A second worker can still hold a second slot (`modalCloneLanes()` stays
+  4); with `S2C_MAX_CONTAINERS=1` that POST gets 429. Do not raise the
   autoscaler to 4 to "use" that slot.
 - **Rows per call, not lanes, is the throughput knob — but a call must also
   finish.** A container decodes every row of a call in one batch: measured
@@ -433,9 +444,11 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   measurement. Warm calls are packed at **150 chars/s**
   (`MODAL_LANE_WARM_PACK_CHARS_PER_SECOND`): just above the unfinished 4-row
   floor on `job 7e4a8b48` (≥127 chars/s) and well under 525. The HTTP wait is
-  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill. 24 sections
-  of 2,000 characters is 48,000 characters: 320s at the packing rate, about
-  91s if 525 holds. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
+  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill. A full
+  batch of 24 sections of 2,000 characters is 48,000 characters: 320s at the
+  packing rate plus prep and transfer, about 349s, under the 400s wait and
+  about 68MB of base64. The ramp sends that call only once the listener's
+  buffer covers it. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
   31k characters. On `job db10a6d6` the old round-robin split made 5 sections
   into four 1-row calls on one container (`36459a5cb16f`), so 246s of audio
@@ -487,12 +500,12 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   batches section 0 beside a neighbour holds the first audio back until that
   neighbour is done too. The first tick that can deliver it renders section 0
   on one lane, publishes it (master, upload, `segments_json`,
-  `first_section_at`), and only then sends one warm batch on that same GPU.
-  If section 0 cannot be placed, the fat batch is skipped. A pool that just
-  missed one restore will miss a 24-row call too. `MODAL_S2_FIRST_LIGHT=0`
+  `first_section_at`), and only then starts the ramp on that same GPU.
+  If section 0 cannot be placed, the ramp is skipped. A pool that just
+  missed one restore will miss a wider call too. `MODAL_S2_FIRST_LIGHT=0`
   skips the dedicated section-0 call. The tick is then one cold-sized call,
-  or one warm batch if the pool has already answered. It does not open four
-  containers. Section 0's take is cached under
+  or the same buffer ramp if the pool has already answered. It does not
+  open four containers. Section 0's take is cached under
   `takehomeSectionCacheKey(index, attempt)`, which owns the section-0
   `balanced` latency and the per-engine variant; the lane prefetch and the
   per-section read must both use it, or a prefetched take is stored where

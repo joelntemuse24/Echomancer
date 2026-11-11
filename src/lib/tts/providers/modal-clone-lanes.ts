@@ -25,9 +25,12 @@
  * 84s of GPU wall, **2.93x realtime**. Section 0 — the only section the player
  * can start with — was last of the four, at +141s.
  *
- * So the plan fills each call toward `batch` before opening the next, and the
- * batch size is the real concurrency knob. `lanes` stays the cap on how many
- * calls a book may have in flight.
+ * So the cold packer fills each call toward `batch` before opening the next,
+ * and the batch size is the real concurrency knob. `lanes` stays the cap on
+ * how many calls a book may have in flight. Once the container has answered,
+ * `planModalCloneBookWave` does not jump to that full batch: each next call
+ * is only as large as the audio already buffered ahead of the listener can
+ * cover, and the calls run back to back on the one GPU.
  *
  * ## …but a call must also finish
  *
@@ -45,6 +48,7 @@ import {
   CLONE_CHARS_PER_AUDIO_MINUTE,
   MODAL_CLONE_CALL_PREP_MS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
+  MODAL_CLONE_PROXY_KILL_MS,
   modalCloneColdWaitMs,
   modalCloneFirstLightWaitMs,
   modalCloneWarmHoldMs,
@@ -329,6 +333,111 @@ export function clonePoolStillWarm(
 }
 
 /**
+ * Prep still paid on a warm call.
+ *
+ * The cold prep constant is 20s and includes the first reference encode.
+ * The container caches that clip (`_resolve_reference`), so a follow-up
+ * call does not encode it again. 5s covers the prompt build and the HTTP
+ * round trip that remain. A cold call's character cap still uses the 20s
+ * constant; this one is only the listener-facing wall.
+ */
+export const MODAL_CLONE_WARM_PREP_MS = 5_000;
+
+/** Encode and prompt that still sit on a cold call after the snapshot is up. */
+export const MODAL_CLONE_COLD_FOLLOW_PREP_MS = 12_000;
+
+/** Measured snapshot restore. Time-to-first-audio only, not the HTTP cap. */
+export const MODAL_CLONE_RESTORE_EXPECTED_MS = 57_000;
+
+/**
+ * Master and upload before the listener can hear a call.
+ *
+ * One section is a couple of ffmpeg passes. A wider call adds a little
+ * more, and the dispatch overlaps that work with the next GPU call. The
+ * planner does not take the overlap as credit: the wall includes this,
+ * so the buffer check still holds if publish is on the critical path.
+ */
+export const MODAL_CLONE_PUBLISH_BASE_MS = 3_000;
+export const MODAL_CLONE_PUBLISH_PER_EXTRA_ROW_MS = 200;
+export const MODAL_CLONE_PUBLISH_MAX_MS = 8_000;
+
+/** Conservative download of the base64 body. 4 MiB/s. */
+export const MODAL_CLONE_TRANSFER_BYTES_PER_SEC = 4 * 1024 * 1024;
+
+/**
+ * Spare audio required before a call may grow past one row.
+ * A single row is legal whenever it finishes strictly before the buffer
+ * runs out. Growing the batch needs this margin on top.
+ */
+export const MODAL_CLONE_RAMP_SLACK_MIN_MS = 4_000;
+export const MODAL_CLONE_RAMP_SLACK_RATIO = 0.1;
+
+/** Narration milliseconds of `chars` at 900 characters per audio minute. */
+export function cloneAudioMs(chars: number): number {
+  return (Math.max(0, chars) / CLONE_CHARS_PER_AUDIO_MINUTE) * 60_000;
+}
+
+export function clonePublishOverheadMs(rows: number): number {
+  const n = Math.max(1, Math.floor(rows) || 1);
+  return Math.min(
+    MODAL_CLONE_PUBLISH_MAX_MS,
+    MODAL_CLONE_PUBLISH_BASE_MS +
+      Math.max(0, n - 1) * MODAL_CLONE_PUBLISH_PER_EXTRA_ROW_MS
+  );
+}
+
+export function cloneTransferMs(chars: number): number {
+  const bytes = estimateCloneBatchJsonBytes(chars);
+  return Math.ceil((bytes / MODAL_CLONE_TRANSFER_BYTES_PER_SEC) * 1000);
+}
+
+export function cloneRampSlackMs(bufferMs: number): number {
+  return Math.max(
+    MODAL_CLONE_RAMP_SLACK_MIN_MS,
+    Math.ceil(Math.max(0, bufferMs) * MODAL_CLONE_RAMP_SLACK_RATIO)
+  );
+}
+
+/**
+ * Listener-facing wall of one call.
+ *
+ * A batch returns every row together, so this is the whole call: restore
+ * (only when this call is the one that brings the container up), generation
+ * at the worse of the aggregate rate and the 50 chars/s row rate, prep,
+ * transfer, and publish. The HTTP cap is a separate number (`waitMs`).
+ */
+export function cloneCallWallMs(input: {
+  chars: number;
+  largestRow: number;
+  rows: number;
+  shape: CloneWaveShape;
+  restore: boolean;
+}): number {
+  const rate =
+    input.shape === "warm"
+      ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND
+      : MODAL_LANE_CHARS_PER_SECOND;
+  const work = modalLaneWorkMs(input.chars, input.largestRow, rate);
+  const prep =
+    input.shape === "warm" ? MODAL_CLONE_WARM_PREP_MS : MODAL_CLONE_COLD_FOLLOW_PREP_MS;
+  const restore = input.restore ? MODAL_CLONE_RESTORE_EXPECTED_MS : 0;
+  return (
+    restore + work + prep + clonePublishOverheadMs(input.rows) + cloneTransferMs(input.chars)
+  );
+}
+
+/**
+ * True when this call finishes before a 1x listener runs out of audio
+ * already delivered. One row needs any positive spare. A wider call also
+ * needs {@link cloneRampSlackMs}.
+ */
+export function cloneCallFitsBuffer(wallMs: number, bufferMs: number, rows: number): boolean {
+  if (!(bufferMs > 0) || !(wallMs >= 0)) return false;
+  if (rows <= 1) return wallMs < bufferMs;
+  return wallMs + cloneRampSlackMs(bufferMs) <= bufferMs;
+}
+
+/**
  * Per-section character target for the Modal clone path.
  *
  * Section sizes were the other half of `job 7e4a8b48`. That book packed at
@@ -387,6 +496,21 @@ export type CloneWaveCall = {
   workMs: number;
   /** HTTP wait this call is allowed. A warm wait is the full warm budget. */
   waitMs: number;
+  /**
+   * Wall from dispatch until this audio can be heard. A batch returns every
+   * row together, so this is the whole call, not one row of it.
+   */
+  wallMs: number;
+  /** Audio this call adds once it returns. */
+  audioMs: number;
+  /** Buffered audio ahead of the listener when this call is dispatched. */
+  bufferAtDispatchMs: number;
+  /**
+   * False when the listener is already playing and this call runs longer
+   * than the audio they have left. The ramp does not plan that on purpose.
+   * A cold restore that is the only way forward can still be one.
+   */
+  fitsBuffer: boolean;
 };
 
 export type CloneBookWavePlan = {
@@ -394,118 +518,735 @@ export type CloneBookWavePlan = {
   deferred: number[];
   /** One restored GPU. Calls in `calls` run in order, never together. */
   parallelLanes: 1;
+  /** Listener buffer after every call in this plan has returned. */
+  bufferAfterMs: number;
+  /** True once this plan has delivered audio the listener can start on. */
+  playbackStarted: boolean;
 };
 
-/**
- * One book's next GPU calls.
- *
- * The first section of a book is its own cold-sized call, so a restore can
- * finish and the listener hears audio before a full batch is in flight.
- * The call after that — in this same plan, and only sent once the first one
- * has returned — fills one batch. A later tick does the same while
- * `poolWarm` is set. When the container has been idle longer than
- * scaledown, the tick is one cold-sized call again and the rest waits.
- *
- * `gpuBusy` means another book already has this GPU. Nothing is sent.
- */
-export function planModalCloneBookWave(input: {
+export type CloneBookWaveInput = {
   pending: number[];
   textAt: (index: number) => string;
   firstLight: boolean;
   poolWarm: boolean;
   batch: number;
   gpuBusy?: boolean;
+  /**
+   * Audio already delivered and not yet played, at 1×. Omit on the first
+   * call of a book. A later tick that omits this is treated as no buffer,
+   * so it does not jump to a 24-row call.
+   */
+  bufferedMs?: number;
+  /** The listener has already heard audio from this book. */
+  playbackStarted?: boolean;
+  /** Stop after this many calls. One, when the GPU has to be handed back. */
+  maxCalls?: number;
   env?: NodeJS.ProcessEnv;
-}): CloneBookWavePlan {
+};
+
+type ListenerState = {
+  started: boolean;
+  buffer: number;
+};
+
+/**
+ * One book's next GPU calls.
+ *
+ * The first section is its own call, so a restore can finish and the
+ * listener has something to play. Each call after that is the largest
+ * prefix that finishes, with margin, before that buffered audio runs out.
+ * A batch returns every row together, so the time-to-next-audio is the
+ * whole call. The prefix grows as the buffer grows — one row, then a
+ * handful, then a full batch — and the calls run back to back.
+ *
+ * A listener who has not started yet does not constrain the first call.
+ * When the container has been idle longer than scaledown, the tick is one
+ * cold-sized call and the rest waits. The ramp starts again on the tick
+ * after that call returns.
+ *
+ * `gpuBusy` means another book already has this GPU. Nothing is sent.
+ */
+export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWavePlan {
   const env = input.env ?? process.env;
   const pending = [...input.pending].sort((a, b) => a - b);
+  const state: ListenerState = {
+    started: input.playbackStarted === true,
+    buffer: input.playbackStarted === true ? Math.max(0, input.bufferedMs ?? 0) : 0,
+  };
   if (input.gpuBusy || pending.length === 0) {
-    return { calls: [], deferred: pending, parallelLanes: 1 };
+    return {
+      calls: [],
+      deferred: pending,
+      parallelLanes: 1,
+      bufferAfterMs: state.buffer,
+      playbackStarted: state.started,
+    };
   }
+
   const calls: CloneWaveCall[] = [];
   let rest = pending;
-  if (input.firstLight) {
+  const batch = Math.max(1, Math.floor(input.batch));
+  const maxCalls =
+    typeof input.maxCalls === "number" && input.maxCalls > 0
+      ? Math.floor(input.maxCalls)
+      : Number.POSITIVE_INFINITY;
+
+  if (input.firstLight && rest.length > 0 && calls.length < maxCalls) {
     const head = rest[0]!;
     rest = rest.slice(1);
-    calls.push(describeCloneWaveCall([head], "cold", true, input.textAt, env));
+    pushCall(calls, state, describeCloneWaveCall({
+      indexes: [head],
+      shape: "cold",
+      firstLight: true,
+      restore: !input.poolWarm,
+      textAt: input.textAt,
+      env,
+      state,
+    }));
   }
-  let deferred: number[] = [];
-  if (rest.length > 0) {
-    // The first-light call is what restores the container. The call planned
-    // after it is the fat batch, and it is only sent once that call returns.
-    const warm = input.firstLight || input.poolWarm;
+
+  // The container is cold and this tick is not the one that plays section 0.
+  // One small call, then stop. The ramp waits until that call has returned
+  // and the next tick sees a warm pool. Planning a fat tail behind a restore
+  // that might not happen is how a book pays for the same rows twice.
+  if (!input.firstLight && !input.poolWarm && rest.length > 0 && calls.length < maxCalls) {
     const packed = planModalCloneLanes({
       pending: rest,
       textAt: input.textAt,
-      limits: {
-        lanes: 1,
-        batch: input.batch,
-        maxLaneChars: warm ? modalWarmLaneCharLimit(env) : modalLaneCharLimit(env),
-      },
+      limits: { lanes: 1, batch, maxLaneChars: modalLaneCharLimit(env) },
     });
     const lane = packed.lanes[0];
     if (lane && lane.length > 0) {
-      calls.push(describeCloneWaveCall(lane, warm ? "warm" : "cold", false, input.textAt, env));
+      pushCall(calls, state, describeCloneWaveCall({
+        indexes: lane,
+        shape: "cold",
+        firstLight: false,
+        restore: true,
+        textAt: input.textAt,
+        env,
+        state,
+      }));
+      rest = packed.deferred;
     }
-    deferred = packed.deferred;
+    return finishPlan(calls, rest, state);
   }
-  return { calls, deferred, parallelLanes: 1 };
+
+  const warm = input.firstLight || input.poolWarm;
+  if (warm) {
+    while (rest.length > 0 && calls.length < maxCalls) {
+      const prefix = largestWarmPrefix(rest, state, batch, input.textAt, env);
+      // No prefix means even one row overruns the buffer. Send that row
+      // anyway when the listener is already waiting on it: it is the only
+      // way the book moves, and the playback sim records the stall.
+      // Before the listener has started, one row is the first audio.
+      const indexes = prefix ?? [rest[0]!];
+      pushCall(calls, state, describeCloneWaveCall({
+        indexes,
+        shape: "warm",
+        firstLight: false,
+        restore: false,
+        textAt: input.textAt,
+        env,
+        state,
+        fitsBuffer: prefix != null || !state.started,
+      }));
+      rest = rest.slice(indexes.length);
+      if (!prefix) break;
+    }
+  }
+
+  return finishPlan(calls, rest, state);
 }
 
-function describeCloneWaveCall(
-  indexes: number[],
-  shape: CloneWaveShape,
-  firstLight: boolean,
+/**
+ * Largest prefix of `rest` whose wall finishes inside the listener's
+ * buffer, the warm character cap, the 80 MiB body, and the warm HTTP wait.
+ * Null when even the first section overruns the buffer.
+ */
+function largestWarmPrefix(
+  rest: number[],
+  state: ListenerState,
+  batch: number,
   textAt: (index: number) => string,
   env: NodeJS.ProcessEnv
-): CloneWaveCall {
+): number[] | null {
+  if (!state.started) {
+    // Nothing is playing yet. One section is the first audio; a wider
+    // call would hold that audio until the last row of the call returns.
+    return rest.slice(0, 1);
+  }
+  const charCap = modalWarmLaneCharLimit(env);
+  const waitCap = modalCloneWarmWaitMs(env);
+  let best = 0;
   let chars = 0;
   let largest = 0;
-  for (const index of indexes) {
-    const size = textAt(index).length;
+  const limit = Math.min(batch, rest.length);
+  for (let n = 1; n <= limit; n += 1) {
+    const size = textAt(rest[n - 1]!).length;
+    const nextChars = chars + size;
+    const nextLargest = Math.max(largest, size);
+    if (n > 1 && nextChars > charCap) break;
+    if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
+      break;
+    }
+    const wall = cloneCallWallMs({
+      chars: nextChars,
+      largestRow: nextLargest,
+      rows: n,
+      shape: "warm",
+      restore: false,
+    });
+    if (n > 1 && (wall >= waitCap || wall >= MODAL_CLONE_PROXY_KILL_MS)) break;
+    if (!cloneCallFitsBuffer(wall, state.buffer, n)) break;
+    best = n;
+    chars = nextChars;
+    largest = nextLargest;
+  }
+  return best > 0 ? rest.slice(0, best) : null;
+}
+
+function pushCall(calls: CloneWaveCall[], state: ListenerState, call: CloneWaveCall): void {
+  calls.push(call);
+  if (!state.started) {
+    state.started = true;
+    state.buffer = call.audioMs;
+    return;
+  }
+  state.buffer = Math.max(0, state.buffer - call.wallMs) + call.audioMs;
+}
+
+function finishPlan(
+  calls: CloneWaveCall[],
+  rest: number[],
+  state: ListenerState
+): CloneBookWavePlan {
+  return {
+    calls,
+    deferred: rest,
+    parallelLanes: 1,
+    bufferAfterMs: state.buffer,
+    playbackStarted: state.started,
+  };
+}
+
+function describeCloneWaveCall(input: {
+  indexes: number[];
+  shape: CloneWaveShape;
+  firstLight: boolean;
+  restore: boolean;
+  textAt: (index: number) => string;
+  env: NodeJS.ProcessEnv;
+  state: ListenerState;
+  fitsBuffer?: boolean;
+}): CloneWaveCall {
+  let chars = 0;
+  let largest = 0;
+  for (const index of input.indexes) {
+    const size = input.textAt(index).length;
     chars += size;
     if (size > largest) largest = size;
   }
   const workMs = modalLaneWorkMs(
     chars,
     largest,
-    shape === "warm" ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND : MODAL_LANE_CHARS_PER_SECOND
+    input.shape === "warm" ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND : MODAL_LANE_CHARS_PER_SECOND
   );
   const need = workMs + MODAL_CLONE_CALL_PREP_MS;
   const waitMs =
-    shape === "warm"
-      ? modalCloneWarmWaitMs(env)
+    input.shape === "warm"
+      ? modalCloneWarmWaitMs(input.env)
       : Math.min(
           MODAL_CLONE_COLD_WAIT_MAX_MS,
-          Math.max(firstLight ? modalCloneFirstLightWaitMs(env) : modalCloneColdWaitMs(env), need)
+          Math.max(
+            input.firstLight ? modalCloneFirstLightWaitMs(input.env) : modalCloneColdWaitMs(input.env),
+            need
+          )
         );
-  return { indexes: [...indexes], shape, chars, workMs, waitMs };
+  const wallMs = cloneCallWallMs({
+    chars,
+    largestRow: largest,
+    rows: input.indexes.length,
+    shape: input.shape,
+    restore: input.restore,
+  });
+  const drains = input.state.started;
+  const fits =
+    input.fitsBuffer ??
+    (!drains || cloneCallFitsBuffer(wallMs, input.state.buffer, input.indexes.length));
+  return {
+    indexes: [...input.indexes],
+    shape: input.shape,
+    chars,
+    workMs,
+    waitMs,
+    wallMs,
+    audioMs: cloneAudioMs(chars),
+    bufferAtDispatchMs: drains ? input.state.buffer : 0,
+    fitsBuffer: fits,
+  };
+}
+
+export type CloneListener = {
+  id: string;
+  pending: number[];
+  textAt: (index: number) => string;
+  playbackStarted: boolean;
+  bufferedMs: number;
+  /** The next call is this book's first audio. */
+  firstLight: boolean;
+};
+
+export type CloneGpuTurn = {
+  bookId: string | null;
+  call: CloneWaveCall | null;
+};
+
+/**
+ * Who may use the one GPU next, and the one call they may send.
+ *
+ * A call is legal when it finishes before the speaker's buffer runs out
+ * and every other listener who has already started still has enough audio
+ * left to cover their own next section. The book closer to a stall goes
+ * first. A book that has not started gets the GPU only when taking it
+ * does not drop a listener below that next section. Calls are never
+ * concurrent: the caller runs this again when the call returns.
+ */
+export function chooseCloneGpuTurn(input: {
+  books: CloneListener[];
+  poolWarm: boolean;
+  batch: number;
+  env?: NodeJS.ProcessEnv;
+}): CloneGpuTurn {
+  const env = input.env ?? process.env;
+  const batch = Math.max(1, Math.floor(input.batch));
+  const books = input.books.filter((book) => book.pending.length > 0);
+  if (books.length === 0) return { bookId: null, call: null };
+
+  const started = books.filter((book) => book.playbackStarted);
+
+  // A listener who has not heard anything yet goes first, once the books
+  // already playing can spare this one section and still cover their own
+  // next one. Otherwise a deep buffer on the active book would take a full
+  // batch and leave the second listener waiting through it.
+  for (const book of books) {
+    if (book.playbackStarted) continue;
+    const call = firstSectionCall(book, input.poolWarm, env);
+    if (!unstartedCallIsSafe(book, call, started)) continue;
+    return { bookId: book.id, call };
+  }
+
+  const legal: Array<{ book: CloneListener; call: CloneWaveCall; slack: number }> = [];
+
+  for (const book of started) {
+    const others = started.filter((other) => other.id !== book.id);
+    const call = largestSharedPrefix(book, others, batch, env);
+    if (!call) continue;
+    const next = nextSectionWall(book, call.indexes.length, true);
+    legal.push({
+      book,
+      call,
+      slack: book.bufferedMs - call.wallMs - next,
+    });
+  }
+
+  if (legal.length > 0) {
+    legal.sort((a, b) => a.slack - b.slack);
+    const winner = legal[0]!;
+    return { bookId: winner.book.id, call: winner.call };
+  }
+
+  // Nobody has a call that keeps every listener ahead of their next
+  // section. The book closest to silence still has to move, or both wait
+  // forever. The playback sim counts this as a stall.
+  if (started.length > 0) {
+    const closest = [...started].sort((a, b) => a.bufferedMs - b.bufferedMs)[0]!;
+    const call = firstSectionCall(closest, true, env);
+    return {
+      bookId: closest.id,
+      call: { ...call, fitsBuffer: cloneCallFitsBuffer(call.wallMs, closest.bufferedMs, 1) },
+    };
+  }
+
+  const first = books[0]!;
+  return { bookId: first.id, call: firstSectionCall(first, input.poolWarm, env) };
+}
+
+function firstSectionCall(
+  book: CloneListener,
+  poolWarm: boolean,
+  env: NodeJS.ProcessEnv
+): CloneWaveCall {
+  const state: ListenerState = {
+    started: book.playbackStarted,
+    buffer: book.playbackStarted ? book.bufferedMs : 0,
+  };
+  // A book's first audio stays one section even on a warm pool, so the
+  // other listener is not asked to sit through a batch before this one
+  // has anything to play. A later section on a book that has already
+  // started is one warm row: the caller only uses this when a wider
+  // prefix does not fit.
+  const opening = book.firstLight && !book.playbackStarted;
+  return describeCloneWaveCall({
+    indexes: [book.pending[0]!],
+    shape: opening ? "cold" : "warm",
+    firstLight: opening,
+    restore: opening && !poolWarm,
+    textAt: book.textAt,
+    env,
+    state,
+  });
+}
+
+function nextSectionWall(book: CloneListener, skip: number, poolWarm: boolean): number {
+  const index = book.pending[skip];
+  if (index == null) return 0;
+  const chars = book.textAt(index).length;
+  return cloneCallWallMs({
+    chars,
+    largestRow: chars,
+    rows: 1,
+    shape: poolWarm ? "warm" : "cold",
+    restore: false,
+  });
 }
 
 /**
- * Two books, one GPU. The active book gets the schedule above. The other
- * book sends nothing this wave; its own first call is still one section
- * when it becomes active, even if the pool is already warm.
+ * Largest warm prefix that fits the speaker and leaves every other
+ * listener enough audio for their own next section.
+ */
+function largestSharedPrefix(
+  book: CloneListener,
+  others: CloneListener[],
+  batch: number,
+  env: NodeJS.ProcessEnv
+): CloneWaveCall | null {
+  const state: ListenerState = { started: true, buffer: book.bufferedMs };
+  const prefix = largestWarmPrefix(book.pending, state, batch, book.textAt, env);
+  if (!prefix) return null;
+  let best: number[] | null = null;
+  for (let n = 1; n <= prefix.length; n += 1) {
+    const indexes = prefix.slice(0, n);
+    const call = describeCloneWaveCall({
+      indexes,
+      shape: "warm",
+      firstLight: false,
+      restore: false,
+      textAt: book.textAt,
+      env,
+      state,
+    });
+    if (!others.every((other) => otherSurvives(other, call.wallMs))) continue;
+    const speakerNext = nextSectionWall(book, n, true);
+    const speakerAfter = book.bufferedMs - call.wallMs + call.audioMs;
+    if (speakerNext > 0 && !(speakerAfter > speakerNext)) continue;
+    best = indexes;
+  }
+  if (!best) return null;
+  return describeCloneWaveCall({
+    indexes: best,
+    shape: "warm",
+    firstLight: false,
+    restore: false,
+    textAt: book.textAt,
+    env,
+    state,
+  });
+}
+
+function otherSurvives(other: CloneListener, wallMs: number): boolean {
+  if (!other.playbackStarted) return true;
+  if (!(wallMs < other.bufferedMs)) return false;
+  const next = nextSectionWall(other, 0, true);
+  if (next <= 0) return true;
+  return other.bufferedMs - wallMs > next;
+}
+
+function unstartedCallIsSafe(
+  book: CloneListener,
+  call: CloneWaveCall,
+  started: CloneListener[]
+): boolean {
+  const next = nextSectionWall(book, 1, true);
+  if (next > 0 && !(call.audioMs > next)) return false;
+  return started.every((other) => otherSurvives(other, call.wallMs));
+}
+
+/**
+ * Two books, one GPU, one turn. The book that gets the call is the one
+ * {@link chooseCloneGpuTurn} picks. The other sends nothing until this
+ * call returns.
  */
 export function planTwoBooksOnOneGpu(input: {
   active: {
+    id?: string;
     pending: number[];
     textAt: (index: number) => string;
     firstLight: boolean;
     poolWarm: boolean;
+    playbackStarted?: boolean;
+    bufferedMs?: number;
   };
   waiting: {
+    id?: string;
     pending: number[];
     textAt: (index: number) => string;
     firstLight: boolean;
     poolWarm: boolean;
+    playbackStarted?: boolean;
+    bufferedMs?: number;
   };
   batch: number;
   env?: NodeJS.ProcessEnv;
 }): { active: CloneBookWavePlan; waiting: CloneBookWavePlan } {
-  const shared = { batch: input.batch, env: input.env };
+  const activeId = input.active.id ?? "active";
+  const waitingId = input.waiting.id ?? "waiting";
+  const poolWarm = input.active.poolWarm || input.waiting.poolWarm;
+  const turn = chooseCloneGpuTurn({
+    books: [
+      listenerFrom(activeId, input.active),
+      listenerFrom(waitingId, input.waiting),
+    ],
+    poolWarm,
+    batch: input.batch,
+    env: input.env,
+  });
   return {
-    active: planModalCloneBookWave({ ...input.active, ...shared, gpuBusy: false }),
-    waiting: planModalCloneBookWave({ ...input.waiting, ...shared, gpuBusy: true }),
+    active: planForTurn(activeId, input.active, turn),
+    waiting: planForTurn(waitingId, input.waiting, turn),
+  };
+}
+
+function listenerFrom(
+  id: string,
+  book: {
+    pending: number[];
+    textAt: (index: number) => string;
+    firstLight: boolean;
+    playbackStarted?: boolean;
+    bufferedMs?: number;
+  }
+): CloneListener {
+  return {
+    id,
+    pending: book.pending,
+    textAt: book.textAt,
+    playbackStarted: book.playbackStarted === true,
+    bufferedMs: book.playbackStarted === true ? Math.max(0, book.bufferedMs ?? 0) : 0,
+    firstLight: book.firstLight,
+  };
+}
+
+function planForTurn(
+  id: string,
+  book: {
+    pending: number[];
+    textAt: (index: number) => string;
+    playbackStarted?: boolean;
+    bufferedMs?: number;
+  },
+  turn: CloneGpuTurn
+): CloneBookWavePlan {
+  const pending = [...book.pending].sort((a, b) => a - b);
+  if (turn.bookId !== id || !turn.call) {
+    return {
+      calls: [],
+      deferred: pending,
+      parallelLanes: 1,
+      bufferAfterMs: book.playbackStarted ? Math.max(0, book.bufferedMs ?? 0) : 0,
+      playbackStarted: book.playbackStarted === true,
+    };
+  }
+  const taken = new Set(turn.call.indexes);
+  const state: ListenerState = {
+    started: book.playbackStarted === true,
+    buffer: book.playbackStarted === true ? Math.max(0, book.bufferedMs ?? 0) : 0,
+  };
+  const calls: CloneWaveCall[] = [];
+  pushCall(calls, state, turn.call);
+  return finishPlan(
+    calls,
+    pending.filter((index) => !taken.has(index)),
+    state
+  );
+}
+
+export type ClonePlaybackStep = {
+  bookId: string;
+  rows: number;
+  chars: number;
+  shape: CloneWaveShape;
+  wallMs: number;
+  audioMs: number;
+  bufferAtDispatchMs: number;
+  fitsBuffer: boolean;
+};
+
+export type ClonePlaybackReport = {
+  steps: ClonePlaybackStep[];
+  /** Wall from the start of the sim until this book's first audio returns. */
+  timeToFirstAudioMs: number;
+  totalWallMs: number;
+  stallCount: number;
+  sizeSequence: number[];
+};
+
+/**
+ * Play one book at 1× from the moment its first audio returns.
+ *
+ * Each tick claims `claim` sections (the worker's batch window) and
+ * pipelines the ramp inside that window. The clock does not idle between
+ * calls. A stall is a call that starts while the listener is already
+ * playing and runs longer than the audio they have left.
+ */
+export function simulateClonePlayback(input: {
+  sectionChars: number[];
+  batch?: number;
+  claim?: number;
+  env?: NodeJS.ProcessEnv;
+}): ClonePlaybackReport {
+  const env = input.env ?? process.env;
+  const batch = input.batch ?? 24;
+  const claim = input.claim ?? batch;
+  const charsAt = input.sectionChars;
+  let pending = charsAt.map((_, index) => index);
+  let poolWarm = false;
+  let started = false;
+  let buffer = 0;
+  let clock = 0;
+  let timeToFirstAudioMs = 0;
+  const steps: ClonePlaybackStep[] = [];
+  let guard = 0;
+  while (pending.length > 0 && guard < charsAt.length + 5) {
+    guard += 1;
+    const window = pending.slice(0, claim);
+    const plan = planModalCloneBookWave({
+      pending: window,
+      textAt: (index) => "x".repeat(charsAt[index] ?? 0),
+      firstLight: window[0] === 0 && !started,
+      poolWarm,
+      batch,
+      bufferedMs: buffer,
+      playbackStarted: started,
+      env,
+    });
+    if (plan.calls.length === 0) break;
+    for (const call of plan.calls) {
+      steps.push({
+        bookId: "book",
+        rows: call.indexes.length,
+        chars: call.chars,
+        shape: call.shape,
+        wallMs: call.wallMs,
+        audioMs: call.audioMs,
+        bufferAtDispatchMs: call.bufferAtDispatchMs,
+        fitsBuffer: call.fitsBuffer,
+      });
+      clock += call.wallMs;
+      // The first call is the one the listener is waiting on. Later calls
+      // in the same plan run after that audio has started.
+      if (timeToFirstAudioMs === 0) timeToFirstAudioMs = clock;
+    }
+    started = plan.playbackStarted;
+    buffer = plan.bufferAfterMs;
+    poolWarm = true;
+    const taken = new Set(plan.calls.flatMap((call) => call.indexes));
+    pending = pending.filter((index) => !taken.has(index));
+  }
+  return {
+    steps,
+    timeToFirstAudioMs,
+    totalWallMs: clock,
+    stallCount: steps.filter((step) => !step.fitsBuffer).length,
+    sizeSequence: steps.map((step) => step.rows),
+  };
+}
+
+/**
+ * Two books, one GPU, both listened to at 1× from their own first audio.
+ * Calls never overlap. The book closer to a stall is served, and a book
+ * that has not started is served only when every current listener still
+ * has a next section's worth of audio afterwards.
+ */
+export function simulateTwoCloneListeners(input: {
+  books: Array<{ id: string; sectionChars: number[] }>;
+  batch?: number;
+  env?: NodeJS.ProcessEnv;
+}): {
+  reports: ClonePlaybackReport[];
+  totalWallMs: number;
+  overlapping: boolean;
+} {
+  const env = input.env ?? process.env;
+  const batch = input.batch ?? 24;
+  const states = input.books.map((book) => ({
+    id: book.id,
+    chars: book.sectionChars,
+    next: 0,
+    started: false,
+    buffer: 0,
+    clockAtStart: 0,
+    steps: [] as ClonePlaybackStep[],
+  }));
+  let poolWarm = false;
+  let clock = 0;
+  let guard = 0;
+  const totalSections = states.reduce((sum, book) => sum + book.chars.length, 0);
+  while (states.some((book) => book.next < book.chars.length) && guard < totalSections + 5) {
+    guard += 1;
+    const turn = chooseCloneGpuTurn({
+      books: states
+        .filter((book) => book.next < book.chars.length)
+        .map((book) => ({
+          id: book.id,
+          pending: book.chars.slice(book.next).map((_, offset) => book.next + offset),
+          textAt: (index) => "x".repeat(book.chars[index] ?? 0),
+          playbackStarted: book.started,
+          bufferedMs: book.buffer,
+          firstLight: book.next === 0,
+        })),
+      poolWarm,
+      batch,
+      env,
+    });
+    if (!turn.call || !turn.bookId) break;
+    const book = states.find((item) => item.id === turn.bookId);
+    if (!book) break;
+    book.steps.push({
+      bookId: book.id,
+      rows: turn.call.indexes.length,
+      chars: turn.call.chars,
+      shape: turn.call.shape,
+      wallMs: turn.call.wallMs,
+      audioMs: turn.call.audioMs,
+      bufferAtDispatchMs: turn.call.bufferAtDispatchMs,
+      fitsBuffer: turn.call.fitsBuffer,
+    });
+    for (const other of states) {
+      if (!other.started || other.id === book.id) continue;
+      other.buffer = Math.max(0, other.buffer - turn.call.wallMs);
+    }
+    clock += turn.call.wallMs;
+    if (!book.started) book.clockAtStart = clock;
+    if (book.started) {
+      book.buffer = Math.max(0, book.buffer - turn.call.wallMs) + turn.call.audioMs;
+    } else {
+      book.started = true;
+      book.buffer = turn.call.audioMs;
+    }
+    book.next += turn.call.indexes.length;
+    poolWarm = true;
+  }
+  return {
+    reports: states.map((book) => ({
+      steps: book.steps,
+      timeToFirstAudioMs: book.clockAtStart,
+      totalWallMs: clock,
+      stallCount: book.steps.filter((step) => !step.fitsBuffer).length,
+      sizeSequence: book.steps.map((step) => step.rows),
+    })),
+    totalWallMs: clock,
+    // The loop runs one call to the clock before choosing the next, so two
+    // books never have a call in flight together.
+    overlapping: false,
   };
 }

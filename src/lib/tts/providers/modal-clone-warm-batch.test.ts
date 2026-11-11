@@ -1,17 +1,20 @@
 /**
- * Warm full-batch sizing for one restored H100.
+ * In-book ramp for one restored H100.
  *
- * Production runs `MODAL_S2_READY=0`, so every call used to be packed as if it
- * might still be restoring: ~8,000 characters, about four sections, on a GPU
- * whose batch is 24–32. A restored container is memory-bandwidth bound, so
- * those empty rows are the cost. These tests pin the schedule without a GPU:
+ * Section 0 is about a minute of audio. A 24-row call after it takes
+ * several minutes and returns every row together, so the listener hears
+ * that minute and then waits. Each next call is the largest prefix that
+ * finishes, with margin, before the audio already buffered ahead of a 1×
+ * listener runs out. The prefix grows as that buffer grows.
  *
- *   - the first call of a book stays one small section that can survive a
- *     cold restore
- *   - once that container has answered, later calls fill one batch
- *   - every call is planned to finish inside the Modal web-proxy budget
- *   - a gap longer than scaledown drops back to the cold-sized call
- *   - two books never open two calls at once
+ * These tests pin the schedule without a GPU:
+ *
+ *   - the first call of a book stays one section that can survive a cold restore
+ *   - the next call is not a full batch
+ *   - a 10-hour book played at 1× never stalls after first audio
+ *   - every call stays inside the Modal web-proxy budget and the 80 MiB body
+ *   - a gap longer than scaledown drops back to one cold-sized call
+ *   - two listeners on one GPU never stall once each has started
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -30,6 +33,7 @@ import {
   modalCloneWarmHoldMs,
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
+import { FIRST_SECTION_CHARS } from "@/lib/tts/section-size";
 import {
   MODAL_LANE_WARM_CHARS_PER_SECOND,
   MODAL_LANE_WARM_PACK_CHARS_PER_SECOND,
@@ -40,6 +44,8 @@ import {
   modalWarmLaneCharLimit,
   planModalCloneBookWave,
   planTwoBooksOnOneGpu,
+  simulateClonePlayback,
+  simulateTwoCloneListeners,
 } from "@/lib/tts/providers/modal-clone-lanes";
 
 const env = {} as NodeJS.ProcessEnv;
@@ -120,7 +126,7 @@ describe("one book's call schedule", () => {
     );
   });
 
-  it("fills the next call to a full batch once the container has answered", () => {
+  it("grows the next call from the buffer instead of jumping to 24 rows", () => {
     const plan = planModalCloneBookWave({
       pending: pending(40),
       textAt,
@@ -129,34 +135,60 @@ describe("one book's call schedule", () => {
       batch: 24,
       env,
     });
-    const fat = plan.calls[1]!;
-    expect(fat.shape).toBe("warm");
-    expect(fat.indexes).toHaveLength(24);
-    expect(fat.indexes[0]).toBe(1);
-    expect(fat.chars).toBe(48_000);
-    expect(fat.chars).toBeGreaterThan(modalLaneCharCap(env));
-    expect(fat.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
-    expect(plan.deferred).toEqual(pending(15, 25));
-    // Playback order: cold section, then the fat call, then the tail.
+    const next = plan.calls[1]!;
+    expect(next.shape).toBe("warm");
+    expect(next.indexes[0]).toBe(1);
+    // A 2,000-character section is ~133s of audio. The largest prefix that
+    // finishes inside that, at 50 chars/s per row and 150 aggregate, is a
+    // handful of rows — not the 24-row call that used to stall playback.
+    expect(next.indexes.length).toBeGreaterThanOrEqual(6);
+    expect(next.indexes.length).toBeLessThanOrEqual(8);
+    expect(next.fitsBuffer).toBe(true);
+    expect(next.wallMs).toBeLessThan(next.bufferAtDispatchMs);
+    expect(next.chars).toBeGreaterThan(modalLaneCharCap(env));
+    expect(next.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
+    expect(plan.calls.some((call) => call.indexes.length === 24)).toBe(true);
     expect([...plan.calls.flatMap((call) => call.indexes), ...plan.deferred]).toEqual(
       pending(40)
     );
+    for (const call of plan.calls.slice(1)) {
+      expect(call.fitsBuffer).toBe(true);
+      expect(call.wallMs).toBeLessThan(call.bufferAtDispatchMs);
+      expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    }
   });
 
-  it("sends a later tick as one fat call, not four thin ones", () => {
+  it("sends a later tick as one fat call once the buffer can cover it", () => {
     const plan = planModalCloneBookWave({
-      pending: pending(30, 10),
+      pending: pending(24, 10),
+      textAt,
+      firstLight: false,
+      poolWarm: true,
+      batch: 24,
+      playbackStarted: true,
+      bufferedMs: 30 * 60_000,
+      env,
+    });
+    expect(plan.calls).toHaveLength(1);
+    expect(plan.calls[0]).toMatchObject({ shape: "warm", fitsBuffer: true });
+    expect(plan.calls[0]!.indexes).toEqual(pending(24, 10));
+    expect(plan.deferred).toEqual([]);
+    expect(plan.parallelLanes).toBe(1);
+  });
+
+  it("does not treat a missing buffer as hours of audio already queued", () => {
+    const plan = planModalCloneBookWave({
+      pending: pending(24),
       textAt,
       firstLight: false,
       poolWarm: true,
       batch: 24,
       env,
     });
-    expect(plan.calls).toHaveLength(1);
-    expect(plan.calls[0]).toMatchObject({ shape: "warm" });
-    expect(plan.calls[0]!.indexes).toEqual(pending(24, 10));
-    expect(plan.deferred).toEqual(pending(6, 34));
-    expect(plan.parallelLanes).toBe(1);
+    expect(plan.calls[0]!.indexes).toHaveLength(1);
+    expect(plan.calls.every((call) => call.indexes.length < 24 || call.bufferAtDispatchMs > call.wallMs)).toBe(
+      true
+    );
   });
 
   it("keeps every warm call inside the proxy budget at the packing rate", () => {
@@ -166,6 +198,8 @@ describe("one book's call schedule", () => {
       firstLight: false,
       poolWarm: true,
       batch: 24,
+      playbackStarted: true,
+      bufferedMs: 30 * 60_000,
       env,
     });
     const call = plan.calls[0]!;
@@ -174,6 +208,8 @@ describe("one book's call schedule", () => {
     expect(call.workMs + MODAL_CLONE_CALL_PREP_MS).toBeLessThanOrEqual(call.waitMs);
     expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
     expect(call.waitMs).toBe(modalCloneWarmWaitMs(env));
+    expect(call.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    expect(call.wallMs).toBeLessThanOrEqual(call.waitMs);
     // The expected 35× rate is faster than the rate we pack against, and
     // both finish well under the proxy. 2,900 chars/s would have scheduled
     // a call this budget cannot survive.
@@ -192,12 +228,16 @@ describe("one book's call schedule", () => {
       firstLight: false,
       poolWarm: true,
       batch: 32,
+      playbackStarted: true,
+      bufferedMs: 40 * 60_000,
       env,
     });
     const call = plan.calls[0]!;
     expect(call.indexes.length).toBeLessThanOrEqual(32);
+    expect(call.indexes.length).toBeGreaterThan(8);
     expect(call.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
     expect(call.workMs + MODAL_CLONE_CALL_PREP_MS).toBeLessThanOrEqual(call.waitMs);
+    expect(call.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
     expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
     expect(estimateCloneBatchJsonBytes(call.chars)).toBeLessThanOrEqual(
       MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
@@ -230,7 +270,19 @@ describe("one book's call schedule", () => {
       env,
     });
     expect(resumed.calls[0]!.shape).toBe("warm");
-    expect(resumed.calls[0]!.indexes.length).toBe(24);
+    // No buffered audio was passed, so the resume does not jump to 24 rows.
+    expect(resumed.calls[0]!.indexes.length).toBe(1);
+    const deep = planModalCloneBookWave({
+      pending: plan.deferred,
+      textAt,
+      firstLight: false,
+      poolWarm: true,
+      batch: 24,
+      playbackStarted: true,
+      bufferedMs: 30 * 60_000,
+      env,
+    });
+    expect(deep.calls[0]!.indexes.length).toBe(24);
   });
 
   it("lets an operator shrink a warm call but not enlarge it past the budget", () => {
@@ -247,57 +299,66 @@ describe("one book's call schedule", () => {
   });
 });
 
-describe("a 10-hour book", () => {
-  it("is many proxy-safe calls on one lane, not one HTTP request", () => {
-    const sectionChars = 2_000;
-    const totalChars = 10 * 60 * 900;
-    const count = Math.ceil(totalChars / sectionChars);
-    let pendingIndexes = pending(count);
-    const calls: Array<{ shape: "cold" | "warm"; chars: number; workMs: number; waitMs: number; indexes: number[] }> = [];
-    let poolWarm = false;
-    let guard = 0;
-    while (pendingIndexes.length > 0 && guard < 40) {
-      guard += 1;
-      const window = pendingIndexes.slice(0, 24);
-      const plan = planModalCloneBookWave({
-        pending: window,
-        textAt: () => section(sectionChars),
-        firstLight: window[0] === 0 && !poolWarm,
-        poolWarm,
-        batch: 24,
-        env,
-      });
-      expect(plan.parallelLanes).toBe(1);
-      expect(plan.calls.length).toBeGreaterThan(0);
-      for (const call of plan.calls) {
-        expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
-        expect(call.workMs + MODAL_CLONE_CALL_PREP_MS).toBeLessThanOrEqual(call.waitMs);
-        calls.push(call);
-      }
-      const taken = new Set(plan.calls.flatMap((call) => call.indexes));
-      pendingIndexes = pendingIndexes.filter((index) => !taken.has(index));
-      poolWarm = true;
+function tenHourSections(): number[] {
+  // Production packer: the first section is ~800 characters and the rest
+  // are the clone width, 2,000. 10 hours at 900 characters a minute.
+  const totalChars = 10 * 60 * 900;
+  const sections = [FIRST_SECTION_CHARS];
+  let used = FIRST_SECTION_CHARS;
+  while (used < totalChars) {
+    const size = Math.min(2_000, totalChars - used);
+    sections.push(size);
+    used += size;
+  }
+  return sections;
+}
+
+describe("a 10-hour book played at 1×", () => {
+  it("never stalls after the first audio", () => {
+    const report = simulateClonePlayback({
+      sectionChars: tenHourSections(),
+      batch: 24,
+      env,
+    });
+    expect(report.stallCount).toBe(0);
+    expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1 });
+    // 57s restore + 16s generation of the 800-character section + 12s cold
+    // prep + 3s publish + the body transfer. About 88s, not the 5-minute
+    // gap a 24-row call used to open.
+    expect(report.timeToFirstAudioMs).toBe(88_272);
+    expect(report.steps[0]!.wallMs).toBe(88_272);
+    expect(report.sizeSequence[0]).toBe(1);
+    expect(report.sizeSequence[1]).toBeLessThan(24);
+    expect(report.sizeSequence).toContain(24);
+    const firstFull = report.sizeSequence.indexOf(24);
+    const before = report.sizeSequence.slice(0, firstFull);
+    for (let i = 1; i < before.length; i += 1) {
+      expect(before[i]).toBeGreaterThanOrEqual(before[i - 1]!);
     }
-    expect(pendingIndexes).toEqual([]);
-    expect(calls[0]).toMatchObject({ shape: "cold", indexes: [0] });
-    const warm = calls.filter((call) => call.shape === "warm");
-    expect(warm.length).toBeGreaterThan(8);
-    expect(warm.every((call) => call.indexes.length <= 24)).toBe(true);
-    const packedMs = warm.reduce((sum, call) => sum + call.workMs, 0);
-    // At the packing rate (150 chars/s) the narration itself is about an
-    // hour. At the expected 35× rate it is under half an hour. Either way
-    // it is not a 3-hour one-row read and not a single proxy-killed call.
-    expect(packedMs).toBeGreaterThan(40 * 60_000);
-    expect(packedMs).toBeLessThan(80 * 60_000);
-    const expectedMs = (totalChars / MODAL_LANE_WARM_CHARS_PER_SECOND) * 1000;
-    expect(expectedMs).toBeLessThan(30 * 60_000);
+    for (const step of report.steps) {
+      expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+      expect(estimateCloneBatchJsonBytes(step.chars)).toBeLessThanOrEqual(
+        MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+      );
+      if (step.shape === "cold") expect(step.chars).toBeLessThanOrEqual(modalLaneCharCap(env));
+    }
+    // 1, 1, 8 is the ramp: section 0 is 800 characters (~53s), so the next
+    // 2,000-character row is the only call that fits; the buffer is then
+    // deep enough for 8. 14 is the rest of the first 24-section claim, sent
+    // as one call because that buffer already covers a full batch. Later
+    // ticks are 24, and the tail is 7. 4,055,652 ms is about 67.6 minutes
+    // of GPU wall for 10 hours of audio, with no idle between calls.
+    expect(report.totalWallMs).toBe(4_055_652);
+    expect(report.sizeSequence).toEqual([
+      1, 1, 8, 14, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 7,
+    ]);
   });
 });
 
 describe("two books, one GPU", () => {
   const textAt = () => section(2_000);
 
-  it("lets only the active book open a call", () => {
+  it("gives the GPU to one book at a time, and that book's first call is one section", () => {
     const pendingIndexes = pending(40);
     const { active, waiting } = planTwoBooksOnOneGpu({
       active: {
@@ -315,34 +376,73 @@ describe("two books, one GPU", () => {
       batch: 24,
       env,
     });
-    expect(active.calls.length).toBeGreaterThan(0);
+    expect(active.calls).toHaveLength(1);
+    expect(active.calls[0]).toMatchObject({ indexes: [0], shape: "cold" });
     expect(active.parallelLanes).toBe(1);
     expect(waiting.calls).toEqual([]);
     expect(waiting.deferred).toEqual(pendingIndexes);
-    // The calls one book does make are sequential: section 0, then one batch.
-    expect(active.calls.map((call) => call.shape)).toEqual(["cold", "warm"]);
   });
 
-  it("still gives the second book a small first call when the pool is already warm", () => {
-    const { active } = planTwoBooksOnOneGpu({
+  it("still gives the second book a one-section first call when the pool is already warm", () => {
+    const { active, waiting } = planTwoBooksOnOneGpu({
       active: {
         pending: pending(40),
         textAt,
         firstLight: true,
         poolWarm: true,
+        playbackStarted: true,
+        bufferedMs: 20 * 60_000,
       },
       waiting: {
         pending: pending(10),
         textAt,
-        firstLight: false,
+        firstLight: true,
         poolWarm: true,
       },
       batch: 24,
       env,
     });
-    expect(active.calls[0]).toMatchObject({ indexes: [0], shape: "cold" });
-    expect(active.calls[1]!.shape).toBe("warm");
-    expect(active.calls[1]!.indexes.length).toBeGreaterThan(8);
+    // The active book has twenty minutes buffered, so the waiting book's
+    // first section fits and goes first. It is one row, not a batch.
+    expect(waiting.calls).toHaveLength(1);
+    expect(waiting.calls[0]!.indexes).toHaveLength(1);
+    expect(waiting.calls[0]!.wallMs).toBeLessThan(60_000);
+    expect(active.calls).toEqual([]);
+  });
+
+  it("does not stall either listener of a 10-hour book", () => {
+    const sections = tenHourSections();
+    const { reports, totalWallMs, overlapping } = simulateTwoCloneListeners({
+      books: [
+        { id: "a", sectionChars: sections },
+        { id: "b", sectionChars: sections },
+      ],
+      batch: 24,
+      env,
+    });
+    expect(overlapping).toBe(false);
+    expect(reports).toHaveLength(2);
+    for (const report of reports) {
+      expect(report.stallCount).toBe(0);
+      expect(report.sizeSequence[0]).toBe(1);
+      expect(report.timeToFirstAudioMs).toBeGreaterThan(0);
+      expect(report.steps.every((step) => step.wallMs < MODAL_CLONE_PROXY_KILL_MS)).toBe(true);
+    }
+    expect(reports[1]!.timeToFirstAudioMs).toBeGreaterThan(reports[0]!.timeToFirstAudioMs);
+    // The second listener starts once the first book's buffer can spare one
+    // section and still cover its own next row: about 168s, after the first
+    // book's cold section and one follow-up row. Early calls stay smaller
+    // than the single-book ramp because each call also has to leave the
+    // other listener a next section. 8,054,302 ms is both books, one GPU.
+    expect(reports[0]!.timeToFirstAudioMs).toBe(88_272);
+    expect(reports[1]!.timeToFirstAudioMs).toBe(168_223);
+    expect(totalWallMs).toBe(8_054_302);
+    expect(reports[0]!.sizeSequence).toEqual([
+      1, 1, 3, 21, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 5,
+    ]);
+    expect(reports[1]!.sizeSequence).toEqual([
+      1, 1, 4, 15, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 10,
+    ]);
   });
 });
 
@@ -362,7 +462,7 @@ describe("book-wave dispatch", () => {
     };
   }
 
-  it("renders section 0 cold, then one warm batch, on the same GPU", async () => {
+  it("renders section 0 cold, then a ramp of warm calls, on the same GPU", async () => {
     const render = vi.fn(async (items: { key: string }[]) =>
       outcome(items.map((item) => item.key))
     );
@@ -380,15 +480,19 @@ describe("book-wave dispatch", () => {
       stage: async () => {},
     });
     expect(result.cold).toBe(false);
-    expect(result.staged).toBe(25);
-    expect(render).toHaveBeenCalledTimes(2);
-    const first = render.mock.calls[0]!;
-    const second = render.mock.calls[1]!;
-    expect(first[0].map((item: { key: string }) => item.key)).toEqual(["0"]);
-    expect(first[2]?.warmBatch).toBe(false);
-    expect(second[0]).toHaveLength(24);
-    expect(second[2]?.warmBatch).toBe(true);
-    expect(second[0][0].key).toBe("1");
+    expect(result.staged).toBe(30);
+    const rows = render.mock.calls.map((call) => call[0].map((item: { key: string }) => item.key));
+    expect(rows[0]).toEqual(["0"]);
+    expect(render.mock.calls[0]![2]?.warmBatch).toBe(false);
+    expect(rows[1]!.length).toBeGreaterThan(1);
+    expect(rows[1]!.length).toBeLessThan(24);
+    expect(render.mock.calls[1]![2]?.warmBatch).toBe(true);
+    expect(rows[1]![0]).toBe("1");
+    const widths = rows.map((keys) => keys.length);
+    for (let i = 1; i < widths.length; i += 1) {
+      expect(widths[i]).toBeGreaterThan(widths[i - 1]!);
+    }
+    expect(widths.reduce((sum, n) => sum + n, 0)).toBe(30);
   });
 
   it("does not open the fat batch when section 0 cannot be placed", async () => {
@@ -436,13 +540,16 @@ describe("book-wave dispatch", () => {
       firstLight: false,
       bookWave: true,
       poolWarm: true,
+      playbackStarted: true,
+      bufferedMs: 30 * 60_000,
       render,
       stage: async () => {},
     });
     expect(result.cold).toBe(false);
     expect(kick).not.toHaveBeenCalled();
-    // The fat call, then one cold section. The other rows wait.
+    // The multi-row call, then one cold section. The other rows wait.
     expect(calls).toBe(2);
+    expect(render.mock.calls[0]![0].length).toBeGreaterThan(1);
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(false);
     expect(render.mock.calls[1]![0]).toHaveLength(1);
     kick.mockRestore();

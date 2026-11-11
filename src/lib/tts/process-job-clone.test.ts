@@ -1050,15 +1050,20 @@ describe("staged clone takes are not rendered again", () => {
     await fakeAdapter();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
 
+    // The next call starts while the previous call's audio is publishing,
+    // so a slow render overlaps that publish inside the same tick.
+    delayMs = 40;
     await processTakehomeTick(JOB_ID, {});
     const first = seen.flat();
     expect(first.length).toBeGreaterThan(8);
+    expect(overlapped).toBe(true);
     const ready = await readyIndexes();
     expect(ready[0]).toBe(0);
     for (let i = 0; i < ready.length; i++) expect(ready[i]).toBe(i);
-    expect(ready.length).toBeLessThan(new Set(first).size);
+    expect(ready.length).toBeGreaterThan(0);
+    expect(ready.length).toBeLessThanOrEqual(new Set(first).size);
 
-    delayMs = 50;
+    delayMs = 0;
     overlapped = false;
     const mark = seen.length;
     await processTakehomeTick(JOB_ID, {});
@@ -1066,7 +1071,6 @@ describe("staged clone takes are not rendered again", () => {
     const again = second.filter((index) => first.includes(index));
     expect(again).toEqual([]);
     expect(second.length).toBeGreaterThan(0);
-    expect(overlapped).toBe(true);
     const readyAfter = await readyIndexes();
     for (let i = 0; i < readyAfter.length; i++) expect(readyAfter[i]).toBe(i);
     expect(readyAfter.length).toBeGreaterThan(ready.length);
@@ -1163,9 +1167,20 @@ describe("staged clone takes are not rendered again", () => {
     const { emptyWav } = await import("@/test/harness");
 
     await processTakehomeTick(JOB_ID, {});
-    const ready = new Set(await readyIndexes());
-    const staged = [...new Set(seen.flat())].filter((index) => !ready.has(index));
-    expect(staged.length).toBeGreaterThanOrEqual(3);
+    const ready = await readyIndexes();
+    expect(ready.length).toBeGreaterThanOrEqual(3);
+    // The ramp publishes what it renders. Drop three ready sections back to
+    // unclaimed so the next tick has to trust the cache, which is the
+    // restart case this test is about.
+    const staged = ready.slice(0, 3);
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as Array<{
+      index: number;
+    }>;
+    await execute(`UPDATE jobs SET segments_json = ? WHERE id = ?`, [
+      JSON.stringify(segments.filter((segment) => !staged.includes(segment.index))),
+      JOB_ID,
+    ]);
     const frozen = await loadFrozenScript(JOB_ID);
     expect(frozen).toBeTruthy();
     const speed = fishSpeedForRequest(

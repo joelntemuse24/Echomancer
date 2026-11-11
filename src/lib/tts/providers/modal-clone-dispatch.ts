@@ -92,6 +92,13 @@ export interface LaneDispatchOptions {
    */
   publishFirstLight?: (index: number) => Promise<void>;
   /**
+   * Publish a call's sections as soon as they are staged. The next GPU call
+   * starts without waiting for ffmpeg. Section 0 is included, so the player
+   * can start while the ramp's next call is already in flight.
+   * `publishFirstLight` is the one-section form used when this is omitted.
+   */
+  publishStaged?: (indexes: number[]) => Promise<void>;
+  /**
    * Section 0 is still missing, so the player has nothing to start with.
    *
    * When set, the lowest index is rendered alone on one lane first, and only
@@ -106,13 +113,23 @@ export interface LaneDispatchOptions {
    */
   firstLight?: boolean;
   /**
-   * One restored H100. The first call stays cold-sized (section 0 when this
-   * book has not played yet). Once that returns, the next call fills one
-   * batch. Later ticks stay fat while {@link modalClonePoolIsWarm} is true,
-   * and drop back to a cold-sized call when the container has scaled away.
-   * Calls run one at a time. Omit this and the older multi-lane planner runs.
+   * One restored H100. The first call stays one section. Each later call is
+   * only as wide as the audio already buffered ahead of the listener, and
+   * the next call starts when the previous one returns. Later ticks stay on
+   * that ramp while {@link modalClonePoolIsWarm} is true, and drop back to
+   * one cold-sized call when the container has scaled away. Calls run one
+   * at a time. Omit this and the older multi-lane planner runs.
    */
   bookWave?: boolean;
+  /**
+   * Audio already delivered and not yet played. The ramp sizes the next
+   * call against this. Omit it and a warm tick does not assume a deep buffer.
+   */
+  bufferedMs?: number;
+  /** The listener has already heard audio from this book. */
+  playbackStarted?: boolean;
+  /** Stop the ramp after this many calls so another book can take the GPU. */
+  maxCalls?: number;
   /**
    * Overrides the in-process warmth bit. Tests pin it; the tick leaves it
    * unset and the dispatch reads {@link modalClonePoolIsWarm}.
@@ -326,17 +343,18 @@ export async function dispatchModalCloneLanes(
 
 /**
  * One book, one H100. Section 0 (or the first cold call after a scaledown)
- * stays small. The call after a successful first light fills one batch, and
- * it is not started until that first call has audio. A warm batch that
- * misses its budget is retried as one section and the rest waits for the
- * next tick, so this book does not open a second GPU.
+ * stays one section. Each later call is only as wide as the audio already
+ * buffered for the listener, and the next call starts as soon as the
+ * previous one returns. A warm call that misses its budget is retried as
+ * one section and the rest waits for the next tick, so this book does not
+ * open a second GPU.
  */
 async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});
   const tally = emptyTally();
   let firstLight: FirstLightReport | null = null;
-  let publishing: Promise<void> | null = null;
   const publishState: { error: unknown } = { error: null };
+  let publishChain: Promise<void> = Promise.resolve();
   const poolWarm = opts.poolWarm ?? modalClonePoolIsWarm();
   const plan = planModalCloneBookWave({
     pending: opts.indexes,
@@ -344,11 +362,37 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     firstLight: opts.firstLight === true,
     poolWarm,
     batch: opts.batch,
+    bufferedMs: opts.bufferedMs,
+    playbackStarted: opts.playbackStarted,
+    maxCalls: opts.maxCalls,
   });
   log(
     `[S2 lanes] book wave pool=${poolWarm ? "warm" : "cold"} ` +
+      `buffer=${Math.round(opts.bufferedMs ?? 0)} ` +
       (plan.calls.map((call) => `${call.shape}:${call.indexes.length}`).join(" then ") || "idle")
   );
+
+  const enqueuePublish = (indexes: number[], head: boolean) => {
+    if (indexes.length === 0) return;
+    const task = () => {
+      const run = opts.publishStaged
+        ? opts.publishStaged(indexes)
+        : head && opts.publishFirstLight && indexes[0] != null
+          ? opts.publishFirstLight(indexes[0])
+          : null;
+      if (!run) return Promise.resolve();
+      return run.catch((err: unknown) => {
+        if (head) publishState.error = err;
+        else {
+          log(
+            `[S2 lanes] sections [${indexes.join(",")}] did not publish: ` +
+              `${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      });
+    };
+    publishChain = publishChain.then(task, task);
+  };
 
   for (let i = 0; i < plan.calls.length; i++) {
     const call = plan.calls[i]!;
@@ -390,11 +434,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
         tally.poolReason = `section ${head} missed the restore budget`;
       }
       if (!headStaged || tally.poolCold) break;
-      if (opts.publishFirstLight) {
-        publishing = opts.publishFirstLight(head).catch((err: unknown) => {
-          publishState.error = err;
-        });
-      }
+      enqueuePublish([head], true);
       continue;
     }
 
@@ -415,6 +455,10 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
           })
         );
       }
+      enqueuePublish(
+        call.indexes.filter((index) => tally.staged.has(index)),
+        false
+      );
       break;
     }
 
@@ -431,9 +475,16 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
         );
       }
     }
+
+    const stagedRows = call.indexes.filter((index) => tally.staged.has(index));
+    enqueuePublish(stagedRows, false);
+    // A dropped call is not followed by the next ramp step. Those rows
+    // wait for the next tick instead of being sent again on a GPU that
+    // just failed this one.
+    if (stagedRows.length !== call.indexes.length) break;
   }
 
-  return finishDispatch(tally, firstLight, publishing, publishState, log);
+  return finishDispatch(tally, firstLight, publishChain, publishState, log);
 }
 
 async function finishDispatch(

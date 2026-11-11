@@ -580,11 +580,11 @@ MODAL_S2_TTS_URL=https://<staging-synthesize-batch-host>
 MODAL_S2_SYNTHESIZE_URL=https://<staging-synthesize-host>
 MODAL_S2_READY_URL=https://<staging-ready-host>
 MODAL_S2_TOKEN=<token>
-MODAL_S2_SECTION_CONCURRENCY=4     # caps concurrent CALLS; a 5-section book is one call
-MODAL_S2_BATCH_SIZE=24             # rows per call: this is the throughput knob
+MODAL_S2_SECTION_CONCURRENCY=4     # slot cap; one book still sends one call at a time
+MODAL_S2_BATCH_SIZE=24             # largest warm call, only once the buffer covers it
 MODAL_S2_COLD_WAIT_MS=150000       # restore-sized; hard ceiling 180s, never a compile
 MODAL_S2_FIRST_LIGHT_WAIT_MS=75000 # section 0 only; gives up before a compile
-MODAL_S2_FIRST_LIGHT=1             # section 0 alone first, then one batched call
+MODAL_S2_FIRST_LIGHT=1             # section 0 alone first, then the playback ramp
 MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 ```
 
@@ -602,7 +602,9 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
       `S2 lane staged` is a GPU row, not a cache hit)
 - [ ] the **first** batch call carried section 0 alone (`[S2 lanes] first light
       section 0 staged in Ns`), and it arrived before any other lane opened
-- [ ] every remaining section rode **one** page — not one page per section
+- [ ] the calls after section 0 grow (`warm:1`, then a larger prefix). A
+      `warm:24` on the call immediately after section 0 means the ramp is
+      not running. `warm:24` is the steady state only once the buffer is deep
 - [ ] from a scaled-to-zero pool, an anonymous book (this checklist) is playable
       in roughly one restore plus one section (~68s: ~57s restore + ~14s
       synthesis + loudnorm). A signed-in `user_*` who already has a trained
@@ -757,9 +759,14 @@ report ≥ 4 distinct containers.
 ### 8d. Cold first audio, from a scaled-to-zero pool
 
 Section 0 is the only section the player can start with, so it is rendered
-alone on one lane and published before the rest of the book fans out
-(`MODAL_S2_FIRST_LIGHT`, default on). Everything after it rides **one** call,
-because a container decodes every row of a call in one batch.
+alone on one lane and published before the rest of the book starts
+(`MODAL_S2_FIRST_LIGHT`, default on). Each later call is the largest prefix
+that finishes before the audio already published runs out, so the batch
+grows (one row, then a few, then 24) instead of jumping to a full batch
+behind one minute of audio. A container still answers every row of a call
+together, which is why the planner counts the whole call as the wait. A
+`warm:24` immediately after section 0 means that ramp is not running. The
+5-section row below is the old one-call measurement, kept as a GPU rate.
 
 | | Budget |
 |--|--|
@@ -768,7 +775,7 @@ because a container decodes every row of a call in one batch.
 | section loudnorm (measure, then apply) | ~2s |
 | **cold → first playable audio** (restore starts at the synth call) | **~68s** |
 | **warm → first playable audio** (restore finished before the synth call) | **~16–20s** |
-| the rest of a 5-section book (one 5-row call) | ~24s GPU |
+| the rest of a 5-section book (old one-call shape, one 5-row call) | ~24s GPU |
 | cold → `ready` | ~90–100s |
 | warm → `ready` | ~40–50s |
 
@@ -927,8 +934,10 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- `staged=N/M` should be one page carrying every remaining section
-  (`page of 4 rendered 4/4`), **not** four pages of one
+- early `warm:N` grows with the buffer. `warm:24` is only once that
+  buffer covers a full batch. A `warm:24` on the call right after section 0
+  means the ramp is not running. One row per page (`page of 1 rendered 1/1`
+  for every section) is the old round-robin split, not the ramp
 - `boot=restored` (or `unknown`) says whether that time was a restore or a
   compile. A long first light that reports `unknown` and then succeeds is a
   warm compile; the off-path `::cover` is what prevents it.
