@@ -189,6 +189,12 @@ export interface JobSegment {
    * cache key.
    */
   rawPath?: string;
+  /**
+   * How many times this section has been dropped or failed. A clone batch
+   * that returns an error or a truncated row writes this before the tick
+   * is treated as handled, so the next render uses a new seed.
+   */
+  attempts?: number;
 }
 
 export interface PriceEstimate {

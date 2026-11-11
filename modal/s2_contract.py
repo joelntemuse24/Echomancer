@@ -1160,8 +1160,11 @@ def container_limits(env) -> dict:
     """Autoscaler knobs, read once so health output and the decorator agree.
 
     Target shape: one frozen app, `min_containers=0`, up to
-    `S2C_MAX_CONTAINERS` independent one-GPU containers (default 4 for
-    staging, 1 in production until staging is signed off).
+    `S2C_MAX_CONTAINERS` independent one-GPU containers. The code default
+    stays 1 so a plain deploy cannot open a fleet. The live cap is
+    `update_autoscaler(max_containers=N)` with N matching `MODAL_S2_MAX_GPUS`
+    (default 20). The clamp only stops a typo; 64 is the same ceiling as
+    the worker.
     """
     def _int(name: str, default: int, low: int, high: int) -> int:
         try:
@@ -1177,7 +1180,7 @@ def container_limits(env) -> dict:
 
     return {
         "min_containers": 0,
-        "max_containers": _int("S2C_MAX_CONTAINERS", 1, 1, 8),
+        "max_containers": _int("S2C_MAX_CONTAINERS", 1, 1, 64),
         "lanes": _int("S2C_LANES", 4, 1, 8),
         "scaledown_window": _int("S2C_SCALEDOWN", 300, 2, 1200),
         "buffer_containers": _int("S2C_BUFFER_CONTAINERS", 0, 0, 8),

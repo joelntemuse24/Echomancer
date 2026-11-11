@@ -47,6 +47,32 @@ export type SplitTextOptions = {
    */
   firstSectionMaxChars?: number;
   /**
+   * Take-home section 1 on the clone path. The call after section 0 is one
+   * row, and a 2,000-character row runs past the opening audio. Later
+   * sections keep `maxChars`.
+   */
+  secondSectionMaxChars?: number;
+  /**
+   * Take-home section 2 on the clone path. The buffer after the second
+   * call still cannot cover a 2,000-character row at 1.5×. Section 3
+   * onward keeps `maxChars`.
+   */
+  thirdSectionMaxChars?: number;
+  /**
+   * Recompute section 1 from the opening that was actually closed.
+   * A sentence boundary leaves section 0 short of `firstSectionMaxChars`,
+   * and the cap computed for a full opening does not fit that audio.
+   */
+  fitSecondSection?: (openingChars: number) => number;
+  /** Recompute section 2 from the opening and section 1 that were closed. */
+  fitThirdSection?: (openingChars: number, secondChars: number) => number;
+  /**
+   * Cap each section after the opening from the sections already closed.
+   * When this is set it replaces the fixed second and third caps, so the
+   * ramp can stay short for more than two sections.
+   */
+  fitNextSection?: (priorChars: number[]) => number;
+  /**
    * Drop a leading copyright / ISBN page. Defaults to on.
    * `TTS_SKIP_FRONT_MATTER=0` turns it off for every caller.
    */
@@ -498,6 +524,16 @@ export function packSpeakableSections(
     typeof requestedFirst === "number" && requestedFirst >= 10
       ? Math.min(requestedFirst, maxChars)
       : Math.min(FIRST_SECTION_CHARS, maxChars);
+  const requestedSecond = opts?.secondSectionMaxChars;
+  let secondTarget =
+    typeof requestedSecond === "number" && requestedSecond >= 10
+      ? Math.min(requestedSecond, maxChars)
+      : null;
+  const requestedThird = opts?.thirdSectionMaxChars;
+  let thirdTarget =
+    typeof requestedThird === "number" && requestedThird >= 10
+      ? Math.min(requestedThird, maxChars)
+      : null;
 
   const source =
     opts?.skipFrontMatter === false ? text : stripNarrationFrontMatter(text);
@@ -510,6 +546,26 @@ export function packSpeakableSections(
   let cursor = 0;
   let open: OpenSection | null = null;
   let seenContent = false;
+  let rampCache: { count: number; target: number } | null = null;
+
+  const nextRampTarget = (): number | null => {
+    if (!opts?.fitNextSection || finished.length === 0) return null;
+    if (rampCache && rampCache.count === finished.length) return rampCache.target;
+    const prior = finished.map((section) => measure(section.text));
+    const fitted = opts.fitNextSection(prior);
+    const target = fitted >= 10 ? Math.min(Math.floor(fitted), maxChars) : maxChars;
+    rampCache = { count: finished.length, target };
+    return target;
+  };
+
+  const onTightRamp = () => {
+    const ramp = nextRampTarget();
+    if (ramp != null) return ramp < maxChars;
+    return (
+      (finished.length === 1 && secondTarget != null) ||
+      (finished.length === 2 && thirdTarget != null)
+    );
+  };
 
   const emit = (section: OpenSection) => {
     const body = openSectionText(section);
@@ -527,6 +583,15 @@ export function packSpeakableSections(
       ...(section.marks.length > 0 ? { chapterMarks: section.marks } : {}),
     });
     cursor = charEnd;
+    if (finished.length === 1 && opts?.fitSecondSection && secondTarget != null) {
+      const fitted = opts.fitSecondSection(measure(body));
+      if (fitted >= 10) secondTarget = Math.min(secondTarget, fitted, maxChars);
+    }
+    if (finished.length === 2 && opts?.fitThirdSection && thirdTarget != null) {
+      const opening = finished[0]?.text ?? "";
+      const fitted = opts.fitThirdSection(measure(opening), measure(body));
+      if (fitted >= 10) thirdTarget = Math.min(thirdTarget, fitted, maxChars);
+    }
   };
 
   const startOpen = (
@@ -545,7 +610,52 @@ export function packSpeakableSections(
     };
   };
 
-  const targetForNext = () => (finished.length === 0 ? firstTarget : maxChars);
+  /**
+   * Open `piece` as the next section. A piece cut for an earlier, wider
+   * window can be longer than this section's ceiling (section 1 is ~786
+   * characters, section 2 ~984). Take only the sentences that fit and
+   * leave the rest for the following section.
+   */
+  const openWithinCeiling = (
+    piece: string,
+    joinKind: SectionJoinKind,
+    title: string | null
+  ) => {
+    let remaining = piece;
+    let kindNow = joinKind;
+    let titleNow = title;
+    while (remaining) {
+      const ceiling = overflowCeiling();
+      if (measure(remaining) > ceiling) {
+        const end = sentencePrefixThatFits("", remaining, ceiling, measure);
+        if (end > 0 && end < remaining.length) {
+          const head = remaining.slice(0, end).trim();
+          const rest = remaining.slice(end).trim();
+          if (head && rest) {
+            startOpen(head, kindNow, chapterIndex, titleNow);
+            seenContent = true;
+            emit(open!);
+            remaining = rest;
+            kindNow = "mid-paragraph";
+            titleNow = null;
+            continue;
+          }
+        }
+      }
+      startOpen(remaining, kindNow, chapterIndex, titleNow);
+      seenContent = true;
+      return;
+    }
+  };
+
+  const targetForNext = () => {
+    const ramp = nextRampTarget();
+    if (ramp != null) return ramp;
+    if (finished.length === 0) return firstTarget;
+    if (finished.length === 1 && secondTarget != null) return secondTarget;
+    if (finished.length === 2 && thirdTarget != null) return thirdTarget;
+    return maxChars;
+  };
 
   /** First-section TTFA uses a tight ceiling; later windows only mid-split at hardMax. */
   const overflowCeiling = () => {
@@ -553,6 +663,12 @@ export function packSpeakableSections(
     if (finished.length === 0) {
       return Math.min(hardMax, target + 80);
     }
+    // Sections on the clone ramp must not grow toward the 2,000-character
+    // steady width. A sentence that does not fit is split, not absorbed.
+    const ramp = nextRampTarget();
+    if (ramp != null && ramp < maxChars) return ramp;
+    if (finished.length === 1 && secondTarget != null) return secondTarget;
+    if (finished.length === 2 && thirdTarget != null) return thirdTarget;
     return hardMax;
   };
 
@@ -584,10 +700,19 @@ export function packSpeakableSections(
     }
 
     const target = targetForNext();
-    const ceiling = finished.length === 0 ? overflowCeiling() : hardMax;
+    const ceiling = overflowCeiling();
+    const rampNow = nextRampTarget();
+    const splitHard =
+      rampNow != null && rampNow < maxChars
+        ? rampNow
+        : finished.length === 1 && secondTarget != null
+          ? secondTarget
+          : finished.length === 2 && thirdTarget != null
+            ? thirdTarget
+            : hardMax;
     const pieces =
       measure(unit.text) > ceiling
-        ? packSentencesWithin(unit.text, target, hardMax, measure)
+        ? packSentencesWithin(unit.text, target, splitHard, measure)
         : [unit.text];
 
     const hasOversizedRun = pieces.length > 1 &&
@@ -599,15 +724,14 @@ export function packSpeakableSections(
         p === 0 ? "paragraph" : "mid-paragraph";
 
       if (!open) {
-        startOpen(piece, joinKind, chapterIndex, chapterTitle);
-        seenContent = true;
+        openWithinCeiling(piece, joinKind, chapterTitle);
         continue;
       }
 
       // Generated pieces already chose a semantic boundary and merged tiny tails.
       if (p > 0 && hasOversizedRun) {
         emit(open);
-        startOpen(piece, joinKind, chapterIndex, null);
+        openWithinCeiling(piece, joinKind, null);
         continue;
       }
 
@@ -626,7 +750,9 @@ export function packSpeakableSections(
       // The first take-home window should land near its target. A 55% fill
       // would close a ~450-character paragraph and leave the opening short.
       const fillRatio =
-        finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS ? 0.9 : MIN_FILL_RATIO;
+        (finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS) || onTightRamp()
+          ? 0.9
+          : MIN_FILL_RATIO;
       const filledEnough = currentLen >= effectiveTarget * fillRatio;
       // A long next paragraph used to flush a short title on its own.
       // Take whole sentences that fit. If none fit, keep a stub open through
@@ -643,18 +769,18 @@ export function packSpeakableSections(
           if (head && measure(joined) <= hardMax) {
             currentOpen.parts.push(head);
             emit(currentOpen);
-            if (rest) startOpen(rest, "mid-paragraph", chapterIndex, null);
+            if (rest) openWithinCeiling(rest, "mid-paragraph", null);
             else open = null;
             continue;
           }
         }
         emit(currentOpen);
-        startOpen(piece, joinKind, chapterIndex, null);
+        openWithinCeiling(piece, joinKind, null);
         continue;
       }
       if (filledEnough || nextLen > overflowCeiling()) {
         emit(currentOpen);
-        startOpen(piece, joinKind, chapterIndex, null);
+        openWithinCeiling(piece, joinKind, null);
         continue;
       }
 

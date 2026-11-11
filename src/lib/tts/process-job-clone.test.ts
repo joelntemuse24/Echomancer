@@ -10,7 +10,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UPLOAD_ID_A,
+  UPLOAD_ID_B,
   USER_A,
+  USER_B,
   createFakeProvider,
   fakeMp3,
   jobRow,
@@ -501,7 +503,9 @@ describe("lane staging", () => {
     const fetchMock = warmPool(2);
     vi.stubGlobal("fetch", fetchMock);
     process.env.TTS_SECTION_CACHE = "1";
+    const vitestFlag = process.env.VITEST;
     delete process.env.VITEST;
+    try {
     await seedCloneJob("A sentence. ".repeat(300));
     const fake = await fakeAdapter();
 
@@ -524,6 +528,10 @@ describe("lane staging", () => {
     // The lanes filled the sections, so the slower per-section path either had
     // nothing left to do or only handled a tail.
     expect(fake.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      if (vitestFlag === undefined) delete process.env.VITEST;
+      else process.env.VITEST = vitestFlag;
+    }
   });
 
   /**
@@ -631,7 +639,7 @@ describe("lane staging", () => {
       expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
     });
 
-    it("falls back to the old all-lanes wave when MODAL_S2_FIRST_LIGHT=0", async () => {
+    it("keeps one call in flight when first light is off", async () => {
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
@@ -639,19 +647,27 @@ describe("lane staging", () => {
       configureModal();
       process.env.MODAL_S2_FIRST_LIGHT = "0";
       process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
-      // Batch of 1 makes the fan-out observable: with the old wave all four
-      // rows open at once, which is exactly the shape first light removes.
+      // One row per call. A call that returns lets the tick plan the next
+      // row, still one HTTP call at a time — not four containers at once.
       process.env.MODAL_S2_BATCH_SIZE = "1";
+      // First light is off, but a call that returns still lets the tick plan
+      // the next row. One call is in flight at a time — never four H100s.
       try {
-        // Count how many batch calls are in flight when each one starts.
         let inflight = 0;
         let maxInflight = 0;
+        const rows: number[][] = [];
         const fetchMock = warmPool(4);
         const base = fetchMock.getMockImplementation()!;
         fetchMock.mockImplementation(async (url, init) => {
           if (endpointOf(String(url)) !== "batch") return base(url, init);
           inflight += 1;
           maxInflight = Math.max(maxInflight, inflight);
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          rows.push(
+            (Array.isArray(body.items) ? body.items : []).map(
+              (item: { key: string }) => Number(item.key)
+            )
+          );
           try {
             await new Promise((resolve) => setTimeout(resolve, 10));
             return await base(url, init);
@@ -666,8 +682,9 @@ describe("lane staging", () => {
         const { processTakehomeTick } = await import("@/lib/tts/process-job");
         await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
-        // Rollback path: no serialized section-0 call ahead of the fan-out.
-        expect(maxInflight).toBeGreaterThan(1);
+        expect(maxInflight).toBe(1);
+        expect(rows.length).toBeGreaterThan(1);
+        expect(rows.every((row) => row.length === 1)).toBe(true);
       } finally {
         delete process.env.MODAL_S2_FIRST_LIGHT;
         delete process.env.MODAL_S2_BATCH_SIZE;
@@ -708,10 +725,11 @@ describe("lane staging", () => {
       expect(Math.max(...fanOut)).toBeGreaterThan(1);
     });
 
-    it("does not pack four 7.7k sections into one call", async () => {
+    it("keeps a 31k book inside the warm budget instead of one cold call", async () => {
       // `job 7e4a8b48`: an 87,000-character cap let one `synthesize_batch`
-      // call carry 31k characters, which ran 4m03s and never finished. The
-      // tick must now split that book across lanes.
+      // call carry 31k characters, which ran past its wait and never finished.
+      // Section 0 stays cold-sized. The call after it may be a full batch,
+      // and that batch still has to finish inside the warm wait.
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
@@ -744,18 +762,26 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, {});
 
-      const { modalLaneCharCap } = await import(
+      const { modalLaneCharCap, modalWarmLaneCharLimit } = await import(
         "@/lib/tts/providers/modal-clone-lanes"
       );
-      const cap = modalLaneCharCap();
-      // No call may be planned to carry more than one lane can finish.
-      for (const chars of charsPerCall) {
-        expect(chars).toBeLessThanOrEqual(cap);
-      }
-      // And it really did split: the biggest call is a single section, not the
-      // 31k pack that stalled. (Section 0 plus at least one more lane.)
-      expect(Math.max(...charsPerCall)).toBeLessThanOrEqual(cap);
+      const { MODAL_CLONE_PROXY_KILL_MS, modalCloneWarmWaitMs } = await import(
+        "@/lib/tts/providers/modal-clone-guard"
+      );
+      const cold = modalLaneCharCap();
+      const warm = modalWarmLaneCharLimit();
+      // Section 0 is the cold call. The call after it may be a full batch,
+      // which is larger than the cold cap, and it still has to finish inside
+      // the warm wait. Nothing is one 31k cold call.
+      expect(charsPerCall[0]).toBeLessThanOrEqual(cold);
       expect(charsPerCall.length).toBeGreaterThan(1);
+      for (const chars of charsPerCall) {
+        expect(chars).toBeLessThanOrEqual(warm);
+        const packedMs = (chars / 150) * 1000 + 20_000;
+        expect(packedMs).toBeLessThanOrEqual(modalCloneWarmWaitMs());
+        expect(modalCloneWarmWaitMs()).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+      }
+      expect(Math.max(...charsPerCall)).toBeGreaterThan(cold);
     });
 
     it("re-packs a frozen clone outline that no call could render", async () => {
@@ -811,13 +837,24 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, {});
 
-      const { modalLaneCharCap } = await import(
-        "@/lib/tts/providers/modal-clone-lanes"
-      );
+      const { modalCloneSectionChars, modalLaneCharCap, modalWarmLaneCharLimit } =
+        await import("@/lib/tts/providers/modal-clone-lanes");
       expect(charsPerCall.length).toBeGreaterThan(0);
+      // The 7.7k rows are gone before the GPU sees them. A warm call may then
+      // carry more than the cold cap, and still not more than it can finish.
+      expect(charsPerCall[0]).toBeLessThanOrEqual(modalLaneCharCap());
       for (const chars of charsPerCall) {
-        expect(chars).toBeLessThanOrEqual(modalLaneCharCap());
+        expect(chars).toBeLessThanOrEqual(modalWarmLaneCharLimit());
       }
+      expect(Math.max(...charsPerCall)).toBeLessThanOrEqual(
+        modalCloneSectionChars() * 24
+      );
+      const { loadFrozenScript } = await import("@/lib/tts/frozen-script");
+      const frozen = await loadFrozenScript(JOB_ID);
+      expect(frozen!.sections.length).toBeGreaterThan(4);
+      expect(
+        frozen!.sections.every((section) => section.text.length <= modalCloneSectionChars())
+      ).toBe(true);
     });
 
     it("never re-packs a clone book that has already published audio", async () => {
@@ -1023,15 +1060,20 @@ describe("staged clone takes are not rendered again", () => {
     await fakeAdapter();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
 
+    // The next call starts while the previous call's audio is publishing,
+    // so a slow render overlaps that publish inside the same tick.
+    delayMs = 40;
     await processTakehomeTick(JOB_ID, {});
     const first = seen.flat();
     expect(first.length).toBeGreaterThan(8);
+    expect(overlapped).toBe(true);
     const ready = await readyIndexes();
     expect(ready[0]).toBe(0);
     for (let i = 0; i < ready.length; i++) expect(ready[i]).toBe(i);
-    expect(ready.length).toBeLessThan(new Set(first).size);
+    expect(ready.length).toBeGreaterThan(0);
+    expect(ready.length).toBeLessThanOrEqual(new Set(first).size);
 
-    delayMs = 50;
+    delayMs = 0;
     overlapped = false;
     const mark = seen.length;
     await processTakehomeTick(JOB_ID, {});
@@ -1039,7 +1081,6 @@ describe("staged clone takes are not rendered again", () => {
     const again = second.filter((index) => first.includes(index));
     expect(again).toEqual([]);
     expect(second.length).toBeGreaterThan(0);
-    expect(overlapped).toBe(true);
     const readyAfter = await readyIndexes();
     for (let i = 0; i < readyAfter.length; i++) expect(readyAfter[i]).toBe(i);
     expect(readyAfter.length).toBeGreaterThan(ready.length);
@@ -1136,9 +1177,22 @@ describe("staged clone takes are not rendered again", () => {
     const { emptyWav } = await import("@/test/harness");
 
     await processTakehomeTick(JOB_ID, {});
-    const ready = new Set(await readyIndexes());
-    const staged = [...new Set(seen.flat())].filter((index) => !ready.has(index));
-    expect(staged.length).toBeGreaterThanOrEqual(3);
+    const ready = await readyIndexes();
+    expect(ready.length).toBeGreaterThanOrEqual(3);
+    // The ramp publishes what it renders. Drop three ready sections back to
+    // unclaimed so the next tick has to trust the cache, which is the
+    // restart case this test is about.
+    const staged = ready.slice(0, 3);
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as Array<{
+      index: number;
+      path?: string;
+      rawPath?: string;
+    }>;
+    await execute(`UPDATE jobs SET segments_json = ? WHERE id = ?`, [
+      JSON.stringify(segments.filter((segment) => !staged.includes(segment.index))),
+      JOB_ID,
+    ]);
     const frozen = await loadFrozenScript(JOB_ID);
     expect(frozen).toBeTruthy();
     const speed = fishSpeedForRequest(
@@ -1166,6 +1220,28 @@ describe("staged clone takes are not rendered again", () => {
     await deleteFile(`tts-cache/${keyFor(victim!, "clone-ref")}.mp3`);
     await writeSectionCache(keyFor(victim!, "other-voice"), "mp3", fakeMp3(), "audio/mpeg");
     await writeSectionCache(keyFor(silent!, "clone-ref"), "mp3", emptyWav(), "audio/wav");
+    // Raw audio would be recovered as a finished take and the cache would
+    // never be consulted. Drop it for the two indexes whose cache is bad.
+    const stored = new Map(segments.map((segment) => [segment.index, segment]));
+    for (const index of [victim!, silent!]) {
+      const pad = String(index).padStart(4, "0");
+      const segment = stored.get(index);
+      for (const storagePath of [
+        segment?.rawPath,
+        segment?.path,
+        `audiobooks/${JOB_ID}/raw/${pad}.mp3`,
+        `audiobooks/${JOB_ID}/raw/${pad}.wav`,
+        `audiobooks/${JOB_ID}/sections/${pad}.mp3`,
+      ]) {
+        if (storagePath && (await fileExists(storagePath))) {
+          await deleteFile(storagePath);
+        }
+      }
+    }
+    await execute(
+      `DELETE FROM cpu_tasks WHERE job_id = ? AND section_index IN (?, ?)`,
+      [JOB_ID, victim!, silent!]
+    );
 
     const mark = seen.length;
     await processTakehomeTick(JOB_ID, {});
@@ -1230,7 +1306,9 @@ describe("staged clone takes are not rendered again", () => {
       const keys = keysOf(typeof init?.body === "string" ? init.body : undefined);
       seen.push(keys);
       batches += 1;
-      if (batches > 2) throw new TypeError("socket hang up");
+      // Section 0 returns. The fat call after it drops. The next tick retries
+      // that call's rows and does not buy section 0 again.
+      if (batches > 1) throw new TypeError("socket hang up");
       return base(url, init);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1238,9 +1316,9 @@ describe("staged clone takes are not rendered again", () => {
     await fakeAdapter();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, {});
-    const staged = seen.slice(0, 2).flat();
+    const staged = seen[0] ?? [];
+    const dropped = seen[1] ?? [];
     expect(staged.length).toBeGreaterThan(0);
-    const dropped = seen.slice(2).flat();
     expect(dropped.length).toBeGreaterThan(0);
 
     const mark = seen.length;
@@ -1295,6 +1373,79 @@ describe("staged clone takes are not rendered again", () => {
   }, 60_000);
 });
 
+describe("a book-wave miss does not open more GPU calls", () => {
+  it("posts one batch when the container answers 429", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let batchPosts = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(
+          JSON.stringify({ ready: true, warm_containers: 1, build: "abc123" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      batchPosts += 1;
+      return new Response("lane busy", { status: 429 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(400));
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+    expect(batchPosts).toBe(1);
+    expect(result.yieldSlot).toBe(true);
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).not.toBe("failed");
+  });
+
+  it("records a dropped row as a retry so the next take changes seed", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    const epochs: number[] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      epochs.push(Number(body.seed_epoch) || 0);
+      const response = await base(url, init);
+      const payload = await response.json();
+      payload.items = (payload.items as { key: string }[]).map((item) =>
+        item.key === "0"
+          ? { key: item.key, error: "row failed", error_code: "row" }
+          : item
+      );
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A short sentence. ".repeat(80));
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, {});
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as {
+      index: number;
+      status: string;
+      attempts?: number;
+    }[];
+    const dropped = segments.find((segment) => segment.index === 0);
+    expect(dropped?.status).toBe("retry");
+    expect(dropped?.attempts).toBe(1);
+    await processTakehomeTick(JOB_ID, {});
+    expect(epochs.length).toBeGreaterThan(1);
+    expect(epochs.at(-1)).toBeGreaterThan(epochs[0] ?? 0);
+  });
+});
+
 describe("a parked provider fault does not fail the book on a later tick", () => {
   function faultyPool() {
     return vi.fn<typeof fetch>().mockImplementation(async (url) => {
@@ -1327,5 +1478,103 @@ describe("a parked provider fault does not fail the book on a later tick", () =>
       expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
       await execute(`UPDATE jobs SET status = 'queued' WHERE id = ?`, [JOB_ID]);
     }
+  });
+});
+
+describe("clone books get their own GPU until the ceiling", () => {
+  const OTHER_ID = "eeeeeeee-0000-4000-8000-000000000002";
+
+  it("keeps this book's ramp when another clone book still fits", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let posts = 0;
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") posts += 1;
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(80));
+    const otherPath = await seedUpload({
+      id: UPLOAD_ID_B,
+      userId: USER_B,
+      text: "Another sentence in the other essay. ".repeat(80),
+    });
+    await seedJob({
+      id: OTHER_ID,
+      userId: USER_B,
+      pdfStoragePath: otherPath,
+      catalogVoiceId: CLONE_ID,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-base",
+    });
+    await execute(`UPDATE jobs SET created_at = 10 WHERE id = ?`, [JOB_ID]);
+    await execute(`UPDATE jobs SET created_at = 20, status = 'queued' WHERE id = ?`, [OTHER_ID]);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+    expect(posts).toBeGreaterThan(0);
+    expect(result.yieldSlot).not.toBe(true);
+  });
+
+  it("queues a younger book when the GPU ceiling is already full", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    const { acquireModalGpuLease } = await import("@/lib/tts/providers/modal-gpu-lease");
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    process.env.MODAL_S2_MAX_GPUS = "1";
+    process.env.MODAL_S2_MAX_GPUS_PER_USER = "5";
+    let posts = 0;
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") posts += 1;
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(80));
+    const otherPath = await seedUpload({
+      id: UPLOAD_ID_B,
+      userId: USER_B,
+      text: "Another sentence in the other essay. ".repeat(80),
+    });
+    await seedJob({
+      id: OTHER_ID,
+      userId: USER_B,
+      pdfStoragePath: otherPath,
+      catalogVoiceId: CLONE_ID,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-base",
+    });
+    await execute(`UPDATE jobs SET created_at = 30 WHERE id = ?`, [JOB_ID]);
+    await execute(`UPDATE jobs SET created_at = 5, status = 'queued' WHERE id = ?`, [OTHER_ID]);
+    expect(
+      (
+        await acquireModalGpuLease({
+          jobId: "holder-book",
+          userId: "user-holder",
+          ownerToken: "holder-token",
+          createdAt: 1,
+          ttlSeconds: 90,
+          globalCap: 1,
+          perUserCap: 5,
+        })
+      ).ok
+    ).toBe(true);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+    expect(posts).toBe(0);
+    expect(result.yieldSlot).toBe(true);
+    delete process.env.MODAL_S2_MAX_GPUS;
+    delete process.env.MODAL_S2_MAX_GPUS_PER_USER;
   });
 });

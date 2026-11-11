@@ -196,11 +196,12 @@ _BUILD_ENV = {
 def _max_containers() -> int:
     """Independent one-GPU containers.
 
-    Production stays at 1 until the staging runbook has shown four lanes
-    restoring the same snapshot and finishing a real book. A cold container
-    spends ~20 min compiling, and four of those at once exhausted the Modal
-    budget on 25 Oct, so the default is deliberately conservative and the
-    value is a single env var (`S2C_MAX_CONTAINERS`) rather than a code edit.
+    The baked default stays 1. A plain `modal deploy` therefore cannot open
+    a fleet by itself. After deploy, the runbook sets the live cap with
+    `update_autoscaler(max_containers=N)` where N is `MODAL_S2_MAX_GPUS`
+    (default 20). `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
+    sends a second book's call to another container instead of queueing it
+    on this one; that decorator is in effect only after a redeploy.
     """
     return int(_LIMITS["max_containers"])
 
@@ -342,6 +343,10 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
         **_BUILD_ENV,
     },
 )
+# One input per container. A second book's call is placed on another
+# container (up to max_containers) instead of queueing on this GPU thread,
+# which would answer 429. Needs a redeploy before it takes effect.
+@modal.concurrent(max_inputs=1)
 class S2CloneWorker:
     @modal.enter(snap=True)
     def load(self) -> None:
@@ -899,11 +904,16 @@ class S2CloneWorker:
                 if seed not in (None, "")
                 else seed_for_call(job_id, text[:64], int(seed_epoch or 0))
             )
-            generated_at = time.time()
+            # Same clock split as /synthesize_batch. generate_s is the
+            # semantic render, codec_s is the vocoder, master_s (below) is
+            # the MP3. An earlier version stamped generate before render, so
+            # codec_s was the render and master_s was vocoder plus MP3.
+            prepared_at = time.time()
             stats = self.engine.render([units], ref, sampling_text)
             truncated_by_slot = stats.pop("truncated_by_slot", [])
-            coded_at = time.time()
+            generated_at = time.time()
             samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
+            coded_at = time.time()
             return {
                 "ref_key": ref_key,
                 "ref_stats": ref_stats,
@@ -911,6 +921,7 @@ class S2CloneWorker:
                 "samples": samples,
                 "truncated": int(sum(truncated_by_slot)),
                 "sample_rate": self.engine.sample_rate,
+                "t_prepare": prepared_at,
                 "t_gen": generated_at,
                 "t_codec": coded_at,
             }
@@ -935,7 +946,8 @@ class S2CloneWorker:
             "units": len(units),
             "unit_shape": units_summary(units),
             "truncated_units": done["truncated"],
-            "generate_s": round(done["t_gen"] - t0, 2),
+            "prepare_s": round(done["t_prepare"] - t0, 2),
+            "generate_s": round(done["t_gen"] - done["t_prepare"], 2),
             "codec_s": round(done["t_codec"] - done["t_gen"], 2),
             "master_s": round(t_master - done["t_codec"], 2),
             "call_s": round(t_master - t0, 2),

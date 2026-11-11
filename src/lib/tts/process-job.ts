@@ -41,10 +41,10 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import {
   loadCloneReference,
   modalCloneBatchSize,
-  modalCloneLaneCount,
   ModalCloneColdError,
   ModalCloneProviderError,
   ModalCloneReferenceError,
+  modalClonePoolIsWarm,
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
@@ -55,7 +55,20 @@ import {
   ModalWorkspaceDisabledError,
 } from "@/lib/modal/workspace-disabled";
 import { incompleteAudiobookMessage, userFriendlyError } from "@/lib/errors-ui";
-import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
+import {
+  chooseCloneGpuTurn,
+  cloneAudioMs,
+  clonePlanningBufferMs,
+  modalCloneColdSafeRowChars,
+  modalCloneNextSectionChars,
+  modalCloneSecondCallChars,
+  modalCloneSecondCallCharsFor,
+  modalCloneThirdCallChars,
+  modalCloneThirdCallCharsFor,
+  modalCloneSectionChars,
+  MODAL_CLONE_OPENING_SECTION_CHARS,
+  modalLaneCharLimit,
+} from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import {
@@ -63,6 +76,12 @@ import {
   shouldPrewarmModalNarration,
 } from "@/lib/tts/modal-narration-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
+import {
+  admitModalCloneGpu,
+  releaseModalGpuLease,
+  releaseModalGpuLeasesForOwner,
+  renewModalGpuLeases,
+} from "@/lib/tts/providers/modal-gpu-lease";
 import {
   selectClonePublishBatch,
   selectCloneRenderIndexes,
@@ -79,7 +98,10 @@ import {
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
 import {
   loadFrozenScript,
+  loadFrozenSectionOutline,
   buildAndPersistFrozenScript,
+  persistFrozenSections,
+  repackFrozenTail,
 } from "@/lib/tts/frozen-script";
 import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
@@ -129,6 +151,8 @@ import {
   allIndexesReady,
   claimIndexSet,
   claimableIndexes,
+  retryableHoleIndexes,
+  unattemptedIndexes,
   SECTION_FANOUT_HARD_MAX,
   createAsyncMutex,
   lowestUnclaimedAfter,
@@ -405,6 +429,9 @@ export async function releaseInFlightTakehomeLeases(): Promise<number> {
     await releaseProviderSlotsForOwner(token).catch((err) => {
       console.error(`[Job ${jobId}] slot release failed`, err);
     });
+    await releaseModalGpuLeasesForOwner(token).catch((err) => {
+      console.error(`[Job ${jobId}] gpu lease release failed`, err);
+    });
     await releaseLease(jobId, token, { status: "queued" });
     dropInFlightTakehomeLease(jobId, token);
   }
@@ -519,6 +546,8 @@ export class LeaseLostError extends Error {
 export interface StockJobRow {
   id: string;
   user_id: string;
+  /** Unix seconds. GPU admission orders books by this, then id. */
+  created_at?: number | null;
   status: string;
   pdf_storage_path: string;
   book_title: string;
@@ -538,6 +567,8 @@ export interface StockJobRow {
   provider_pin?: string | null;
   /** Unix time this book started waiting for a cold clone pool. */
   clone_wait_started_at?: number | null;
+  /** Unix time the first section became playable. Playback buffer is measured from here. */
+  first_section_at?: number | null;
 }
 
 function newLeaseToken(): string {
@@ -676,6 +707,12 @@ function startLeaseHeartbeat(
             err instanceof Error ? err.message : err
           );
         });
+        await renewModalGpuLeases(token, LEASE_TTL_SECONDS).catch((err) => {
+          console.warn(
+            `[lease] gpu-lease renew skipped for ${jobId}`,
+            err instanceof Error ? err.message : err
+          );
+        });
       })
       .catch((err) => {
         if (isTransientWorkerError(err)) {
@@ -758,9 +795,167 @@ export interface SynthesisFailure {
 export function cloneSeedEpoch(segments: JobSegment[]): number {
   let epoch = 0;
   for (const segment of segments) {
-    if (segment.status === "retry") epoch = Math.max(epoch, 1);
+    if (segment.status === "retry") {
+      epoch = Math.max(epoch, Math.max(1, segment.attempts ?? 1));
+    }
   }
   return epoch;
+}
+
+/**
+ * A dropped clone row spends one attempt. The third spend fails the
+ * section (`SECTION_ATTEMPTS`). Until then the status is `retry`, which
+ * moves {@link cloneSeedEpoch} so the next take is not the same seed.
+ */
+export function cloneDropLedger(prev: JobSegment | undefined): {
+  status: "retry" | "failed";
+  attempts: number;
+} {
+  const prior = prev?.attempts ?? (prev?.status === "retry" ? 1 : 0);
+  const attempts = prior + 1;
+  if (attempts >= SECTION_ATTEMPTS) return { status: "failed", attempts };
+  return { status: "retry", attempts };
+}
+
+/**
+ * Indexes a clone tick may still render, in playback order.
+ *
+ * `claimableIndexes` finishes every never-attempted section before it
+ * touches a retry. A dropped early row would then wait until the rest of
+ * the book had been spoken, and the next tick would keep the same seed.
+ * Retries are in this list as soon as they are written.
+ */
+export function clonePendingIndexes(
+  segments: JobSegment[],
+  total: number
+): number[] {
+  const indexes = new Set<number>([
+    ...retryableHoleIndexes(segments, total),
+    ...unattemptedIndexes(segments, total),
+  ]);
+  return [...indexes].sort((a, b) => a - b);
+}
+
+/**
+ * The other book's next sections, up to one batch.
+ *
+ * Two placeholder rows made every shared turn look like a one-row book,
+ * so the chooser could not hand that book a batch and kept both listeners
+ * on single rows. A missing outline is not a book on this GPU: inventing
+ * a full batch would size a call for a listener who is not here.
+ */
+export function otherCloneShareView(
+  outline: { index: number; text: string }[] | null,
+  segments: { index: number; status: string }[],
+  batch: number
+): { pending: number[]; textAt: (index: number) => string } {
+  const published = new Set(
+    segments
+      .filter((segment) => segment.status === "ready" || segment.status === "mastering")
+      .map((segment) => segment.index)
+  );
+  const open = (outline ?? [])
+    .filter((section) => !published.has(section.index))
+    .sort((a, b) => a.index - b.index)
+    .slice(0, Math.max(1, batch));
+  if (open.length === 0) {
+    return { pending: [], textAt: () => "" };
+  }
+  const text = new Map(open.map((section) => [section.index, section.text]));
+  return {
+    pending: open.map((section) => section.index),
+    textAt: (index) => text.get(index) ?? "",
+  };
+}
+
+/** Character lengths of the next two unpublished sections. A missing outline uses the fallback. */
+export function unpublishedSectionLengths(
+  sections: { index: number; text: string }[] | null,
+  segments: { index: number; status: string }[],
+  fallback: [number, number]
+): [number, number] {
+  if (!sections || sections.length === 0) return fallback;
+  const published = new Set(
+    segments
+      .filter((segment) => segment.status === "ready" || segment.status === "mastering")
+      .map((segment) => segment.index)
+  );
+  const open = [...sections]
+    .filter((section) => !published.has(section.index))
+    .sort((a, b) => a.index - b.index);
+  return [open[0]?.text.length ?? fallback[0], open[1]?.text.length ?? fallback[1]];
+}
+
+/**
+ * Ramp caps for this outline. Section 0 often closes a sentence short of
+ * 1,000 characters, and the cap for a full opening does not fit that audio.
+ */
+export function cloneRampLimits(sections: { index: number; text: string }[]): {
+  opening: number;
+  second: number;
+  third: number;
+  coldSafe: number;
+} {
+  const openingText =
+    sections.find((section) => section.index === 0)?.text.length ??
+    MODAL_CLONE_OPENING_SECTION_CHARS;
+  const second = Math.min(
+    modalCloneSecondCallChars(),
+    modalCloneSecondCallCharsFor(openingText)
+  );
+  const secondText = sections.find((section) => section.index === 1)?.text.length;
+  const third = Math.min(
+    modalCloneThirdCallChars(),
+    modalCloneThirdCallCharsFor(openingText, secondText != null ? Math.min(secondText, second) : second)
+  );
+  return {
+    opening: MODAL_CLONE_OPENING_SECTION_CHARS,
+    second,
+    third,
+    coldSafe: modalCloneColdSafeRowChars(),
+  };
+}
+
+/**
+ * `rebuild` replaces the whole outline, and only while nothing is published.
+ * `tail` splits unpublished rows that a cold abort or the second-call cap
+ * cannot finish. Published sections are left alone.
+ */
+export function cloneOutlineRepackKind(
+  sections: { index: number; text: string }[],
+  published: ReadonlySet<number>,
+  limits: { opening: number; second: number; third: number; coldSafe: number }
+): "rebuild" | "tail" | null {
+  if (sections.length === 0) return null;
+  const unpublished = sections.filter((section) => !published.has(section.index));
+  if (unpublished.length === 0) return null;
+  const over = (text: string, cap: number) => text.length > cap;
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const tooWide = (rows: { index: number; text: string }[], priorStart: number[]) => {
+    const prior = [...priorStart];
+    for (const section of rows) {
+      const cap =
+        prior.length === 0
+          ? limits.opening + 80
+          : Math.min(limits.coldSafe, modalCloneNextSectionChars(prior) || limits.coldSafe);
+      if (over(section.text, cap)) return true;
+      prior.push(section.text.length);
+    }
+    return false;
+  };
+  if (published.size === 0) {
+    return tooWide(ordered, []) ? "rebuild" : null;
+  }
+  const lastPublished = ordered.reduce(
+    (max, section) => (published.has(section.index) ? Math.max(max, section.index) : max),
+    -1
+  );
+  const prior = ordered
+    .filter((section) => section.index <= lastPublished)
+    .map((section) => section.text.length);
+  const suffix = ordered.filter((section) => section.index > lastPublished);
+  if (tooWide(suffix, prior)) return "tail";
+  return null;
 }
 
 /**
@@ -928,11 +1123,11 @@ export async function processTakehomeTick(
   await ensureTtsJobColumns();
 
   const job = await queryOne<StockJobRow>(
-    `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
+    `SELECT id, user_id, created_at, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
             job_kind, generation_mode, audio_storage_path, provider_pin,
-            clone_wait_started_at
+            clone_wait_started_at, first_section_at
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [jobId]
   );
@@ -1029,6 +1224,14 @@ export async function processTakehomeTick(
   } finally {
     heartbeat.stop();
     dropInFlightTakehomeLease(jobId, lease);
+    // The GPU row covers this tick's call. A dead process stops heartbeating
+    // and the row expires; a finished tick frees it for the next book.
+    await releaseModalGpuLease({ jobId, ownerToken: lease }).catch((err) => {
+      console.warn(
+        `[Job ${jobId}] gpu lease release skipped`,
+        err instanceof Error ? err.message : err
+      );
+    });
   }
 }
 
@@ -1042,8 +1245,11 @@ async function runClaimedTick(
   total: number;
   busy?: boolean;
   deferred?: boolean;
+  /** Let another take-home use the GPU before this wave continues. */
+  yieldSlot?: boolean;
 }> {
   const jobId = job.id;
+  let handGpuOff = false;
   const providerId = job.tts_provider || "";
 
   // A new clone book restores a GPU snapshot before its first section can
@@ -1225,21 +1431,47 @@ async function runClaimedTick(
   // it once, and only while nothing has been published, so a book already in
   // progress never changes under the player.
   let frozen = existingFrozen;
-  const frozenTooWide =
-    Boolean(frozen) &&
-    clonePacked &&
-    frozen!.sections.length > 0 &&
-    Math.max(...frozen!.sections.map((section) => section.text.length)) > packChars &&
-    parseSegments(job.segments_json).every(
-      (segment) => segment.status !== "ready" && segment.status !== "mastering"
-    );
-  if (frozenTooWide) {
+  const publishedSections = new Set(
+    parseSegments(job.segments_json)
+      .filter((segment) => segment.status === "ready" || segment.status === "mastering")
+      .map((segment) => segment.index)
+  );
+  const repackLimits = frozen
+    ? cloneRampLimits(frozen.sections)
+    : null;
+  const repackKind =
+    frozen && clonePacked && repackLimits
+      ? cloneOutlineRepackKind(frozen.sections, publishedSections, repackLimits)
+      : null;
+  if (repackKind === "rebuild") {
     console.warn(
-      `[Job ${jobId}] clone sections were packed wider than one call can render ` +
-        `(max ${Math.max(...frozen!.sections.map((section) => section.text.length))} chars > ` +
-        `${packChars}); re-packing before the first section renders`
+      `[Job ${jobId}] clone sections were packed wider than a call can finish ` +
+        `(max ${Math.max(...frozen!.sections.map((section) => section.text.length))} chars); ` +
+        `re-packing before the first section renders`
     );
     frozen = null;
+  } else if (repackKind === "tail" && frozen) {
+    const fromIndex = frozen.sections
+      .filter((section) => !publishedSections.has(section.index))
+      .reduce((min, section) => Math.min(min, section.index), frozen.sections.length);
+    const coldSafe = repackLimits?.coldSafe ?? modalCloneColdSafeRowChars();
+    console.warn(
+      `[Job ${jobId}] re-packing unpublished clone sections from ${fromIndex} ` +
+        `that a cold abort or the second call cannot finish`
+    );
+    frozen = {
+      ...frozen,
+      sections: repackFrozenTail(
+        frozen.sections,
+        fromIndex,
+        (_section, prior) => {
+          const ramp = modalCloneNextSectionChars(prior);
+          return Math.min(packChars, coldSafe, ramp > 0 ? ramp : packChars);
+        },
+        publishedSections
+      ),
+    };
+    await persistFrozenSections(jobId, frozen.sections);
   }
   if (!frozen) {
     const rawText = await loadBookRaw(job.pdf_storage_path);
@@ -1253,6 +1485,19 @@ async function runClaimedTick(
       pdfStoragePath: job.pdf_storage_path,
       maxChars: packChars,
       hardMaxChars: clonePacked ? packChars : hardMaxChars,
+      // Edge and Fish keep the shared 800-character opening. A clone's
+      // second row is one GPU call, and 2,000 characters of it runs past
+      // that opening. Section 0 is a bit longer; section 1 is capped.
+      ...(clonePacked
+        ? {
+            firstSectionMaxChars: MODAL_CLONE_OPENING_SECTION_CHARS,
+            secondSectionMaxChars: modalCloneSecondCallChars(),
+            thirdSectionMaxChars: modalCloneThirdCallChars(),
+            fitSecondSection: modalCloneSecondCallCharsFor,
+            fitThirdSection: modalCloneThirdCallCharsFor,
+            fitNextSection: modalCloneNextSectionChars,
+          }
+        : {}),
       // Even packing is for parallel Fish workers, where sections only need to
       // be similar to each other. A clone section is bounded by what one GPU
       // call can render, and the remainder-absorbing pass that goes with even
@@ -1478,6 +1723,10 @@ async function runClaimedTick(
     // The generic claim below would otherwise speak the same sections again,
     // one row per call, including takes that are already in the section cache.
     let modalPrefetchHandled = false;
+    // Set as soon as this tick is about to POST a book wave, including a
+    // wave that 429s, throws, or returns no audio. The per-section fan-out
+    // must not run in the same tick.
+    let bookWaveAttempted = false;
     // A shared cap that is only partly free. Sections that already hold a
     // slot finish and write before the tick returns the book to the queue.
     let providerCapFull = false;
@@ -1717,11 +1966,12 @@ async function runClaimedTick(
       }
     };
 
-    // Self-hosted clones: render this tick's uncached sections across the GPU
-    // lanes. The container decodes each section as its own row of one batch,
-    // so GPU cost is nearly flat in rows-per-call (measured 2.9x realtime
-    // one-per-call, 35x at 24 per call), and four lanes means four independent
-    // one-GPU containers. Indexes that already have a take are not sent again:
+    // Self-hosted clones: one restored H100. Section 0 is its own call,
+    // unless the whole remaining book is a short piece that finishes in
+    // that section's generation time. Each later call is only as wide as
+    // the audio already buffered ahead of the listener, and the next call
+    // starts when the previous returns.
+    // Indexes that already have a take are not sent again:
     // the publish window is 8 and the batch is 24, so the next tick used to
     // re-render the staged tail (`S2 lane staged` is a GPU row, not a cache hit).
     //
@@ -1742,7 +1992,7 @@ async function runClaimedTick(
     // asynchronous, so "come back in a minute" is strictly better than
     // "different voice from section 7".
     if (clonePin === "modal") {
-      const pendingAll = claimableIndexes(segments, total);
+      const pendingAll = clonePendingIndexes(segments, total);
       if (pendingAll.length >= 1) {
         const batch = modalCloneBatchSize();
         const maxLaneChars = modalLaneCharLimit();
@@ -1795,10 +2045,9 @@ async function runClaimedTick(
             (index) => cachedAtStart.has(index),
             maxClaim
           );
-          const lanes = Math.max(
-            1,
-            Math.min(modalCloneLaneCount(), Math.max(render.length, 1))
-          );
+          // One call at a time. A second concurrent POST would be a second GPU
+          // when the autoscaler cap is above 1, and this book does not need it.
+          const lanes = 1;
           // Section 0 is alone only when this tick is the one that renders it.
           const needsFirstLight = modalCloneFirstLightEnabled() && render[0] === 0;
           const stagedNow = new Set<number>();
@@ -1813,7 +2062,7 @@ async function runClaimedTick(
               `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
             );
           };
-          const publishIndexes = async (indexes: number[]) => {
+          const publishIndexes = async (indexes: number[], skipQaIndex?: number) => {
             if (indexes.length === 0) return;
             const nextUnclaimed = lowestUnclaimedAfter(segments, total, indexes);
             await writeWithLease(
@@ -1829,9 +2078,101 @@ async function runClaimedTick(
             );
             await runIndexBoundFanout(
               indexes,
-              (index) => workSection(index, () => nextUnclaimed),
+              (index) =>
+                workSection(
+                  index,
+                  () => nextUnclaimed,
+                  // Transcript QA spawns a fresh Whisper process. That load
+                  // sits between the GPU returning and `first_section_at`.
+                  // Section 0 is published without it. Later sections are
+                  // still checked, and the take is not swapped afterwards.
+                  skipQaIndex === index ? { skipSectionQa: true } : undefined
+                ),
               indexes.length
             );
+          };
+          const playback = listenerBufferMs(sections, segments, job.first_section_at, Date.now());
+          let gpuIndexes = render;
+          let yieldedGpu = false;
+          // Under the GPU ceiling this book keeps its own ramp. Sharing is
+          // only the overflow path, and then one call is the whole tick.
+          let oneCall = false;
+          let committedShare = false;
+          if (render.length > 0) {
+            const admission = await admitModalCloneGpu({
+              jobId,
+              userId: job.user_id,
+              ownerToken: lease,
+              createdAt: Number(job.created_at) || 0,
+              ttlSeconds: LEASE_TTL_SECONDS,
+            });
+            if (admission.mode === "queue") {
+              handGpuOff = true;
+              yieldedGpu = true;
+              gpuIndexes = [];
+            } else if (admission.mode === "share") {
+              oneCall = true;
+              handGpuOff = true;
+              const other = await cloneSharePartner(admission.partnerId);
+              const otherSegments = parseSegments(other?.segments_json ?? null);
+              const otherPlay = listenerBufferMs(
+                null,
+                otherSegments,
+                other?.first_section_at,
+                Date.now()
+              );
+              const outline = other ? await loadFrozenSectionOutline(other.id) : null;
+              const otherView = otherCloneShareView(outline, otherSegments, batch);
+              if (otherView.pending.length === 0) {
+                // No outline to score. One call of this book's own ramp,
+                // then the partner's tick. Do not invent their sections.
+              } else {
+                committedShare = true;
+                const turn = chooseCloneGpuTurn({
+                  books: [
+                    {
+                      id: jobId,
+                      pending: render,
+                      textAt: (index) => sections[index] ?? "",
+                      playbackStarted: playback.started,
+                      bufferedMs: playback.bufferedMs,
+                      firstLight: needsFirstLight,
+                    },
+                    {
+                      id: `other:${other!.id}`,
+                      pending: otherView.pending,
+                      textAt: otherView.textAt,
+                      playbackStarted: otherPlay.started,
+                      bufferedMs: otherPlay.bufferedMs,
+                      firstLight: !otherPlay.started,
+                    },
+                  ],
+                  poolWarm: modalClonePoolIsWarm(),
+                  batch,
+                });
+                if (turn.bookId !== jobId || !turn.call) {
+                  yieldedGpu = true;
+                  gpuIndexes = [];
+                } else {
+                  gpuIndexes = turn.call.indexes;
+                }
+              }
+            }
+          }
+          const published = new Set<number>();
+          let publishChain: Promise<void> = Promise.resolve();
+          const enqueuePublish = (indexes: number[]) => {
+            const fresh = indexes.filter((index) => !published.has(index));
+            for (const index of fresh) published.add(index);
+            if (fresh.length === 0) return Promise.resolve();
+            const run = publishChain.then(() =>
+              publishIndexes(fresh, fresh.includes(0) ? 0 : undefined)
+            );
+            publishChain = run.then(
+              () => undefined,
+              () => undefined
+            );
+            return run;
           };
 
           let dispatch: Awaited<ReturnType<typeof dispatchModalCloneLanes>> | null = null;
@@ -1846,38 +2187,42 @@ async function runClaimedTick(
           ) {
             prewarmModalCloneSnapshot(`book ${jobId} has uncached narration`);
           }
+          if (gpuIndexes.length > 0) bookWaveAttempted = true;
           const renderPromise =
-            render.length === 0
+            gpuIndexes.length === 0
               ? Promise.resolve(null)
               : withCloneBatchSlot(() =>
                   dispatchModalCloneLanes({
-                    indexes: render,
+                    indexes: gpuIndexes,
                     textAt: (index) => sections[index]!,
                     lanes,
                     batch,
                     maxLaneChars,
                     seedEpoch,
-                    firstLight: needsFirstLight,
-                    // Section 0 goes through the real per-section path so mastering,
-                    // upload, `segments_json` and `first_section_at` all happen for
-                    // it while the other lanes are still rendering.
-                    publishFirstLight: async (index) => {
-                      // Transcript QA spawns a fresh Whisper process. That model
-                      // load sits between the GPU returning and `first_section_at`.
-                      // Section 0 is published without it; every later section is
-                      // still checked. The take is not swapped afterwards, because
-                      // the player may already be reading the object.
-                      await workSection(
-                        index,
-                        () => lowestUnreadyIndex(segments, total),
-                        { skipSectionQa: true }
-                      );
-                    },
+                    firstLight: needsFirstLight && gpuIndexes[0] === 0,
+                    bookWave: true,
+                    bufferedMs: playback.bufferedMs,
+                    playbackStarted: playback.started,
+                    maxCalls: oneCall ? 1 : undefined,
+                    // The overflow chooser already sized this call. A growth
+                    // call is wider than the buffer on purpose; planning it
+                    // again would shrink it to one row.
+                    committedCall: committedShare,
+                    yieldToOther: async () => oneCall,
+                    entireRemainder:
+                      gpuIndexes.length > 0 &&
+                      gpuIndexes.length ===
+                        pendingAll.filter((index) => !cachedAtStart.has(index)).length,
+                    // Publish each call as it returns so the player hears it
+                    // while the next call is already on the GPU. The chain
+                    // keeps the segment writes in order.
+                    publishStaged: (indexes) => enqueuePublish(indexes),
                     render: (items, epoch, renderOpts) =>
                       renderModalCloneBatch(items, reference, undefined, jobId, {
                         seedEpoch: epoch,
                         raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
                         workMs: renderOpts?.workMs,
+                        warmBatch: renderOpts?.warmBatch === true,
                       }),
                     stage: stageSection,
                     log: (message) => console.log(`[Job ${jobId}] ${message}`),
@@ -1900,14 +2245,14 @@ async function runClaimedTick(
           try {
             while (!cpuBacklog && !(stopAt && Date.now() >= stopAt)) {
               const batchIndexes = selectClonePublishBatch(
-                claimableIndexes(segments, total).filter((index) => !attempted.has(index)),
+                clonePendingIndexes(segments, total).filter((index) => !attempted.has(index)),
                 (index) => cachedAtStart.has(index),
                 blocked,
                 SECTION_FANOUT_HARD_MAX
               );
               if (batchIndexes.length === 0) break;
               for (const index of batchIndexes) attempted.add(index);
-              await publishIndexes(batchIndexes);
+              await enqueuePublish(batchIndexes);
               publishedFromCache += batchIndexes.length;
             }
           } finally {
@@ -1947,10 +2292,36 @@ async function runClaimedTick(
                 total: job.total_sections ?? 0,
               };
             }
-            if (outcome.switched) {
+            if (outcome.switched || modalCloneDeferMs() <= 0) {
               // The row is pinned to the fallback from here on. Adopt that in
               // memory too, or the remaining sections would keep calling a
-              // pool this book has already given up on.
+              // pool this book has already given up on. DEFER_MS=0 is the
+              // rollback: this tick continues on Fish instead of parking,
+              // and it does not open another GPU call.
+              clonePin = "fish";
+            }
+          }
+
+          if (dispatch?.providerFault && clonePin === "modal") {
+            console.warn(
+              `[Job ${jobId}] Modal provider fault this tick: ${dispatch.providerFault}`
+            );
+            const outcome = await deferForProviderFault({
+              jobId,
+              lease,
+              job,
+              message: dispatch.providerFault,
+            });
+            if (outcome.park) {
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+            if (outcome.switched || modalCloneDeferMs() <= 0) {
               clonePin = "fish";
             }
           }
@@ -1965,25 +2336,69 @@ async function runClaimedTick(
               !(stopAt && Date.now() >= stopAt)
             ) {
               const fresh = selectClonePublishBatch(
-                claimableIndexes(segments, total).filter((index) => !attempted.has(index)),
+                clonePendingIndexes(segments, total).filter(
+                  (index) => !attempted.has(index) && !published.has(index)
+                ),
                 (index) => stagedNow.has(index),
                 new Set(),
                 SECTION_FANOUT_HARD_MAX
               );
-              if (fresh.length > 0) await publishIndexes(fresh);
+              if (fresh.length > 0) await enqueuePublish(fresh);
             }
-            // A dispatch that neither staged nor published did not take the
-            // book forward. The per-section path still has to see a cold pool
-            // or a hard provider fault. Once a take is staged, or an older
-            // take was published, that path would speak the misses one row at
-            // a time, so the next batch does it.
-            modalPrefetchHandled = stagedNow.size > 0 || publishedFromCache > 0;
+            // Once a book wave was attempted, this tick does not POST again.
+            // A 429, a thrown call, or a batch that dropped every row used
+            // to fall through into per-section synthesizeModalClone, which
+            // holds up to modalCloneLanes() slots and starts more H100s.
+            if (
+              dispatch &&
+              !dispatch.cold &&
+              !dispatch.providerFault &&
+              dispatch.busy === 0 &&
+              dispatch.missing.length > 0
+            ) {
+              await writeLock(async () => {
+                for (const index of dispatch.missing) {
+                  const prev = segments.find((segment) => segment.index === index);
+                  const ledger = cloneDropLedger(prev);
+                  segments = upsertSegment(segments, {
+                    index,
+                    path: prev?.path || "",
+                    status: ledger.status,
+                    attempts: ledger.attempts,
+                    error: prev?.error || "clone batch dropped this section",
+                  });
+                }
+                const done = readyCount(segments);
+                await writeWithLease(
+                  jobId,
+                  lease,
+                  `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                     current_section = ?, total_sections = ?, status = 'processing',
+                     updated_at = unixepoch()
+                   WHERE id = ? AND processing_lease_token = ?`,
+                  [
+                    lowestUnreadyIndex(segments, total),
+                    JSON.stringify(segments),
+                    Math.min(99, Math.round((done / total) * 100)),
+                    done,
+                    total,
+                  ]
+                );
+              });
+            }
+            if ((dispatch?.busy ?? 0) > 0 || dispatch?.handedOff) handGpuOff = true;
+            modalPrefetchHandled =
+              bookWaveAttempted ||
+              yieldedGpu ||
+              stagedNow.size > 0 ||
+              publishedFromCache > 0;
           }
         } catch (err) {
           if (err instanceof ModalWorkspaceDisabledError) throw err;
           if (err instanceof LeaseLostError) throw err;
+          if (bookWaveAttempted) modalPrefetchHandled = true;
           console.warn(
-            `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
+            `[Job ${jobId}] S2 lane dispatch failed; leaving the GPU call to finish:`,
             err instanceof Error ? err.message : err
           );
         }
@@ -2075,6 +2490,7 @@ async function runClaimedTick(
     // After the last first-pass index, retry remaining holes once in this tick.
     const holes = claimableIndexes(segments, total);
     if (
+      !modalPrefetchHandled &&
       holes.length > 0 &&
       holes.every((i) => segments.some((s) => s.index === i && s.status === "retry"))
     ) {
@@ -2422,7 +2838,7 @@ async function runClaimedTick(
     ]
   );
 
-  return { done: false, nextIndex, total };
+  return { done: false, nextIndex, total, yieldSlot: handGpuOff };
 }
 
 const STORED_GOOGLE_STOPPED =
@@ -3034,10 +3450,7 @@ export async function runTakehomeWave(
  * `listDrainableTakehomeJobs` and `claimTakehomeLease` already include
  * `waiting`, so the next drain picks that book up.
  */
-async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
-  const row = await queryOne<{ id: string }>(
-    `SELECT id FROM jobs
-     WHERE deleted_at IS NULL
+const OTHER_RUNNABLE_TAKEHOME_SQL = `deleted_at IS NULL
        AND job_kind = 'takehome'
        AND id != ?
        AND (
@@ -3055,11 +3468,77 @@ async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
                AND u.status IN ('ready', 'failed')
            )
          )
-       )
-     LIMIT 1`,
+       )`;
+
+async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `SELECT id FROM jobs WHERE ${OTHER_RUNNABLE_TAKEHOME_SQL} LIMIT 1`,
     [jobId]
   );
   return Boolean(row);
+}
+
+/**
+ * The one book this GPU is sharing with. Admission already chose the id.
+ * Playback uses the contiguous ready prefix, so a call stays inside the
+ * audio that listener has not played yet.
+ */
+async function cloneSharePartner(jobId: string): Promise<{
+  id: string;
+  first_section_at: number | null;
+  segments_json: string | null;
+} | null> {
+  return queryOne(
+    `SELECT id, first_section_at, segments_json FROM jobs
+     WHERE id = ? AND deleted_at IS NULL AND job_kind = 'takehome'`,
+    [jobId]
+  );
+}
+
+/**
+ * Wall time left at the player's fastest rate: delivered audio / 1.5,
+ * minus elapsed wall. `first_section_at` is unix seconds. Elapsed time
+ * past that wall is zero — a seek ahead of what is ready does not inflate
+ * the buffer, and it is not subtracted from the audio before the division.
+ */
+export function listenerBufferMs(
+  sections: string[] | null,
+  segments: JobSegment[],
+  firstSectionAt: number | null | undefined,
+  nowMs: number
+): { started: boolean; bufferedMs: number } {
+  if (firstSectionAt == null || !Number.isFinite(firstSectionAt) || firstSectionAt <= 0) {
+    return { started: false, bufferedMs: 0 };
+  }
+  const byIndex = new Map(segments.map((segment) => [segment.index, segment]));
+  const limit = sections ? sections.length : segments.length;
+  let delivered = 0;
+  for (let index = 0; index < limit; index += 1) {
+    const segment = byIndex.get(index);
+    if (!segment || segment.status !== "ready") {
+      // A failed section is a hole the listener is already sitting on.
+      // Audio before it is not time the next call can spend, or the
+      // sections after the hole are never attempted and the book stays
+      // queued instead of being marked incomplete.
+      if (segment?.status === "failed") {
+        return { started: true, bufferedMs: 0 };
+      }
+      break;
+    }
+    if (segment.durationSeconds && segment.durationSeconds > 0) {
+      delivered += segment.durationSeconds * 1000;
+      continue;
+    }
+    const text = sections?.[index];
+    if (text) {
+      delivered += cloneAudioMs(text.length);
+      continue;
+    }
+    break;
+  }
+  const elapsed = Math.max(0, nowMs - firstSectionAt * 1000);
+  const wallLeft = clonePlanningBufferMs(delivered) - elapsed;
+  return { started: true, bufferedMs: Math.max(0, wallLeft) };
 }
 
 /**

@@ -72,6 +72,20 @@ export type BuildFrozenScriptInput = {
   maxChars: number;
   hardMaxChars?: number;
   firstSectionMaxChars?: number;
+  /** Clone section 1. Steady sections stay on `maxChars`. */
+  secondSectionMaxChars?: number;
+  /** Clone section 2. Section 3 onward stays on `maxChars`. */
+  thirdSectionMaxChars?: number;
+  /** Tighten section 1 once section 0 has closed on a sentence. */
+  fitSecondSection?: (openingChars: number) => number;
+  /** Tighten section 2 once section 0 and section 1 have closed. */
+  fitThirdSection?: (openingChars: number, secondChars: number) => number;
+  /**
+   * Cap every section after the opening from the sections already closed.
+   * The clone ramp stays under 2,000 characters until that row fits the
+   * 1.5× buffer. When set, this wins over the fixed second and third caps.
+   */
+  fitNextSection?: (priorChars: number[]) => number;
   /**
    * Take-home Fish / clone: even-pack so `fanout` workers
    * get similar-sized slices. Section 0 still uses the fast first-section cap.
@@ -144,12 +158,22 @@ function resolvePackChars(
 ): {
   maxChars: number;
   firstSectionMaxChars: number | undefined;
+  secondSectionMaxChars: number | undefined;
+  thirdSectionMaxChars: number | undefined;
+  fitSecondSection: ((openingChars: number) => number) | undefined;
+  fitThirdSection: ((openingChars: number, secondChars: number) => number) | undefined;
+  fitNextSection: ((priorChars: number[]) => number) | undefined;
   evenFanout: number | undefined;
 } {
   if (input.packProvider === "edge" || input.packProvider === "google") {
     return {
       maxChars: edgeGoogleTakehomeTargetChars(speakable.length, input.maxChars),
       firstSectionMaxChars: FIRST_SECTION_CHARS,
+      secondSectionMaxChars: undefined,
+      thirdSectionMaxChars: undefined,
+      fitSecondSection: undefined,
+      fitThirdSection: undefined,
+      fitNextSection: undefined,
       evenFanout: 8,
     };
   }
@@ -171,12 +195,22 @@ function resolvePackChars(
         evenTakehomeTargetChars(speakable.length, evenFanout)
       ),
       firstSectionMaxChars: FIRST_SECTION_CHARS,
+      secondSectionMaxChars: undefined,
+      thirdSectionMaxChars: undefined,
+      fitSecondSection: undefined,
+      fitThirdSection: undefined,
+      fitNextSection: undefined,
       evenFanout,
     };
   }
   return {
     maxChars: input.maxChars,
     firstSectionMaxChars: input.firstSectionMaxChars ?? FIRST_SECTION_CHARS,
+    secondSectionMaxChars: input.secondSectionMaxChars,
+    thirdSectionMaxChars: input.thirdSectionMaxChars,
+    fitSecondSection: input.fitSecondSection,
+    fitThirdSection: input.fitThirdSection,
+    fitNextSection: input.fitNextSection,
     evenFanout: undefined,
   };
 }
@@ -201,6 +235,11 @@ function packFromSpeakable(
   let sections = packSpeakableSections(spoken, maxChars, {
     hardMaxChars,
     firstSectionMaxChars: pack.firstSectionMaxChars,
+    secondSectionMaxChars: pack.secondSectionMaxChars,
+    thirdSectionMaxChars: pack.thirdSectionMaxChars,
+    fitSecondSection: pack.fitSecondSection,
+    fitThirdSection: pack.fitThirdSection,
+    fitNextSection: pack.fitNextSection,
     measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
     chapters,
   });
@@ -241,6 +280,83 @@ export async function persistFrozenScript(
     Buffer.from(JSON.stringify(script.sections), "utf8"),
     "application/json"
   );
+}
+
+/** Rewrite `sections.json` without touching `speakable.txt`. */
+export async function persistFrozenSections(
+  jobId: string,
+  sections: FrozenSection[]
+): Promise<void> {
+  await uploadFile(
+    frozenScriptPrefix(jobId),
+    FROZEN_SECTIONS_NAME,
+    Buffer.from(JSON.stringify(sections), "utf8"),
+    "application/json"
+  );
+}
+
+/**
+ * Split one frozen section that is wider than a call can finish.
+ * Chapter identity stays with the parent. Indexes are assigned by the caller.
+ */
+export function splitWideFrozenSection(
+  section: FrozenSection,
+  maxChars: number
+): FrozenSection[] {
+  if (section.text.length <= maxChars) return [section];
+  const parts = packSpeakableSections(section.text, maxChars, {
+    skipFrontMatter: false,
+    hardMaxChars: maxChars,
+    firstSectionMaxChars: maxChars,
+  }).filter((part) => part.text.length > 0);
+  const slices =
+    parts.length > 1
+      ? parts
+      : Array.from(
+          { length: Math.ceil(section.text.length / maxChars) },
+          (_, i) => ({ text: section.text.slice(i * maxChars, (i + 1) * maxChars) })
+        );
+  return slices.map((part) => ({
+    ...section,
+    text: part.text,
+    chapterMarks: undefined,
+  }));
+}
+
+/**
+ * Replace the unpublished suffix with rows that fit `maxCharsFor`.
+ *
+ * A ready section keeps its index and its text, including when it sits
+ * after a hole. Reindexing it would leave its audio on the old index.
+ * Only the contiguous suffix after the last published index is split,
+ * and that suffix starts at `fromIndex` when that is later.
+ */
+export function repackFrozenTail(
+  sections: FrozenSection[],
+  fromIndex: number,
+  maxCharsFor: (section: FrozenSection, priorChars: number[]) => number,
+  published: ReadonlySet<number> = new Set()
+): FrozenSection[] {
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const lastPublished = ordered.reduce(
+    (max, section) => (published.has(section.index) ? Math.max(max, section.index) : max),
+    -1
+  );
+  const tailStart = Math.max(fromIndex, lastPublished + 1);
+  const kept = ordered.filter((section) => section.index < tailStart);
+  const tail = ordered.filter((section) => section.index >= tailStart);
+  const prior = kept.map((section) => section.text.length);
+  const split: FrozenSection[] = [];
+  for (const section of tail) {
+    const parts = splitWideFrozenSection(section, maxCharsFor(section, prior));
+    split.push(...parts);
+    for (const part of parts) prior.push(part.text.length);
+  }
+  const nextIndex = kept.reduce((max, section) => Math.max(max, section.index), -1) + 1;
+  return [
+    ...kept,
+    ...split.map((section, offset) => ({ ...section, index: nextIndex + offset })),
+  ];
 }
 
 /** Section outline only. Does not download `speakable.txt`. */

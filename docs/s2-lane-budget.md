@@ -78,7 +78,131 @@ lane cap          = 80s x 100 chars/s
   own text at the worse of the aggregate and single-row rates. The packer and
   the timeout therefore cannot disagree.
 - `modalCloneSectionChars` — **2,000** characters per clone section (~40s as a
-  row). Four of them still batch into one 8,000-char call, so batching survives.
+  row). Four of them still fit one cold call. A warm call carries up to 24,
+  and only once the listener's buffer covers that call.
+
+## The ramp, after the container has answered
+
+The 8,000-character cap assumes the call might still be restoring. Production
+runs `MODAL_S2_READY=0`, so every call used to be planned that way and a
+restored H100 rendered about four rows of a 24-row batch. Sending all 24
+the moment section 0 returns is the other failure: section 0 is about a
+minute of audio, the 24 rows come back together, and the listener waits
+through the whole call.
+
+`planModalCloneBookWave` keeps the cold cap for the first call and for any
+call whose last success is older than `MODAL_S2_WARM_HOLD_MS` (default 165s,
+under the production 180s scaledown). After a successful answer each next
+call is the largest prefix that finishes before the buffered audio runs out:
+
+```
+one row       = 33 chars/s          (smoke: 1,300 chars in 39.85s)
+8 rows        = 28.3 chars/s/row    (15% under the measured 266 chars/s)
+14 rows       = 22.5 chars/s/row    (15% under 371)
+24 rows       = 21.9 chars/s/row    (15% under 617; measured e2e was 528)
+transfer      = 12s per 43,907 characters (58.7MB on that 24-row call)
+restore       = 38s on the opening call only (57.05s wall − 18.8s server)
+narration     = 15.85 characters per audio second
+slack         = max(15s, 10% of the buffer), including a one-row call
+warm wait     = 400s (MODAL_S2_WARM_WAIT_MS, ceiling 482s)
+warm cap      = min(380s × 150, ~80 MiB of base64) = 57,000 characters
+```
+
+The 150 chars/s figure is only that character cap. It is not the listener
+wall. A row is also never planned faster than 33 chars/s, so one long row
+cannot hide inside a wide call's average.
+
+Clone section 0 is **1,000** characters, not the 800-character opening the
+other providers use. The wall includes 3s of publish/loudnorm. Its planned
+cold wall is **71,576 ms**, under the 75s first-light wait. Warm first
+audio is **33,576 ms**. The planning buffer is wall time left at 1.5×:
+`floor(delivered / 1.5) − elapsed`. A call subtracts its wall directly.
+A seek ahead of the delivered audio is 0.
+
+The next call is **786** characters (the row that leaves 15s inside the
+1,000-character opening played at 1.5×). Its warm wall is **27,033 ms**.
+The margin is **15,027 ms** at 1.5× and **36,058 ms** at 1×. The call
+after that is **984** characters, wall **33,087 ms**. That is the
+tightest 1.5× margin, **15,000 ms**. The ramp then continues at **1,255**
+and **1,628** characters, and later sections stay 2,000. A real opening
+that closes short of 1,000 recomputes each of those caps from the audio
+it actually produced.
+
+A short piece skips the ramp when one call adds no generation beyond
+section 0. The listener's extra wait is only the transfer of the rest of
+the text. Two rows at the curve above are a little slower per row than one
+row at 33 chars/s, so a second section of 1,000 characters already adds
+generation. The bound is **1,959 characters** (opening 1,000, second
+section 959): about **2.1 minutes** of audio. At that boundary the extra
+transfer is **262 ms** (cold wall **71,838 ms**, warm **33,838 ms**),
+first audio is still inside the 75s first-light wait, and total time is
+one call instead of two. A 786-character second section adds no generation
+and can ride in that opening call. A longer second section, or any
+2,000-character row, does not. A 5-minute article ramps.
+
+One book does not stall. Time to first audio stays **71,576 ms**
+cold and **33,576 ms** warm. The tightest margin at 1× is the second call
+(**36,058 ms**). The tightest margin at 1.5× is the third call
+(**15,000 ms**). Warm wall is the cold wall minus the 38s restore.
+
+| Piece | Calls | Wall, cold | Wall, warm |
+| --- | --- | --- | --- |
+| ~5 minutes | 1, 1, 1, 1, 1 | 198,390 ms | 160,390 ms |
+| ~10 minutes | 1, 1, 1, 1, 1, 2 | 290,507 ms | 252,507 ms |
+| ~40 minutes | 1, 1, 1, 1, 1, 3, 14 | 387,572 ms | 349,572 ms |
+| ~2 hours | 1, 1, 1, 1, 1, 3, 16, 24, 12 | 588,152 ms | 550,152 ms |
+| ~10 hours | 1, 1, 1, 1, 1, 3, 16, then eleven 24s | 1,576,533 ms | 1,538,533 ms |
+
+Each clone book gets its own H100 until `MODAL_S2_MAX_GPUS` (default 20)
+and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). The count is a row in
+`modal_gpu_leases`, one per book, renewed with the take-home heartbeat
+and expired if that worker dies. A book still sends one call at a time.
+Past either ceiling the oldest waiter shares the oldest holder's call
+schedule, and younger waiters wait.
+
+Under the ceiling every listener is the single-book ramp. One, two, three,
+or ten concurrent 10-hour books (different users, or three from one user)
+each finish in **1,576,533 ms**, first audio **71,576 ms**, tightest margin
+**36,058 ms** at 1× and **15,000 ms** at 1.5×. Peak GPUs is the book count.
+
+A sixth 10-hour book from the same user shares GPU 1. Peak stays **5**.
+That pair is the overflow schedule: **3,056,922 ms**, first audio
+**71,576 ms** and **165,272 ms**, tightest margins **−5,356 / −53,121 ms**
+and **+29,789 / −23,036 ms**. The other four books keep the 15s floor.
+One row is **64,153 ms** of wall and about 84s of audio at 1.5×, so the
+overflow scheduler still prefers a wide call. A growth call wider than the
+buffer is posted (`committedCall`); planning it again would shrink it to
+one row and both listeners would stall for the whole book (the old
+**36,439,973 ms** total).
+
+A 10-hour book plus a 40-minute article that starts at 5 minutes uses two
+GPUs. The book is unchanged (15s floor, no stall). The article is its own
+cold ramp: first audio **371,576 ms**, the same 15s floor, finished at
+**687,572 ms**. Fleet wall stays **1,576,533 ms**. Peak GPUs **2**.
+
+Three 10-hour books with the global ceiling set to 2 use **2** GPUs. The
+oldest and the third share (the 3,056,922 ms pair above). The middle book
+stays on the solo ramp and keeps the 15s floor. Fleet wall is
+**3,056,922 ms**.
+
+One `synthesize_batch` still carries one reference and one seed
+(`s2_clone_service.synthesize_batch`, `S2Engine.render`). Rows from two
+books in that call would be spoken in the top-level voice. Per-item
+references need a Modal redeploy and a new snapshot.
+`MODAL_S2_MIXED_BOOK_BATCH` defaults off, and the tick does not send that
+payload. `planMixedCloneBatch` is the worker side for after that deploy.
+
+24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
+the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
+whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
+rollback toward the cold shape.
+
+One book, one call at a time, on its own GPU. A second book gets a second
+GPU until the ceiling. The overflow share is one call at a time on the
+holder's GPU, and that partner's first call is still one section. A shared
+call is the widest feeding call the buffers can hold, and a growth call
+when none of those leave the slack. One row is only the last section of a
+book.
 
 `MODAL_S2_LANE_MAX_CHARS` can only **lower** the cap. That is deliberate: the
 stopgap must not be able to recreate the oversized pack.
@@ -91,9 +215,11 @@ warm. Only a **single-section** placement that never came back is treated as
 cold, which is still the case the off-path `::cover` exists for (#237: a book
 never waits on a compile).
 
-A book frozen before this fix, whose sections are wider than the cap, is
-re-packed **once and only while nothing has been published**. Once a section is
-stored, the outline is the book someone is hearing and is left alone.
+A book frozen before this fix is re-packed while section 0 is still
+unpublished, when any row is wider than the cold abort or sections 0–2 are
+wider than the ramp (1,000 / 786 / 984, then 1,255 and 1,628). After section 0 is published,
+only the unpublished tail is re-packed, and only when its next row is over
+that cap. Published timestamps are not moved.
 
 ## Verifying a deploy
 
@@ -105,8 +231,14 @@ pm2 logs echomancer-takehome --lines 300 \
 Healthy:
 
 - `pack evenFanout=… target=2000` — the clone width, not 7797
-- `S2 lanes=… batch=24 …` and each `page of N rendered N/N` with the page's
-  characters **at or under 8,000**
+- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:12`
+  on the first claim of a book that has the GPU to itself, then `warm:24`
+  once the buffer is deep. A second runnable book stops the tick after one
+  call, and once both buffers are deep that line is `warm:24`, not `warm:1`.
+  A `warm:24` on the call immediately after section 0 means the ramp is not running.
+  A `cold:` page stays **at or under 8,000** characters. A `warm:` page
+  stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
+  and at or under 24 rows.
 - no `multi-section call missed its budget` line
 - `first=0:staged@Ns` for the first audio
 

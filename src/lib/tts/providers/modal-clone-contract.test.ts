@@ -166,6 +166,34 @@ describe("batch contract against the real server shape", () => {
     expect(body.sampling).toBeTruthy();
   });
 
+  it("sends a per-row reference only when the mixed-book flag is on", async () => {
+    const ref = await loadCloneReference("clone:saved-id", "fish-id");
+    const item = {
+      key: "3",
+      text: "Section.",
+      referenceAudioBase64: "bbb",
+      referenceText: "other voice",
+      seed: 9,
+    };
+    const offMock = setupFetch(serverBatchResponse({ keys: ["3"] }));
+    await renderModalCloneBatch([item], ref, undefined, "job-1");
+    const off = JSON.parse(String(offMock.mock.calls.at(-1)?.[1]?.body));
+    expect(off.items).toEqual([{ key: "3", text: "Section." }]);
+
+    vi.stubEnv("MODAL_S2_MIXED_BOOK_BATCH", "1");
+    const onMock = setupFetch(serverBatchResponse({ keys: ["3"] }));
+    await renderModalCloneBatch([item], ref, undefined, "job-1");
+    const on = JSON.parse(String(onMock.mock.calls.at(-1)?.[1]?.body));
+    expect(on.items[0]).toMatchObject({
+      key: "3",
+      text: "Section.",
+      reference_audio_base64: "bbb",
+      reference_text: "other voice",
+      seed: 9,
+    });
+    expect(on.reference_audio_base64).toBeTruthy();
+  });
+
   it("keeps the row order the server sent, including interleaved errors", async () => {
     setupFetch(
       serverBatchResponse({

@@ -32,6 +32,9 @@
 import {
   ModalCloneColdError,
   ModalCloneLaneBusyError,
+  ModalCloneProviderError,
+  modalClonePoolIsWarm,
+  noteModalClonePoolLost,
   rememberModalCloneCold,
   type CloneBatchItem,
   type CloneBatchOutcome,
@@ -39,7 +42,14 @@ import {
 import { ModalWorkspaceDisabledError } from "@/lib/modal/workspace-disabled";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
-  modalLaneWorkMs,
+  MODAL_CLONE_PUBLISH_MS,
+  advancePlanningBuffer,
+  cloneAudioMs,
+  cloneCallWallMs,
+  clonePlanningBufferMs,
+  cloneWaveCallForIndexes,
+  modalCloneArmedWaitMs,
+  planModalCloneBookWave,
   planModalCloneLanes,
   pageLane,
 } from "@/lib/tts/providers/modal-clone-lanes";
@@ -69,7 +79,7 @@ export interface LaneDispatchOptions {
   render: (
     items: CloneBatchItem[],
     seedEpoch: number,
-    opts?: { raceForFirstAudio?: boolean; workMs?: number }
+    opts?: { raceForFirstAudio?: boolean; workMs?: number; warmBatch?: boolean }
   ) => Promise<CloneBatchOutcome>;
   /** Persist a rendered section (section cache + any bookkeeping). */
   stage: (index: number, audio: Buffer, durationSeconds: number) => Promise<void>;
@@ -87,6 +97,13 @@ export interface LaneDispatchOptions {
    */
   publishFirstLight?: (index: number) => Promise<void>;
   /**
+   * Publish a call's sections as soon as they are staged. The next GPU call
+   * starts without waiting for ffmpeg. Section 0 is included, so the player
+   * can start while the ramp's next call is already in flight.
+   * `publishFirstLight` is the one-section form used when this is omitted.
+   */
+  publishStaged?: (indexes: number[]) => Promise<void>;
+  /**
    * Section 0 is still missing, so the player has nothing to start with.
    *
    * When set, the lowest index is rendered alone on one lane first, and only
@@ -100,6 +117,49 @@ export interface LaneDispatchOptions {
    * could not restore it will not restore three more calls either.
    */
   firstLight?: boolean;
+  /**
+   * One restored H100. The first call stays one section, unless `indexes`
+   * is the whole remaining book and one call is no slower to first audio
+   * than that section. Each later call is only as wide as the audio already
+   * buffered ahead of the listener, and the next call starts when the
+   * previous one returns. Later ticks stay on that ramp while
+   * {@link modalClonePoolIsWarm} is true, and drop back to one cold-sized
+   * call when the container has scaled away. Calls run one at a time. Omit
+   * this and the older multi-lane planner runs.
+   */
+  bookWave?: boolean;
+  /**
+   * `indexes` is every section this book still has to speak. A claim that
+   * stopped at the batch size is not the whole book.
+   */
+  entireRemainder?: boolean;
+  /**
+   * Wall time left at 1.5× (`delivered / 1.5 − elapsed`). The ramp sizes
+   * the next call against this and subtracts each call's wall directly.
+   * Omit it and a warm tick does not assume a deep buffer.
+   */
+  bufferedMs?: number;
+  /** The listener has already heard audio from this book. */
+  playbackStarted?: boolean;
+  /** Stop the ramp after this many calls so another book can take the GPU. */
+  maxCalls?: number;
+  /**
+   * `indexes` is already the one call {@link chooseCloneGpuTurn} chose.
+   * Post that call. Do not plan it again: a growth call is wider than the
+   * buffer on purpose, and the ramp would shrink it back to one row.
+   */
+  committedCall?: boolean;
+  /**
+   * Called before every call after the first. When it returns true the
+   * ramp stops so a take-home that became runnable during this tick can
+   * have the GPU. A tick that started alone still re-checks.
+   */
+  yieldToOther?: () => Promise<boolean>;
+  /**
+   * Overrides the in-process warmth bit. Tests pin it; the tick leaves it
+   * unset and the dispatch reads {@link modalClonePoolIsWarm}.
+   */
+  poolWarm?: boolean;
   log?: (message: string) => void;
 }
 
@@ -129,6 +189,13 @@ export interface LaneDispatchResult {
   oversize: number[];
   /** Lanes that found their container already rendering. Retryable, not cold. */
   busy: number;
+  /** The ramp stopped because another take-home became runnable. */
+  handedOff?: boolean;
+  /**
+   * Modal answered with a hard error (a 5xx that is not a cold placement).
+   * The tick parks on the provider-fault clock instead of failing the book.
+   */
+  providerFault: string | null;
   /** Containers that answered, and the builds they reported. */
   containers: string[];
   builds: string[];
@@ -150,13 +217,26 @@ interface WaveOutcome {
    * demonstrably warm. Not cold: splitting the call is the fix.
    */
   oversize: number[];
+  /**
+   * Placement misses whose wait was a restore. A warm wait is not in
+   * this list, and neither is a one-row retry that follows a warm miss.
+   */
+  compile: number[];
   poolCold: boolean;
   poolReason: string;
   busy: number;
+  providerFault: string | null;
   containers: string[];
   builds: string[];
   boot: string[];
   generateSeconds: number;
+  /** True when `render` returned a body, including one whose rows all failed. */
+  parsed: boolean;
+  /**
+   * The call threw before a body was parsed (socket, transport, or any
+   * other unclassified rejection). The ramp stops and warmth stays as it was.
+   */
+  transport: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -165,9 +245,11 @@ interface DispatchTally {
   staged: Set<number>;
   placement: number[];
   oversize: number[];
+  compile: number[];
   poolCold: boolean;
   poolReason: string;
   busy: number;
+  providerFault: string | null;
   containers: string[];
   builds: string[];
   boot: string[];
@@ -180,9 +262,11 @@ function emptyTally(): DispatchTally {
     staged: new Set(),
     placement: [],
     oversize: [],
+    compile: [],
     poolCold: false,
     poolReason: "",
     busy: 0,
+    providerFault: null,
     containers: [],
     builds: [],
     boot: [],
@@ -201,6 +285,9 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   tally.oversize = [
     ...new Set([...tally.oversize, ...wave.oversize.filter((i) => !tally.staged.has(i))]),
   ];
+  tally.compile = [
+    ...new Set([...tally.compile, ...wave.compile.filter((i) => !tally.staged.has(i))]),
+  ];
   tally.busy += wave.busy;
   tally.containers.push(...wave.containers);
   tally.builds.push(...wave.builds);
@@ -209,6 +296,9 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   if (wave.poolCold) {
     tally.poolCold = true;
     tally.poolReason = wave.poolReason;
+  }
+  if (wave.providerFault && !tally.providerFault) {
+    tally.providerFault = wave.providerFault;
   }
 }
 
@@ -225,13 +315,14 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
 export async function dispatchModalCloneLanes(
   opts: LaneDispatchOptions
 ): Promise<LaneDispatchResult> {
+  if (opts.bookWave) return dispatchBookWave(opts);
   const log = opts.log ?? (() => {});
   const tally = emptyTally();
   let remaining = opts.indexes;
   let firstLight: FirstLightReport | null = null;
   /** Started when the first-light section lands, settled before we return. */
   let publishing: Promise<void> | null = null;
-  let publishError: unknown = null;
+  const publishState: { error: unknown } = { error: null };
   // The rest of the fan-out waits for the section the player needs. A pool
   // that could not restore it gains nothing from three more cold waits.
   let mayFanOut = true;
@@ -267,7 +358,7 @@ export async function dispatchModalCloneLanes(
       // CPU-bound ffmpeg passes; running it inside the critical path here would
       // idle every other lane for as long as it takes.
       publishing = opts.publishFirstLight(head).catch((err: unknown) => {
-        publishError = err;
+        publishState.error = err;
       });
     }
   }
@@ -302,19 +393,254 @@ export async function dispatchModalCloneLanes(
       }
     }
   }
-  const sawPlacement = tally.placement.length > 0;
-  if (sawPlacement) {
-    // A one-section call that never came back is a placement that missed: the
-    // HTTP call already gave up, and the RPC is what is allowed to finish a
-    // possible compile. A split lane is handled by its own smaller retry and
-    // deliberately does not reach here — a warm pool is not compiling.
+  return finishDispatch(tally, firstLight, publishing, publishState, log);
+}
+
+/**
+ * One book, one H100. Section 0 (or the first cold call after a scaledown)
+ * stays one section, unless the indexes are the whole remaining book and
+ * one call adds no generation beyond that section. Each later call is only
+ * as wide as the audio already buffered for the listener, and the next
+ * call starts as soon as the previous one returns. A warm call that misses
+ * its budget is retried as one section and the rest waits for the next
+ * tick, so this book does not open a second GPU.
+ */
+async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
+  const log = opts.log ?? (() => {});
+  const tally = emptyTally();
+  let firstLight: FirstLightReport | null = null;
+  const publishState: { error: unknown } = { error: null };
+  let publishChain: Promise<void> = Promise.resolve();
+  let poolWarm = opts.poolWarm ?? modalClonePoolIsWarm();
+  let pending = [...opts.indexes].sort((a, b) => a - b);
+  let started = opts.playbackStarted === true;
+  // `bufferedMs` is wall time left at 1.5×. Each finished call subtracts
+  // its wall directly and adds the new audio as wall time.
+  let buffer = started ? Math.max(0, opts.bufferedMs ?? 0) : 0;
+  const callLimit =
+    typeof opts.maxCalls === "number" && opts.maxCalls > 0
+      ? Math.floor(opts.maxCalls)
+      : Number.POSITIVE_INFINITY;
+  let made = 0;
+  let handedOff = false;
+
+  const enqueuePublish = (indexes: number[], head: boolean) => {
+    if (indexes.length === 0) return;
+    const task = () => {
+      const run = opts.publishStaged
+        ? opts.publishStaged(indexes)
+        : head && opts.publishFirstLight && indexes[0] != null
+          ? opts.publishFirstLight(indexes[0])
+          : null;
+      if (!run) return Promise.resolve();
+      return run.catch((err: unknown) => {
+        if (head) publishState.error = err;
+        else {
+          log(
+            `[S2 lanes] sections [${indexes.join(",")}] did not publish: ` +
+              `${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      });
+    };
+    publishChain = publishChain.then(task, task);
+  };
+
+  while (pending.length > 0 && made < callLimit && !tally.poolCold && tally.busy === 0) {
+    if (made > 0 && opts.yieldToOther) {
+      const yieldNow = await opts.yieldToOther();
+      if (yieldNow) {
+        handedOff = true;
+        log("[S2 lanes] another take-home is runnable; stopping the ramp");
+        break;
+      }
+    }
+    const opening = opts.firstLight === true && !started;
+    const committed = opts.committedCall === true && made === 0;
+    const call = committed
+      ? cloneWaveCallForIndexes({
+          indexes: pending,
+          textAt: opts.textAt,
+          // A warm pool has already restored. The opening on a cold pool is
+          // the cold call. A later section on a cold pool is one cold-sized
+          // call, which is all the shared-GPU chooser commits in that case.
+          shape: poolWarm ? "warm" : "cold",
+          firstLight: opening,
+          restore: !poolWarm,
+          playbackStarted: started,
+          bufferedMs: buffer,
+        })
+      : planModalCloneBookWave({
+          pending,
+          textAt: opts.textAt,
+          firstLight: opening,
+          poolWarm,
+          batch: opts.batch,
+          bufferedMs: buffer,
+          playbackStarted: started,
+          entireRemainder:
+            opts.entireRemainder === true && pending.length === opts.indexes.length,
+          maxCalls: 1,
+        }).calls[0];
+    if (!call) break;
+    log(
+      `[S2 lanes] book wave pool=${poolWarm ? "warm" : "cold"} ` +
+        `buffer=${Math.round(buffer)} ${call.shape}:${call.indexes.length}`
+    );
+    const isHead = opts.firstLight === true && !started && call.shape === "cold";
+    const startedAt = Date.now();
+    const wave = await runWave(opts, call.indexes, log, opts.lanes, isHead, undefined, {
+      maxLaneChars: Number.POSITIVE_INFINITY,
+      warmBatch: call.shape === "warm",
+    });
+    mergeWave(tally, wave);
+    if (tally.busy > 0 || tally.providerFault) break;
+    // A socket or any other throw is not "the container parsed a body and
+    // every row failed". Stop. Do not mark the pool warm, and do not POST
+    // the next section of the ramp.
+    if (wave.transport) break;
+
+    if (isHead && !tally.poolCold && tally.placement.includes(call.indexes[0]!)) {
+      log(
+        `[S2 lanes] first-light section ${call.indexes[0]} missed the restore budget; retrying it`
+      );
+      mergeWave(
+        tally,
+        await runWave(opts, call.indexes, log, opts.lanes, true, undefined, {
+          maxLaneChars: Number.POSITIVE_INFINITY,
+          warmBatch: false,
+        })
+      );
+    }
+
+    if (isHead) {
+      const head = call.indexes[0]!;
+      const headStaged = tally.staged.has(head);
+      firstLight = {
+        index: head,
+        staged: headStaged,
+        elapsedMs: Date.now() - startedAt,
+      };
+      log(
+        `[S2 lanes] first light section ${head} ` +
+          `${headStaged ? `staged in ${Math.round(firstLight.elapsedMs / 1000)}s` : "not staged"}`
+      );
+      if (!headStaged && tally.placement.includes(head)) {
+        tally.poolCold = true;
+        tally.poolReason = `section ${head} missed the restore budget`;
+      }
+      if (!headStaged || tally.poolCold) break;
+    }
+
+    if (!isHead && wave.poolCold) break;
+
+    if (!isHead && !wave.poolCold && wave.oversize.length > 0) {
+      const split = wave.oversize.filter((index) => !tally.staged.has(index));
+      if (split.length > 0) {
+        const one = split.slice(0, 1);
+        log(
+          `[S2 lanes] ${call.shape} batch missed its budget; retrying [${one.join(",")}] and leaving the rest`
+        );
+        mergeWave(
+          tally,
+          // warmBatch is false because the wide call missed. compileKick is
+          // false so this retry cannot start a snapshot compile.
+          await runWave(opts, one, log, opts.lanes, false, 1, {
+            maxLaneChars: Number.POSITIVE_INFINITY,
+            warmBatch: false,
+            compileKick: call.shape === "warm" ? false : undefined,
+          })
+        );
+      }
+      enqueuePublish(
+        call.indexes.filter((index) => tally.staged.has(index)),
+        false
+      );
+      break;
+    }
+
+    if (!isHead && call.shape === "cold" && !wave.poolCold && wave.placement.length > 0) {
+      const retry = wave.placement.filter((index) => !tally.staged.has(index));
+      if (retry.length > 0) {
+        log(`[S2 lanes] placement missed restore budget; retrying [${retry.join(",")}]`);
+        mergeWave(
+          tally,
+          await runWave(opts, retry, log, opts.lanes, false, undefined, {
+            maxLaneChars: Number.POSITIVE_INFINITY,
+            warmBatch: false,
+          })
+        );
+      }
+    }
+
+    const stagedRows = call.indexes.filter((index) => tally.staged.has(index));
+    if (isHead) {
+      enqueuePublish(stagedRows, true);
+    } else {
+      enqueuePublish(stagedRows, false);
+    }
+    // A row the container rejected is not sent again in this tick. The
+    // ledger retries it next time. The rows after it are still owed an
+    // attempt, or a book that fails one section stays queued with the
+    // rest never spoken.
+    if (stagedRows.length !== call.indexes.length) {
+      const dropped = new Set(
+        call.indexes.filter((index) => !tally.staged.has(index))
+      );
+      pending = pending.filter((index) => !dropped.has(index));
+    }
+    if (tally.busy > 0 || pending.length === 0) break;
+    if (stagedRows.length === 0) {
+      if (!wave.parsed) break;
+      // The container parsed a body and every row failed. The listener
+      // gained no audio, so the next section is sent on its own instead
+      // of waiting out a buffer that will not grow.
+      buffer = 0;
+      poolWarm = true;
+      made += 1;
+      continue;
+    }
+
+    const elapsed = Date.now() - startedAt;
+    const spent = Math.max(elapsed + MODAL_CLONE_PUBLISH_MS, call.wallMs);
+    const stagedChars = stagedRows.reduce(
+      (sum, index) => sum + opts.textAt(index).length,
+      0
+    );
+    const audio = cloneAudioMs(stagedChars);
+    if (!started) {
+      started = true;
+      buffer = clonePlanningBufferMs(audio);
+    } else {
+      buffer = advancePlanningBuffer(buffer, spent, audio);
+    }
+    const taken = new Set(stagedRows);
+    pending = pending.filter((index) => !taken.has(index));
+    poolWarm = true;
+    made += 1;
+  }
+
+  const result = await finishDispatch(tally, firstLight, publishChain, publishState, log);
+  return handedOff ? { ...result, handedOff: true } : result;
+}
+
+async function finishDispatch(
+  tally: DispatchTally,
+  firstLight: FirstLightReport | null,
+  publishing: Promise<void> | null,
+  publishState: { error: unknown },
+  log: (message: string) => void
+): Promise<LaneDispatchResult> {
+  if (tally.compile.length > 0) {
+    // Only a restore-budget miss kicks the compile RPC. A warm wait that
+    // expired is a slow container, and the one-row retry after a warm miss
+    // is sent with compile suppressed so it cannot start a compile either.
     kickModalCloneSnapshotWarm("placement exceeded restore budget");
   }
 
-  // The published section is a lane result too: a failure here must not look
-  // like a successful first light.
   if (publishing) {
     await publishing;
+    const publishError = publishState.error;
     if (publishError) {
       log(
         `[S2 lanes] first-light section ${firstLight!.index} did not publish: ` +
@@ -323,19 +649,15 @@ export async function dispatchModalCloneLanes(
       if (firstLight) {
         firstLight = { ...firstLight, staged: false, publishError: true };
       }
-      // It is staged but not playable, so the fan-out was still worth it.
       tally.staged.delete(firstLight!.index);
     }
   }
 
-  // The pool is cold only when a single-section placement missed. A call that
-  // carried several sections and ran out of budget is a slow lane that has
-  // already been split, which is never a reason to park the book.
   const cold = tally.poolCold || (tally.placement.length > 0 && tally.staged.size === 0);
   if (!tally.poolCold && tally.placement.length > 0) {
-    // Do not open another restore-budget wait for the holes in this tick.
     rememberModalCloneCold();
-  }  if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
+  }
+  if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
 
   return {
     staged: tally.staged.size,
@@ -343,6 +665,7 @@ export async function dispatchModalCloneLanes(
     cold,
     oversize: [...tally.oversize],
     busy: tally.busy,
+    providerFault: tally.providerFault,
     containers: [...new Set(tally.containers)],
     builds: [...new Set(tally.builds)],
     boot: [...new Set(tally.boot)],
@@ -362,16 +685,21 @@ async function runWave(
    * of budget passes 1: the pack did not fit, so the same pack on another
    * container cannot fit either, while single sections can.
    */
-  rowsPerCall?: number
+  rowsPerCall?: number,
+  wave?: { maxLaneChars?: number; warmBatch?: boolean; compileKick?: boolean }
 ): Promise<WaveOutcome> {
   const rowsPerPage = Math.max(1, Math.floor(rowsPerCall ?? opts.batch));
+  // One book, one call in flight. A book wave never opens a second lane,
+  // even if the caller passed a fan-out. That second lane would be a second
+  // GPU for the same book.
+  const laneCount = opts.bookWave ? 1 : lanes;
   const plan = planModalCloneLanes({
     pending: indexes,
     textAt: opts.textAt,
     limits: {
-      lanes,
+      lanes: laneCount,
       batch: Math.min(opts.batch, rowsPerPage),
-      maxLaneChars: opts.maxLaneChars,
+      maxLaneChars: wave?.maxLaneChars ?? opts.maxLaneChars,
     },
   });
   const attempted = plan.lanes.flat();
@@ -383,8 +711,12 @@ async function runWave(
   let poolCold = false;
   let poolReason = "";
   let busy = 0;
+  let providerFault: string | null = null;
   const placement: number[] = [];
   const oversize: number[] = [];
+  const compile: number[] = [];
+  let parsed = false;
+  let transport = false;
 
   if (attempted.length === 0) {
     return {
@@ -392,29 +724,39 @@ async function runWave(
       staged,
       placement,
       oversize,
+      compile,
       poolCold,
       poolReason,
       busy,
+      providerFault,
       containers,
       builds,
       boot,
       generateSeconds,
+      parsed,
+      transport,
     };
   }
 
   const laneResults = await Promise.all(
     plan.lanes.map(async (lane) => {
       const stagedHere: number[] = [];
-      // One shared permit per HTTP lane. A second worker blocks here instead
-      // of opening another container call. No wait: sitting out the restore
-      // budget would look like a cold compile.
-      const slot = await holdModalCloneLaneSlot(modalCloneLanes());
+      // A book wave is one call on the GPU this book already leased
+      // (`modal_gpu_leases`). The old modal-clone slot cap of 1 serialized
+      // every book onto one container. The per-section path still takes a
+      // lane slot so a miss cannot fan out into modalCloneLanes() H100s.
+      const slot = opts.bookWave
+        ? { slotId: 0, release: async () => {} }
+        : await holdModalCloneLaneSlot(modalCloneLanes());
       if (!slot) {
         return {
           lane,
           error: new ModalCloneLaneBusyError("shared clone lane is in use"),
+          parsed: false,
+          transport: false,
         };
       }
+      let laneParsed = false;
       try {
         for (const page of pageLane(lane, rowsPerPage)) {
           // A race is only meaningful for the call that carries section 0.
@@ -433,14 +775,37 @@ async function runWave(
             (max, index) => Math.max(max, opts.textAt(index).length),
             0
           );
+          const warm = wave?.warmBatch === true;
+          const wallMs = cloneCallWallMs({
+            chars: pageChars,
+            largestRow,
+            rows: page.length,
+            shape: warm ? "warm" : "cold",
+            restore: !warm,
+          });
+          if (!warm) {
+            const abortMs = modalCloneArmedWaitMs(false, races, wallMs, false).ms;
+            if (!(wallMs < abortMs)) {
+              log(
+                `[S2 lanes] cold pack of ${page.length} rows / ${pageChars} chars ` +
+                  `does not fit its abort (${wallMs}ms >= ${abortMs}ms)`
+              );
+              oversize.push(...page);
+              break;
+            }
+          }
           const outcome = await opts.render(
             page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
             opts.seedEpoch,
             {
               raceForFirstAudio: races,
-              workMs: modalLaneWorkMs(pageChars, largestRow),
+              // The abort is armed from this same wall, not from the old
+              // 100/50 character clocks.
+              workMs: wallMs,
+              warmBatch: warm,
             }
           );
+          laneParsed = true;
           if (outcome.containerId) containers.push(outcome.containerId);
           if (outcome.build) builds.push(outcome.build);
           if (outcome.boot) boot.push(outcome.boot);
@@ -462,13 +827,25 @@ async function runWave(
           }
           // A page that produced nothing for a section leaves it unclaimed, so
           // the per-section path retries it. That is the intended fall-through.
-          log(`[S2 lanes] page of ${page.length} rendered ${rendered}/${page.length}`);
+          log(
+            `[S2 lanes] ${wave?.warmBatch ? "warm" : "cold"} page of ${page.length} rendered ${rendered}/${page.length}`
+          );
           if (rendered < page.length) break;
         }
-        return { lane, error: null as unknown };
+        return { lane, error: null as unknown, parsed: laneParsed, transport: false };
       } catch (error) {
         if (error instanceof ModalWorkspaceDisabledError) throw error;
-        return { lane, error };
+        // A 429 means the lane is busy, not that the pool went cold.
+        // A socket or other unclassified throw is not a reason to forget
+        // a container that already answered: warmth stays where it was.
+        const unclassified =
+          !(error instanceof ModalCloneColdError) &&
+          !(error instanceof ModalCloneLaneBusyError) &&
+          !(error instanceof ModalCloneProviderError);
+        if (wave?.warmBatch && !unclassified && !(error instanceof ModalCloneLaneBusyError)) {
+          noteModalClonePoolLost();
+        }
+        return { lane, error, parsed: laneParsed, transport: unclassified && !laneParsed };
       } finally {
         await slot.release();
       }
@@ -476,6 +853,8 @@ async function runWave(
   );
 
   for (const result of laneResults) {
+    if (result.parsed) parsed = true;
+    if (result.transport) transport = true;
     const err = result.error;
     if (!err) continue;
     if (err instanceof ModalCloneColdError && err.scope === "placement") {
@@ -488,7 +867,12 @@ async function runWave(
       // resending the same pack on another container is what made
       // `job 7e4a8b48` loop. This holds whether or not a sibling answered.
       if (result.lane.length > 1) oversize.push(...missed);
-      else placement.push(...missed);
+      else {
+        placement.push(...missed);
+        if (err.waitKind !== "warm" && wave?.compileKick !== false) {
+          compile.push(...missed);
+        }
+      }
     } else if (err instanceof ModalCloneColdError) {
       poolCold = true;
       poolReason = err.message;
@@ -497,6 +881,12 @@ async function runWave(
       // fatal: the sections stay unclaimed so a later tick picks them up.
       busy += 1;
       log(`[S2 lanes] lane busy: ${err.message}`);
+    } else if (err instanceof ModalCloneProviderError) {
+      // A 5xx is the container answering, not a cold restore. The book parks
+      // on the provider-fault clock (`job 5f09ee0e`) instead of fanning out
+      // more calls or failing the section as a spent retry.
+      providerFault = err.message;
+      log(`[S2 lanes] provider fault: ${err.message}`);
     } else {
       log(`[S2 lanes] lane failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -507,12 +897,16 @@ async function runWave(
     staged,
     placement,
     oversize,
+    compile,
     poolCold,
     poolReason,
     busy,
+    providerFault,
     containers,
     builds,
     boot,
     generateSeconds,
+    parsed,
+    transport,
   };
 }

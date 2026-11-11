@@ -314,7 +314,7 @@ class TestPlacementKind:
 class TestContainerLimits:
     def test_defaults_are_production_safe(self):
         limits = container_limits({})
-        # Production stays at one container until staging signs off.
+        # A plain deploy stays at one container. The live cap is update_autoscaler.
         assert limits["max_containers"] == 1
         assert limits["min_containers"] == 0
         assert limits["lanes"] == 4
@@ -323,8 +323,11 @@ class TestContainerLimits:
         limits = container_limits({"S2C_MAX_CONTAINERS": "4"})
         assert limits["max_containers"] == 4
 
+    def test_accepts_the_worker_gpu_ceiling(self):
+        assert container_limits({"S2C_MAX_CONTAINERS": "20"})["max_containers"] == 20
+
     def test_clamps_nonsense(self):
-        assert container_limits({"S2C_MAX_CONTAINERS": "500"})["max_containers"] == 8
+        assert container_limits({"S2C_MAX_CONTAINERS": "500"})["max_containers"] == 64
         assert container_limits({"S2C_MAX_CONTAINERS": "0"})["max_containers"] == 1
         assert container_limits({"S2C_MAX_CONTAINERS": "abc"})["max_containers"] == 1
         assert container_limits({"S2C_LANES": "-4"})["lanes"] == 4
