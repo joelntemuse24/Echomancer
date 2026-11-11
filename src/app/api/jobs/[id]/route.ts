@@ -5,6 +5,7 @@ import { releaseTakehomeCreateForJob } from "@/lib/jobs/takehome-identity";
 import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
+import { forgetModalCloneJob } from "@/lib/tts/providers/modal-clone";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
@@ -181,6 +182,7 @@ export async function DELETE(
     // Stop a finalize that is already in flight before its files go away. A
     // worker holds the lease and would otherwise publish (`ready`) a row the
     // user just deleted, or upload a full file long after the delete.
+    forgetModalCloneJob(id);
     await execute(
       `UPDATE jobs SET status = 'cancelled', error_message = 'Deleted by user',
        processing_lease_token = NULL, lease_expires_at = NULL,

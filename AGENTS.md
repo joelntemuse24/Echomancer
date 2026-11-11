@@ -373,8 +373,11 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   pool as warm for this book only when `warm_containers` exceeds the other
   live `modal_gpu_leases` rows and this book has already heard its own
   container. A book's first call, and any call before that, uses the
-  restore budget (150s, or 75s for first audio). A miss sets the 30s
-  backoff on that book only. The process-wide backoff is only when the
+  restore budget (150s, or 75s for first audio). The ramp uses that same
+  spare check, so a confirmed book whose container is busy is not given a
+  24-row call. A miss sets the 30s
+  backoff on that book only. The book then waits on `sched_not_before`.
+  That wait does not start `clone_wait_started_at`. The process-wide backoff is only when the
   probe sees zero warm containers and no other call in flight (or the
   call has no job id). A client timeout does not re-POST those sections
   in the same dispatch: the sync handler keeps rendering, and this
@@ -419,9 +422,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
 - **A book never builds a snapshot.** One placement may wait the restore
   budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
-  wait is dropped (`ModalCloneColdError` `scope: "placement"`), the unstaged
-  sections are tried once on another container, and if nothing comes back the
-  book parks and later follows the defer → direct Fish path (the same voice).
+  wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
+  miss tries the unstaged sections once on another container. A client
+  timeout does not: the handler is still rendering, the book waits on
+  `sched_not_before`, and that wait does not start the Fish defer clock.
+  When a real cold probe comes back empty the book parks and later follows
+  the defer → direct Fish path (the same voice).
   A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
@@ -569,7 +575,8 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
   the first-light call only. That wait is wall clock in front of the person,
   and a compiling placement cannot be waited out at any budget a book may use,
-  so abandoning it sooner only retries another container sooner. It is not
+  so abandoning a gateway miss retries another container sooner. A client
+  timeout does not open a second container for the same sections. It is not
   shortened further: a measured restore is ~57s, and a budget under that parks
   a book that would have played.
 - **Section 0 is published before transcript QA.** The check spawns a fresh

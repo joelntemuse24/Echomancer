@@ -44,7 +44,11 @@ import {
   ModalCloneColdError,
   ModalCloneProviderError,
   ModalCloneReferenceError,
+  forgetModalCloneJob,
   modalCloneBookContainerWarm,
+  modalCloneBookHasSpareContainer,
+  modalCloneJobBackoffRemainingMs,
+  modalCloneLiveLeases,
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
@@ -78,7 +82,6 @@ import {
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   admitModalCloneGpu,
-  listLiveModalGpuLeases,
   releaseModalGpuLease,
   releaseModalGpuLeasesForOwner,
   renewModalGpuLeases,
@@ -1120,9 +1123,11 @@ async function prewarmCloneBook(
   userId: string,
   reason: string
 ): Promise<void> {
-  let leases: Awaited<ReturnType<typeof listLiveModalGpuLeases>> | undefined;
+  if (modalCloneBookContainerWarm(jobId)) return;
+  if (modalCloneJobBackoffRemainingMs(jobId) > 0) return;
+  let leases: Awaited<ReturnType<typeof modalCloneLiveLeases>> | undefined;
   try {
-    leases = await listLiveModalGpuLeases();
+    leases = await modalCloneLiveLeases();
   } catch (err) {
     console.warn(
       `[Job ${jobId}] GPU lease ledger unreadable; prewarm cap skipped`,
@@ -1281,21 +1286,6 @@ async function runClaimedTick(
   // outline does not: concat, saved raw, and a later cache check must not
   // start a container. The call is one RPC, never awaited, and the app stays
   // `min_containers=0`.
-  const knownTotal = job.total_sections ?? 0;
-  if (
-    shouldPrewarmBeforeOutline({
-      modalVoice: usesModalClone(job.catalog_voice_id),
-      clonePin: parseCloneProviderPin(job.provider_pin),
-      totalSections: knownTotal,
-      claimableCount:
-        knownTotal > 0
-          ? claimableIndexes(parseSegments(job.segments_json), knownTotal).length
-          : 0,
-    })
-  ) {
-    await prewarmCloneBook(jobId, job.user_id, `book ${jobId} is starting`);
-  }
-
   // A job may be created while its upload is still extracting, so the first
   // thing a tick does is wait its turn: park the job as `waiting` until the
   // text exists, and fail it once the upload itself has failed. `waiting` is
@@ -1332,6 +1322,23 @@ async function runClaimedTick(
         total: job.total_sections ?? 0,
       };
     }
+  }
+
+  // After the file is readable. A book still waiting on extract must not
+  // start a GPU, and N waiting books must not start N restores.
+  const knownTotal = job.total_sections ?? 0;
+  if (
+    shouldPrewarmBeforeOutline({
+      modalVoice: usesModalClone(job.catalog_voice_id),
+      clonePin: parseCloneProviderPin(job.provider_pin),
+      totalSections: knownTotal,
+      claimableCount:
+        knownTotal > 0
+          ? claimableIndexes(parseSegments(job.segments_json), knownTotal).length
+          : 0,
+    })
+  ) {
+    await prewarmCloneBook(jobId, job.user_id, `book ${jobId} is starting`);
   }
 
   if (
@@ -1954,6 +1961,7 @@ async function runClaimedTick(
                current_section = ?, total_sections = ?, tts_options = ?,
                first_section_at = COALESCE(first_section_at, unixepoch()),
                last_section_at = unixepoch(),
+               clone_wait_started_at = NULL,
                status = 'processing', updated_at = unixepoch()
              WHERE id = ? AND processing_lease_token = ?`,
             [
@@ -2171,7 +2179,7 @@ async function runClaimedTick(
                       firstLight: !otherPlay.started,
                     },
                   ],
-                  poolWarm: modalCloneBookContainerWarm(jobId),
+                  poolWarm: await modalCloneBookHasSpareContainer(jobId),
                   batch,
                 });
                 if (turn.bookId !== jobId || !turn.call) {
@@ -2305,6 +2313,66 @@ async function runClaimedTick(
             console.log(`[Job ${jobId}] S2 cacheSkip=${skippedCached} render=0`);
           }
 
+          if (
+            dispatch &&
+            (dispatch.abortedIndexes.length > 0 || dispatch.selfBackoff)
+          ) {
+            // The handler is still rendering, or this book is already
+            // waiting. Park on that delay. Do not start the Fish clock:
+            // a single timeout is not an empty pool. Rows from this
+            // abort are still rendering, so they do not spend an attempt.
+            await publishChain.catch(() => undefined);
+            const aborted = new Set(dispatch.abortedIndexes);
+            const charge = dispatch.missing.filter((index) => !aborted.has(index));
+            if (charge.length > 0 && !dispatch.cold && !dispatch.providerFault) {
+              await writeLock(async () => {
+                for (const index of charge) {
+                  const prev = segments.find((segment) => segment.index === index);
+                  const ledger = cloneDropLedger(prev);
+                  segments = upsertSegment(segments, {
+                    index,
+                    path: prev?.path || "",
+                    status: ledger.status,
+                    attempts: ledger.attempts,
+                    error: prev?.error || "clone batch dropped this section",
+                  });
+                }
+                const done = readyCount(segments);
+                await writeWithLease(
+                  jobId,
+                  lease,
+                  `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                     current_section = ?, total_sections = ?, status = 'processing',
+                     updated_at = unixepoch()
+                   WHERE id = ? AND processing_lease_token = ?`,
+                  [
+                    lowestUnreadyIndex(segments, total),
+                    JSON.stringify(segments),
+                    Math.min(99, Math.round((done / total) * 100)),
+                    done,
+                    total,
+                  ]
+                );
+              });
+            }
+            const remain = modalCloneJobBackoffRemainingMs(jobId);
+            const notBeforeSec = Math.max(1, Math.ceil(remain / 1000));
+            console.log(
+              `[Job ${jobId}] clone call aborted; next claim in ${notBeforeSec}s`
+            );
+            await releaseLease(jobId, lease, {
+              status: "queued",
+              notBeforeSec,
+            }).catch(() => {});
+            return {
+              done: false,
+              busy: true,
+              deferred: true,
+              nextIndex: job.next_section_index ?? 0,
+              total: job.total_sections ?? 0,
+            };
+          }
+
           if (dispatch?.cold) {
             const outcome = await deferForColdClonePool({
               jobId,
@@ -2388,7 +2456,9 @@ async function runClaimedTick(
               dispatch.missing.length > 0
             ) {
               await writeLock(async () => {
+                const aborted = new Set(dispatch.abortedIndexes);
                 for (const index of dispatch.missing) {
+                  if (aborted.has(index)) continue;
                   const prev = segments.find((segment) => segment.index === index);
                   const ledger = cloneDropLedger(prev);
                   segments = upsertSegment(segments, {
@@ -2671,6 +2741,7 @@ async function runClaimedTick(
       // 5 of 11 sections, 510 s of a 1,069 s source). The stored audio and the
       // section rows are untouched, so nothing a listener can already hear is
       // lost, and `failed` is the status the UI already labels as not done.
+      forgetModalCloneJob(jobId);
       const publishedStatus = complete ? "ready" : "failed";
       const failureMessage = complete
         ? null
@@ -2955,6 +3026,7 @@ async function failJob(
   message: string
 ): Promise<void> {
   console.error(`[Job ${jobId}] failed: ${message}`);
+  forgetModalCloneJob(jobId);
   await releaseLease(jobId, lease, {
     status: "failed",
     errorMessage: message,
@@ -3445,12 +3517,10 @@ export async function runTakehomeWave(
         return { deferred: false, changed: true, yieldSlot: true };
       }
       if (result.deferred) {
-        // A cold park returns here. This invocation does not claim the book
-        // again and post the same sections while an aborted call is still
-        // rendering on Modal. The per-job backoff is in this process.
-        console.log(
-          `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
-        );
+        // Includes a book parked on its own backoff. That wait is
+        // `sched_not_before` on the row, so another process does not claim
+        // it and post the same sections while the handler is still rendering.
+        console.log(`[Job ${jobId}] deferred until a later wave`);
         return { deferred: true, changed: true };
       }
       if (result.busy) {

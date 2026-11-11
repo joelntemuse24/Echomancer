@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ModalCloneColdError,
+  ModalCloneProviderError,
   loadCloneReference,
   modalCloneBookContainerWarm,
   modalCloneKnownWarmForCall,
@@ -24,6 +25,7 @@ import {
 import {
   MODAL_CLONE_COLD_WAIT_DEFAULT_MS,
   MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS,
+  MODAL_CLONE_WARM_WAIT_DEFAULT_MS,
 } from "./modal-clone-guard";
 import { dispatchModalCloneLanes } from "./modal-clone-dispatch";
 import {
@@ -109,6 +111,7 @@ function timeoutsOf(spy: { mock: { calls: unknown[][] } }): number[] {
 afterEach(() => {
   resetModalCloneRuntimeForTests();
   resetModalCloneWarmForTests();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -150,6 +153,8 @@ describe("spare warmth while another book occupies the only container", () => {
 
 describe("one book's miss does not stall another book's ramp", () => {
   it("lets A post again after B's steady-budget miss", async () => {
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     const harness = setup({ warmContainers: 2, leases: [] });
     const ref = await loadCloneReference("clone:saved-id", "fish-id");
     await renderModalCloneBatch([{ key: "0", text: "Hi." }], ref, undefined, "job-b");
@@ -171,12 +176,33 @@ describe("one book's miss does not stall another book's ramp", () => {
     expect(missed).toBeInstanceOf(ModalCloneColdError);
     expect((missed as ModalCloneColdError).clientAborted).toBe(true);
 
+    const held = harness.batchCalls().length;
+    const again = await renderModalCloneBatch(
+      [{ key: "2", text: "Still B." }],
+      ref,
+      undefined,
+      "job-b"
+    ).then(
+      () => {
+        throw new Error("expected B to stay in backoff");
+      },
+      (err: unknown) => err
+    );
+    expect(again).toBeInstanceOf(ModalCloneColdError);
+    expect((again as ModalCloneColdError).selfBackoff).toBe(true);
+    expect(harness.batchCalls().length).toBe(held);
+
+    // A has not heard its own container. An app-wide clock would stop this
+    // fetch. A's call has to reach Modal.
     harness.setBatchMode("ok");
     harness.fetchMock.mockClear();
-    noteModalClonePoolAnswered(Date.now(), "job-a");
-    await renderModalCloneBatch([{ key: "0", text: "Hi." }], ref, undefined, "job-a", {
-      warmBatch: true,
-    });
+    await renderModalCloneBatch([{ key: "0", text: "Hi." }], ref, undefined, "job-a");
+    expect(harness.batchCalls().length).toBeGreaterThan(0);
+
+    now += 30_000;
+    harness.setBatchMode("ok");
+    harness.fetchMock.mockClear();
+    await renderModalCloneBatch([{ key: "3", text: "B again." }], ref, undefined, "job-b");
     expect(harness.batchCalls().length).toBeGreaterThan(0);
   });
 });
@@ -243,6 +269,45 @@ describe("prewarm is per book and still inside the GPU cap", () => {
       })
     ).toBe(false);
     expect(calls).toHaveLength(0);
+  });
+
+  it("still prewarms when the only lease is this book's own row", () => {
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    vi.stubEnv("MODAL_S2_MAX_GPUS", "1");
+    const calls = spawner();
+    expect(
+      prewarmModalCloneSnapshot("book B is starting", 1_000, {
+        jobId: "job-b",
+        userId: "user-b",
+        leases: [{ jobId: "job-b", userId: "user-b" }],
+      })
+    ).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("counts restores already started, even with an empty lease table", () => {
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    vi.stubEnv("MODAL_S2_MAX_GPUS", "2");
+    const calls = spawner();
+    expect(
+      prewarmModalCloneSnapshot("book A", 1_000, {
+        jobId: "job-a",
+        leases: [],
+      })
+    ).toBe(true);
+    expect(
+      prewarmModalCloneSnapshot("book B", 1_000, {
+        jobId: "job-b",
+        leases: [],
+      })
+    ).toBe(true);
+    expect(
+      prewarmModalCloneSnapshot("book C", 1_000, {
+        jobId: "job-c",
+        leases: [],
+      })
+    ).toBe(false);
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -331,5 +396,155 @@ describe("warmth is spare containers plus this book's own answer", () => {
     noteModalClonePoolAnswered(now, "job-a");
     expect(modalCloneBookContainerWarm("job-a", now)).toBe(true);
     expect(modalCloneBookContainerWarm("job-b", now)).toBe(false);
+  });
+});
+
+describe("a busy pool is not a warm ramp", () => {
+  it("gives a confirmed book the restore budget when the warm container is leased", async () => {
+    const harness = setup({
+      warmContainers: 1,
+      leases: [lease("job-b", "user-b")],
+    });
+    const waits: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      waits.push(ms);
+      return new AbortController().signal;
+    });
+    noteModalClonePoolAnswered(Date.now(), "job-a");
+    const ref = await loadCloneReference("clone:saved-id", "fish-id");
+    await renderModalCloneBatch([{ key: "0", text: "Hi." }], ref, undefined, "job-a", {
+      warmBatch: true,
+    });
+    expect(harness.batchCalls().length).toBeGreaterThan(0);
+    expect(waits).not.toContain(MODAL_CLONE_WARM_WAIT_DEFAULT_MS);
+    expect(waits).toContain(MODAL_CLONE_COLD_WAIT_DEFAULT_MS);
+  });
+
+  it("plans a cold call when the spare container is already leased", async () => {
+    setup({
+      warmContainers: 1,
+      leases: [lease("job-b", "user-b")],
+    });
+    noteModalClonePoolAnswered(Date.now(), "job-a");
+    const seen: { count: number; warmBatch?: boolean }[] = [];
+    const render = vi.fn(async (items: { key: string }[], _ref: unknown, opts?: { warmBatch?: boolean }) => {
+      seen.push({ count: items.length, warmBatch: opts?.warmBatch });
+      throw new Error("stop after the plan");
+    });
+    await dispatchModalCloneLanes({
+      indexes: Array.from({ length: 24 }, (_, index) => index),
+      textAt: () => "x".repeat(2_000),
+      lanes: 1,
+      batch: 24,
+      maxLaneChars: 48_000,
+      seedEpoch: 0,
+      jobId: "job-a",
+      bookWave: true,
+      playbackStarted: true,
+      bufferedMs: 600_000,
+      render,
+      stage: async () => {},
+    });
+    expect(seen[0]?.warmBatch).toBe(false);
+    expect(seen[0]?.count).toBeLessThan(24);
+  });
+});
+
+describe("a later ramp call is not posted again after a timeout", () => {
+  it("stops the wave on the aborted call", async () => {
+    const render = vi.fn(async () => {
+      throw new ModalCloneColdError(
+        "Modal clone did not answer within 400s",
+        30_000,
+        "placement",
+        "warm",
+        true
+      );
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2, 3, 4, 5],
+      textAt: () => "x".repeat(2_000),
+      lanes: 1,
+      batch: 24,
+      maxLaneChars: 48_000,
+      seedEpoch: 0,
+      jobId: "job-a",
+      bookWave: true,
+      poolWarm: true,
+      playbackStarted: true,
+      bufferedMs: 600_000,
+      render,
+      stage: async () => {},
+    });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(result.abortedIndexes.length).toBeGreaterThan(1);
+    expect(result.staged).toBe(0);
+  });
+
+  it("retries a gateway miss once and does not retry a timeout", async () => {
+    const gateway = vi.fn(async () => {
+      throw new ModalCloneColdError("502", 30_000, "placement", "restore", false);
+    });
+    await dispatchModalCloneLanes({
+      indexes: [0, 1, 2],
+      textAt: () => "x".repeat(1_000),
+      lanes: 1,
+      batch: 24,
+      seedEpoch: 0,
+      jobId: "job-b",
+      bookWave: true,
+      firstLight: true,
+      poolWarm: false,
+      render: gateway,
+      stage: async () => {},
+    });
+    expect(gateway).toHaveBeenCalledTimes(2);
+
+    const timeout = vi.fn(async () => {
+      throw new ModalCloneColdError(
+        "did not answer",
+        30_000,
+        "placement",
+        "restore",
+        true
+      );
+    });
+    await dispatchModalCloneLanes({
+      indexes: [0, 1, 2],
+      textAt: () => "x".repeat(1_000),
+      lanes: 1,
+      batch: 24,
+      seedEpoch: 0,
+      jobId: "job-c",
+      bookWave: true,
+      firstLight: true,
+      poolWarm: false,
+      render: timeout,
+      stage: async () => {},
+    });
+    expect(timeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("forgets this book's container after a provider 500", async () => {
+    noteModalClonePoolAnswered(Date.now(), "job-a");
+    expect(modalCloneBookContainerWarm("job-a")).toBe(true);
+    const render = vi.fn(async () => {
+      throw new ModalCloneProviderError("Modal clone TTS 500: boom");
+    });
+    await dispatchModalCloneLanes({
+      indexes: [0, 1, 2],
+      textAt: () => "x".repeat(2_000),
+      lanes: 1,
+      batch: 24,
+      seedEpoch: 0,
+      jobId: "job-a",
+      bookWave: true,
+      poolWarm: true,
+      playbackStarted: true,
+      bufferedMs: 600_000,
+      render,
+      stage: async () => {},
+    });
+    expect(modalCloneBookContainerWarm("job-a")).toBe(false);
   });
 });

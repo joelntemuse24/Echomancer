@@ -21,6 +21,7 @@ import { enqueueCpuTask } from "@/lib/cpu/tasks";
 import { writeSectionCache } from "@/lib/tts/section-cache";
 import { takehomeSectionCacheKey } from "@/lib/tts/process-job";
 import { fishSpeedForRequest, DEFAULT_NARRATION_SPEED } from "@/lib/tts/narration-pace";
+import { resetModalCloneRuntimeForTests } from "@/lib/tts/providers/modal-clone";
 import {
   resetModalCloneWarmForTests,
   setModalCloneWarmSpawnerForTests,
@@ -34,6 +35,7 @@ let gpuCalls: string[][];
 
 function armGpuWatch() {
   gpuCalls = [];
+  resetModalCloneRuntimeForTests();
   resetModalCloneWarmForTests();
   setModalCloneWarmSpawnerForTests((command, args) => {
     gpuCalls.push([command, ...args]);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { execute } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
+import { forgetModalCloneJob } from "@/lib/tts/providers/modal-clone";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,7 @@ export async function POST(
 
     // Cancelling clears the lease as well, otherwise a worker mid-wave would
     // keep synthesizing sections the user has already paid to stop.
+    forgetModalCloneJob(id);
     await execute(
       `UPDATE jobs SET status = 'cancelled', error_message = 'Cancelled by user',
        processing_lease_token = NULL, lease_expires_at = NULL,

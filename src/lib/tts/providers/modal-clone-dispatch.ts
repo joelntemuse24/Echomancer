@@ -37,8 +37,9 @@ import {
   ModalCloneColdError,
   ModalCloneLaneBusyError,
   ModalCloneProviderError,
-  modalCloneBookContainerWarm,
+  modalCloneBookHasSpareContainer,
   modalClonePoolIsWarm,
+  noteModalCloneBookLost,
   noteModalClonePoolLost,
   rememberModalCloneCold,
   type CloneBatchItem,
@@ -211,6 +212,13 @@ export interface LaneDispatchResult {
   generateSeconds: number;
   /** What the containers said about their boot: `restored` or `unknown`. */
   boot: string[];
+  /**
+   * Indexes whose HTTP wait was dropped, or that this process refused to
+   * post because the book is in its own backoff. Still not a failed take.
+   */
+  abortedIndexes: number[];
+  /** The throw was this book's backoff, not an empty pool. */
+  selfBackoff: boolean;
   /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
   firstLight: FirstLightReport | null;
 }
@@ -250,6 +258,8 @@ interface WaveOutcome {
    * Dispatch must not POST these sections again in this wave.
    */
   aborted: boolean;
+  abortedIndexes: number[];
+  selfBackoff: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -269,6 +279,8 @@ interface DispatchTally {
   generateSeconds: number;
   /** A client timeout happened in some wave of this dispatch. */
   aborted: boolean;
+  abortedIndexes: number[];
+  selfBackoff: boolean;
 }
 
 function emptyTally(): DispatchTally {
@@ -287,6 +299,8 @@ function emptyTally(): DispatchTally {
     boot: [],
     generateSeconds: 0,
     aborted: false,
+    abortedIndexes: [],
+    selfBackoff: false,
   };
 }
 
@@ -317,6 +331,10 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
     tally.providerFault = wave.providerFault;
   }
   if (wave.aborted) tally.aborted = true;
+  if (wave.selfBackoff) tally.selfBackoff = true;
+  for (const index of wave.abortedIndexes) {
+    if (!tally.abortedIndexes.includes(index)) tally.abortedIndexes.push(index);
+  }
 }
 
 /**
@@ -430,7 +448,9 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
   let publishChain: Promise<void> = Promise.resolve();
   let poolWarm =
     opts.poolWarm ??
-    (opts.jobId ? modalCloneBookContainerWarm(opts.jobId) : modalClonePoolIsWarm());
+    (opts.jobId
+      ? await modalCloneBookHasSpareContainer(opts.jobId)
+      : modalClonePoolIsWarm());
   let pending = [...opts.indexes].sort((a, b) => a - b);
   let started = opts.playbackStarted === true;
   // `bufferedMs` is wall time left at 1.5×. Each finished call subtracts
@@ -714,6 +734,8 @@ async function finishDispatch(
     builds: [...new Set(tally.builds)],
     boot: [...new Set(tally.boot)],
     generateSeconds: Math.round(tally.generateSeconds * 10) / 10,
+    abortedIndexes: [...tally.abortedIndexes],
+    selfBackoff: tally.selfBackoff,
     firstLight,
   };
 }
@@ -762,6 +784,8 @@ async function runWave(
   let parsed = false;
   let transport = false;
   let aborted = false;
+  const abortedIndexes: number[] = [];
+  let selfBackoff = false;
 
   if (attempted.length === 0) {
     return {
@@ -781,6 +805,8 @@ async function runWave(
       parsed,
       transport,
       aborted: false,
+      abortedIndexes: [],
+      selfBackoff: false,
     };
   }
 
@@ -888,14 +914,17 @@ async function runWave(
           !(error instanceof ModalCloneColdError) &&
           !(error instanceof ModalCloneLaneBusyError) &&
           !(error instanceof ModalCloneProviderError);
-        if (
+        if (opts.jobId && error instanceof ModalCloneProviderError) {
+          // A 500 is this book's container failing. The next call is
+          // cold-sized. A timeout already drops warmth inside the client
+          // when the wait was the warm budget; a backoff throw must not.
+          noteModalCloneBookLost(opts.jobId);
+        } else if (
+          !opts.jobId &&
           wave?.warmBatch &&
           !unclassified &&
-          !(error instanceof ModalCloneLaneBusyError) &&
-          !opts.jobId
+          !(error instanceof ModalCloneLaneBusyError)
         ) {
-          // A book-scoped miss forgets that book inside the client. Clearing
-          // the process bit here would make another book's ramp look cold.
           noteModalClonePoolLost();
         }
         return { lane, error, parsed: laneParsed, transport: unclassified && !laneParsed };
@@ -912,6 +941,14 @@ async function runWave(
     if (!err) continue;
     if (err instanceof ModalCloneColdError && err.clientAborted) {
       aborted = true;
+      for (const index of result.lane) {
+        if (!staged.has(index) && !abortedIndexes.includes(index)) {
+          abortedIndexes.push(index);
+        }
+      }
+    }
+    if (err instanceof ModalCloneColdError && err.selfBackoff) {
+      selfBackoff = true;
     }
     if (err instanceof ModalCloneColdError && err.scope === "placement") {
       const missed = result.lane.filter((index) => !staged.has(index));
@@ -966,5 +1003,7 @@ async function runWave(
     parsed,
     transport,
     aborted,
+    abortedIndexes,
+    selfBackoff,
   };
 }

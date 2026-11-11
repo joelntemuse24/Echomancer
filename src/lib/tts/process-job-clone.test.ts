@@ -632,13 +632,75 @@ describe("lane staging", () => {
       expect(batchCalls.length).toBe(1);
       for (const keys of batchCalls) expect(keys).toEqual([0]);
       expect(result.deferred).toBe(true);
-      // Book keeps its narrator and the compile is finished off this path.
+      // Book keeps its narrator. A timeout does not start the Fish clock.
       const row = await jobRow(JOB_ID);
       expect(row?.provider_pin).toBe("modal");
+      expect(Number(row?.clone_wait_started_at ?? 0)).toBe(0);
+      expect(Number(row?.sched_not_before)).toBeGreaterThan(
+        Math.floor(Date.now() / 1000)
+      );
       // One pre-warm from the tick starting, one from the missed placement.
       // Both are the same cheap RPC and the book never awaits either.
       expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
       expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
+    });
+
+    it("does not prewarm a book whose file is still being read", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      const { resetModalCloneWarmForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      resetModalCloneRuntimeForTests();
+      resetModalCloneWarmForTests();
+      configureModal();
+      process.env.MODAL_TOKEN_ID = "test-token";
+      await seedCloneJob("One sentence for the reader.");
+      await execute(`UPDATE uploads SET status = 'extracting' WHERE id = ?`, [
+        UPLOAD_ID_A,
+      ]);
+      const warmSpawn: string[][] = [];
+      const { setModalCloneWarmSpawnerForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      setModalCloneWarmSpawnerForTests((command, args) => {
+        warmSpawn.push([command, ...args]);
+      });
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      expect(result.deferred).toBe(true);
+      expect(warmSpawn).toHaveLength(0);
+    });
+
+    it("prewarms when the only GPU lease is this book's own row", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      const { resetModalCloneWarmForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      resetModalCloneRuntimeForTests();
+      resetModalCloneWarmForTests();
+      configureModal();
+      process.env.MODAL_TOKEN_ID = "test-token";
+      process.env.MODAL_S2_MAX_GPUS = "1";
+      await seedCloneJob("One sentence for the reader.");
+      await execute(
+        `INSERT INTO modal_gpu_leases (job_id, user_id, owner_token, created_at, expires_at)
+         VALUES (?, ?, 'owner', unixepoch(), unixepoch() + 120)`,
+        [JOB_ID, USER_A]
+      );
+      const warmSpawn: string[][] = [];
+      const { setModalCloneWarmSpawnerForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      setModalCloneWarmSpawnerForTests((command, args) => {
+        warmSpawn.push([command, ...args]);
+      });
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
     });
 
     it("keeps one call in flight when first light is off", async () => {

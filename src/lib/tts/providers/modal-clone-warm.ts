@@ -77,6 +77,10 @@ export type ModalClonePrewarmOptions = {
   leases?: ReadonlyArray<{ jobId: string; userId: string }>;
 };
 
+export function forgetModalClonePrewarm(jobId: string): void {
+  prewarmAtByJob.delete(jobId);
+}
+
 export function resetModalCloneWarmForTests(): void {
   nextKickAt = 0;
   nextPreWarmAt = 0;
@@ -140,11 +144,24 @@ export function prewarmModalCloneSnapshot(
  * rows are the shared count across workers. No rows means the caller did
  * not ask for the check.
  */
-function prewarmWithinGpuCap(opts: ModalClonePrewarmOptions): boolean {
-  if (!opts.leases) return true;
-  if (opts.leases.length >= modalCloneMaxGpus()) return false;
-  if (opts.userId) {
-    const used = opts.leases.filter((row) => row.userId === opts.userId).length;
+function prewarmWithinGpuCap(opts: ModalClonePrewarmOptions, now: number): boolean {
+  // This book's own lease is the row admit just wrote. It is not another GPU.
+  // Prewarms already started in this window are containers the lease table
+  // does not show yet (a waiting book holds no row).
+  const recentOthers = [...prewarmAtByJob.entries()].filter(
+    ([id, until]) => id !== opts.jobId && until > now
+  ).length;
+  const leaseOthers = opts.leases
+    ? opts.leases.filter((row) => row.jobId !== opts.jobId)
+    : null;
+  const held = (leaseOthers?.length ?? 0) + recentOthers;
+  if (leaseOthers) {
+    if (held >= modalCloneMaxGpus()) return false;
+  } else if (recentOthers >= modalCloneMaxGpus()) {
+    return false;
+  }
+  if (opts.userId && leaseOthers) {
+    const used = leaseOthers.filter((row) => row.userId === opts.userId).length;
     if (used >= modalCloneMaxGpusPerUser()) return false;
   }
   return true;
@@ -166,7 +183,7 @@ function startWarm(
     // This book's own clock. Another book's prewarm, and the compile
     // kick's clock, do not hold it. The GPU cap is the bound.
     if (now < (prewarmAtByJob.get(jobId) ?? 0)) return false;
-    if (opts && !prewarmWithinGpuCap(opts)) {
+    if (opts && !prewarmWithinGpuCap(opts, now)) {
       console.log(`[modal-clone] pre-warm skipped (${reason}): GPU cap`);
       return false;
     }
@@ -190,6 +207,7 @@ function startWarm(
   // voice list does not stack a container on a book that just started.
   // It does not move the compile clock, and it does not block another book.
   if (jobId) {
+    prewarmAtByJob.delete(jobId);
     prewarmAtByJob.set(jobId, now + MODAL_CLONE_PREWARM_COOLDOWN_MS);
     if (prewarmAtByJob.size > 4_000) {
       const oldest = prewarmAtByJob.keys().next().value;
