@@ -1468,3 +1468,88 @@ def placement_kind(
     return "slow"
 
 
+
+
+# ── honest cover placements ─────────────────────────────────────────────────
+
+#: Modal's own record that a container came up from a GPU memory snapshot.
+RESTORE_LOG_LINE = "Restoring Function from memory snapshot"
+#: Modal's record that a container is *creating* a snapshot (it compiled).
+SNAPSHOT_CREATE_LOG_LINE = "Creating GPU memory snapshot"
+
+
+def cover_placement_kind(
+    status: dict,
+    seen_container_ids: set,
+    *,
+    restore_s: float = RESTORE_WALL_S,
+    compile_s: float = COMPILE_WALL_S,
+) -> str:
+    """Classify one `status()` answer from a cover round.
+
+    A container that already answered an earlier call is `reuse`, never a
+    restore: a warm container answers in a second, and counting that as a
+    restore is how a cover run reported coverage that did not exist. The same
+    is true of a container whose `since_ready_s` is older than the call itself,
+    even when its id is new to this run (it was warm before we asked).
+    Otherwise the wall clock decides (`placement_kind`).
+    """
+    if status.get("error"):
+        return "failed"
+    wall = float(status.get("wall_s") or 0)
+    cid = status.get("container_id")
+    if cid and cid in seen_container_ids:
+        return "reuse"
+    since_ready = status.get("since_ready_s")
+    if isinstance(since_ready, (int, float)) and since_ready > wall + 5:
+        return "reuse"
+    return placement_kind(wall, restore_s=restore_s, compile_s=compile_s)
+
+
+def count_app_containers(rows: list, app_name: str) -> int:
+    """Containers of `app_name` in `modal container list --json` output."""
+    return sum(
+        1 for row in rows or [] if isinstance(row, dict) and row.get("app_name") == app_name
+    )
+
+
+def task_id_for_container(log_text: str, container_hex: str) -> str | None:
+    """Map the service's own `container=<hex>` to Modal's `ta-…` task id.
+
+    Expects `modal app logs --show-container-id` lines; the service prints
+    `[S2C] container=<hex>` from `publish()` on every start.
+    """
+    if not container_hex:
+        return None
+    needle = f"container={container_hex}"
+    for line in (log_text or "").splitlines():
+        if needle not in line:
+            continue
+        match = re.search(r"\b(ta-[0-9A-Za-z]+)\b", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def snapshot_log_verdict(system_log_text: str, task_id: str | None) -> str:
+    """What Modal's system log says about one container's boot.
+
+    `restore` — a `Restoring Function from memory snapshot` line for that task.
+    `compile` — a `Creating GPU memory snapshot` line (it built one).
+    `unverified` — neither (logs not available yet, or wrong task id).
+    """
+    if not task_id:
+        return "unverified"
+    restored = created = False
+    for line in (system_log_text or "").splitlines():
+        if task_id not in line:
+            continue
+        if RESTORE_LOG_LINE in line:
+            restored = True
+        if SNAPSHOT_CREATE_LOG_LINE in line:
+            created = True
+    if restored:
+        return "restore"
+    if created:
+        return "compile"
+    return "unverified"
