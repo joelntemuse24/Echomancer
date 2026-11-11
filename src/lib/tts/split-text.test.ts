@@ -190,6 +190,22 @@ describe("splitTextForTts", () => {
     expect(edge.every((s) => s.text.length <= hardMaxForTarget(4000))).toBe(true);
   });
 
+  it("keeps a clone's second section inside the short second call", () => {
+    const sentence = "This sentence is long enough to pack and short enough to split cleanly. ";
+    const text = sentence.repeat(80);
+    const sections = packSpeakableSections(text, 2_000, {
+      hardMaxChars: 2_000,
+      firstSectionMaxChars: 1_000,
+      secondSectionMaxChars: 1_300,
+    });
+    expect(sections.length).toBeGreaterThan(2);
+    expect(sections[0]!.text.length).toBeGreaterThan(800);
+    expect(sections[0]!.text.length).toBeLessThanOrEqual(1_080);
+    expect(sections[1]!.text.length).toBeLessThanOrEqual(1_300);
+    expect(sections[2]!.text.length).toBeGreaterThan(1_300);
+    expect(sections[2]!.text.length).toBeLessThanOrEqual(2_000);
+  });
+
   it("hard-splits a single run that exceeds the hard ceiling", () => {
     const long = "a".repeat(100);
     const chunks = splitTextForTts(long, 30, { hardMaxChars: 30 });

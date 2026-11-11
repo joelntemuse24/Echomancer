@@ -59,6 +59,8 @@ import {
   chooseCloneGpuTurn,
   cloneAudioMs,
   modalCloneSectionChars,
+  MODAL_CLONE_OPENING_SECTION_CHARS,
+  MODAL_CLONE_SECOND_CALL_CHARS,
   modalLaneCharLimit,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
@@ -1263,6 +1265,15 @@ async function runClaimedTick(
       pdfStoragePath: job.pdf_storage_path,
       maxChars: packChars,
       hardMaxChars: clonePacked ? packChars : hardMaxChars,
+      // Edge and Fish keep the shared 800-character opening. A clone's
+      // second row is one GPU call, and 2,000 characters of it runs past
+      // that opening. Section 0 is a bit longer; section 1 is capped.
+      ...(clonePacked
+        ? {
+            firstSectionMaxChars: MODAL_CLONE_OPENING_SECTION_CHARS,
+            secondSectionMaxChars: MODAL_CLONE_SECOND_CALL_CHARS,
+          }
+        : {}),
       // Even packing is for parallel Fish workers, where sections only need to
       // be similar to each other. A clone section is bounded by what one GPU
       // call can render, and the remainder-absorbing pass that goes with even
@@ -1863,7 +1874,7 @@ async function runClaimedTick(
                 other.first_section_at,
                 Date.now()
               );
-              const synthetic = modalCloneSectionChars();
+              const steady = modalCloneSectionChars();
               const turn = chooseCloneGpuTurn({
                 books: [
                   {
@@ -1877,7 +1888,14 @@ async function runClaimedTick(
                   {
                     id: `other:${other.id}`,
                     pending: [0, 1],
-                    textAt: () => "x".repeat(synthetic),
+                    textAt: (index) =>
+                      "x".repeat(
+                        !otherPlay.started && index === 0
+                          ? MODAL_CLONE_OPENING_SECTION_CHARS
+                          : !otherPlay.started && index === 1
+                            ? MODAL_CLONE_SECOND_CALL_CHARS
+                            : steady
+                      ),
                     playbackStarted: otherPlay.started,
                     bufferedMs: otherPlay.bufferedMs,
                     firstLight: !otherPlay.started,

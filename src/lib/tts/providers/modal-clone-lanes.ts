@@ -333,62 +333,109 @@ export function clonePoolStillWarm(
 }
 
 /**
- * Prep still paid on a warm call.
+ * Listener-facing rates from the 2026-11-11 paid smoke (one H100, HTTPS
+ * `/synthesize_batch`, sequential ramp). The cold character cap above stays
+ * at 100 chars/s. These numbers are only how long the listener waits.
  *
- * The cold prep constant is 20s and includes the first reference encode.
- * The container caches that clip (`_resolve_reference`), so a follow-up
- * call does not encode it again. 5s covers the prompt build and the HTTP
- * round trip that remain. A cold call's character cap still uses the 20s
- * constant; this one is only the listener-facing wall.
+ * Single row, end to end: 1,300 characters in 39.85s → ~33 chars/s.
+ * The older 50 chars/s figure was generation on one short row, and it let
+ * a 2,000-character second call be planned into ~53s of section-0 audio.
+ * Server aggregate for wider calls, before transfer: 266 chars/s at 8 rows,
+ * 371 at 14, 617 at 24. The per-row planning rate is 15% under those, so a
+ * wide call is not packed at the flat 150 chars/s cap rate.
  */
-export const MODAL_CLONE_WARM_PREP_MS = 5_000;
+export const MODAL_CLONE_ROW_CHARS_PER_SECOND = 33;
 
-/** Encode and prompt that still sit on a cold call after the snapshot is up. */
-export const MODAL_CLONE_COLD_FOLLOW_PREP_MS = 12_000;
+/** 15% under the measured server per-row rate. The 1-row point is 33, not 33×0.85. */
+export const MODAL_CLONE_WIDE_RATE_MARGIN = 0.85;
 
-/** Measured snapshot restore. Time-to-first-audio only, not the HTTP cap. */
-export const MODAL_CLONE_RESTORE_EXPECTED_MS = 57_000;
+const CLONE_RATE_ANCHORS: ReadonlyArray<{ rows: number; perRow: number }> = [
+  { rows: 1, perRow: MODAL_CLONE_ROW_CHARS_PER_SECOND },
+  { rows: 8, perRow: (266 / 8) * MODAL_CLONE_WIDE_RATE_MARGIN },
+  { rows: 14, perRow: (371 / 14) * MODAL_CLONE_WIDE_RATE_MARGIN },
+  { rows: 24, perRow: (617 / 24) * MODAL_CLONE_WIDE_RATE_MARGIN },
+];
 
-/**
- * Master and upload before the listener can hear a call.
- *
- * One section is a couple of ffmpeg passes. A wider call adds a little
- * more, and the dispatch overlaps that work with the next GPU call. The
- * planner does not take the overlap as credit: the wall includes this,
- * so the buffer check still holds if publish is on the critical path.
- */
-export const MODAL_CLONE_PUBLISH_BASE_MS = 3_000;
-export const MODAL_CLONE_PUBLISH_PER_EXTRA_ROW_MS = 200;
-export const MODAL_CLONE_PUBLISH_MAX_MS = 8_000;
-
-/** Conservative download of the base64 body. 4 MiB/s. */
-export const MODAL_CLONE_TRANSFER_BYTES_PER_SEC = 4 * 1024 * 1024;
-
-/**
- * Spare audio required before a call may grow past one row.
- * A single row is legal whenever it finishes strictly before the buffer
- * runs out. Growing the batch needs this margin on top.
- */
-export const MODAL_CLONE_RAMP_SLACK_MIN_MS = 4_000;
-export const MODAL_CLONE_RAMP_SLACK_RATIO = 0.1;
-
-/** Narration milliseconds of `chars` at 900 characters per audio minute. */
-export function cloneAudioMs(chars: number): number {
-  return (Math.max(0, chars) / CLONE_CHARS_PER_AUDIO_MINUTE) * 60_000;
+/** Chars/s of one row at this call width. Wider calls are slower per row. */
+export function cloneRowCharsPerSecond(rows: number): number {
+  const n = Math.max(1, rows);
+  const first = CLONE_RATE_ANCHORS[0]!;
+  if (n <= first.rows) return first.perRow;
+  const last = CLONE_RATE_ANCHORS[CLONE_RATE_ANCHORS.length - 1]!;
+  if (n >= last.rows) return last.perRow;
+  let hi = 1;
+  while (CLONE_RATE_ANCHORS[hi]!.rows < n) hi += 1;
+  const left = CLONE_RATE_ANCHORS[hi - 1]!;
+  const right = CLONE_RATE_ANCHORS[hi]!;
+  const t = (n - left.rows) / (right.rows - left.rows);
+  return left.perRow + (right.perRow - left.perRow) * t;
 }
 
-export function clonePublishOverheadMs(rows: number): number {
+/** Generation time for the whole call. Rows share the batch; the rate already says so. */
+export function cloneGenerationMs(chars: number, rows: number): number {
   const n = Math.max(1, Math.floor(rows) || 1);
-  return Math.min(
-    MODAL_CLONE_PUBLISH_MAX_MS,
-    MODAL_CLONE_PUBLISH_BASE_MS +
-      Math.max(0, n - 1) * MODAL_CLONE_PUBLISH_PER_EXTRA_ROW_MS
-  );
+  const aggregate = cloneRowCharsPerSecond(n) * n;
+  if (!(aggregate > 0)) return 0;
+  return Math.round((Math.max(0, chars) / aggregate) * 1000);
+}
+
+/**
+ * Cold-call overhead that is not generation.
+ *
+ * The same smoke: 673 characters, 57.05s wall, 18.8s on the server, ~0.2s
+ * to move the 0.94MB body. 57.05 − 18.8 − 0.2 ≈ 38s of restore and proxy,
+ * not a 57s restore stacked on top of generation. The old 57s constant made
+ * an 800-character opening look like 88s.
+ */
+export const MODAL_CLONE_RESTORE_EXPECTED_MS = 38_000;
+
+/**
+ * Transfer, from the 24-row body: 58.7MB took ~12s. That is 12s for the
+ * 43,907 characters in that call, linear in characters. The 80 MiB planner
+ * cap still uses {@link estimateCloneBatchJsonBytes}, which is a little
+ * larger than this smoke's bodies.
+ */
+export const MODAL_CLONE_TRANSFER_REFERENCE_CHARS = 43_907;
+export const MODAL_CLONE_TRANSFER_REFERENCE_MS = 12_000;
+
+/**
+ * Spare audio every call must leave, including a one-row call.
+ *
+ * The smoke's second call returned with 4.3s left. That is not a margin.
+ * 15s is the floor; a deep buffer also keeps 10% of itself.
+ */
+export const MODAL_CLONE_RAMP_SLACK_MIN_MS = 15_000;
+export const MODAL_CLONE_RAMP_SLACK_RATIO = 0.1;
+
+/**
+ * Clone section 0. Larger than the 800-character opening every other
+ * provider uses, and still one cold row under the 75s first-light wait.
+ * 1,000 characters is ~63s of audio at the smoke's narration rate, and the
+ * planned cold wall is ~69s.
+ */
+export const MODAL_CLONE_OPENING_SECTION_CHARS = 1_000;
+
+/**
+ * The call after section 0. The smoke's 1,300-character row took 39.85s.
+ * Against ~63s of opening audio that leaves ~23s, which clears the 15s
+ * floor. 1,600 against this opening leaves ~14s, so the cap stays 1,300
+ * rather than the top of that range. Later sections stay at 2,000.
+ */
+export const MODAL_CLONE_SECOND_CALL_CHARS = 1_300;
+
+/** Narration rate measured on the smoke, not the 900-character product minute. */
+export const MODAL_CLONE_CHARS_PER_AUDIO_SECOND = 15.85;
+
+/** Narration milliseconds of `chars` at the smoke's 15.85 characters per audio second. */
+export function cloneAudioMs(chars: number): number {
+  return Math.round((Math.max(0, chars) / MODAL_CLONE_CHARS_PER_AUDIO_SECOND) * 1000);
 }
 
 export function cloneTransferMs(chars: number): number {
-  const bytes = estimateCloneBatchJsonBytes(chars);
-  return Math.ceil((bytes / MODAL_CLONE_TRANSFER_BYTES_PER_SEC) * 1000);
+  if (!(chars > 0)) return 0;
+  return Math.round(
+    (chars / MODAL_CLONE_TRANSFER_REFERENCE_CHARS) * MODAL_CLONE_TRANSFER_REFERENCE_MS
+  );
 }
 
 export function cloneRampSlackMs(bufferMs: number): number {
@@ -403,8 +450,9 @@ export function cloneRampSlackMs(bufferMs: number): number {
  *
  * A batch returns every row together, so this is the whole call: restore
  * (only when this call is the one that brings the container up), generation
- * at the worse of the aggregate rate and the 50 chars/s row rate, prep,
- * transfer, and publish. The HTTP cap is a separate number (`waitMs`).
+ * at {@link cloneRowCharsPerSecond}, and transfer at the smoke's 12s /
+ * 43,907-character rate. Publish of a returned call overlaps the next GPU
+ * call and is not added here. The HTTP cap is a separate number (`waitMs`).
  */
 export function cloneCallWallMs(input: {
   chars: number;
@@ -413,27 +461,23 @@ export function cloneCallWallMs(input: {
   shape: CloneWaveShape;
   restore: boolean;
 }): number {
-  const rate =
-    input.shape === "warm"
-      ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND
-      : MODAL_LANE_CHARS_PER_SECOND;
-  const work = modalLaneWorkMs(input.chars, input.largestRow, rate);
-  const prep =
-    input.shape === "warm" ? MODAL_CLONE_WARM_PREP_MS : MODAL_CLONE_COLD_FOLLOW_PREP_MS;
   const restore = input.restore ? MODAL_CLONE_RESTORE_EXPECTED_MS : 0;
-  return (
-    restore + work + prep + clonePublishOverheadMs(input.rows) + cloneTransferMs(input.chars)
+  // A row never goes faster than the single-row rate, even inside a batch
+  // whose average says the page would. The curve is the page; the row is the floor.
+  const work = Math.max(
+    cloneGenerationMs(input.chars, input.rows),
+    cloneGenerationMs(input.largestRow, 1)
   );
+  return restore + work + cloneTransferMs(input.chars);
 }
 
 /**
- * True when this call finishes before a 1x listener runs out of audio
- * already delivered. One row needs any positive spare. A wider call also
- * needs {@link cloneRampSlackMs}.
+ * True when this call finishes and still leaves {@link cloneRampSlackMs}
+ * of audio. One row used to pass on any positive spare, which is how a
+ * 4.3s margin counted as success.
  */
 export function cloneCallFitsBuffer(wallMs: number, bufferMs: number, rows: number): boolean {
-  if (!(bufferMs > 0) || !(wallMs >= 0)) return false;
-  if (rows <= 1) return wallMs < bufferMs;
+  if (!(bufferMs > 0) || !(wallMs >= 0) || !(rows > 0)) return false;
   return wallMs + cloneRampSlackMs(bufferMs) <= bufferMs;
 }
 
@@ -677,6 +721,11 @@ function largestWarmPrefix(
   }
   const charCap = modalWarmLaneCharLimit(env);
   const waitCap = modalCloneWarmWaitMs(env);
+  // The call that follows section 0 is one short row. A deeper buffer is
+  // what unlocks the rest of the ramp. Comparing to the opening's audio,
+  // plus a second, still matches a section that closed a little long.
+  const openingCall =
+    state.buffer <= cloneAudioMs(MODAL_CLONE_OPENING_SECTION_CHARS) + 1_000;
   let best = 0;
   let chars = 0;
   let largest = 0;
@@ -685,6 +734,7 @@ function largestWarmPrefix(
     const size = textAt(rest[n - 1]!).length;
     const nextChars = chars + size;
     const nextLargest = Math.max(largest, size);
+    if (openingCall && n > 1 && nextChars > MODAL_CLONE_SECOND_CALL_CHARS) break;
     if (n > 1 && nextChars > charCap) break;
     if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
       break;
@@ -746,11 +796,7 @@ function describeCloneWaveCall(input: {
     chars += size;
     if (size > largest) largest = size;
   }
-  const workMs = modalLaneWorkMs(
-    chars,
-    largest,
-    input.shape === "warm" ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND : MODAL_LANE_CHARS_PER_SECOND
-  );
+  const workMs = Math.max(cloneGenerationMs(chars, input.indexes.length), cloneGenerationMs(largest, 1));
   const need = workMs + MODAL_CLONE_CALL_PREP_MS;
   const waitMs =
     input.shape === "warm"
@@ -938,7 +984,7 @@ function largestSharedPrefix(
     if (!others.every((other) => otherSurvives(other, call.wallMs))) continue;
     const speakerNext = nextSectionWall(book, n, true);
     const speakerAfter = book.bufferedMs - call.wallMs + call.audioMs;
-    if (speakerNext > 0 && !(speakerAfter > speakerNext)) continue;
+    if (speakerNext > 0 && speakerAfter < speakerNext + cloneRampSlackMs(speakerAfter)) continue;
     best = indexes;
   }
   if (!best) return null;
@@ -955,10 +1001,11 @@ function largestSharedPrefix(
 
 function otherSurvives(other: CloneListener, wallMs: number): boolean {
   if (!other.playbackStarted) return true;
-  if (!(wallMs < other.bufferedMs)) return false;
+  const slack = cloneRampSlackMs(other.bufferedMs);
+  if (other.bufferedMs - wallMs < slack) return false;
   const next = nextSectionWall(other, 0, true);
   if (next <= 0) return true;
-  return other.bufferedMs - wallMs > next;
+  return other.bufferedMs - wallMs - next >= slack;
 }
 
 function unstartedCallIsSafe(
@@ -967,7 +1014,7 @@ function unstartedCallIsSafe(
   started: CloneListener[]
 ): boolean {
   const next = nextSectionWall(book, 1, true);
-  if (next > 0 && !(call.audioMs > next)) return false;
+  if (next > 0 && call.audioMs < next + cloneRampSlackMs(call.audioMs)) return false;
   return started.every((other) => otherSurvives(other, call.wallMs));
 }
 
@@ -1088,6 +1135,11 @@ export type ClonePlaybackReport = {
   totalWallMs: number;
   stallCount: number;
   sizeSequence: number[];
+  /**
+   * Smallest (buffer − call wall) once playback has started, in ms.
+   * The opening call is not included: nothing is playing yet.
+   */
+  minMarginMs: number;
 };
 
 /**
@@ -1152,12 +1204,14 @@ export function simulateClonePlayback(input: {
     const taken = new Set(plan.calls.flatMap((call) => call.indexes));
     pending = pending.filter((index) => !taken.has(index));
   }
+  const margins = steps.slice(1).map((step) => step.bufferAtDispatchMs - step.wallMs);
   return {
     steps,
     timeToFirstAudioMs,
     totalWallMs: clock,
     stallCount: steps.filter((step) => !step.fitsBuffer).length,
     sizeSequence: steps.map((step) => step.rows),
+    minMarginMs: margins.length > 0 ? Math.min(...margins) : 0,
   };
 }
 
@@ -1186,6 +1240,8 @@ export function simulateTwoCloneListeners(input: {
     buffer: 0,
     clockAtStart: 0,
     steps: [] as ClonePlaybackStep[],
+    minMarginMs: Number.POSITIVE_INFINITY,
+    drained: 0,
   }));
   let poolWarm = false;
   let clock = 0;
@@ -1223,11 +1279,15 @@ export function simulateTwoCloneListeners(input: {
     });
     for (const other of states) {
       if (!other.started || other.id === book.id) continue;
-      other.buffer = Math.max(0, other.buffer - turn.call.wallMs);
+      const left = other.buffer - turn.call.wallMs;
+      other.minMarginMs = Math.min(other.minMarginMs, left);
+      if (left < 0) other.drained += 1;
+      other.buffer = Math.max(0, left);
     }
     clock += turn.call.wallMs;
     if (!book.started) book.clockAtStart = clock;
     if (book.started) {
+      book.minMarginMs = Math.min(book.minMarginMs, book.buffer - turn.call.wallMs);
       book.buffer = Math.max(0, book.buffer - turn.call.wallMs) + turn.call.audioMs;
     } else {
       book.started = true;
@@ -1241,8 +1301,10 @@ export function simulateTwoCloneListeners(input: {
       steps: book.steps,
       timeToFirstAudioMs: book.clockAtStart,
       totalWallMs: clock,
-      stallCount: book.steps.filter((step) => !step.fitsBuffer).length,
+      stallCount:
+        book.steps.filter((step) => !step.fitsBuffer).length + book.drained,
       sizeSequence: book.steps.map((step) => step.rows),
+      minMarginMs: Number.isFinite(book.minMarginMs) ? book.minMarginMs : 0,
     })),
     totalWallMs: clock,
     // The loop runs one call to the clock before choosing the next, so two

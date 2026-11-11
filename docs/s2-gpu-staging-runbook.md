@@ -781,11 +781,15 @@ together, which is why the planner counts the whole call as the wait. A
 
 **Throughput, in the right units.** Realtime is *audio seconds per wall second*.
 At 900 characters per audio minute, a **one-row** call at 2.9x produces about
-**50 chars/s**, and a row renders its paragraph units **in sequence**, so more
-text in one row means proportionally more time. A **full batch** aggregates
-about 1,000 chars/s because rows run in parallel — not because a row gets
-faster. A call's wall time is set by its longest row, so section size is a hard
-bound, not a tuning preference.
+**50 chars/s** of generation, and a row renders its paragraph units **in
+sequence**, so more text in one row means proportionally more time. The
+2026-11-11 HTTPS smoke measured the listener-facing row at **~33 chars/s**
+(1,300 characters in 39.85s) and a 24-row call at 528 chars/s end to end.
+The in-book ramp plans from those numbers, 15% slower on wide calls. A
+**full batch** is faster because rows run in parallel — not because a row
+gets faster. A call's wall time is set by its longest row, so section size
+is a hard bound, not a tuning preference. Clone section 0 is 1,000
+characters and the next call is capped at 1,300.
 
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 

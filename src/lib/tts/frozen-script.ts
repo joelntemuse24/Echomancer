@@ -72,6 +72,8 @@ export type BuildFrozenScriptInput = {
   maxChars: number;
   hardMaxChars?: number;
   firstSectionMaxChars?: number;
+  /** Clone section 1. Steady sections stay on `maxChars`. */
+  secondSectionMaxChars?: number;
   /**
    * Take-home Fish / clone: even-pack so `fanout` workers
    * get similar-sized slices. Section 0 still uses the fast first-section cap.
@@ -144,12 +146,14 @@ function resolvePackChars(
 ): {
   maxChars: number;
   firstSectionMaxChars: number | undefined;
+  secondSectionMaxChars: number | undefined;
   evenFanout: number | undefined;
 } {
   if (input.packProvider === "edge" || input.packProvider === "google") {
     return {
       maxChars: edgeGoogleTakehomeTargetChars(speakable.length, input.maxChars),
       firstSectionMaxChars: FIRST_SECTION_CHARS,
+      secondSectionMaxChars: undefined,
       evenFanout: 8,
     };
   }
@@ -171,12 +175,14 @@ function resolvePackChars(
         evenTakehomeTargetChars(speakable.length, evenFanout)
       ),
       firstSectionMaxChars: FIRST_SECTION_CHARS,
+      secondSectionMaxChars: undefined,
       evenFanout,
     };
   }
   return {
     maxChars: input.maxChars,
     firstSectionMaxChars: input.firstSectionMaxChars ?? FIRST_SECTION_CHARS,
+    secondSectionMaxChars: input.secondSectionMaxChars,
     evenFanout: undefined,
   };
 }
@@ -201,6 +207,7 @@ function packFromSpeakable(
   let sections = packSpeakableSections(spoken, maxChars, {
     hardMaxChars,
     firstSectionMaxChars: pack.firstSectionMaxChars,
+    secondSectionMaxChars: pack.secondSectionMaxChars,
     measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
     chapters,
   });

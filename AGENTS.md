@@ -416,14 +416,19 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
   Each later call is the largest prefix that finishes, with margin, before
-  the audio already buffered ahead of a 1× listener runs out. A single row
-  is ~50 chars/s. A wider call is packed at 150 chars/s, plus warm prep
-  (5s; the container has cached the reference), transfer at 4 MiB/s, and
-  publish. One row is legal when it finishes strictly before the buffer
-  ends. A wider call also keeps `cloneRampSlackMs` (at least 4s, or 10% of
-  the buffer). The prefix grows as that buffer grows — after an 800-character
-  section 0 the next call is one 2,000-character row, then 8, then full
-  batches of 24 — and the next call starts when the previous one returns.
+  the audio already buffered ahead of a 1× listener runs out. The
+  2026-11-11 smoke (one H100, HTTPS `/synthesize_batch`) measured a single
+  row at ~33 chars/s, not 50. Wider calls use that smoke's per-row curve,
+  15% under the server rate (~31 chars/s/row at 8 rows measured, planned
+  slower; ~24 at 14; ~22 at 24). Transfer is the measured 12s per 43,907
+  characters (58.7MB). Every call, including one row, leaves at least 15s
+  or 10% of the buffer. Clone section 0 is 1,000 characters (~63s, cold
+  wall ~69s, under the 75s first-light wait). The next call is capped at
+  1,300 characters so it does not run past that opening; the smoke's
+  1,300-character row left 4.3s against a 673-character opening, and this
+  pair leaves ~23s. Later sections stay 2,000. The prefix then grows — on
+  a 10-hour book the calls are 1, 1, 12, the rest of that 24-section
+  claim, then 24 — and the next call starts when the previous one returns.
   Playback does not stall once it has started. A gap longer than the
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
   180s scaledown) is one cold-sized call again, then the ramp resumes.
@@ -439,14 +444,17 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   autoscaler to 4 to "use" that slot.
 - **Rows per call, not lanes, is the throughput knob — but a call must also
   finish.** A container decodes every row of a call in one batch: measured
-  **2.9x realtime for a one-row call (~50 chars/s)**. A full batch is
-  documented at 35–65x (**525–975 chars/s**). That band is not a 24-row
-  measurement. Warm calls are packed at **150 chars/s**
-  (`MODAL_LANE_WARM_PACK_CHARS_PER_SECOND`): just above the unfinished 4-row
-  floor on `job 7e4a8b48` (≥127 chars/s) and well under 525. The HTTP wait is
+  **2.9x realtime for a one-row call**. The 2026-11-11 smoke measured that
+  row at **~33 chars/s** end to end (1,300 characters in 39.85s), and a
+  24-row call at **528 chars/s** end to end (617 on the server, ~33×, 58.7MB
+  in ~12s of transfer). The listener wall uses 33 chars/s for one row and
+  15% under the server per-row curve for wider calls, plus that transfer.
+  `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character
+  cap, above the unfinished 4-row floor on `job 7e4a8b48` (≥127 chars/s).
+  The HTTP wait is
   **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill. A full
-  batch of 24 sections of 2,000 characters is 48,000 characters: 320s at the
-  packing rate plus prep and transfer, about 349s, under the 400s wait and
+  batch of 24 sections of 2,000 characters is 48,000 characters: about 105s
+  at the planning curve, under the 400s wait and
   about 68MB of base64. The ramp sends that call only once the listener's
   buffer covers it. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow

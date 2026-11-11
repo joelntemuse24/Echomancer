@@ -33,12 +33,18 @@ import {
   modalCloneWarmHoldMs,
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
-import { FIRST_SECTION_CHARS } from "@/lib/tts/section-size";
 import {
   MODAL_LANE_WARM_CHARS_PER_SECOND,
   MODAL_LANE_WARM_PACK_CHARS_PER_SECOND,
+  MODAL_CLONE_CHARS_PER_AUDIO_SECOND,
+  MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
+  MODAL_CLONE_ROW_CHARS_PER_SECOND,
+  MODAL_CLONE_SECOND_CALL_CHARS,
+  cloneCallWallMs,
+  cloneGenerationMs,
   clonePoolStillWarm,
+  cloneRowCharsPerSecond,
   estimateCloneBatchJsonBytes,
   modalLaneCharCap,
   modalWarmLaneCharLimit,
@@ -56,16 +62,38 @@ function pending(n: number, from = 0): number[] {
 }
 
 describe("warm batch constants", () => {
-  it("sizes calls at a conservative full-batch rate, not the old 2,900", () => {
-    // 35× realtime × 15 chars per audio second is the low end of the
-    // documented full-batch band. Packing uses a lower rate so a call still
-    // finishes if the GPU only partly realizes that band.
+  it("keeps the warm character cap under the documented full-batch band", () => {
+    // 150 still sizes the warm character cap. The listener wall uses the
+    // 2026-11-11 smoke curve, which is slower per row as the call gets wider.
     expect(MODAL_LANE_WARM_CHARS_PER_SECOND).toBe(525);
-    expect(MODAL_LANE_WARM_PACK_CHARS_PER_SECOND).toBeGreaterThan(100);
-    expect(MODAL_LANE_WARM_PACK_CHARS_PER_SECOND).toBeLessThan(
-      MODAL_LANE_WARM_CHARS_PER_SECOND
-    );
     expect(MODAL_LANE_WARM_PACK_CHARS_PER_SECOND).toBe(150);
+    expect(MODAL_CLONE_ROW_CHARS_PER_SECOND).toBe(33);
+    expect(cloneRowCharsPerSecond(1)).toBe(33);
+    expect(cloneRowCharsPerSecond(8)).toBeCloseTo((266 / 8) * 0.85, 5);
+    expect(cloneRowCharsPerSecond(14)).toBeCloseTo((371 / 14) * 0.85, 5);
+    expect(cloneRowCharsPerSecond(24)).toBeCloseTo((617 / 24) * 0.85, 5);
+    expect(cloneRowCharsPerSecond(24)).toBeLessThan(cloneRowCharsPerSecond(8));
+  });
+
+  it("plans at or slower than the 2026-11-11 smoke", () => {
+    const smoke = [
+      { rows: 1, chars: 673, wallMs: 57_050, restore: true },
+      { rows: 1, chars: 1_300, wallMs: 39_850, restore: false },
+      { rows: 8, chars: 15_500, wallMs: 62_730, restore: false },
+      { rows: 14, chars: 22_185, wallMs: 65_200, restore: false },
+      { rows: 24, chars: 43_907, wallMs: 83_180, restore: false },
+    ];
+    for (const call of smoke) {
+      const wall = cloneCallWallMs({
+        chars: call.chars,
+        largestRow: Math.ceil(call.chars / call.rows),
+        rows: call.rows,
+        shape: call.restore ? "cold" : "warm",
+        restore: call.restore,
+      });
+      expect(wall).toBeGreaterThanOrEqual(call.wallMs - 500);
+      expect(wall).toBeLessThan(call.wallMs * 1.25);
+    }
   });
 
   it("gives a warm batch the long wait and does not call that a compile", () => {
@@ -127,9 +155,10 @@ describe("one book's call schedule", () => {
   });
 
   it("grows the next call from the buffer instead of jumping to 24 rows", () => {
+    const chars = tenHourSections();
     const plan = planModalCloneBookWave({
-      pending: pending(40),
-      textAt,
+      pending: pending(60),
+      textAt: (index) => section(chars[index] ?? 2_000),
       firstLight: true,
       poolWarm: false,
       batch: 24,
@@ -138,18 +167,16 @@ describe("one book's call schedule", () => {
     const next = plan.calls[1]!;
     expect(next.shape).toBe("warm");
     expect(next.indexes[0]).toBe(1);
-    // A 2,000-character section is ~133s of audio. The largest prefix that
-    // finishes inside that, at 50 chars/s per row and 150 aggregate, is a
-    // handful of rows — not the 24-row call that used to stall playback.
-    expect(next.indexes.length).toBeGreaterThanOrEqual(6);
-    expect(next.indexes.length).toBeLessThanOrEqual(8);
+    // Section 0 is 1,000 characters. The next call is the 1,300-character
+    // cap, one row, and it leaves the 15s margin. It is not 24 rows.
+    expect(next.indexes).toHaveLength(1);
+    expect(next.chars).toBe(MODAL_CLONE_SECOND_CALL_CHARS);
     expect(next.fitsBuffer).toBe(true);
-    expect(next.wallMs).toBeLessThan(next.bufferAtDispatchMs);
-    expect(next.chars).toBeGreaterThan(modalLaneCharCap(env));
+    expect(next.bufferAtDispatchMs - next.wallMs).toBeGreaterThanOrEqual(15_000);
     expect(next.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
     expect(plan.calls.some((call) => call.indexes.length === 24)).toBe(true);
     expect([...plan.calls.flatMap((call) => call.indexes), ...plan.deferred]).toEqual(
-      pending(40)
+      pending(60)
     );
     for (const call of plan.calls.slice(1)) {
       expect(call.fitsBuffer).toBe(true);
@@ -203,8 +230,12 @@ describe("one book's call schedule", () => {
       env,
     });
     const call = plan.calls[0]!;
-    const packedMs = (call.chars / MODAL_LANE_WARM_PACK_CHARS_PER_SECOND) * 1000;
-    expect(call.workMs).toBeGreaterThanOrEqual(Math.round(packedMs) - 1);
+    expect(call.workMs).toBe(
+      Math.max(
+        cloneGenerationMs(call.chars, call.indexes.length),
+        cloneGenerationMs(2_000, 1)
+      )
+    );
     expect(call.workMs + MODAL_CLONE_CALL_PREP_MS).toBeLessThanOrEqual(call.waitMs);
     expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
     expect(call.waitMs).toBe(modalCloneWarmWaitMs(env));
@@ -300,11 +331,15 @@ describe("one book's call schedule", () => {
 });
 
 function tenHourSections(): number[] {
-  // Production packer: the first section is ~800 characters and the rest
-  // are the clone width, 2,000. 10 hours at 900 characters a minute.
-  const totalChars = 10 * 60 * 900;
-  const sections = [FIRST_SECTION_CHARS];
-  let used = FIRST_SECTION_CHARS;
+  // 10 hours at the smoke's 15.85 characters per audio second. Section 0 is
+  // the clone opening, section 1 is the short second call, and the rest are
+  // the steady 2,000-character width.
+  const totalChars = Math.round(10 * 3600 * MODAL_CLONE_CHARS_PER_AUDIO_SECOND);
+  const sections = [MODAL_CLONE_OPENING_SECTION_CHARS];
+  let used = sections[0]!;
+  const second = Math.min(MODAL_CLONE_SECOND_CALL_CHARS, totalChars - used);
+  sections.push(second);
+  used += second;
   while (used < totalChars) {
     const size = Math.min(2_000, totalChars - used);
     sections.push(size);
@@ -321,20 +356,22 @@ describe("a 10-hour book played at 1×", () => {
       env,
     });
     expect(report.stallCount).toBe(0);
-    expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1 });
-    // 57s restore + 16s generation of the 800-character section + 12s cold
-    // prep + 3s publish + the body transfer. About 88s, not the 5-minute
-    // gap a 24-row call used to open.
-    expect(report.timeToFirstAudioMs).toBe(88_272);
-    expect(report.steps[0]!.wallMs).toBe(88_272);
-    expect(report.sizeSequence[0]).toBe(1);
-    expect(report.sizeSequence[1]).toBeLessThan(24);
-    expect(report.sizeSequence).toContain(24);
-    const firstFull = report.sizeSequence.indexOf(24);
-    const before = report.sizeSequence.slice(0, firstFull);
-    for (let i = 1; i < before.length; i += 1) {
-      expect(before[i]).toBeGreaterThanOrEqual(before[i - 1]!);
-    }
+    expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: MODAL_CLONE_OPENING_SECTION_CHARS });
+    expect(report.steps[1]).toMatchObject({ rows: 1, chars: MODAL_CLONE_SECOND_CALL_CHARS });
+    // 38s restore + 1,000 characters at 33 chars/s + the measured transfer.
+    // Under the 75s first-light wait. The second call is the 1,300-character
+    // row and leaves 23.3s. The tightest later margin is 17.0s. 1, 1, 12 is
+    // the ramp; 10 is the rest of that 24-section claim; then full batches.
+    // 1,424,500 ms is 23.7 minutes at the 15% curve. The smoke's own rates,
+    // without that margin, are the ~20–21 minute projection.
+    expect(report.timeToFirstAudioMs).toBe(68_576);
+    expect(report.steps[0]!.wallMs).toBe(68_576);
+    expect(report.steps[1]!.bufferAtDispatchMs - report.steps[1]!.wallMs).toBe(23_342);
+    expect(report.minMarginMs).toBe(16_961);
+    expect(report.totalWallMs).toBe(1_424_500);
+    expect(report.sizeSequence).toEqual([
+      1, 1, 12, 10, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 23,
+    ]);
     for (const step of report.steps) {
       expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
       expect(estimateCloneBatchJsonBytes(step.chars)).toBeLessThanOrEqual(
@@ -342,16 +379,7 @@ describe("a 10-hour book played at 1×", () => {
       );
       if (step.shape === "cold") expect(step.chars).toBeLessThanOrEqual(modalLaneCharCap(env));
     }
-    // 1, 1, 8 is the ramp: section 0 is 800 characters (~53s), so the next
-    // 2,000-character row is the only call that fits; the buffer is then
-    // deep enough for 8. 14 is the rest of the first 24-section claim, sent
-    // as one call because that buffer already covers a full batch. Later
-    // ticks are 24, and the tail is 7. 4,055,652 ms is about 67.6 minutes
-    // of GPU wall for 10 hours of audio, with no idle between calls.
-    expect(report.totalWallMs).toBe(4_055_652);
-    expect(report.sizeSequence).toEqual([
-      1, 1, 8, 14, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 7,
-    ]);
+    expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(tenHourSections().length);
   });
 });
 
@@ -406,7 +434,7 @@ describe("two books, one GPU", () => {
     // first section fits and goes first. It is one row, not a batch.
     expect(waiting.calls).toHaveLength(1);
     expect(waiting.calls[0]!.indexes).toHaveLength(1);
-    expect(waiting.calls[0]!.wallMs).toBeLessThan(60_000);
+    expect(waiting.calls[0]!.wallMs).toBeLessThan(70_000);
     expect(active.calls).toEqual([]);
   });
 
@@ -429,19 +457,21 @@ describe("two books, one GPU", () => {
       expect(report.steps.every((step) => step.wallMs < MODAL_CLONE_PROXY_KILL_MS)).toBe(true);
     }
     expect(reports[1]!.timeToFirstAudioMs).toBeGreaterThan(reports[0]!.timeToFirstAudioMs);
-    // The second listener starts once the first book's buffer can spare one
-    // section and still cover its own next row: about 168s, after the first
-    // book's cold section and one follow-up row. Early calls stay smaller
-    // than the single-book ramp because each call also has to leave the
-    // other listener a next section. 8,054,302 ms is both books, one GPU.
-    expect(reports[0]!.timeToFirstAudioMs).toBe(88_272);
-    expect(reports[1]!.timeToFirstAudioMs).toBe(168_223);
-    expect(totalWallMs).toBe(8_054_302);
+    // One call at a time, so neither book has the single-book "rest of the
+    // claim" step. Each listener's tightest margin is 17.0s. 2,799,158 ms
+    // is both books.
+    expect(reports[0]!.timeToFirstAudioMs).toBe(68_576);
+    expect(reports[1]!.timeToFirstAudioMs).toBe(227_301);
+    expect(reports[0]!.minMarginMs).toBe(16_961);
+    expect(reports[1]!.minMarginMs).toBe(16_961);
+    expect(totalWallMs).toBe(2_799_158);
+    expect(reports[0]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
+    expect(reports[1]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
     expect(reports[0]!.sizeSequence).toEqual([
-      1, 1, 3, 21, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 5,
+      1, 1, 12, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 9,
     ]);
     expect(reports[1]!.sizeSequence).toEqual([
-      1, 1, 4, 15, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 10,
+      1, 1, 12, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 9,
     ]);
   });
 });
@@ -466,9 +496,10 @@ describe("book-wave dispatch", () => {
     const render = vi.fn(async (items: { key: string }[]) =>
       outcome(items.map((item) => item.key))
     );
+    const chars = tenHourSections();
     const result = await dispatchModalCloneLanes({
       indexes: pending(30),
-      textAt,
+      textAt: (index) => section(chars[index] ?? 2_000),
       lanes: 4,
       batch: 24,
       maxLaneChars: 8_000,
@@ -484,14 +515,11 @@ describe("book-wave dispatch", () => {
     const rows = render.mock.calls.map((call) => call[0].map((item: { key: string }) => item.key));
     expect(rows[0]).toEqual(["0"]);
     expect(render.mock.calls[0]![2]?.warmBatch).toBe(false);
-    expect(rows[1]!.length).toBeGreaterThan(1);
-    expect(rows[1]!.length).toBeLessThan(24);
+    expect(rows[1]).toEqual(["1"]);
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(true);
-    expect(rows[1]![0]).toBe("1");
     const widths = rows.map((keys) => keys.length);
-    for (let i = 1; i < widths.length; i += 1) {
-      expect(widths[i]).toBeGreaterThan(widths[i - 1]!);
-    }
+    expect(widths[2]).toBeGreaterThan(1);
+    expect(widths.some((width) => width > widths[2]!)).toBe(true);
     expect(widths.reduce((sum, n) => sum + n, 0)).toBe(30);
   });
 

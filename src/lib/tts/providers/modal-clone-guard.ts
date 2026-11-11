@@ -324,7 +324,9 @@ export const MODAL_CLONE_DEFER_MAX_MS = 6 * 60 * 60_000;
  *
  * Default 75 s: a measured restore is ~57 s, so this still covers a real
  * restore with ~18 s of margin, and it is half the normal budget so a bad
- * placement is abandoned twice as fast. `MODAL_S2_FIRST_LIGHT_WAIT_MS=0`
+ * placement is abandoned twice as fast. The 2026-11-11 smoke's whole cold
+ * call was 57 s for 673 characters. A 1,000-character opening plans to
+ * about 69 s, which still fits. `MODAL_S2_FIRST_LIGHT_WAIT_MS=0`
  * falls back to the full cold wait.
  */
 export const MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS = 75_000;

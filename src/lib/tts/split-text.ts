@@ -47,6 +47,12 @@ export type SplitTextOptions = {
    */
   firstSectionMaxChars?: number;
   /**
+   * Take-home section 1 on the clone path. The call after section 0 is one
+   * row, and a 2,000-character row runs past the opening audio. Later
+   * sections keep `maxChars`.
+   */
+  secondSectionMaxChars?: number;
+  /**
    * Drop a leading copyright / ISBN page. Defaults to on.
    * `TTS_SKIP_FRONT_MATTER=0` turns it off for every caller.
    */
@@ -498,6 +504,11 @@ export function packSpeakableSections(
     typeof requestedFirst === "number" && requestedFirst >= 10
       ? Math.min(requestedFirst, maxChars)
       : Math.min(FIRST_SECTION_CHARS, maxChars);
+  const requestedSecond = opts?.secondSectionMaxChars;
+  const secondTarget =
+    typeof requestedSecond === "number" && requestedSecond >= 10
+      ? Math.min(requestedSecond, maxChars)
+      : null;
 
   const source =
     opts?.skipFrontMatter === false ? text : stripNarrationFrontMatter(text);
@@ -545,7 +556,11 @@ export function packSpeakableSections(
     };
   };
 
-  const targetForNext = () => (finished.length === 0 ? firstTarget : maxChars);
+  const targetForNext = () => {
+    if (finished.length === 0) return firstTarget;
+    if (finished.length === 1 && secondTarget != null) return secondTarget;
+    return maxChars;
+  };
 
   /** First-section TTFA uses a tight ceiling; later windows only mid-split at hardMax. */
   const overflowCeiling = () => {
@@ -553,6 +568,9 @@ export function packSpeakableSections(
     if (finished.length === 0) {
       return Math.min(hardMax, target + 80);
     }
+    // Section 1 on the clone path must not grow toward the 2,000-character
+    // steady width. A sentence that does not fit is split, not absorbed.
+    if (finished.length === 1 && secondTarget != null) return secondTarget;
     return hardMax;
   };
 
@@ -584,10 +602,12 @@ export function packSpeakableSections(
     }
 
     const target = targetForNext();
-    const ceiling = finished.length === 0 ? overflowCeiling() : hardMax;
+    const ceiling = overflowCeiling();
+    const splitHard =
+      finished.length === 1 && secondTarget != null ? secondTarget : hardMax;
     const pieces =
       measure(unit.text) > ceiling
-        ? packSentencesWithin(unit.text, target, hardMax, measure)
+        ? packSentencesWithin(unit.text, target, splitHard, measure)
         : [unit.text];
 
     const hasOversizedRun = pieces.length > 1 &&
@@ -626,7 +646,10 @@ export function packSpeakableSections(
       // The first take-home window should land near its target. A 55% fill
       // would close a ~450-character paragraph and leave the opening short.
       const fillRatio =
-        finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS ? 0.9 : MIN_FILL_RATIO;
+        (finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS) ||
+        (finished.length === 1 && secondTarget != null)
+          ? 0.9
+          : MIN_FILL_RATIO;
       const filledEnough = currentLen >= effectiveTarget * fillRatio;
       // A long next paragraph used to flush a short title on its own.
       // Take whole sentences that fit. If none fit, keep a stub open through

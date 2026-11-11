@@ -96,28 +96,43 @@ under the production 180s scaledown). After a successful answer each next
 call is the largest prefix that finishes before the buffered audio runs out:
 
 ```
-one row       = 50 chars/s
-wider calls   = 150 chars/s aggregate, and still the 50 chars/s row
-warm prep     = 5s   (reference is cached; cold prep stays 20s)
-publish       = 3s + 0.2s per extra row, cap 8s
-transfer      = 4 MiB/s of the base64 body
-slack         = max(4s, 10% of the buffer) before a call may pass one row
+one row       = 33 chars/s          (smoke: 1,300 chars in 39.85s)
+8 rows        = 28.3 chars/s/row    (15% under the measured 266 chars/s)
+14 rows       = 22.5 chars/s/row    (15% under 371)
+24 rows       = 21.9 chars/s/row    (15% under 617; measured e2e was 528)
+transfer      = 12s per 43,907 characters (58.7MB on that 24-row call)
+restore       = 38s on the opening call only (57.05s wall − 18.8s server)
+narration     = 15.85 characters per audio second
+slack         = max(15s, 10% of the buffer), including a one-row call
 warm wait     = 400s (MODAL_S2_WARM_WAIT_MS, ceiling 482s)
 warm cap      = min(380s × 150, ~80 MiB of base64) = 57,000 characters
 ```
 
-A single row is sent when its wall is strictly inside the buffer. A wider
-call also has to leave the slack. The next call starts when the previous
-one returns. On a 10-hour book (800-character section 0, then 2,000) the
-offline 1× sim is **1, 1, 8**, then the rest of that 24-section claim, then
-**24** until the tail. Time to first audio is about **88s**. The GPU wall
-for the book is about **68 minutes**. No stall after the first audio.
+The 150 chars/s figure is only that character cap. It is not the listener
+wall. A row is also never planned faster than 33 chars/s, so one long row
+cannot hide inside a wide call's average.
 
-24 × 2,000 is 48,000 characters: about 349s including prep and transfer,
-inside the 400s wait, and about 68MB of base64. The response stays
-`audio_b64` JSON. A paid smoke has to confirm that body arrives whole and
-that a real first section plus the next call finishes before playback runs
-out. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
+Clone section 0 is **1,000** characters, not the 800-character opening the
+other providers use. Its planned cold wall is **68.6s**, under the 75s
+first-light wait. The next call is capped at **1,300** characters (one
+row, the smoke's second call). Against ~63s of opening audio that leaves
+**23.3s**. A 2,000-character second row at 33 chars/s is ~61s and does not
+clear the 15s floor, which is the stall the smoke was 4.3s away from.
+Later sections stay 2,000.
+
+On a 10-hour book at 1× the offline sim does not stall. Time to first
+audio is **68,576 ms**. The tightest margin after that is **16,961 ms**.
+Call sizes are **1, 1, 12, 10**, then ten **24**s, tail **23**. The 10 is
+the rest of the first 24-section claim. GPU wall is **1,424,500 ms**
+(23.7 minutes) at the 15% curve. The smoke's own rates, without that
+margin, are the ~20–21 minute projection. Two books on the one GPU also
+do not stall: the second listener's first audio is at **227,301 ms**, both
+margins stay **16,961 ms**, and the pair takes **2,799,158 ms**. Each
+book's calls are **1, 1, 12**, then **24**s, tail **9**.
+
+24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
+the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
+whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
 rollback toward the cold shape.
 
 One book, one call at a time. Two books share that call. The second book's
@@ -150,7 +165,7 @@ pm2 logs echomancer-takehome --lines 300 \
 Healthy:
 
 - `pack evenFanout=… target=2000` — the clone width, not 7797
-- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:8`
+- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:12`
   on the first claim, then `warm:24` once the buffer is deep. A `warm:24`
   on the call immediately after section 0 means the ramp is not running.
   A `cold:` page stays **at or under 8,000** characters. A `warm:` page
