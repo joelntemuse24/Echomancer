@@ -426,7 +426,17 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   wall ~69s, under the 75s first-light wait). The next call is capped at
   1,300 characters so it does not run past that opening; the smoke's
   1,300-character row left 4.3s against a 673-character opening, and this
-  pair leaves ~23s. Later sections stay 2,000. The prefix then grows — on
+  pair leaves ~23s. Later sections stay 2,000. A short piece whose whole
+  remaining book adds no generation beyond section 0 goes out as that one
+  call instead of ramping. Two rows at this curve are a little slower per
+  row than one row at 33 chars/s, so the bound is about 1,959 characters
+  (a 1,000-character opening and a second section of 959): ~2.1 minutes of
+  audio. The extra wait is only the transfer of that second section, under
+  half a second, and total time is one call instead of two. A later row
+  longer than the opening — the 1,300-character second section, or any
+  2,000-character row — adds generation, so a 5-minute article and anything
+  longer still ramps. Ten minutes would fit inside the opening's ~69s only
+  if every row were a few hundred characters. The prefix then grows — on
   a 10-hour book the calls are 1, 1, 12, the rest of that 24-section
   claim, then 24 — and the next call starts when the previous one returns.
   Playback does not stall once it has started. A gap longer than the

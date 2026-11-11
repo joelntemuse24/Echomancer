@@ -583,6 +583,12 @@ export type CloneBookWaveInput = {
   bufferedMs?: number;
   /** The listener has already heard audio from this book. */
   playbackStarted?: boolean;
+  /**
+   * `pending` is every section this book still has to speak. A claim window
+   * that stopped early is not the whole book, and a short-piece batch is
+   * not sent for a prefix of a longer one.
+   */
+  entireRemainder?: boolean;
   /** Stop after this many calls. One, when the GPU has to be handed back. */
   maxCalls?: number;
   env?: NodeJS.ProcessEnv;
@@ -592,6 +598,66 @@ type ListenerState = {
   started: boolean;
   buffer: number;
 };
+
+/** Generation time of a call: the page, or its longest row, whichever is slower. */
+function cloneCallWorkMs(chars: number, largestRow: number, rows: number): number {
+  return Math.max(cloneGenerationMs(chars, rows), cloneGenerationMs(largestRow, 1));
+}
+
+/**
+ * The whole remaining book as one opening call, or null when that would
+ * make first audio later than section 0 alone.
+ *
+ * Generation has to be no greater than section 0. Transfer of the extra
+ * text is the only added wait. With these section widths that holds up to
+ * about 1,959 characters: a 1,000-character opening and a second section of
+ * 959. Two rows at the smoke curve are a little slower per row than one
+ * row at 33 chars/s, so a second section of 1,000 already adds generation.
+ * 1,959 characters is ~124s of audio, about 2.1 minutes. The extra transfer
+ * there is under half a second, and the book is one call instead of two,
+ * so total time is shorter.
+ *
+ * A 1,300-character second section, or any 2,000-character row, adds
+ * generation. A 5-minute article contains one of those rows, and a cold
+ * batch of it returns around 100s rather than the ramp's ~69s, so it ramps.
+ * Ten minutes of audio would fit inside that ~69s only if every row were a
+ * few hundred characters and they ran in parallel. These rows are not.
+ */
+function shortOpeningIndexes(
+  pending: number[],
+  poolWarm: boolean,
+  batch: number,
+  textAt: (index: number) => string,
+  env: NodeJS.ProcessEnv
+): number[] | null {
+  if (pending.length < 2 || pending.length > batch) return null;
+  let chars = 0;
+  let largest = 0;
+  let head = 0;
+  for (let i = 0; i < pending.length; i += 1) {
+    const size = textAt(pending[i]!).length;
+    if (i === 0) head = size;
+    chars += size;
+    if (size > largest) largest = size;
+  }
+  if (!(head > 0)) return null;
+  if (cloneCallWorkMs(chars, largest, pending.length) > cloneCallWorkMs(head, head, 1)) {
+    return null;
+  }
+  const charCap = poolWarm ? modalWarmLaneCharLimit(env) : modalLaneCharLimit(env);
+  if (chars > charCap) return null;
+  if (estimateCloneBatchJsonBytes(chars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) return null;
+  const wall = cloneCallWallMs({
+    chars,
+    largestRow: largest,
+    rows: pending.length,
+    shape: "cold",
+    restore: !poolWarm,
+  });
+  const waitCap = modalCloneFirstLightWaitMs(env);
+  if (wall >= waitCap || wall >= MODAL_CLONE_PROXY_KILL_MS) return null;
+  return [...pending];
+}
 
 /**
  * One book's next GPU calls.
@@ -603,7 +669,12 @@ type ListenerState = {
  * whole call. The prefix grows as the buffer grows — one row, then a
  * handful, then a full batch — and the calls run back to back.
  *
- * A listener who has not started yet does not constrain the first call.
+ * A listener who has not started yet does not constrain the first call,
+ * except a short piece: when `pending` is the whole remaining book and one
+ * call adds no generation beyond section 0, that call is the book. Extra
+ * text still costs its transfer (under half a second at the boundary). A
+ * later row longer than the opening adds generation, and the book ramps
+ * so first audio stays the opening's ~69s cold / ~31s warm.
  * When the container has been idle longer than scaledown, the tick is one
  * cold-sized call and the rest waits. The ramp starts again on the tick
  * after that call returns.
@@ -634,6 +705,31 @@ export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWave
     typeof input.maxCalls === "number" && input.maxCalls > 0
       ? Math.floor(input.maxCalls)
       : Number.POSITIVE_INFINITY;
+
+  // A short piece whose rows finish in section 0's generation time. One
+  // call, then done. A 2,000-character row does not qualify: it generates
+  // for ~61s, so a cold batch would return after the ramp's ~69s.
+  if (
+    !state.started &&
+    input.entireRemainder === true &&
+    input.firstLight &&
+    rest.length > 1 &&
+    calls.length < maxCalls
+  ) {
+    const whole = shortOpeningIndexes(rest, input.poolWarm, batch, input.textAt, env);
+    if (whole && whole.length === rest.length) {
+      pushCall(calls, state, describeCloneWaveCall({
+        indexes: whole,
+        shape: "cold",
+        firstLight: true,
+        restore: !input.poolWarm,
+        textAt: input.textAt,
+        env,
+        state,
+      }));
+      return finishPlan(calls, [], state);
+    }
+  }
 
   if (input.firstLight && rest.length > 0 && calls.length < maxCalls) {
     const head = rest[0]!;
@@ -876,7 +972,26 @@ export function chooseCloneGpuTurn(input: {
   // batch and leave the second listener waiting through it.
   for (const book of books) {
     if (book.playbackStarted) continue;
-    const call = firstSectionCall(book, input.poolWarm, env);
+    let call = firstSectionCall(book, input.poolWarm, env);
+    // A short piece is still one call, and about as long as its first
+    // section. If the other listener cannot spare the extra transfer,
+    // this book takes section 0 and ramps on a later turn.
+    if (book.firstLight) {
+      const whole = shortOpeningIndexes(book.pending, input.poolWarm, batch, book.textAt, env);
+      if (whole && whole.length === book.pending.length) {
+        const state: ListenerState = { started: false, buffer: 0 };
+        const batched = describeCloneWaveCall({
+          indexes: whole,
+          shape: "cold",
+          firstLight: true,
+          restore: !input.poolWarm,
+          textAt: book.textAt,
+          env,
+          state,
+        });
+        if (unstartedCallIsSafe(book, batched, started)) call = batched;
+      }
+    }
     if (!unstartedCallIsSafe(book, call, started)) continue;
     return { bookId: book.id, call };
   }
@@ -1154,6 +1269,8 @@ export function simulateClonePlayback(input: {
   sectionChars: number[];
   batch?: number;
   claim?: number;
+  /** The container is already up, so the opening call pays no restore. */
+  poolWarm?: boolean;
   env?: NodeJS.ProcessEnv;
 }): ClonePlaybackReport {
   const env = input.env ?? process.env;
@@ -1161,7 +1278,7 @@ export function simulateClonePlayback(input: {
   const claim = input.claim ?? batch;
   const charsAt = input.sectionChars;
   let pending = charsAt.map((_, index) => index);
-  let poolWarm = false;
+  let poolWarm = input.poolWarm === true;
   let started = false;
   let buffer = 0;
   let clock = 0;
@@ -1179,6 +1296,7 @@ export function simulateClonePlayback(input: {
       batch,
       bufferedMs: buffer,
       playbackStarted: started,
+      entireRemainder: window.length === pending.length,
       env,
     });
     if (plan.calls.length === 0) break;

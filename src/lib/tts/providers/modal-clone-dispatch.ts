@@ -113,14 +113,21 @@ export interface LaneDispatchOptions {
    */
   firstLight?: boolean;
   /**
-   * One restored H100. The first call stays one section. Each later call is
-   * only as wide as the audio already buffered ahead of the listener, and
-   * the next call starts when the previous one returns. Later ticks stay on
-   * that ramp while {@link modalClonePoolIsWarm} is true, and drop back to
-   * one cold-sized call when the container has scaled away. Calls run one
-   * at a time. Omit this and the older multi-lane planner runs.
+   * One restored H100. The first call stays one section, unless `indexes`
+   * is the whole remaining book and one call is no slower to first audio
+   * than that section. Each later call is only as wide as the audio already
+   * buffered ahead of the listener, and the next call starts when the
+   * previous one returns. Later ticks stay on that ramp while
+   * {@link modalClonePoolIsWarm} is true, and drop back to one cold-sized
+   * call when the container has scaled away. Calls run one at a time. Omit
+   * this and the older multi-lane planner runs.
    */
   bookWave?: boolean;
+  /**
+   * `indexes` is every section this book still has to speak. A claim that
+   * stopped at the batch size is not the whole book.
+   */
+  entireRemainder?: boolean;
   /**
    * Audio already delivered and not yet played. The ramp sizes the next
    * call against this. Omit it and a warm tick does not assume a deep buffer.
@@ -343,11 +350,12 @@ export async function dispatchModalCloneLanes(
 
 /**
  * One book, one H100. Section 0 (or the first cold call after a scaledown)
- * stays one section. Each later call is only as wide as the audio already
- * buffered for the listener, and the next call starts as soon as the
- * previous one returns. A warm call that misses its budget is retried as
- * one section and the rest waits for the next tick, so this book does not
- * open a second GPU.
+ * stays one section, unless the indexes are the whole remaining book and
+ * one call adds no generation beyond that section. Each later call is only
+ * as wide as the audio already buffered for the listener, and the next
+ * call starts as soon as the previous one returns. A warm call that misses
+ * its budget is retried as one section and the rest waits for the next
+ * tick, so this book does not open a second GPU.
  */
 async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});
@@ -364,6 +372,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     batch: opts.batch,
     bufferedMs: opts.bufferedMs,
     playbackStarted: opts.playbackStarted,
+    entireRemainder: opts.entireRemainder,
     maxCalls: opts.maxCalls,
   });
   log(
@@ -434,7 +443,12 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
         tally.poolReason = `section ${head} missed the restore budget`;
       }
       if (!headStaged || tally.poolCold) break;
-      enqueuePublish([head], true);
+      // A one-section opening publishes that section. A short piece's rows
+      // came back together, so the rest of the call is published with it.
+      enqueuePublish(
+        call.indexes.filter((index) => tally.staged.has(index)),
+        true
+      );
       continue;
     }
 

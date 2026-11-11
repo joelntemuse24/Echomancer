@@ -1738,9 +1738,11 @@ async function runClaimedTick(
       }
     };
 
-    // Self-hosted clones: one restored H100. Section 0 is its own call.
-    // Each later call is only as wide as the audio already buffered ahead
-    // of the listener, and the next call starts when the previous returns.
+    // Self-hosted clones: one restored H100. Section 0 is its own call,
+    // unless the whole remaining book is a short piece that finishes in
+    // that section's generation time. Each later call is only as wide as
+    // the audio already buffered ahead of the listener, and the next call
+    // starts when the previous returns.
     // Indexes that already have a take are not sent again:
     // the publish window is 8 and the batch is 24, so the next tick used to
     // re-render the staged tail (`S2 lane staged` is a GPU row, not a cache hit).
@@ -1958,6 +1960,10 @@ async function runClaimedTick(
                     bookWave: true,
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
+                    entireRemainder:
+                      gpuIndexes.length > 0 &&
+                      gpuIndexes.length ===
+                        pendingAll.filter((index) => !cachedAtStart.has(index)).length,
                     // Publish each call as it returns so the player hears it
                     // while the next call is already on the GPU. The chain
                     // keeps the segment writes in order.

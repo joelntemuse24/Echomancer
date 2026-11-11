@@ -120,6 +120,21 @@ row, the smoke's second call). Against ~63s of opening audio that leaves
 clear the 15s floor, which is the stall the smoke was 4.3s away from.
 Later sections stay 2,000.
 
+A short piece skips the ramp when one call adds no generation beyond
+section 0. The listener's extra wait is only the transfer of the rest of
+the text. Two rows at the curve above are a little slower per row than one
+row at 33 chars/s, so a second section of 1,000 characters already adds
+generation. The bound is **1,959 characters** (opening 1,000, second
+section 959): about **2.1 minutes** of audio. At that boundary the extra
+transfer is **262 ms** (cold wall **68,838 ms**, warm **30,838 ms**),
+first audio is still inside the 75s first-light wait, and total time is
+one call instead of two. A
+1,300-character second section or any 2,000-character row does not
+qualify. A 5-minute article contains a 2,000-character row, so a cold
+one-call would return around 100s against the ramp's 68.6s. It ramps.
+Ten minutes would fit inside that 68.6s only if every row were a few
+hundred characters and they ran in parallel.
+
 On a 10-hour book at 1× the offline sim does not stall. Time to first
 audio is **68,576 ms**. The tightest margin after that is **16,961 ms**.
 Call sizes are **1, 1, 12, 10**, then ten **24**s, tail **23**. The 10 is
@@ -129,6 +144,20 @@ margin, are the ~20–21 minute projection. Two books on the one GPU also
 do not stall: the second listener's first audio is at **227,301 ms**, both
 margins stay **16,961 ms**, and the pair takes **2,799,158 ms**. Each
 book's calls are **1, 1, 12**, then **24**s, tail **9**.
+
+The same sim on shorter books, cold, also does not stall. A 2,000-character
+row keeps them on the ramp. Time to first audio stays **68,576 ms**.
+
+| Piece | Calls | Tightest margin | Wall |
+| --- | --- | --- | --- |
+| ~5 minutes | 1, 1, 2 | 23,342 ms | 169,602 ms |
+| ~10 minutes | 1, 1, 4 | 23,342 ms | 170,902 ms |
+| ~40 minutes | 1, 1, 12, 6 | 16,961 ms | 266,002 ms |
+| ~2 hours | 1, 1, 12, 10, 24, 10 | 16,961 ms | 463,370 ms |
+
+A warm 10-minute article is the same calls and the same 23,342 ms margin.
+First audio is **30,576 ms** and the wall is **132,902 ms**, the cold
+figures without the 38s restore.
 
 24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
 the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived

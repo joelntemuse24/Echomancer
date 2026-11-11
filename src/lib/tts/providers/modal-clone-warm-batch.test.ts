@@ -41,10 +41,12 @@ import {
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
   MODAL_CLONE_ROW_CHARS_PER_SECOND,
   MODAL_CLONE_SECOND_CALL_CHARS,
+  cloneAudioMs,
   cloneCallWallMs,
   cloneGenerationMs,
   clonePoolStillWarm,
   cloneRowCharsPerSecond,
+  cloneTransferMs,
   estimateCloneBatchJsonBytes,
   modalLaneCharCap,
   modalWarmLaneCharLimit,
@@ -330,22 +332,29 @@ describe("one book's call schedule", () => {
   });
 });
 
-function tenHourSections(): number[] {
-  // 10 hours at the smoke's 15.85 characters per audio second. Section 0 is
-  // the clone opening, section 1 is the short second call, and the rest are
-  // the steady 2,000-character width.
-  const totalChars = Math.round(10 * 3600 * MODAL_CLONE_CHARS_PER_AUDIO_SECOND);
-  const sections = [MODAL_CLONE_OPENING_SECTION_CHARS];
-  let used = sections[0]!;
-  const second = Math.min(MODAL_CLONE_SECOND_CALL_CHARS, totalChars - used);
-  sections.push(second);
-  used += second;
+function cloneBookSections(audioSeconds: number): number[] {
+  // The smoke's 15.85 characters per audio second. Section 0 is the clone
+  // opening, section 1 is the short second call, and the rest are the
+  // steady 2,000-character width.
+  const totalChars = Math.round(audioSeconds * MODAL_CLONE_CHARS_PER_AUDIO_SECOND);
+  const opening = Math.min(MODAL_CLONE_OPENING_SECTION_CHARS, Math.max(0, totalChars));
+  const sections = [opening];
+  let used = opening;
+  if (used < totalChars) {
+    const second = Math.min(MODAL_CLONE_SECOND_CALL_CHARS, totalChars - used);
+    sections.push(second);
+    used += second;
+  }
   while (used < totalChars) {
     const size = Math.min(2_000, totalChars - used);
     sections.push(size);
     used += size;
   }
   return sections;
+}
+
+function tenHourSections(): number[] {
+  return cloneBookSections(10 * 3600);
 }
 
 describe("a 10-hour book played at 1×", () => {
@@ -380,6 +389,180 @@ describe("a 10-hour book played at 1×", () => {
       if (step.shape === "cold") expect(step.chars).toBeLessThanOrEqual(modalLaneCharCap(env));
     }
     expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(tenHourSections().length);
+  });
+});
+
+describe("short pieces", () => {
+  function opening(chars: number[], poolWarm = false) {
+    return planModalCloneBookWave({
+      pending: pending(chars.length),
+      textAt: (index) => section(chars[index] ?? 0),
+      firstLight: true,
+      poolWarm,
+      batch: 24,
+      entireRemainder: true,
+      env,
+    });
+  }
+
+  it("sends the whole book when one call adds no generation beyond section 0", () => {
+    // 1,000 + 959. Two rows at the smoke curve still finish in the opening
+    // row's generation time. The only added wait is the extra body's transfer.
+    const chars = [1_000, 959];
+    const plan = opening(chars);
+    const head = cloneCallWallMs({
+      chars: 1_000,
+      largestRow: 1_000,
+      rows: 1,
+      shape: "cold",
+      restore: true,
+    });
+    expect(plan.calls).toHaveLength(1);
+    expect(plan.calls[0]!.indexes).toEqual([0, 1]);
+    expect(plan.deferred).toEqual([]);
+    const transferDelta = cloneTransferMs(1_959) - cloneTransferMs(1_000);
+    // Generation does not grow. The listener waits 262ms, which is the
+    // transfer of the second section. 68,838 is still under the 75s
+    // first-light wait, and ~69s.
+    expect(head).toBe(68_576);
+    expect(transferDelta).toBe(262);
+    expect(plan.calls[0]!.wallMs).toBe(68_838);
+    expect(plan.calls[0]!.wallMs).toBeLessThan(75_000);
+    const ramp = planModalCloneBookWave({
+      pending: pending(2),
+      textAt: (index) => section(chars[index] ?? 0),
+      firstLight: true,
+      poolWarm: false,
+      batch: 24,
+      env,
+    });
+    const rampWall = ramp.calls.reduce((sum, call) => sum + call.wallMs, 0);
+    expect(ramp.calls.length).toBeGreaterThan(1);
+    expect(plan.calls[0]!.wallMs).toBeLessThan(rampWall);
+    expect(plan.calls[0]!.wallMs).toBeLessThanOrEqual(head + 1_000);
+
+    const warm = opening(chars, true);
+    expect(warm.calls).toHaveLength(1);
+    expect(warm.calls[0]!.wallMs).toBe(plan.calls[0]!.wallMs - 38_000);
+  });
+
+  it("ramps once a later row would make first audio later than section 0", () => {
+    // 960 characters on the second row pushes the page past the opening's
+    // generation time. A 1,300-character second section, and every article
+    // that contains a 2,000-character row, does the same.
+    const justOver = opening([1_000, 960]);
+    expect(justOver.calls[0]!.indexes).toEqual([0]);
+    expect(justOver.calls.length).toBeGreaterThan(1);
+
+    const secondCall = opening([1_000, MODAL_CLONE_SECOND_CALL_CHARS]);
+    expect(secondCall.calls[0]!.indexes).toEqual([0]);
+
+    const fiveMinutes = opening(cloneBookSections(5 * 60));
+    expect(fiveMinutes.calls[0]!.indexes).toEqual([0]);
+    expect(fiveMinutes.calls[0]!.chars).toBe(MODAL_CLONE_OPENING_SECTION_CHARS);
+
+    // A prefix of a longer book is not a short piece, even when those two
+    // sections would have qualified on their own.
+    const prefix = planModalCloneBookWave({
+      pending: [0, 1],
+      textAt: (index) => section(index === 0 ? 1_000 : 900),
+      firstLight: true,
+      poolWarm: false,
+      batch: 24,
+      env,
+    });
+    expect(prefix.calls[0]!.indexes).toEqual([0]);
+  });
+
+  it("gives an unstarted short book one call when the other listener can spare it", () => {
+    const { active, waiting } = planTwoBooksOnOneGpu({
+      active: {
+        pending: [0, 1],
+        textAt: (index) => section(index === 0 ? 1_000 : 900),
+        firstLight: true,
+        poolWarm: false,
+      },
+      waiting: {
+        pending: pending(40),
+        textAt: () => section(2_000),
+        firstLight: false,
+        poolWarm: true,
+        playbackStarted: true,
+        bufferedMs: 10 * 60_000,
+      },
+      batch: 24,
+      env,
+    });
+    expect(active.calls).toHaveLength(1);
+    expect(active.calls[0]!.indexes).toEqual([0, 1]);
+    expect(waiting.calls).toEqual([]);
+  });
+});
+
+describe("shorter books played at 1×", () => {
+  function play(audioSeconds: number, poolWarm = false) {
+    const sectionChars = cloneBookSections(audioSeconds);
+    const report = simulateClonePlayback({
+      sectionChars,
+      batch: 24,
+      poolWarm,
+      env,
+    });
+    expect(report.stallCount).toBe(0);
+    expect(report.steps[0]).toMatchObject({
+      shape: "cold",
+      rows: 1,
+      chars: MODAL_CLONE_OPENING_SECTION_CHARS,
+    });
+    expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sectionChars.length);
+    expect(report.minMarginMs).toBeGreaterThanOrEqual(15_000);
+    for (const step of report.steps) {
+      expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+      expect(estimateCloneBatchJsonBytes(step.chars)).toBeLessThanOrEqual(
+        MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+      );
+    }
+    return report;
+  }
+
+  it("ramps a 5-minute, 10-minute, and 40-minute article and a 2-hour book", () => {
+    // A 2,000-character row keeps these on the ramp. One batch would be
+    // ~100s cold to first audio, against the opening's 68.6s.
+    const five = play(5 * 60);
+    expect(five.timeToFirstAudioMs).toBe(68_576);
+    expect(five.sizeSequence).toEqual([1, 1, 2]);
+    expect(five.minMarginMs).toBe(23_342);
+    expect(five.totalWallMs).toBe(169_602);
+    expect(cloneAudioMs(5 * 60 * MODAL_CLONE_CHARS_PER_AUDIO_SECOND)).toBe(300_000);
+
+    const ten = play(10 * 60);
+    expect(ten.timeToFirstAudioMs).toBe(68_576);
+    expect(ten.sizeSequence).toEqual([1, 1, 4]);
+    expect(ten.minMarginMs).toBe(23_342);
+    expect(ten.totalWallMs).toBe(170_902);
+
+    const forty = play(40 * 60);
+    expect(forty.timeToFirstAudioMs).toBe(68_576);
+    expect(forty.sizeSequence).toEqual([1, 1, 12, 6]);
+    expect(forty.minMarginMs).toBe(16_961);
+    expect(forty.totalWallMs).toBe(266_002);
+
+    const twoHours = play(2 * 3600);
+    expect(twoHours.timeToFirstAudioMs).toBe(68_576);
+    expect(twoHours.sizeSequence).toEqual([1, 1, 12, 10, 24, 10]);
+    expect(twoHours.minMarginMs).toBe(16_961);
+    expect(twoHours.totalWallMs).toBe(463_370);
+  });
+
+  it("starts a 10-minute article on a warm pool without the restore", () => {
+    const cold = play(10 * 60);
+    const warm = play(10 * 60, true);
+    expect(warm.timeToFirstAudioMs).toBe(30_576);
+    expect(warm.timeToFirstAudioMs).toBe(cold.timeToFirstAudioMs - 38_000);
+    expect(warm.sizeSequence).toEqual(cold.sizeSequence);
+    expect(warm.minMarginMs).toBe(cold.minMarginMs);
+    expect(warm.totalWallMs).toBe(132_902);
+    expect(warm.totalWallMs).toBe(cold.totalWallMs - 38_000);
   });
 });
 
@@ -581,5 +764,34 @@ describe("book-wave dispatch", () => {
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(false);
     expect(render.mock.calls[1]![0]).toHaveLength(1);
     kick.mockRestore();
+  });
+
+  it("sends a short piece as one cold call", async () => {
+    const render = vi.fn(async (items: { key: string }[]) =>
+      outcome(items.map((item) => item.key))
+    );
+    const published: number[][] = [];
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: (index) => section(index === 0 ? 1_000 : 900),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      firstLight: true,
+      bookWave: true,
+      entireRemainder: true,
+      poolWarm: false,
+      render,
+      stage: async () => {},
+      publishStaged: async (indexes) => {
+        published.push(indexes);
+      },
+    });
+    expect(result.staged).toBe(2);
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(render.mock.calls[0]![0].map((item: { key: string }) => item.key)).toEqual(["0", "1"]);
+    expect(render.mock.calls[0]![2]?.warmBatch).toBe(false);
+    expect(published).toEqual([[0, 1]]);
   });
 });

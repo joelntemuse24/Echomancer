@@ -789,7 +789,10 @@ The in-book ramp plans from those numbers, 15% slower on wide calls. A
 **full batch** is faster because rows run in parallel — not because a row
 gets faster. A call's wall time is set by its longest row, so section size
 is a hard bound, not a tuning preference. Clone section 0 is 1,000
-characters and the next call is capped at 1,300.
+characters and the next call is capped at 1,300. A piece of about 2.1
+minutes or less, whose rows add no generation beyond that opening, is one
+call. A 5-minute article still ramps, because a 2,000-character row would
+make first audio later than the opening.
 
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 
