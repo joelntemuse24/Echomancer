@@ -153,24 +153,49 @@ cold and **33,576 ms** warm. The tightest margin at 1× is the second call
 | ~2 hours | 1, 1, 1, 1, 1, 3, 16, 24, 12 | 588,152 ms | 550,152 ms |
 | ~10 hours | 1, 1, 1, 1, 1, 3, 16, then eleven 24s | 1,576,533 ms | 1,538,533 ms |
 
-Two 10-hour books do not POST together. The pair takes **36,439,973 ms**.
-Book A's first audio is **71,576 ms** (calls: five single rows, one 3-row
-call, then single rows). Book B's first audio is **327,261 ms** (single
-rows, and a 3-row call at the end). A 2,000-character row is **64,153 ms**.
-Once both listeners are on those rows, the other listener's spare at 1.5×
-is about 20s, so the closer book still takes the row. The tightest margins
-are **−39,289 ms** at 1× and **−64,958 ms** at 1.5× for A, and **−2,123 ms**
-at 1× and **−44,808 ms** at 1.5× for B. A single book keeps the 15s floor.
+Two 10-hour books do not POST together. They also do not alternate
+2,000-character rows. One row is **64,153 ms** of wall and about 84s of
+audio at 1.5× (~33 chars/s), so the listener who does not receive it falls
+behind on every turn. A 24-row call is ~528 chars/s and feeds both. The
+second book starts once the first can spare that one opening and still
+keep its slack (after three solo calls). After that, each turn is the
+feeding call with the least silence and the highest characters per wall
+second: grow through a ramp, then 24-row batches. A call that is wider
+than the buffer is still posted (`committedCall`); planning it again would
+shrink it back to one row.
+
+The pair takes **3,056,922 ms** (under twice one book's **1,576,533 ms**).
+Book A's first audio is **71,576 ms** (calls: 1, 1, 1, 2, 3, 8, eleven 24s,
+then 8). Book B's first audio is **165,272 ms** (1, 2, 2, 2, eleven 24s,
+then 17). The tightest margins are **−5,356 ms** at 1× and **−53,121 ms**
+at 1.5× for A (the one growth call the shallow buffer cannot cover), and
+**+29,789 ms** at 1× and **−23,036 ms** at 1.5× for B. A single book keeps
+the 15s floor.
+
+Three 10-hour books take **4,544,019 ms**. First audio is **71,576 ms**,
+**165,272 ms**, and **338,392 ms**. The tightest 1.5× margins are
+**−67,838 ms**, **−67,838 ms**, and **+203 ms**. A 10-hour book plus a
+40-minute article that appears at 5 minutes takes **2,176,792 ms**. The
+book keeps the 15s floor (tightest **36,058 ms** at 1× and **15,000 ms** at
+1.5×, no stall). The article's first audio is **434,904 ms**, and its
+tightest margin is **+21,234 ms** at 1× and **−44,804 ms** at 1.5×.
+
+One `synthesize_batch` still carries one reference and one seed
+(`s2_clone_service.synthesize_batch`, `S2Engine.render`). Rows from two
+books in that call would be spoken in the top-level voice. Per-item
+references need a Modal redeploy and a new snapshot.
+`MODAL_S2_MIXED_BOOK_BATCH` defaults off, and the tick does not send that
+payload. `planMixedCloneBatch` is the worker side for after that deploy.
 
 24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
 the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
 whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
 rollback toward the cold shape.
 
-One book, one call at a time. Two books share that call. The second book's
-first call is still one section. A shared call is sent when it finishes
-before both buffers run out. When no such call exists, the book closer to
-silence still takes one row, which is the two-book gap above.
+One book, one call at a time. Two books share the GPU one call at a time.
+The second book's first call is still one section. A shared call is the
+widest feeding call the buffers can hold, and a growth call when none of
+those leave the slack. One row is only the last section of a book.
 
 `MODAL_S2_LANE_MAX_CHARS` can only **lower** the cap. That is deliberate: the
 stopgap must not be able to recreate the oversized pack.
@@ -200,8 +225,10 @@ Healthy:
 
 - `pack evenFanout=… target=2000` — the clone width, not 7797
 - `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:12`
-  on the first claim, then `warm:24` once the buffer is deep. A `warm:24`
-  on the call immediately after section 0 means the ramp is not running.
+  on the first claim of a book that has the GPU to itself, then `warm:24`
+  once the buffer is deep. A second runnable book stops the tick after one
+  call, and once both buffers are deep that line is `warm:24`, not `warm:1`.
+  A `warm:24` on the call immediately after section 0 means the ramp is not running.
   A `cold:` page stays **at or under 8,000** characters. A `warm:` page
   stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
   and at or under 24 rows.

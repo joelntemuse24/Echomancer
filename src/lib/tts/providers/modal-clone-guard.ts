@@ -273,6 +273,21 @@ export function modalCloneBatchItems(env: NodeJS.ProcessEnv = process.env): numb
 }
 
 /**
+ * Pack rows from more than one book into one `synthesize_batch`.
+ *
+ * Off. The deployed container takes one `reference_audio_base64` for the
+ * whole call and applies it to every row (`s2_clone_service.synthesize_batch`,
+ * `S2Engine.render`). Per-item references need that container redeployed.
+ * Turning this on against the current container would speak every row in
+ * the top-level voice. The tick does not send a mixed payload either way.
+ */
+export function modalCloneMixedBookBatchEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return (env.MODAL_S2_MIXED_BOOK_BATCH ?? "").trim() === "1";
+}
+
+/**
  * How long one book placement may wait for a cold container.
  *
  * A snapshot restore is about 30–90 s. A compile on an unseen worker variant

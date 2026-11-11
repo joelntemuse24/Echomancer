@@ -14,8 +14,8 @@
  *   - a 10-hour book played at 1.5× never stalls after first audio
  *   - every call stays inside the Modal web-proxy budget and the 80 MiB body
  *   - a gap longer than scaledown drops back to one cold-sized call
- *   - two listeners on one GPU do not POST together; once both are on
- *     2,000-character rows the 1.5× margin goes negative
+ *   - two listeners on one GPU do not POST together; a turn is a ramp or
+ *     a batch, not a one-row thrash, and both first audios stay under 5 min
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -52,10 +52,12 @@ import {
   estimateCloneBatchJsonBytes,
   modalLaneCharCap,
   modalWarmLaneCharLimit,
+  chooseCloneGpuTurn,
+  planMixedCloneBatch,
   planModalCloneBookWave,
   planTwoBooksOnOneGpu,
+  simulateCloneListeners,
   simulateClonePlayback,
-  simulateTwoCloneListeners,
 } from "@/lib/tts/providers/modal-clone-lanes";
 
 const env = {} as NodeJS.ProcessEnv;
@@ -637,9 +639,10 @@ describe("two books, one GPU", () => {
     expect(active.calls).toEqual([]);
   });
 
-  it("shares one GPU and records the 1.5× margin once both books are on 2,000-character rows", () => {
+  it("keeps two 10-hour books on wide calls and finishes near twice one book", () => {
     const sections = tenHourSections();
-    const { reports, totalWallMs, overlapping } = simulateTwoCloneListeners({
+    const single = simulateClonePlayback({ sectionChars: sections, batch: 24, env });
+    const { reports, totalWallMs, overlapping } = simulateCloneListeners({
       books: [
         { id: "a", sectionChars: sections },
         { id: "b", sectionChars: sections },
@@ -652,27 +655,209 @@ describe("two books, one GPU", () => {
     for (const report of reports) {
       expect(report.sizeSequence[0]).toBe(1);
       expect(report.timeToFirstAudioMs).toBeGreaterThan(0);
+      expect(report.timeToFirstAudioMs).toBeLessThan(5 * 60_000);
       expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
       expect(report.steps.every((step) => step.wallMs < MODAL_CLONE_PROXY_KILL_MS)).toBe(true);
+      expect(report.sizeSequence.some((n) => n >= 8)).toBe(true);
+      // The old schedule was one row per call after the opening and took
+      // 36,439,973 ms. A book of single rows cannot feed two 1.5× listeners.
+      expect(report.sizeSequence.filter((n) => n === 1).length).toBeLessThan(8);
     }
-    expect(reports[1]!.timeToFirstAudioMs).toBeGreaterThan(reports[0]!.timeToFirstAudioMs);
-    // One call at a time. Opening audio is unchanged. Once both listeners
-    // are on 2,000-character rows, a row is ~64s and the other listener's
-    // spare at 1.5× is not, so the closer book still takes the row and the
-    // margin goes negative. 36,439,973 ms is both books.
+    // One book is unchanged: 71,576 ms to first audio, 15s floor, 1,576,533 ms wall.
+    expect(single.timeToFirstAudioMs).toBe(71_576);
+    expect(single.minMarginAt15xMs).toBe(15_000);
+    expect(single.totalWallMs).toBe(1_576_533);
     expect(reports[0]!.timeToFirstAudioMs).toBe(71_576);
-    expect(reports[1]!.timeToFirstAudioMs).toBe(327_261);
-    expect(reports[0]!.minMarginMs).toBe(-39_289);
-    expect(reports[1]!.minMarginMs).toBe(-2_123);
-    expect(reports[0]!.minMarginAt15xMs).toBe(-64_958);
-    expect(reports[1]!.minMarginAt15xMs).toBe(-44_808);
-    expect(reports[0]!.stallCount).toBe(281);
-    expect(reports[1]!.stallCount).toBe(280);
-    expect(reports[0]!.sizeSequence.slice(0, 6)).toEqual([1, 1, 1, 1, 1, 3]);
-    expect(reports[0]!.sizeSequence.slice(6).every((n) => n === 1)).toBe(true);
-    expect(reports[1]!.sizeSequence.at(-1)).toBe(3);
-    expect(reports[1]!.sizeSequence.slice(0, -1).every((n) => n === 1)).toBe(true);
-    expect(totalWallMs).toBe(36_439_973);
+    expect(reports[1]!.timeToFirstAudioMs).toBe(165_272);
+    // Growth is one wide call that the shallow buffer cannot cover, then
+    // 24-row batches. The one-row schedule was 36,439,973 ms with both
+    // listeners negative on every row; this equality fails on that total.
+    expect(reports[0]!.minMarginAt1xMs).toBe(-5_356);
+    expect(reports[0]!.minMarginAt15xMs).toBe(-53_121);
+    expect(reports[0]!.stallCount).toBe(4);
+    expect(reports[1]!.minMarginAt1xMs).toBe(29_789);
+    expect(reports[1]!.minMarginAt15xMs).toBe(-23_036);
+    expect(reports[1]!.stallCount).toBe(3);
+    expect(reports[0]!.sizeSequence).toEqual([
+      1, 1, 1, 2, 3, 8, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 8,
+    ]);
+    expect(reports[1]!.sizeSequence).toEqual([
+      1, 2, 2, 2, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 17,
+    ]);
+    expect(totalWallMs).toBe(3_056_922);
+    expect(totalWallMs).toBeLessThan(single.totalWallMs * 2);
+  });
+
+  it("plays three 10-hour books and a late article without collapsing to one-row calls", () => {
+    const ten = tenHourSections();
+    const article = cloneBookSections(40 * 60);
+    const three = simulateCloneListeners({
+      books: [
+        { id: "a", sectionChars: ten },
+        { id: "b", sectionChars: ten },
+        { id: "c", sectionChars: ten },
+      ],
+      batch: 24,
+      env,
+    });
+    const late = simulateCloneListeners({
+      books: [
+        { id: "book", sectionChars: ten },
+        { id: "article", sectionChars: article, startAtMs: 5 * 60_000 },
+      ],
+      batch: 24,
+      env,
+    });
+    expect(three.totalWallMs).toBe(4_544_019);
+    expect(three.reports.map((report) => report.timeToFirstAudioMs)).toEqual([
+      71_576, 165_272, 338_392,
+    ]);
+    expect(three.reports.map((report) => report.minMarginAt1xMs)).toEqual([
+      -67_838, -59_141, 21_234,
+    ]);
+    expect(three.reports.map((report) => report.minMarginAt15xMs)).toEqual([
+      -67_838, -67_838, 203,
+    ]);
+    expect(three.reports.every((report) => report.sizeSequence.some((n) => n >= 8))).toBe(true);
+    expect(late.totalWallMs).toBe(2_176_792);
+    expect(late.reports[0]!.timeToFirstAudioMs).toBe(71_576);
+    expect(late.reports[0]!.minMarginAt1xMs).toBe(36_058);
+    expect(late.reports[0]!.minMarginAt15xMs).toBe(15_000);
+    expect(late.reports[0]!.stallCount).toBe(0);
+    expect(late.reports[1]!.timeToFirstAudioMs).toBe(434_904);
+    expect(late.reports[1]!.minMarginAt1xMs).toBe(21_234);
+    expect(late.reports[1]!.minMarginAt15xMs).toBe(-44_804);
+    expect(late.reports[1]!.stallCount).toBe(10);
+  });
+
+  it("posts two and three 10-hour books through dispatch without the one-row total", async () => {
+    async function replay(bookCount: number) {
+      const sections = tenHourSections();
+      const posted: number[][] = [];
+      const render = vi.fn(async (items: { key: string }[]) => {
+        posted.push(items.map((item) => Number(item.key)));
+        const audio = new Map<string, { audio: Buffer; durationSeconds: number }>();
+        for (const item of items) {
+          audio.set(item.key, { audio: Buffer.from("mp3"), durationSeconds: 12 });
+        }
+        return {
+          audio,
+          build: "abc",
+          containerId: "gpu-1",
+          seed: 1,
+          performance: { generate_s: 4 },
+          boot: "restored" as const,
+        };
+      });
+      const states = Array.from({ length: bookCount }, (_, id) => ({
+        id: String.fromCharCode(97 + id),
+        chars: sections,
+        next: 0,
+        started: false,
+        wall: 0,
+      }));
+      let poolWarm = false;
+      let clock = 0;
+      let guard = 0;
+      const cap = sections.length * bookCount + 5;
+      while (states.some((book) => book.next < book.chars.length) && guard < cap) {
+        guard += 1;
+        const turn = chooseCloneGpuTurn({
+          books: states
+            .filter((book) => book.next < book.chars.length)
+            .map((book) => ({
+              id: book.id,
+              pending: book.chars.slice(book.next).map((_, offset) => book.next + offset),
+              textAt: (index) => section(book.chars[index] ?? 0),
+              playbackStarted: book.started,
+              bufferedMs: book.started ? book.wall : 0,
+              firstLight: book.next === 0,
+            })),
+          poolWarm,
+          batch: 24,
+          env,
+        });
+        expect(turn.call).toBeTruthy();
+        const book = states.find((item) => item.id === turn.bookId)!;
+        const before = posted.length;
+        await dispatchModalCloneLanes({
+          indexes: turn.call!.indexes,
+          textAt: (index) => section(book.chars[index] ?? 0),
+          lanes: 1,
+          batch: 24,
+          maxLaneChars: 8_000,
+          seedEpoch: 0,
+          firstLight: !book.started && turn.call!.indexes[0] === 0,
+          bookWave: true,
+          poolWarm,
+          playbackStarted: book.started,
+          bufferedMs: book.started ? book.wall : 0,
+          maxCalls: 1,
+          committedCall: true,
+          render,
+          stage: async () => {},
+        });
+        expect(posted.length).toBe(before + 1);
+        expect(posted.at(-1)).toEqual(turn.call!.indexes);
+        const spent = turn.call!.wallMs;
+        for (const other of states) {
+          if (!other.started || other.id === book.id) continue;
+          other.wall = Math.max(0, other.wall - spent);
+        }
+        if (!book.started) {
+          book.started = true;
+          book.wall = Math.floor(turn.call!.audioMs / 1.5);
+        } else {
+          book.wall = Math.max(0, book.wall - spent) + Math.floor(turn.call!.audioMs / 1.5);
+        }
+        book.next += turn.call!.indexes.length;
+        clock += spent;
+        poolWarm = true;
+      }
+      return { posted, clock, sections: sections.length };
+    }
+
+    const two = await replay(2);
+    // The one-row schedule posted 36,439,973 ms. These equalities fail on it.
+    expect(two.clock).toBe(3_056_922);
+    expect(two.posted.flat()).toHaveLength(two.sections * 2);
+    expect(two.posted.some((call) => call.length === 24)).toBe(true);
+    expect(two.posted.filter((call) => call.length === 1).length).toBe(4);
+
+    const three = await replay(3);
+    expect(three.clock).toBe(4_544_019);
+    expect(three.posted.flat()).toHaveLength(three.sections * 3);
+    expect(three.posted.some((call) => call.length === 24)).toBe(true);
+    expect(three.posted.filter((call) => call.length === 1).length).toBeLessThan(12);
+  });
+
+  it("packs both books into one call only as a redeploy payload", () => {
+    const rows = planMixedCloneBatch({
+      books: [
+        {
+          id: "a",
+          pending: [0, 1],
+          textAt: () => section(100),
+          referenceAudioBase64: "aaa",
+          referenceText: "voice a",
+          seedFor: (index) => index + 1,
+        },
+        {
+          id: "b",
+          pending: [0, 1],
+          textAt: () => section(100),
+          referenceAudioBase64: "bbb",
+          referenceText: "voice b",
+          seedFor: (index) => 10 + index,
+        },
+      ],
+      batch: 24,
+      env,
+    });
+    expect(rows.map((row) => row.bookId)).toEqual(["a", "b", "a", "b"]);
+    expect(new Set(rows.map((row) => row.referenceAudioBase64))).toEqual(new Set(["aaa", "bbb"]));
+    expect(rows[0]!.seed).toBe(1);
+    expect(rows[1]!.seed).toBe(10);
   });
 });
 

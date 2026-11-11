@@ -1108,6 +1108,57 @@ function rowThatStaysAhead(
   return [index];
 }
 
+type WarmPrefix = {
+  indexes: number[];
+  chars: number;
+  largest: number;
+  wallMs: number;
+};
+
+/**
+ * Warm prefixes of `rest`, shortest first, that stay inside the warm
+ * character cap, the 80 MiB body, and the warm HTTP wait.
+ *
+ * The buffer is not a stop. A caller that must leave slack walks this
+ * list and stops at the first prefix that misses it. A caller that is
+ * choosing a shared-GPU turn also sees the wider prefixes, because a
+ * one-row call cannot feed two listeners at 1.5×.
+ */
+function warmPrefixStats(
+  rest: number[],
+  batch: number,
+  textAt: (index: number) => string,
+  env: NodeJS.ProcessEnv
+): WarmPrefix[] {
+  const charCap = modalWarmLaneCharLimit(env);
+  const waitCap = modalCloneWarmWaitMs(env);
+  const out: WarmPrefix[] = [];
+  let chars = 0;
+  let largest = 0;
+  const limit = Math.min(Math.max(1, batch), rest.length);
+  for (let n = 1; n <= limit; n += 1) {
+    const size = textAt(rest[n - 1]!).length;
+    const nextChars = chars + size;
+    const nextLargest = Math.max(largest, size);
+    if (n > 1 && nextChars > charCap) break;
+    if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
+      break;
+    }
+    const wallMs = cloneCallWallMs({
+      chars: nextChars,
+      largestRow: nextLargest,
+      rows: n,
+      shape: "warm",
+      restore: false,
+    });
+    if (n > 1 && (wallMs >= waitCap || wallMs >= MODAL_CLONE_PROXY_KILL_MS)) break;
+    chars = nextChars;
+    largest = nextLargest;
+    out.push({ indexes: rest.slice(0, n), chars, largest, wallMs });
+  }
+  return out;
+}
+
 /**
  * Largest prefix of `rest` whose wall finishes inside the listener's
  * buffer, the warm character cap, the 80 MiB body, and the warm HTTP wait.
@@ -1125,40 +1176,18 @@ function largestWarmPrefix(
     // call would hold that audio until the last row of the call returns.
     return rest.slice(0, 1);
   }
-  const charCap = modalWarmLaneCharLimit(env);
-  const waitCap = modalCloneWarmWaitMs(env);
   // The buffer is the only width limit. A row packed for this opening is
   // sent when it leaves the slack; a 2,000-character row that does not fit
   // is not sent. Index is not a second, tighter cap: section 0 often closes
   // a sentence past 1,000 characters, and the next row is sized from that
   // audio. Capping it again at the 1,000-character opening's row left the
   // book queued after section 0.
-  let best = 0;
-  let chars = 0;
-  let largest = 0;
-  const limit = Math.min(batch, rest.length);
-  for (let n = 1; n <= limit; n += 1) {
-    const size = textAt(rest[n - 1]!).length;
-    const nextChars = chars + size;
-    const nextLargest = Math.max(largest, size);
-    if (n > 1 && nextChars > charCap) break;
-    if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
-      break;
-    }
-    const wall = cloneCallWallMs({
-      chars: nextChars,
-      largestRow: nextLargest,
-      rows: n,
-      shape: "warm",
-      restore: false,
-    });
-    if (n > 1 && (wall >= waitCap || wall >= MODAL_CLONE_PROXY_KILL_MS)) break;
-    if (!cloneCallFitsBuffer(wall, state.buffer, n)) break;
-    best = n;
-    chars = nextChars;
-    largest = nextLargest;
+  let best: number[] | null = null;
+  for (const pref of warmPrefixStats(rest, batch, textAt, env)) {
+    if (!cloneCallFitsBuffer(pref.wallMs, state.buffer, pref.indexes.length)) break;
+    best = pref.indexes;
   }
-  return best > 0 ? rest.slice(0, best) : null;
+  return best;
 }
 
 function pushCall(calls: CloneWaveCall[], state: ListenerState, call: CloneWaveCall): void {
@@ -1233,6 +1262,107 @@ function describeCloneWaveCall(input: {
   };
 }
 
+/** One already-chosen call. Dispatch posts these indexes instead of re-planning them shorter. */
+export function cloneWaveCallForIndexes(input: {
+  indexes: number[];
+  textAt: (index: number) => string;
+  shape: CloneWaveShape;
+  firstLight: boolean;
+  restore: boolean;
+  playbackStarted: boolean;
+  bufferedMs: number;
+  env?: NodeJS.ProcessEnv;
+}): CloneWaveCall {
+  return describeCloneWaveCall({
+    indexes: input.indexes,
+    shape: input.shape,
+    firstLight: input.firstLight,
+    restore: input.restore,
+    textAt: input.textAt,
+    env: input.env ?? process.env,
+    state: listenerState(input.playbackStarted, input.playbackStarted ? input.bufferedMs : 0),
+  });
+}
+
+export type MixedCloneRow = {
+  bookId: string;
+  index: number;
+  key: string;
+  text: string;
+  referenceAudioBase64?: string;
+  referenceText?: string;
+  seed?: number;
+};
+
+/**
+ * Rows from several books for one `synthesize_batch`.
+ *
+ * The deployed container cannot speak them. `synthesize_batch` takes one
+ * `reference_audio_base64` for the call, and `S2Engine.render` passes that
+ * one reference into every row's prompt. History is already per row, and
+ * the seed is one `torch.manual_seed` for the call. A per-item reference
+ * (and a per-item seed) is a container change, which means a Modal redeploy
+ * and a new snapshot. `MODAL_S2_MIXED_BOOK_BATCH` stays off, and the tick
+ * does not send this payload, until that container is the one answering.
+ *
+ * Round-robin keeps a short book from waiting behind a 24-row neighbour.
+ * The cap is the same warm character cap a one-book call uses.
+ */
+export function planMixedCloneBatch(input: {
+  books: Array<{
+    id: string;
+    pending: number[];
+    textAt: (index: number) => string;
+    referenceAudioBase64?: string;
+    referenceText?: string;
+    seedFor?: (index: number) => number;
+  }>;
+  batch: number;
+  env?: NodeJS.ProcessEnv;
+}): MixedCloneRow[] {
+  const env = input.env ?? process.env;
+  const batch = Math.max(1, Math.floor(input.batch));
+  const charCap = modalWarmLaneCharLimit(env);
+  const cursors = input.books.map((book) => ({ book, at: 0 }));
+  const rows: MixedCloneRow[] = [];
+  let chars = 0;
+  let placed = true;
+  while (rows.length < batch && placed) {
+    placed = false;
+    for (const cursor of cursors) {
+      if (rows.length >= batch) break;
+      const index = cursor.book.pending[cursor.at];
+      if (index == null) continue;
+      const text = cursor.book.textAt(index);
+      const nextChars = chars + text.length;
+      if (rows.length > 0 && nextChars > charCap) continue;
+      if (
+        rows.length > 0 &&
+        estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+      ) {
+        continue;
+      }
+      chars = nextChars;
+      cursor.at += 1;
+      placed = true;
+      rows.push({
+        bookId: cursor.book.id,
+        index,
+        key: `${cursor.book.id}:${index}`,
+        text,
+        ...(cursor.book.referenceAudioBase64
+          ? {
+              referenceAudioBase64: cursor.book.referenceAudioBase64,
+              referenceText: cursor.book.referenceText ?? "",
+              seed: cursor.book.seedFor?.(index),
+            }
+          : {}),
+      });
+    }
+  }
+  return rows;
+}
+
 export type CloneListener = {
   id: string;
   pending: number[];
@@ -1251,12 +1381,21 @@ export type CloneGpuTurn = {
 /**
  * Who may use the one GPU next, and the one call they may send.
  *
- * A call is legal when it finishes before the speaker's buffer runs out
- * and every other listener who has already started still has enough audio
- * left to cover their own next section. The book closer to a stall goes
- * first. A book that has not started gets the GPU only when taking it
- * does not drop a listener below that next section. Calls are never
+ * A book that has not started goes first when every listener who is
+ * already playing keeps the slack through that one section. After that,
+ * a call has to feed every started listener: one round of it, handed to
+ * each book in turn, must not shrink their buffers. A single
+ * 2,000-character row is about 64s of wall and about 84s of audio at
+ * 1.5×, so two listeners alternating those rows fall behind forever.
+ * When no slack-safe call can feed them, the turn is the feeding call
+ * with the least silence and the highest characters per wall second —
+ * a ramp or a batch, not another one-row thrash. Calls are never
  * concurrent: the caller runs this again when the call returns.
+ *
+ * One `synthesize_batch` still carries one reference voice. Rows from
+ * two books in one call need a container that reads a reference per
+ * item; that is {@link planMixedCloneBatch}, and it stays off the tick
+ * until that container is deployed.
  */
 export function chooseCloneGpuTurn(input: {
   books: CloneListener[];
@@ -1272,9 +1411,11 @@ export function chooseCloneGpuTurn(input: {
   const started = books.filter((book) => book.playbackStarted);
 
   // A listener who has not heard anything yet goes first, once the books
-  // already playing can spare this one section and still cover their own
-  // next one. Otherwise a deep buffer on the active book would take a full
-  // batch and leave the second listener waiting through it.
+  // already playing keep their slack through this one section. A deep
+  // buffer must not take a batch and leave the second listener waiting
+  // through it. The new book does not also have to leave the others a
+  // whole extra section: that reserve is what kept the second opening
+  // behind the ramp and then trapped both listeners on one-row calls.
   for (const book of books) {
     if (book.playbackStarted) continue;
     let call = firstSectionCall(book, input.poolWarm, env);
@@ -1287,7 +1428,7 @@ export function chooseCloneGpuTurn(input: {
         const state = listenerState(false, 0);
         const batched = describeCloneWaveCall({
           indexes: whole,
-          shape: "cold",
+          shape: input.poolWarm ? "warm" : "cold",
           firstLight: true,
           restore: !input.poolWarm,
           textAt: book.textAt,
@@ -1301,39 +1442,115 @@ export function chooseCloneGpuTurn(input: {
     return { bookId: book.id, call };
   }
 
-  const legal: Array<{ book: CloneListener; call: CloneWaveCall; slack: number }> = [];
-
-  for (const book of started) {
-    const others = started.filter((other) => other.id !== book.id);
-    const call = largestSharedPrefix(book, others, batch, env);
-    if (!call) continue;
-    legal.push({
-      book,
-      call,
-      slack: book.bufferedMs - call.wallMs,
-    });
-  }
-
-  if (legal.length > 0) {
-    legal.sort((a, b) => a.slack - b.slack);
-    const winner = legal[0]!;
-    return { bookId: winner.book.id, call: winner.call };
-  }
-
-  // No call leaves every listener with slack. The book closest to silence
-  // still has to move, or both wait forever. One row is the smallest
-  // spend. The playback sim counts an unfit row as a stall.
-  if (started.length > 0) {
+  if (!input.poolWarm && started.length > 0) {
     const closest = [...started].sort((a, b) => a.bufferedMs - b.bufferedMs)[0]!;
-    const call = firstSectionCall(closest, true, env);
-    return {
-      bookId: closest.id,
-      call: { ...call, fitsBuffer: cloneCallFitsBuffer(call.wallMs, closest.bufferedMs, 1) },
-    };
+    const cold = planModalCloneBookWave({
+      pending: closest.pending,
+      textAt: closest.textAt,
+      firstLight: false,
+      poolWarm: false,
+      batch,
+      bufferedMs: closest.bufferedMs,
+      playbackStarted: true,
+      maxCalls: 1,
+      env,
+    });
+    const call = cold.calls[0] ?? firstSectionCall(closest, false, env);
+    return { bookId: closest.id, call };
   }
+
+  const picked = selectWarmSharedTurn(started, batch, env);
+  if (picked) return { bookId: picked.book.id, call: picked.call };
 
   const first = books[0]!;
   return { bookId: first.id, call: firstSectionCall(first, input.poolWarm, env) };
+}
+
+/**
+ * True when one round of this call, served to each started listener,
+ * does not shrink the buffers.
+ *
+ * The audio arrives on one book. Every other listener only spends the
+ * wall. `audio / 1.5` has to cover this call once per listener.
+ */
+function callFeedsListeners(chars: number, wallMs: number, listeners: number): boolean {
+  if (!(wallMs > 0) || !(chars > 0)) return false;
+  return clonePlanningBufferMs(cloneAudioMs(chars)) >= wallMs * Math.max(1, listeners);
+}
+
+/**
+ * The warm call these started listeners should take.
+ *
+ * A slack-safe call that feeds everyone wins, and among those the
+ * highest characters per wall second — the wide batch, once the buffers
+ * can hold it. A one-row call feeds one listener and not two, so it is
+ * not that winner. When nothing slack-safe feeds them, the feeding call
+ * with the least silence is the growth step. One row is only the
+ * fallback when even a wide call cannot feed them, which is a book that
+ * has a single section left.
+ */
+function selectWarmSharedTurn(
+  started: CloneListener[],
+  batch: number,
+  env: NodeJS.ProcessEnv
+): { book: CloneListener; call: CloneWaveCall } | null {
+  if (started.length === 0) return null;
+  const listeners = started.length;
+  type Cand = {
+    book: CloneListener;
+    indexes: number[];
+    wallMs: number;
+    chars: number;
+    stall: number;
+    feeds: boolean;
+    slack: boolean;
+  };
+  const cands: Cand[] = [];
+  for (const book of started) {
+    for (const pref of warmPrefixStats(book.pending, batch, book.textAt, env)) {
+      let stall = 0;
+      for (const other of started) stall += Math.max(0, pref.wallMs - other.bufferedMs);
+      const feeds = callFeedsListeners(pref.chars, pref.wallMs, listeners);
+      const slack = started.every((other) =>
+        other.id === book.id
+          ? cloneCallFitsBuffer(pref.wallMs, book.bufferedMs, pref.indexes.length)
+          : otherStillPlaying(other, pref.wallMs)
+      );
+      cands.push({
+        book,
+        indexes: pref.indexes,
+        wallMs: pref.wallMs,
+        chars: pref.chars,
+        stall,
+        feeds,
+        slack,
+      });
+    }
+  }
+  const feeding = cands.filter((cand) => cand.feeds);
+  const slackFed = feeding.filter((cand) => cand.slack);
+  const pool = slackFed.length > 0 ? slackFed : feeding.length > 0 ? feeding : cands;
+  pool.sort((a, b) => {
+    if (a.stall !== b.stall) return a.stall - b.stall;
+    const supplyA = a.chars / Math.max(1, a.wallMs);
+    const supplyB = b.chars / Math.max(1, b.wallMs);
+    if (supplyA !== supplyB) return supplyB - supplyA;
+    return a.book.bufferedMs - b.book.bufferedMs;
+  });
+  const win = pool[0];
+  if (!win) return null;
+  return {
+    book: win.book,
+    call: describeCloneWaveCall({
+      indexes: win.indexes,
+      shape: "warm",
+      firstLight: false,
+      restore: false,
+      textAt: win.book.textAt,
+      env,
+      state: listenerState(true, win.book.bufferedMs),
+    }),
+  };
 }
 
 function firstSectionCall(
@@ -1375,87 +1592,11 @@ function nextSectionWall(book: CloneListener, skip: number, poolWarm: boolean): 
   });
 }
 
-/**
- * Largest warm prefix that fits the speaker and leaves every other
- * listener their slack.
- *
- * When a prefix also leaves each other listener enough for their own
- * next section, that one wins: a wide call should not be the thing that
- * makes the other book miss its next row. A 2,000-character row is about
- * 64s, so early on that reserve blocks every call, including the wide
- * ones that actually build buffer. Those turns use the widest prefix
- * that still leaves slack. One 2,000-character row is the wrong fallback:
- * at 1.5× two books alternating those rows lose a little buffer every
- * round and never reach a batch.
- */
-function largestSharedPrefix(
-  book: CloneListener,
-  others: CloneListener[],
-  batch: number,
-  env: NodeJS.ProcessEnv
-): CloneWaveCall | null {
-  const state = listenerState(true, book.bufferedMs);
-  const prefix = largestWarmPrefix(book.pending, state, batch, book.textAt, env);
-  if (!prefix) return null;
-  let bestPlaying: number[] | null = null;
-  let bestCovered: number[] | null = null;
-  for (let n = 1; n <= prefix.length; n += 1) {
-    const indexes = prefix.slice(0, n);
-    const call = describeCloneWaveCall({
-      indexes,
-      shape: "warm",
-      firstLight: false,
-      restore: false,
-      textAt: book.textAt,
-      env,
-      state,
-    });
-    if (!cloneCallFitsBuffer(call.wallMs, book.bufferedMs, indexes.length)) continue;
-    if (!others.every((other) => otherStillPlaying(other, call.wallMs))) continue;
-    const speakerNext = nextSectionWall(book, n, true);
-    const speakerAfter = advancePlanningBuffer(book.bufferedMs, call.wallMs, call.audioMs);
-    const speakerKeepsNext =
-      speakerNext <= 0 || speakerAfter >= speakerNext + cloneRampSlackMs(speakerAfter);
-    if (speakerKeepsNext) bestPlaying = indexes;
-    if (speakerKeepsNext && others.every((other) => otherCoversNext(other, call.wallMs))) {
-      bestCovered = indexes;
-    }
-  }
-  const best = bestCovered ?? bestPlaying;
-  if (!best) return null;
-  return describeCloneWaveCall({
-    indexes: best,
-    shape: "warm",
-    firstLight: false,
-    restore: false,
-    textAt: book.textAt,
-    env,
-    state,
-  });
-}
-
 /** The other listener still has slack left when this call returns. */
 function otherStillPlaying(other: CloneListener, wallMs: number): boolean {
   if (!other.playbackStarted) return true;
   const slack = cloneRampSlackMs(other.bufferedMs);
   return other.bufferedMs - wallMs >= slack;
-}
-
-/**
- * The other listener can still generate their next section after this
- * call and keep the slack. Used when that reserve still leaves a call;
- * {@link largestSharedPrefix} does not refuse every turn when it does not.
- */
-function otherCoversNext(other: CloneListener, wallMs: number): boolean {
-  if (!otherStillPlaying(other, wallMs)) return false;
-  const next = nextSectionWall(other, 0, true);
-  if (next <= 0) return true;
-  const slack = cloneRampSlackMs(other.bufferedMs);
-  return other.bufferedMs - wallMs - next >= slack;
-}
-
-function otherSurvives(other: CloneListener, wallMs: number): boolean {
-  return otherCoversNext(other, wallMs);
 }
 
 function unstartedCallIsSafe(
@@ -1464,9 +1605,9 @@ function unstartedCallIsSafe(
   started: CloneListener[]
 ): boolean {
   const opening = clonePlanningBufferMs(call.audioMs);
-  const next = nextSectionWall(book, 1, true);
+  const next = nextSectionWall(book, call.indexes.length, true);
   if (next > 0 && opening < next + cloneRampSlackMs(opening)) return false;
-  return started.every((other) => otherSurvives(other, call.wallMs));
+  return started.every((other) => otherStillPlaying(other, call.wallMs));
 }
 
 /**
@@ -1710,13 +1851,13 @@ export function simulateClonePlayback(input: {
 }
 
 /**
- * Two books, one GPU, both listened to at 1.5× from their own first audio.
- * Calls never overlap. The book closer to a stall is served, and a book
- * that has not started is served only when every current listener still
- * has a next section's worth of audio afterwards.
+ * Several books, one GPU, each listened to at 1.5× from its own first audio.
+ * Calls never overlap. {@link chooseCloneGpuTurn} picks the one call.
+ * A book with `startAtMs` is not in the queue until the clock reaches it,
+ * and it does not drain before its own first audio.
  */
-export function simulateTwoCloneListeners(input: {
-  books: Array<{ id: string; sectionChars: number[] }>;
+export function simulateCloneListeners(input: {
+  books: Array<{ id: string; sectionChars: number[]; startAtMs?: number }>;
   batch?: number;
   env?: NodeJS.ProcessEnv;
 }): {
@@ -1731,6 +1872,7 @@ export function simulateTwoCloneListeners(input: {
     chars: book.sectionChars,
     next: 0,
     started: false,
+    startAt: Math.max(0, book.startAtMs ?? 0),
     /** Wall time left at 1.5×. */
     wall: 0,
     /** Audio still unplayed at 1×. */
@@ -1749,7 +1891,7 @@ export function simulateTwoCloneListeners(input: {
     guard += 1;
     const turn = chooseCloneGpuTurn({
       books: states
-        .filter((book) => book.next < book.chars.length)
+        .filter((book) => book.next < book.chars.length && clock >= book.startAt)
         .map((book) => ({
           id: book.id,
           pending: book.chars.slice(book.next).map((_, offset) => book.next + offset),

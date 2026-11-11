@@ -801,10 +801,6 @@ export function cloneDropLedger(prev: JobSegment | undefined): {
 }
 
 /**
- * Character lengths of the next two unpublished sections. A missing
- * outline falls back to the caller's synthetic lengths.
- */
-/**
  * Indexes a clone tick may still render, in playback order.
  *
  * `claimableIndexes` finishes every never-attempted section before it
@@ -823,6 +819,47 @@ export function clonePendingIndexes(
   return [...indexes].sort((a, b) => a - b);
 }
 
+/**
+ * The other book's next sections, up to one batch.
+ *
+ * Two placeholder rows made every shared turn look like a one-row book,
+ * so the chooser could not hand that book a batch and kept both listeners
+ * on single rows. A missing outline still offers a full batch of the
+ * steady width, which is enough to yield the GPU; that book's own tick
+ * sends the sections it actually has.
+ */
+export function otherCloneShareView(
+  outline: { index: number; text: string }[] | null,
+  segments: { index: number; status: string }[],
+  batch: number,
+  started: boolean,
+  steadyChars: number
+): { pending: number[]; textAt: (index: number) => string } {
+  const published = new Set(
+    segments
+      .filter((segment) => segment.status === "ready" || segment.status === "mastering")
+      .map((segment) => segment.index)
+  );
+  const open = (outline ?? [])
+    .filter((section) => !published.has(section.index))
+    .sort((a, b) => a.index - b.index)
+    .slice(0, Math.max(1, batch));
+  if (open.length > 0) {
+    const text = new Map(open.map((section) => [section.index, section.text]));
+    return {
+      pending: open.map((section) => section.index),
+      textAt: (index) => text.get(index) ?? "",
+    };
+  }
+  const width = started ? steadyChars : MODAL_CLONE_OPENING_SECTION_CHARS;
+  const count = Math.max(1, batch);
+  return {
+    pending: Array.from({ length: count }, (_, index) => index),
+    textAt: () => "x".repeat(Math.max(1, width)),
+  };
+}
+
+/** Character lengths of the next two unpublished sections. A missing outline uses the fallback. */
 export function unpublishedSectionLengths(
   sections: { index: number; text: string }[] | null,
   segments: { index: number; status: string }[],
@@ -2054,13 +2091,12 @@ async function runClaimedTick(
               );
               const steady = modalCloneSectionChars();
               const outline = await loadFrozenSectionOutline(other.id);
-              const [firstLen, secondLen] = unpublishedSectionLengths(
+              const otherView = otherCloneShareView(
                 outline,
                 otherSegments,
-                [
-                  !otherPlay.started ? MODAL_CLONE_OPENING_SECTION_CHARS : steady,
-                  !otherPlay.started ? modalCloneSecondCallChars() : steady,
-                ]
+                batch,
+                otherPlay.started,
+                steady
               );
               const turn = chooseCloneGpuTurn({
                 books: [
@@ -2074,8 +2110,8 @@ async function runClaimedTick(
                   },
                   {
                     id: `other:${other.id}`,
-                    pending: [0, 1],
-                    textAt: (index) => "x".repeat(index === 0 ? firstLen : secondLen),
+                    pending: otherView.pending,
+                    textAt: otherView.textAt,
                     playbackStarted: otherPlay.started,
                     bufferedMs: otherPlay.bufferedMs,
                     firstLight: !otherPlay.started,
@@ -2140,6 +2176,11 @@ async function runClaimedTick(
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
                     maxCalls: shareGpu ? 1 : undefined,
+                    // The shared-GPU chooser already sized this call. A growth
+                    // call is wider than the buffer on purpose; planning it
+                    // again would shrink it to one row and both listeners
+                    // would stay on the 33 chars/s path.
+                    committedCall: shareGpu,
                     yieldToOther: async () => Boolean(await otherTakehomeListener(jobId)),
                     entireRemainder:
                       gpuIndexes.length > 0 &&

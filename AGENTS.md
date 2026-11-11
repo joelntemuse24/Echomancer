@@ -446,16 +446,24 @@ plain `modal deploy` resets the override, so 8c is repeated.
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
   180s scaledown) is one cold-sized call again, then the ramp resumes.
   Warmth is in-process memory: a worker restart costs one cold call.
-  Two books share the GPU. They do not POST together. A book that has not
-  started gets the next call once every listener who has already started
-  can spare that one section and still cover their own next row. After
-  that, the book closer to a stall is served, and a call is sent only when
-  it also leaves the other listener enough audio for their next section.
-  Once both books are on 2,000-character rows that spare is not there at
-  1.5× (a row is ~64s and the other listener has ~20s), so the closer book
-  still takes one row and the margin goes negative. A single book keeps
-  the 15s floor.
-  The second book's first call is still one section, even on a warm pool.
+  Two books share the GPU. They do not POST together, and they do not
+  alternate 2,000-character rows: one row is ~64s of wall and ~84s of
+  audio at 1.5×, so the other listener falls behind on every turn, while
+  a 24-row call is ~528 chars/s and feeds both. The second book starts
+  once the first can spare that one opening and still keep its slack.
+  After that, each turn is the feeding call with the least silence and
+  the highest characters per wall second (grow, then a batch). A growth
+  call wider than the buffer is posted as chosen (`committedCall`);
+  planning it again would shrink it to one row. Two 10-hour books take
+  **3,056,922 ms** (under twice one book's 1,576,533 ms). First audio is
+  71,576 ms and 165,272 ms. The tightest 1.5× margins are −53,121 ms and
+  −23,036 ms, both on the one growth step, then the batches stay ahead.
+  A single book keeps the 15s floor. One `synthesize_batch` still has one
+  reference and one seed, so rows from two books cannot share a call
+  until the container reads a reference per item. That is a Modal
+  redeploy. `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does
+  not send per-item references. The second book's first call is still
+  one section, even on a warm pool.
   A second worker can still hold a second slot (`modalCloneLanes()` stays
   4); with `S2C_MAX_CONTAINERS=1` that POST gets 429. Do not raise the
   autoscaler to 4 to "use" that slot.

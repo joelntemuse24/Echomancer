@@ -47,6 +47,7 @@ import {
   cloneAudioMs,
   cloneCallWallMs,
   clonePlanningBufferMs,
+  cloneWaveCallForIndexes,
   modalCloneArmedWaitMs,
   planModalCloneBookWave,
   planModalCloneLanes,
@@ -142,6 +143,12 @@ export interface LaneDispatchOptions {
   playbackStarted?: boolean;
   /** Stop the ramp after this many calls so another book can take the GPU. */
   maxCalls?: number;
+  /**
+   * `indexes` is already the one call {@link chooseCloneGpuTurn} chose.
+   * Post that call. Do not plan it again: a growth call is wider than the
+   * buffer on purpose, and the ramp would shrink it back to one row.
+   */
+  committedCall?: boolean;
   /**
    * Called before every call after the first. When it returns true the
    * ramp stops so a take-home that became runnable during this tick can
@@ -448,19 +455,33 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
         break;
       }
     }
-    const plan = planModalCloneBookWave({
-      pending,
-      textAt: opts.textAt,
-      firstLight: opts.firstLight === true && !started,
-      poolWarm,
-      batch: opts.batch,
-      bufferedMs: buffer,
-      playbackStarted: started,
-      entireRemainder:
-        opts.entireRemainder === true && pending.length === opts.indexes.length,
-      maxCalls: 1,
-    });
-    const call = plan.calls[0];
+    const opening = opts.firstLight === true && !started;
+    const committed = opts.committedCall === true && made === 0;
+    const call = committed
+      ? cloneWaveCallForIndexes({
+          indexes: pending,
+          textAt: opts.textAt,
+          // A warm pool has already restored. The opening on a cold pool is
+          // the cold call. A later section on a cold pool is one cold-sized
+          // call, which is all the shared-GPU chooser commits in that case.
+          shape: poolWarm ? "warm" : "cold",
+          firstLight: opening,
+          restore: !poolWarm,
+          playbackStarted: started,
+          bufferedMs: buffer,
+        })
+      : planModalCloneBookWave({
+          pending,
+          textAt: opts.textAt,
+          firstLight: opening,
+          poolWarm,
+          batch: opts.batch,
+          bufferedMs: buffer,
+          playbackStarted: started,
+          entireRemainder:
+            opts.entireRemainder === true && pending.length === opts.indexes.length,
+          maxCalls: 1,
+        }).calls[0];
     if (!call) break;
     log(
       `[S2 lanes] book wave pool=${poolWarm ? "warm" : "cold"} ` +

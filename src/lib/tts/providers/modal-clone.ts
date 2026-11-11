@@ -59,6 +59,7 @@ import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
   modalCloneCallTimeoutMs,
+  modalCloneMixedBookBatchEnabled,
   modalCloneLanes,
   modalCloneReadyProbeEnabled,
   modalCloneReadyTimeoutMs,
@@ -370,6 +371,14 @@ export async function loadCloneReference(
 export interface CloneBatchItem {
   key: string;
   text: string;
+  /**
+   * Per-row reference. Sent only when `MODAL_S2_MIXED_BOOK_BATCH=1`.
+   * The deployed container ignores these and uses the call-level reference,
+   * so the tick does not set them.
+   */
+  referenceAudioBase64?: string;
+  referenceText?: string;
+  seed?: number;
 }
 
 type BatchRow = {
@@ -471,7 +480,20 @@ export async function renderModalCloneBatch(
   const payload = await postJson(
     modalBatchUrl(),
     {
-      items: items.map((item) => ({ key: item.key, text: item.text })),
+      items: items.map((item) => ({
+        key: item.key,
+        text: item.text,
+        // The current container reads one reference for the call. These
+        // fields are the redeployed contract; they are omitted until
+        // MODAL_S2_MIXED_BOOK_BATCH=1, and the tick still does not mix books.
+        ...(modalCloneMixedBookBatchEnabled() && item.referenceAudioBase64
+          ? {
+              reference_audio_base64: item.referenceAudioBase64,
+              reference_text: item.referenceText ?? "",
+              ...(item.seed != null ? { seed: item.seed } : {}),
+            }
+          : {}),
+      })),
       reference_audio_base64: reference.audio.toString("base64"),
       reference_text: reference.transcript,
       sampling: MODAL_S2_SAMPLING,
