@@ -349,18 +349,22 @@ def log_verdict(app_name: str, container_hex: str | None, since: str = "45m") ->
     """(verdict, ta-id) from Modal's logs for one placement. Best effort."""
     if not container_hex:
         return "unverified", None
-    app_log = _modal_cli(
-        ["app", "logs", app_name, "--since", since, "--show-container-id",
-         "--search", f"container={container_hex}", "--tail", "50"],
-        timeout=90,
-    )
-    task = task_id_for_container(app_log or "", container_hex)
-    if not task:
-        return "unverified", None
+    task = None
     verdict = "unverified"
-    for attempt in range(3):  # Modal's log index can lag the call by seconds
+    # Modal's log index lags the call by seconds: the `[S2C] container=` line
+    # can land after `status()` has already answered. Retry both lookups.
+    for attempt in range(4):
         if attempt:
             time.sleep(10)
+        if not task:
+            app_log = _modal_cli(
+                ["app", "logs", app_name, "--since", since, "--show-container-id",
+                 "--search", f"container={container_hex}", "--tail", "50"],
+                timeout=90,
+            )
+            task = task_id_for_container(app_log or "", container_hex)
+            if not task:
+                continue
         sys_log = _modal_cli(
             ["app", "logs", app_name, "--since", since, "--show-container-id",
              "--timestamps", "--source", "system", "--container", task, "--tail", "200"],
