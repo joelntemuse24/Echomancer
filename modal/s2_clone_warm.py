@@ -42,8 +42,10 @@ October snapshot, so an empty file is rejected before it reaches the GPU.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import pathlib
+import subprocess
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +57,10 @@ from s2_contract import (
     RESTORE_WALL_S,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
+    cover_placement_kind,
+    count_app_containers,
+    snapshot_log_verdict,
+    task_id_for_container,
     ReferenceTextError,
     placement_kind,
     validate_reference_audio,
@@ -62,9 +68,14 @@ from s2_contract import (
     warm_reference_wav,
 )
 
-#: How long one RPC may sit. Long enough for an 8–16 min compile. Books never
-#: use this; their HTTP wait is the restore budget.
-RPC_COMPILE_TIMEOUT_S = 1200
+#: How long one RPC may sit. Matches the service's S2C_INIT_TIMEOUT (1800 s):
+#: the slow H100 host variant compiles in ~19 min, past the old 1200 s, so the
+#: client gave up seconds before the snapshot landed. Books never use this;
+#: their HTTP wait is the restore budget.
+RPC_COMPILE_TIMEOUT_S = 1800
+
+#: Longest a cover run waits for the previous round's containers to exit.
+ZERO_WAIT_MAX_S = 900
 
 # An app object is required to host `local_entrypoint`; nothing is deployed
 # from this file. The worker lives in s2_clone_service.py.
@@ -294,6 +305,73 @@ def _classify_row(status: dict, restore_s: float, compile_s: float) -> str:
     )
 
 
+def _modal_cli(args: list[str], timeout: float) -> str | None:
+    """Run the Modal CLI with a hard timeout. None when it is unavailable."""
+    cli = os.environ.get("MODAL_CLI", "modal")
+    try:
+        out = subprocess.run(
+            [cli, *args], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        print(f"  (modal {' '.join(args[:2])} unavailable: {err})")
+        return None
+    return out.stdout
+
+
+def app_container_count(app_name: str = APP_NAME) -> int | None:
+    raw = _modal_cli(["container", "list", "--json"], timeout=60)
+    if raw is None:
+        return None
+    try:
+        return count_app_containers(json.loads(raw or "[]"), app_name)
+    except ValueError:
+        return None
+
+
+def wait_for_zero(app_name: str = APP_NAME, max_wait_s: float = ZERO_WAIT_MAX_S) -> bool:
+    """Block until `app_name` has no containers, so the next call is cold.
+
+    A fixed sleep is not enough: a container that is still up answers the next
+    call warm and looks like a one-second restore.
+    """
+    deadline = time.time() + max_wait_s
+    while True:
+        n = app_container_count(app_name)
+        print(f"  containers of {app_name}: {n if n is not None else 'unknown'}")
+        if n == 0:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(15)
+
+
+def log_verdict(app_name: str, container_hex: str | None, since: str = "45m") -> tuple[str, str | None]:
+    """(verdict, ta-id) from Modal's logs for one placement. Best effort."""
+    if not container_hex:
+        return "unverified", None
+    app_log = _modal_cli(
+        ["app", "logs", app_name, "--since", since, "--show-container-id",
+         "--search", f"container={container_hex}", "--tail", "50"],
+        timeout=90,
+    )
+    task = task_id_for_container(app_log or "", container_hex)
+    if not task:
+        return "unverified", None
+    verdict = "unverified"
+    for attempt in range(3):  # Modal's log index can lag the call by seconds
+        if attempt:
+            time.sleep(10)
+        sys_log = _modal_cli(
+            ["app", "logs", app_name, "--since", since, "--show-container-id",
+             "--timestamps", "--source", "system", "--container", task, "--tail", "200"],
+            timeout=90,
+        )
+        verdict = snapshot_log_verdict(sys_log or "", task)
+        if verdict != "unverified":
+            break
+    return verdict, task
+
+
 def cover_variants(
     worker,
     *,
@@ -304,56 +382,61 @@ def cover_variants(
     restore_s: float,
     compile_s: float,
     rpc_timeout: int,
+    verify_logs: bool = True,
 ) -> None:
-    """Place containers until `streak` calls in a row restore by wall clock.
+    """Place containers until `streak` fresh containers in a row restore.
 
-    Between rounds the previous containers are given `scaledown` seconds to
-    exit, so the next fan-out can land on a different worker variant. A compile
-    (wall >= compile_s) is success for *this* command — the snapshot sticks —
-    and it resets the restore streak. A book never runs this.
+    Between rounds this waits until the app has zero containers (not a fixed
+    sleep), so every placement is cold. A container id seen before, or one that
+    was ready before the call started, is `reuse` and never counts. With
+    `verify_logs`, a wall-clock restore only counts when Modal's system log has
+    `Restoring Function from memory snapshot` for that container. A compile is
+    success for *this* command (the snapshot sticks) and resets the streak.
     """
     print(
         "Books never build GPU snapshots. This RPC may: there is no HTTP proxy "
         f"limit, and each call may run for {rpc_timeout}s."
     )
-    print(
-        "Judge restores by wall time, not boot=. boot=unknown is normal on a "
-        "real restore. Modal's log line 'Restoring Function from memory "
-        "snapshot' is the platform record."
-    )
+    seen: set = set()
     streak_n = 0
     compiles = 0
     target = max(1, streak)
     total_rounds = max(1, rounds)
     for round_i in range(total_rounds):
         if round_i and scaledown > 0:
-            wait = scaledown + 5
-            print(f"\nscale-to-zero: waiting {wait}s so the next placement is fresh …")
-            time.sleep(wait)
+            print("\nscale-to-zero: waiting until the app has 0 containers …")
+            if not wait_for_zero(APP_NAME, max(ZERO_WAIT_MAX_S, scaledown + 60)):
+                print("  containers did not reach 0; stopping so nothing counts a warm reuse.")
+                break
         print(f"\n== cover round {round_i + 1}/{total_rounds} ==")
         results = _fanout_status(worker, containers, rpc_timeout)
         for i, status in enumerate(results):
             wall = float(status.get("wall_s") or 0)
-            kind = _classify_row(status, restore_s, compile_s)
+            kind = cover_placement_kind(status, seen, restore_s=restore_s, compile_s=compile_s)
+            cid = status.get("container_id")
+            task = None
+            log_kind = "skipped"
+            if verify_logs and kind in ("restore", "compile", "slow"):
+                log_kind, task = log_verdict(APP_NAME, cid)
+                if kind == "restore" and log_kind != "restore":
+                    kind = "restore-unverified"
             print(
-                f"  {i}: wall={wall:.1f}s kind={kind} boot={status.get('boot')} "
-                f"id={status.get('container_id')} {status.get('error') or ''}"
+                f"  {i}: wall={wall:.1f}s kind={kind} log={log_kind} task={task} "
+                f"since_ready={status.get('since_ready_s')} id={cid} {status.get('error') or ''}"
             )
+            if cid:
+                seen.add(cid)
             if kind == "compile":
                 compiles += 1
-                print(
-                    "    this call built a snapshot (wall time). "
-                    "The next placement on that variant should restore."
-                )
-            if kind == "restore":
-                streak_n += 1
-            else:
-                streak_n = 0
+                print("    this call built a snapshot. The next placement on that variant should restore.")
+            if kind == "reuse":
+                print("    warm reuse of a running container: proves nothing, not counted.")
+                continue
+            streak_n = streak_n + 1 if kind == "restore" else 0
             if streak_n >= target:
                 print(
-                    f"\n{target} consecutive restores by wall clock "
-                    f"(<= {restore_s:.0f}s). Variant coverage is in place.\n"
-                    "Books still must not be the thing that compiles."
+                    f"\n{target} consecutive restores on fresh containers "
+                    f"(<= {restore_s:.0f}s{', confirmed in Modal logs' if verify_logs else ''})."
                 )
                 return
     print(
@@ -361,15 +444,9 @@ def cover_variants(
         f"restore streak {streak_n}/{target}."
     )
     if compiles:
-        print(
-            "Those compiles were off the book path. Re-run cover after "
-            "scale-to-zero until the restore streak lands; do not send a book."
-        )
+        print("Re-run cover until the restore streak lands; do not send a book.")
     else:
-        print(
-            "No compile finished and the restore streak was not met. "
-            "Re-run cover. Do not use a customer book to build the snapshot."
-        )
+        print("Restore streak not met. Re-run cover; do not use a customer book.")
 
 
 @app.local_entrypoint()
@@ -381,6 +458,7 @@ def cover(
     restore_s: float = RESTORE_WALL_S,
     compile_s: float = COMPILE_WALL_S,
     rpc_timeout: int = RPC_COMPILE_TIMEOUT_S,
+    verify_logs: bool = True,
 ) -> None:
     """Cover worker variants until consecutive restores succeed.
 
@@ -399,6 +477,7 @@ def cover(
         restore_s=restore_s,
         compile_s=compile_s,
         rpc_timeout=rpc_timeout,
+        verify_logs=verify_logs,
     )
 
 

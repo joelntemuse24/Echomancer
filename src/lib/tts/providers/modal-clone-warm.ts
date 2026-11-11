@@ -23,8 +23,12 @@
  */
 import { spawn } from "node:child_process";
 
-/** Long enough that a second book does not start a second compile. */
-export const MODAL_CLONE_WARM_COOLDOWN_MS = 20 * 60_000;
+/**
+ * Long enough that a second book does not start a second compile. Matches the
+ * cover RPC timeout (1800 s, `RPC_COMPILE_TIMEOUT_S` in s2_clone_warm.py): the
+ * slow H100 host variant compiles in ~19 min, so 20 min was too tight.
+ */
+export const MODAL_CLONE_WARM_COOLDOWN_MS = 30 * 60_000;
 
 /**
  * A pre-warm is only useful for the gap between "a book is starting" and "its
