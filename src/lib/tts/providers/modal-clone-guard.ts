@@ -250,11 +250,12 @@ function clampMs(
 // ── lanes, cold start, and deferral ────────────────────────────────────────
 
 /**
- * Target container shape: one frozen deployed app, four independent one-GPU
- * containers, `min_containers=0`. `S2C_MAX_CONTAINERS` on the Modal side is
- * the hard cap; this is how many concurrent batch calls this worker aims for.
- * A lane beyond the server cap just queues inside Modal, so the two values
- * should match after staging.
+ * Shared slot cap across workers, not the number of GPUs one book opens.
+ *
+ * A book wave sends one call. This cap stays at 4 so a second worker blocks
+ * on the slot instead of posting without a limit. With `S2C_MAX_CONTAINERS=1`
+ * a second POST is 429, not a second H100. Do not raise the autoscaler to
+ * match this number. `min_containers` stays 0.
  */
 export const MODAL_CLONE_LANES_DEFAULT = 4;
 export const MODAL_CLONE_LANES_MAX = 8;
@@ -337,6 +338,50 @@ export const MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS = 75_000;
  * pays it once per call, not per row, so it is a constant, not a multiplier.
  */
 export const MODAL_CLONE_CALL_PREP_MS = 20_000;
+
+/**
+ * Modal's web proxy drops a request at about this. A book call must finish
+ * inside it; a compile is not a book call and is not waited on here.
+ */
+export const MODAL_CLONE_PROXY_KILL_MS = 542_000;
+
+/** Left under the proxy kill for MP3 encode and the JSON body. */
+export const MODAL_CLONE_PROXY_MARGIN_MS = 60_000;
+
+/**
+ * HTTP wait for a batch whose container has already answered this process.
+ *
+ * Longer than the cold placement ceiling (`MODAL_CLONE_COLD_WAIT_MAX_MS`),
+ * because that ceiling exists so a cold call cannot sit through a compile.
+ * A warm call is not compiling. 400s is still ~140s under the proxy kill.
+ */
+export const MODAL_CLONE_WARM_WAIT_DEFAULT_MS = 400_000;
+
+/**
+ * How long after a successful call this process still treats the one H100
+ * as restored.
+ *
+ * `S2C_SCALEDOWN` defaults to 300s. The production autoscaler override in
+ * the runbook is 180s, and this hold is the shorter of those minus 15s so a
+ * fat call is not planned after the container can already be gone. Raise
+ * `MODAL_S2_WARM_HOLD_MS` only when the live scaledown is longer.
+ */
+export const MODAL_CLONE_WARM_HOLD_DEFAULT_MS = 165_000;
+
+export function modalCloneWarmWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const ceiling = MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_PROXY_MARGIN_MS;
+  const raw = Number(env.MODAL_S2_WARM_WAIT_MS);
+  const chosen =
+    Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : MODAL_CLONE_WARM_WAIT_DEFAULT_MS;
+  return Math.min(ceiling, Math.max(30_000, chosen));
+}
+
+export function modalCloneWarmHoldMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.MODAL_S2_WARM_HOLD_MS);
+  const chosen =
+    Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : MODAL_CLONE_WARM_HOLD_DEFAULT_MS;
+  return Math.min(30 * 60_000, Math.max(0, chosen));
+}
 
 export function modalCloneFirstLightWaitMs(
   env: NodeJS.ProcessEnv = process.env

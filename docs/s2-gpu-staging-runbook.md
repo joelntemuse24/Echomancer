@@ -650,6 +650,16 @@ than substituting a voice.
 
 ## 8. Promote to four lanes in production
 
+**Leave the live cap at 1.** The worker sends one `synthesize_batch` at a time
+and fills that call once the container has answered (see
+`docs/s2-lane-budget.md`). `max_containers=4` starts GPUs a single book does
+not use. Do not re-apply 8c after deploying the warm-batch worker.
+`min_containers` stays 0. `scaledown_window` can stay 180s; the client treats
+the pool as warm for 165s after the last answer (`MODAL_S2_WARM_HOLD_MS`).
+
+The steps below are the historical four-lane promote. They are not the next
+step for the one-GPU batch schedule.
+
 Only with every box above ticked and evidence pasted into the PR.
 
 **The primary path raises the cap at runtime, after the deploy.** Staging proved

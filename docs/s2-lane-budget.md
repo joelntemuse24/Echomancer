@@ -78,7 +78,35 @@ lane cap          = 80s x 100 chars/s
   own text at the worse of the aggregate and single-row rates. The packer and
   the timeout therefore cannot disagree.
 - `modalCloneSectionChars` — **2,000** characters per clone section (~40s as a
-  row). Four of them still batch into one 8,000-char call, so batching survives.
+  row). Four of them still fit one cold call. A warm call carries up to 24.
+
+## Warm batches, after the container has answered
+
+The 8,000-character cap assumes the call might still be restoring. Production
+runs `MODAL_S2_READY=0`, so every call used to be planned that way and a
+restored H100 rendered about four rows of a 24-row batch.
+
+`planModalCloneBookWave` keeps that cap for the first call and for any call
+whose last success is older than `MODAL_S2_WARM_HOLD_MS` (default 165s, under
+the production 180s scaledown). After a successful answer the next call is
+one batch:
+
+```
+warm wait     = 400s          (MODAL_S2_WARM_WAIT_MS, ceiling 482s)
+packing rate  = 150 chars/s   (above the ≥127 chars/s 4-row floor,
+                               under the unverified 35× / 525 chars/s band)
+warm cap      = min(380s × 150, ~80 MiB of base64)
+              = 57,000 characters at the defaults
+rows          = min(batch, cap)   batch defaults to 24, so 24 × 2,000 wins
+```
+
+24 × 2,000 is 48,000 characters: 320s at 150 chars/s plus 20s of prep, inside
+400s, and about 68MB of base64. The response stays `audio_b64` JSON. A paid
+smoke has to confirm that body arrives whole. `MODAL_S2_WARM_LANE_MAX_CHARS`
+can only lower the cap; `8000` is the rollback to today's shape.
+
+One book, one call. Two books alternate waves. The second book's first call
+is still one section.
 
 `MODAL_S2_LANE_MAX_CHARS` can only **lower** the cap. That is deliberate: the
 stopgap must not be able to recreate the oversized pack.
@@ -105,8 +133,10 @@ pm2 logs echomancer-takehome --lines 300 \
 Healthy:
 
 - `pack evenFanout=… target=2000` — the clone width, not 7797
-- `S2 lanes=… batch=24 …` and each `page of N rendered N/N` with the page's
-  characters **at or under 8,000**
+- `S2 lanes=1 batch=24 …` and `book wave pool=warm warm:24` after the first
+  answer. A `cold:` page stays **at or under 8,000** characters. A `warm:`
+  page stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
+  and at or under 24 rows.
 - no `multi-section call missed its budget` line
 - `first=0:staged@Ns` for the first audio
 

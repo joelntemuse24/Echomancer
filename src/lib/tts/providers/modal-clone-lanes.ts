@@ -2,9 +2,9 @@
  * Lane dispatch for the self-hosted S2-Pro clone path.
  *
  * One lane is one HTTP batch call, and Modal starts one container per
- * concurrent call, so the lane count *is* the number of GPUs this book uses.
- * That is deliberate: GPU memory snapshots are documented as generally
- * incompatible with multi-GPU programs, so replicas are the scaling unit.
+ * concurrent call. The book schedule (`planModalCloneBookWave`) uses one
+ * lane: the GPU this book already restored. Opening a second call opens a
+ * second GPU when the autoscaler cap is above 1, which this path does not do.
  *
  * ## Why rows per call matter more than lanes
  *
@@ -42,9 +42,13 @@
  */
 
 import {
+  CLONE_CHARS_PER_AUDIO_MINUTE,
   MODAL_CLONE_CALL_PREP_MS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
   modalCloneColdWaitMs,
+  modalCloneFirstLightWaitMs,
+  modalCloneWarmHoldMs,
+  modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
 
 export interface LaneLimits {
@@ -175,6 +179,45 @@ export const MODAL_LANE_CHARS_PER_SECOND = 100;
 export const MODAL_LANE_ROW_CHARS_PER_SECOND = 50;
 
 /**
+ * Expected aggregate rate of a full S2-Pro batch: the low end of the
+ * documented 35–65× realtime band, times 15 characters per audio second.
+ * Not a 24-row measurement. Packing does not use this number.
+ */
+export const MODAL_LANE_WARM_CHARS_PER_SECOND = 525;
+
+/**
+ * Rate a warm call is packed against.
+ *
+ * A one-row H100 call is ~50 chars/s. The unfinished four-row call on
+ * `job 7e4a8b48` was already at least 127 chars/s when it was aborted, and
+ * a full 24-row batch should be faster because the model rereads its weights
+ * per frame. 150 sits just above that floor and well under the 525 chars/s
+ * the 35× band implies, so a batch that only partly fills the GPU still
+ * finishes inside its wait. The old 2,900 constant was a unit error
+ * (realtime treated as chars/s) and is what let one call swallow 31k chars.
+ */
+export const MODAL_LANE_WARM_PACK_CHARS_PER_SECOND = 150;
+
+/**
+ * Largest base64 JSON body a warm call is allowed to plan.
+ *
+ * Production returns `audio_b64` over HTTP. A box-side `.remote()` download
+ * of a multi-megabyte body was truncated (`ContentLengthError`) on
+ * 2026-11-10; HTTP is a different path, and this change does not alter the
+ * deployed container's contract. The bound keeps one response near 80 MiB
+ * of base64 (about 60 MiB of 128 kbps MP3). A paid smoke has to confirm the
+ * body arrives whole.
+ */
+export const MODAL_CLONE_RESPONSE_BODY_MAX_BYTES = 80 * 1024 * 1024;
+
+/** 128 kbps mono MP3, then base64 (4/3), at the narration rate. */
+export function estimateCloneBatchJsonBytes(chars: number): number {
+  const audioSeconds = (Math.max(0, chars) / CLONE_CHARS_PER_AUDIO_MINUTE) * 60;
+  const mp3Bytes = audioSeconds * (128_000 / 8);
+  return Math.ceil((mp3Bytes * 4) / 3);
+}
+
+/**
  * What a cold call spends before it generates anything.
  *
  * Measured: ~57s for a snapshot restore, then ~12s of reference encode and
@@ -244,11 +287,45 @@ export function modalLaneCharCap(env: NodeJS.ProcessEnv = process.env): number {
  */
 export function modalLaneWorkMs(
   pageChars: number,
-  largestRowChars: number
+  largestRowChars: number,
+  charsPerSecond: number = MODAL_LANE_CHARS_PER_SECOND
 ): number {
-  const aggregate = (pageChars / MODAL_LANE_CHARS_PER_SECOND) * 1000;
+  const rate = charsPerSecond > 0 ? charsPerSecond : MODAL_LANE_CHARS_PER_SECOND;
+  const aggregate = (pageChars / rate) * 1000;
   const slowestRow = (largestRowChars / MODAL_LANE_ROW_CHARS_PER_SECOND) * 1000;
   return Math.max(0, Math.round(Math.max(aggregate, slowestRow)));
+}
+
+/**
+ * Characters one warm call may carry.
+ *
+ * Time is the warm wait minus prep, at the packing rate. Bytes are the
+ * base64 ceiling. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the result,
+ * the same way `MODAL_S2_LANE_MAX_CHARS` can only lower a cold call.
+ */
+export function modalWarmLaneCharLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const generateMs = Math.max(1_000, modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_PREP_MS);
+  const byTime = Math.floor((generateMs / 1000) * MODAL_LANE_WARM_PACK_CHARS_PER_SECOND);
+  const perChar = estimateCloneBatchJsonBytes(10_000) / 10_000;
+  const byResponse = Math.floor(MODAL_CLONE_RESPONSE_BODY_MAX_BYTES / perChar);
+  const cap = Math.max(MODAL_LANE_MIN_CHARS, Math.min(byTime, byResponse));
+  const override = Number(env.MODAL_S2_WARM_LANE_MAX_CHARS);
+  if (!Number.isFinite(override) || override <= 0) return cap;
+  return Math.min(cap, Math.floor(override));
+}
+
+/**
+ * True while a successful answer is still inside the scaledown hold.
+ * `answeredAt` is null until this process has heard the container.
+ */
+export function clonePoolStillWarm(
+  now: number,
+  answeredAt: number | null,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (answeredAt == null || !Number.isFinite(answeredAt) || !Number.isFinite(now)) return false;
+  if (now < answeredAt) return false;
+  return now - answeredAt <= modalCloneWarmHoldMs(env);
 }
 
 /**
@@ -298,4 +375,137 @@ export function modalLaneCharLimit(
  */
 export function sectionSeedEpoch(priorAttempts: number): number {
   return Math.max(0, Math.floor(priorAttempts));
+}
+
+export type CloneWaveShape = "cold" | "warm";
+
+export type CloneWaveCall = {
+  indexes: number[];
+  shape: CloneWaveShape;
+  chars: number;
+  /** Generation time the packing rate assigns this call. */
+  workMs: number;
+  /** HTTP wait this call is allowed. A warm wait is the full warm budget. */
+  waitMs: number;
+};
+
+export type CloneBookWavePlan = {
+  calls: CloneWaveCall[];
+  deferred: number[];
+  /** One restored GPU. Calls in `calls` run in order, never together. */
+  parallelLanes: 1;
+};
+
+/**
+ * One book's next GPU calls.
+ *
+ * The first section of a book is its own cold-sized call, so a restore can
+ * finish and the listener hears audio before a full batch is in flight.
+ * The call after that — in this same plan, and only sent once the first one
+ * has returned — fills one batch. A later tick does the same while
+ * `poolWarm` is set. When the container has been idle longer than
+ * scaledown, the tick is one cold-sized call again and the rest waits.
+ *
+ * `gpuBusy` means another book already has this GPU. Nothing is sent.
+ */
+export function planModalCloneBookWave(input: {
+  pending: number[];
+  textAt: (index: number) => string;
+  firstLight: boolean;
+  poolWarm: boolean;
+  batch: number;
+  gpuBusy?: boolean;
+  env?: NodeJS.ProcessEnv;
+}): CloneBookWavePlan {
+  const env = input.env ?? process.env;
+  const pending = [...input.pending].sort((a, b) => a - b);
+  if (input.gpuBusy || pending.length === 0) {
+    return { calls: [], deferred: pending, parallelLanes: 1 };
+  }
+  const calls: CloneWaveCall[] = [];
+  let rest = pending;
+  if (input.firstLight) {
+    const head = rest[0]!;
+    rest = rest.slice(1);
+    calls.push(describeCloneWaveCall([head], "cold", true, input.textAt, env));
+  }
+  let deferred: number[] = [];
+  if (rest.length > 0) {
+    // The first-light call is what restores the container. The call planned
+    // after it is the fat batch, and it is only sent once that call returns.
+    const warm = input.firstLight || input.poolWarm;
+    const packed = planModalCloneLanes({
+      pending: rest,
+      textAt: input.textAt,
+      limits: {
+        lanes: 1,
+        batch: input.batch,
+        maxLaneChars: warm ? modalWarmLaneCharLimit(env) : modalLaneCharLimit(env),
+      },
+    });
+    const lane = packed.lanes[0];
+    if (lane && lane.length > 0) {
+      calls.push(describeCloneWaveCall(lane, warm ? "warm" : "cold", false, input.textAt, env));
+    }
+    deferred = packed.deferred;
+  }
+  return { calls, deferred, parallelLanes: 1 };
+}
+
+function describeCloneWaveCall(
+  indexes: number[],
+  shape: CloneWaveShape,
+  firstLight: boolean,
+  textAt: (index: number) => string,
+  env: NodeJS.ProcessEnv
+): CloneWaveCall {
+  let chars = 0;
+  let largest = 0;
+  for (const index of indexes) {
+    const size = textAt(index).length;
+    chars += size;
+    if (size > largest) largest = size;
+  }
+  const workMs = modalLaneWorkMs(
+    chars,
+    largest,
+    shape === "warm" ? MODAL_LANE_WARM_PACK_CHARS_PER_SECOND : MODAL_LANE_CHARS_PER_SECOND
+  );
+  const need = workMs + MODAL_CLONE_CALL_PREP_MS;
+  const waitMs =
+    shape === "warm"
+      ? modalCloneWarmWaitMs(env)
+      : Math.min(
+          MODAL_CLONE_COLD_WAIT_MAX_MS,
+          Math.max(firstLight ? modalCloneFirstLightWaitMs(env) : modalCloneColdWaitMs(env), need)
+        );
+  return { indexes: [...indexes], shape, chars, workMs, waitMs };
+}
+
+/**
+ * Two books, one GPU. The active book gets the schedule above. The other
+ * book sends nothing this wave; its own first call is still one section
+ * when it becomes active, even if the pool is already warm.
+ */
+export function planTwoBooksOnOneGpu(input: {
+  active: {
+    pending: number[];
+    textAt: (index: number) => string;
+    firstLight: boolean;
+    poolWarm: boolean;
+  };
+  waiting: {
+    pending: number[];
+    textAt: (index: number) => string;
+    firstLight: boolean;
+    poolWarm: boolean;
+  };
+  batch: number;
+  env?: NodeJS.ProcessEnv;
+}): { active: CloneBookWavePlan; waiting: CloneBookWavePlan } {
+  const shared = { batch: input.batch, env: input.env };
+  return {
+    active: planModalCloneBookWave({ ...input.active, ...shared, gpuBusy: false }),
+    waiting: planModalCloneBookWave({ ...input.waiting, ...shared, gpuBusy: true }),
+  };
 }

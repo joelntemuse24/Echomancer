@@ -899,11 +899,16 @@ class S2CloneWorker:
                 if seed not in (None, "")
                 else seed_for_call(job_id, text[:64], int(seed_epoch or 0))
             )
-            generated_at = time.time()
+            # Same clock split as /synthesize_batch. generate_s is the
+            # semantic render, codec_s is the vocoder, master_s (below) is
+            # the MP3. An earlier version stamped generate before render, so
+            # codec_s was the render and master_s was vocoder plus MP3.
+            prepared_at = time.time()
             stats = self.engine.render([units], ref, sampling_text)
             truncated_by_slot = stats.pop("truncated_by_slot", [])
-            coded_at = time.time()
+            generated_at = time.time()
             samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
+            coded_at = time.time()
             return {
                 "ref_key": ref_key,
                 "ref_stats": ref_stats,
@@ -911,6 +916,7 @@ class S2CloneWorker:
                 "samples": samples,
                 "truncated": int(sum(truncated_by_slot)),
                 "sample_rate": self.engine.sample_rate,
+                "t_prepare": prepared_at,
                 "t_gen": generated_at,
                 "t_codec": coded_at,
             }
@@ -935,7 +941,8 @@ class S2CloneWorker:
             "units": len(units),
             "unit_shape": units_summary(units),
             "truncated_units": done["truncated"],
-            "generate_s": round(done["t_gen"] - t0, 2),
+            "prepare_s": round(done["t_prepare"] - t0, 2),
+            "generate_s": round(done["t_gen"] - done["t_prepare"], 2),
             "codec_s": round(done["t_codec"] - done["t_gen"], 2),
             "master_s": round(t_master - done["t_codec"], 2),
             "call_s": round(t_master - t0, 2),

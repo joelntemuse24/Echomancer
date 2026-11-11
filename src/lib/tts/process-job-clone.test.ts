@@ -631,7 +631,7 @@ describe("lane staging", () => {
       expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
     });
 
-    it("falls back to the old all-lanes wave when MODAL_S2_FIRST_LIGHT=0", async () => {
+    it("keeps one call in flight when first light is off", async () => {
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
@@ -639,19 +639,25 @@ describe("lane staging", () => {
       configureModal();
       process.env.MODAL_S2_FIRST_LIGHT = "0";
       process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
-      // Batch of 1 makes the fan-out observable: with the old wave all four
-      // rows open at once, which is exactly the shape first light removes.
+      // One row per call. The pool has not answered, so the tick is a single
+      // cold-sized call — not four containers opened together.
       process.env.MODAL_S2_BATCH_SIZE = "1";
       try {
-        // Count how many batch calls are in flight when each one starts.
         let inflight = 0;
         let maxInflight = 0;
+        const rows: number[][] = [];
         const fetchMock = warmPool(4);
         const base = fetchMock.getMockImplementation()!;
         fetchMock.mockImplementation(async (url, init) => {
           if (endpointOf(String(url)) !== "batch") return base(url, init);
           inflight += 1;
           maxInflight = Math.max(maxInflight, inflight);
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          rows.push(
+            (Array.isArray(body.items) ? body.items : []).map(
+              (item: { key: string }) => Number(item.key)
+            )
+          );
           try {
             await new Promise((resolve) => setTimeout(resolve, 10));
             return await base(url, init);
@@ -666,8 +672,9 @@ describe("lane staging", () => {
         const { processTakehomeTick } = await import("@/lib/tts/process-job");
         await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
-        // Rollback path: no serialized section-0 call ahead of the fan-out.
-        expect(maxInflight).toBeGreaterThan(1);
+        expect(maxInflight).toBe(1);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toHaveLength(1);
       } finally {
         delete process.env.MODAL_S2_FIRST_LIGHT;
         delete process.env.MODAL_S2_BATCH_SIZE;
@@ -708,10 +715,11 @@ describe("lane staging", () => {
       expect(Math.max(...fanOut)).toBeGreaterThan(1);
     });
 
-    it("does not pack four 7.7k sections into one call", async () => {
+    it("keeps a 31k book inside the warm budget instead of one cold call", async () => {
       // `job 7e4a8b48`: an 87,000-character cap let one `synthesize_batch`
-      // call carry 31k characters, which ran 4m03s and never finished. The
-      // tick must now split that book across lanes.
+      // call carry 31k characters, which ran past its wait and never finished.
+      // Section 0 stays cold-sized. The call after it may be a full batch,
+      // and that batch still has to finish inside the warm wait.
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
@@ -744,18 +752,26 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, {});
 
-      const { modalLaneCharCap } = await import(
+      const { modalLaneCharCap, modalWarmLaneCharLimit } = await import(
         "@/lib/tts/providers/modal-clone-lanes"
       );
-      const cap = modalLaneCharCap();
-      // No call may be planned to carry more than one lane can finish.
-      for (const chars of charsPerCall) {
-        expect(chars).toBeLessThanOrEqual(cap);
-      }
-      // And it really did split: the biggest call is a single section, not the
-      // 31k pack that stalled. (Section 0 plus at least one more lane.)
-      expect(Math.max(...charsPerCall)).toBeLessThanOrEqual(cap);
+      const { MODAL_CLONE_PROXY_KILL_MS, modalCloneWarmWaitMs } = await import(
+        "@/lib/tts/providers/modal-clone-guard"
+      );
+      const cold = modalLaneCharCap();
+      const warm = modalWarmLaneCharLimit();
+      // Section 0 is the cold call. The call after it may be a full batch,
+      // which is larger than the cold cap, and it still has to finish inside
+      // the warm wait. Nothing is one 31k cold call.
+      expect(charsPerCall[0]).toBeLessThanOrEqual(cold);
       expect(charsPerCall.length).toBeGreaterThan(1);
+      for (const chars of charsPerCall) {
+        expect(chars).toBeLessThanOrEqual(warm);
+        const packedMs = (chars / 150) * 1000 + 20_000;
+        expect(packedMs).toBeLessThanOrEqual(modalCloneWarmWaitMs());
+        expect(modalCloneWarmWaitMs()).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+      }
+      expect(Math.max(...charsPerCall)).toBeGreaterThan(cold);
     });
 
     it("re-packs a frozen clone outline that no call could render", async () => {
@@ -811,13 +827,24 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, {});
 
-      const { modalLaneCharCap } = await import(
-        "@/lib/tts/providers/modal-clone-lanes"
-      );
+      const { modalCloneSectionChars, modalLaneCharCap, modalWarmLaneCharLimit } =
+        await import("@/lib/tts/providers/modal-clone-lanes");
       expect(charsPerCall.length).toBeGreaterThan(0);
+      // The 7.7k rows are gone before the GPU sees them. A warm call may then
+      // carry more than the cold cap, and still not more than it can finish.
+      expect(charsPerCall[0]).toBeLessThanOrEqual(modalLaneCharCap());
       for (const chars of charsPerCall) {
-        expect(chars).toBeLessThanOrEqual(modalLaneCharCap());
+        expect(chars).toBeLessThanOrEqual(modalWarmLaneCharLimit());
       }
+      expect(Math.max(...charsPerCall)).toBeLessThanOrEqual(
+        modalCloneSectionChars() * 24
+      );
+      const { loadFrozenScript } = await import("@/lib/tts/frozen-script");
+      const frozen = await loadFrozenScript(JOB_ID);
+      expect(frozen!.sections.length).toBeGreaterThan(4);
+      expect(
+        frozen!.sections.every((section) => section.text.length <= modalCloneSectionChars())
+      ).toBe(true);
     });
 
     it("never re-packs a clone book that has already published audio", async () => {
@@ -1230,7 +1257,9 @@ describe("staged clone takes are not rendered again", () => {
       const keys = keysOf(typeof init?.body === "string" ? init.body : undefined);
       seen.push(keys);
       batches += 1;
-      if (batches > 2) throw new TypeError("socket hang up");
+      // Section 0 returns. The fat call after it drops. The next tick retries
+      // that call's rows and does not buy section 0 again.
+      if (batches > 1) throw new TypeError("socket hang up");
       return base(url, init);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1238,9 +1267,9 @@ describe("staged clone takes are not rendered again", () => {
     await fakeAdapter();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, {});
-    const staged = seen.slice(0, 2).flat();
+    const staged = seen[0] ?? [];
+    const dropped = seen[1] ?? [];
     expect(staged.length).toBeGreaterThan(0);
-    const dropped = seen.slice(2).flat();
     expect(dropped.length).toBeGreaterThan(0);
 
     const mark = seen.length;

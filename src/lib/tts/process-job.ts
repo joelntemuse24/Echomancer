@@ -41,7 +41,6 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import {
   loadCloneReference,
   modalCloneBatchSize,
-  modalCloneLaneCount,
   ModalCloneColdError,
   ModalCloneProviderError,
   ModalCloneReferenceError,
@@ -1717,11 +1716,10 @@ async function runClaimedTick(
       }
     };
 
-    // Self-hosted clones: render this tick's uncached sections across the GPU
-    // lanes. The container decodes each section as its own row of one batch,
-    // so GPU cost is nearly flat in rows-per-call (measured 2.9x realtime
-    // one-per-call, 35x at 24 per call), and four lanes means four independent
-    // one-GPU containers. Indexes that already have a take are not sent again:
+    // Self-hosted clones: one restored H100. Section 0 is its own cold-sized
+    // call. Once that container has answered, later calls fill one batch
+    // (about 24 sections) and run one at a time on that GPU. Indexes that
+    // already have a take are not sent again:
     // the publish window is 8 and the batch is 24, so the next tick used to
     // re-render the staged tail (`S2 lane staged` is a GPU row, not a cache hit).
     //
@@ -1795,10 +1793,9 @@ async function runClaimedTick(
             (index) => cachedAtStart.has(index),
             maxClaim
           );
-          const lanes = Math.max(
-            1,
-            Math.min(modalCloneLaneCount(), Math.max(render.length, 1))
-          );
+          // One call at a time. A second concurrent POST would be a second GPU
+          // when the autoscaler cap is above 1, and this book does not need it.
+          const lanes = 1;
           // Section 0 is alone only when this tick is the one that renders it.
           const needsFirstLight = modalCloneFirstLightEnabled() && render[0] === 0;
           const stagedNow = new Set<number>();
@@ -1858,6 +1855,7 @@ async function runClaimedTick(
                     maxLaneChars,
                     seedEpoch,
                     firstLight: needsFirstLight,
+                    bookWave: true,
                     // Section 0 goes through the real per-section path so mastering,
                     // upload, `segments_json` and `first_section_at` all happen for
                     // it while the other lanes are still rendering.
@@ -1878,6 +1876,7 @@ async function runClaimedTick(
                         seedEpoch: epoch,
                         raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
                         workMs: renderOpts?.workMs,
+                        warmBatch: renderOpts?.warmBatch === true,
                       }),
                     stage: stageSection,
                     log: (message) => console.log(`[Job ${jobId}] ${message}`),

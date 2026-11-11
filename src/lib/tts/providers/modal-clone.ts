@@ -69,7 +69,9 @@ import {
   resetModalCloneGuardForTests,
   MODAL_CLONE_CALL_PREP_MS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
+  modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
+import { clonePoolStillWarm } from "@/lib/tts/providers/modal-clone-lanes";
 import {
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
@@ -173,12 +175,32 @@ const EMPTY_ATTEMPT: AttemptState = { count: 0, hardFaults: 0, lastError: null }
 
 const attempts = new Map<string, AttemptState>();
 let notReadyUntil = 0;
+/**
+ * When this process last got audio back from the one H100.
+ * Lost on restart, which costs one cold-sized call and then fat batches again.
+ * Not a database column: a worker restart must not write production rows.
+ */
+let poolAnsweredAt: number | null = null;
 
 export function resetModalCloneRuntimeForTests(): void {
   attempts.clear();
   notReadyUntil = 0;
+  poolAnsweredAt = null;
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
+}
+
+export function noteModalClonePoolAnswered(now: number = Date.now()): void {
+  poolAnsweredAt = now;
+}
+
+export function noteModalClonePoolLost(): void {
+  poolAnsweredAt = null;
+}
+
+/** True while the last successful answer is still inside the scaledown hold. */
+export function modalClonePoolIsWarm(now: number = Date.now()): boolean {
+  return clonePoolStillWarm(now, poolAnsweredAt);
 }
 
 /** Explicit provider choice, or "" when the default applies. */
@@ -410,6 +432,11 @@ export async function renderModalCloneBatch(
     raceForFirstAudio?: boolean;
     /** Narration seconds this pack is planned to need, for the call's wait. */
     workMs?: number;
+    /**
+     * The container already answered this process. Wait the warm budget and
+     * do not treat a miss as a compile.
+     */
+    warmBatch?: boolean;
   }
 ): Promise<CloneBatchOutcome> {
   if (items.length === 0) {
@@ -429,7 +456,8 @@ export async function renderModalCloneBatch(
   const wait = await assertModalCloneReady(
     signal,
     opts?.raceForFirstAudio === true,
-    opts?.workMs ?? 0
+    opts?.workMs ?? 0,
+    opts?.warmBatch === true
   );
   // Accounting only. It cannot refuse, and failing to record never blocks.
   await recordModalCloneUsage(userId, chars);
@@ -474,6 +502,7 @@ export async function renderModalCloneBatch(
       `Modal clone batch returned ${undecodable.length} row(s) without decodable audio (${undecodable.join(",")})`
     );
   }
+  if (out.size > 0) noteModalClonePoolAnswered();
   return {
     audio: out,
     build: body.build ?? null,
@@ -586,6 +615,7 @@ export async function synthesizeModalClonePreview(
   if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") {
     throw new ModalCloneProviderError("Modal clone returned invalid MP3 audio");
   }
+  noteModalClonePoolAnswered();
   return {
     audio,
     contentType: "audio/mpeg",
@@ -945,12 +975,20 @@ export function warmClonePoolForPreview(reason: string): boolean {
  * against an 80 s generation budget cannot be cut at a 60 s steady timeout.
  * The result is still clamped to {@link MODAL_CLONE_COLD_WAIT_MAX_MS}, so no
  * wait on this path can reach a compile.
+ *
+ * `warmBatch` is the exception: the container has already answered, so the
+ * wait is the warm budget (still under the proxy kill) and a miss is not a
+ * compile. Cold and steady calls ignore it.
  */
 export function modalCloneCallWait(
   poolKnownWarm: boolean,
   raceForFirstAudio = false,
-  workMs = 0
+  workMs = 0,
+  warmBatch = false
 ): ModalCallWait {
+  if (warmBatch) {
+    return { ms: modalCloneWarmWaitMs(), kind: "warm" };
+  }
   const work = Number.isFinite(workMs) && workMs > 0 ? workMs : 0;
   const need = work + MODAL_CLONE_CALL_PREP_MS;
   if (poolKnownWarm) {
@@ -976,12 +1014,13 @@ export function modalCloneCallWait(
   };
 }
 
-type ModalCallWait = { ms: number; kind: "restore" | "steady" };
+type ModalCallWait = { ms: number; kind: "restore" | "steady" | "warm" };
 
 async function assertModalCloneReady(
   signal?: AbortSignal,
   raceForFirstAudio = false,
-  workMs = 0
+  workMs = 0,
+  warmBatch = false
 ): Promise<ModalCallWait> {
   if (Date.now() < notReadyUntil) {
     throw new ModalCloneColdError("Modal clone pool is cold (backoff)", COLD_BACKOFF_MS, "pool");
@@ -995,7 +1034,12 @@ async function assertModalCloneReady(
       "pool"
     );
   }
-  return modalCloneCallWait(state.warmContainers > 0, raceForFirstAudio, workMs);
+  return modalCloneCallWait(
+    state.warmContainers > 0,
+    raceForFirstAudio,
+    workMs,
+    warmBatch
+  );
 }
 
 /** Skip Modal briefly so the rest of this tick does not open more cold calls. */
@@ -1008,7 +1052,17 @@ export function rememberModalCloneCold(): void {
  * finish a compile, and leave the backoff unset so another lane can try.
  * A steady-state miss freezes the pool — the container was already warm.
  */
-function coldFromWait(kind: "restore" | "steady", message: string): ModalCloneColdError {
+function coldFromWait(
+  kind: "restore" | "steady" | "warm",
+  message: string
+): ModalCloneColdError {
+  if (kind === "warm") {
+    // The container had answered, so this is a slow or gone GPU, not a
+    // compile. Drop the warmth bit. The next call is cold-sized. Do not
+    // kick `::cover` and do not freeze the pool.
+    noteModalClonePoolLost();
+    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement");
+  }
   if (kind === "restore") {
     kickModalCloneSnapshotWarm(message);
     return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement");
@@ -1066,6 +1120,7 @@ async function postSynthesize(
       wait
     );
     const audio = Buffer.from(await response.arrayBuffer());
+    if (audio.length > 0) noteModalClonePoolAnswered();
     return {
       audio,
       durationSeconds: Number(response.headers.get("x-s2-duration")),
@@ -1105,6 +1160,7 @@ async function postSynthesize(
       "Modal clone returned a row without decodable audio"
     );
   }
+  noteModalClonePoolAnswered();
   return {
     audio: decoded.audio,
     durationSeconds: decoded.durationSeconds,
