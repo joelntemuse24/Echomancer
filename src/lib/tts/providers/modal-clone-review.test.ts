@@ -12,15 +12,21 @@ import {
   MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_PUBLISH_MS,
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
+  MODAL_CLONE_RAMP_SLACK_MIN_MS,
+  advancePlanningBuffer,
+  cloneAudioMs,
   cloneCallWallMs,
   clonePlanningBufferMs,
   coldClonePackFitsAbort,
   modalCloneColdSafeRowChars,
+  modalCloneNextSectionChars,
   modalCloneSecondCallChars,
   modalCloneThirdCallChars,
   planModalCloneBookWave,
   simulateClonePlayback,
 } from "@/lib/tts/providers/modal-clone-lanes";
+import { repackFrozenTail } from "@/lib/tts/frozen-script";
+import type { FrozenSection } from "@/lib/tts/types";
 import { cloneDropLedger, cloneSeedEpoch, listenerBufferMs, unpublishedSectionLengths, cloneOutlineRepackKind } from "@/lib/tts/process-job";
 import * as modalCloneWarm from "@/lib/tts/providers/modal-clone-warm";
 
@@ -265,14 +271,244 @@ describe("the other book's real section length", () => {
 });
 
 describe("listener buffer at 1.5×", () => {
-  it("divides the 1× spare and does not grow when the clock is ahead", () => {
+  it("is wall time left: delivered / 1.5 minus elapsed", () => {
     const ready = [{ index: 0, path: "a.mp3", status: "ready" as const, durationSeconds: 60 }];
     const onTime = listenerBufferMs(["hello"], ready, 1_000, 1_000 * 1000);
     expect(onTime.bufferedMs).toBe(Math.floor(60_000 / 1.5));
     const later = listenerBufferMs(["hello"], ready, 1_000, 1_000 * 1000 + 20_000);
-    expect(later.bufferedMs).toBeLessThan(onTime.bufferedMs);
+    // 20s of wall consumes 20s of the planning buffer, not 20s of audio
+    // divided by 1.5 afterwards.
+    expect(later.bufferedMs).toBe(Math.floor(60_000 / 1.5) - 20_000);
     const seekedPast = listenerBufferMs(["hello"], ready, 1_000, 1_000 * 1000 + 90_000);
     expect(seekedPast.bufferedMs).toBe(0);
+    const opened = clonePlanningBufferMs(cloneAudioMs(1_000));
+    const spent = cloneCallWallMs({
+      chars: modalCloneSecondCallChars(),
+      largestRow: modalCloneSecondCallChars(),
+      rows: 1,
+      shape: "warm",
+      restore: false,
+    });
+    expect(advancePlanningBuffer(opened, spent, cloneAudioMs(modalCloneSecondCallChars()))).toBe(
+      opened - spent + clonePlanningBufferMs(cloneAudioMs(modalCloneSecondCallChars()))
+    );
+  });
+});
+
+function rampOutline(count: number): number[] {
+  const sections: number[] = [];
+  while (sections.length < count) {
+    const next =
+      sections.length === 0
+        ? MODAL_CLONE_OPENING_SECTION_CHARS
+        : modalCloneNextSectionChars(sections);
+    sections.push(Math.min(2_000, Math.max(next, 1)));
+  }
+  return sections;
+}
+
+describe("1.5× replay through the planner", () => {
+  it("keeps 15s and never lets the playhead go negative", async () => {
+    const sections = rampOutline(43);
+    expect(sections[0]).toBe(1_000);
+    expect(sections[1]).toBe(modalCloneSecondCallChars());
+    expect(sections[2]).toBe(modalCloneThirdCallChars());
+    expect(sections[2]).toBeLessThan(1_278);
+
+    let pending = sections.map((_, index) => index);
+    let started = false;
+    let delivered = 0;
+    let elapsed = 0;
+    let buffer = 0;
+    const posted: number[][] = [];
+    let guard = 0;
+    while (pending.length > 0 && guard < sections.length + 2) {
+      guard += 1;
+      const plan = planModalCloneBookWave({
+        pending,
+        textAt: (index) => text(sections[index] ?? 0),
+        firstLight: pending[0] === 0 && !started,
+        poolWarm: started,
+        batch: 24,
+        bufferedMs: started ? buffer : 0,
+        playbackStarted: started,
+        entireRemainder: true,
+        maxCalls: 1,
+      });
+      const call = plan.calls[0];
+      expect(call).toBeTruthy();
+      if (started) {
+        const left = Math.floor(delivered / 1.5) - elapsed;
+        expect(left).toBeGreaterThanOrEqual(0);
+        expect(left - call!.wallMs).toBeGreaterThanOrEqual(MODAL_CLONE_RAMP_SLACK_MIN_MS);
+        expect(call!.fitsBuffer).toBe(true);
+      }
+      posted.push(call!.indexes);
+      if (!started) {
+        started = true;
+        delivered = call!.audioMs;
+        elapsed = 0;
+        buffer = clonePlanningBufferMs(call!.audioMs);
+      } else {
+        elapsed += call!.wallMs;
+        delivered += call!.audioMs;
+        buffer = advancePlanningBuffer(buffer, call!.wallMs, call!.audioMs);
+        expect(buffer).toBeGreaterThanOrEqual(Math.floor(delivered / 1.5) - elapsed - 2);
+      }
+      const taken = new Set(call!.indexes);
+      pending = pending.filter((index) => !taken.has(index));
+    }
+    expect(pending).toEqual([]);
+
+    resetModalCloneRuntimeForTests();
+    const render = vi.fn(async (items: { key: string }[]) => {
+      const audio = new Map<string, { audio: Buffer; durationSeconds: number }>();
+      for (const item of items) {
+        audio.set(item.key, { audio: Buffer.from("mp3"), durationSeconds: 12 });
+      }
+      return { audio, build: "abc", containerId: "gpu", seed: 1, performance: null, boot: "restored" };
+    });
+    await dispatchModalCloneLanes({
+      indexes: sections.map((_, index) => index),
+      textAt: (index) => text(sections[index] ?? 0),
+      lanes: 1,
+      batch: 24,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      firstLight: true,
+      bookWave: true,
+      poolWarm: false,
+      entireRemainder: true,
+      render,
+      stage: async () => {},
+    });
+    const dispatched = render.mock.calls.map((call) =>
+      (call[0] as { key: string }[]).map((item) => Number(item.key))
+    );
+    expect(dispatched).toEqual(posted);
+    let playDelivered = 0;
+    let playElapsed = 0;
+    let playStarted = false;
+    for (const indexes of dispatched) {
+      const chars = indexes.reduce((sum, index) => sum + (sections[index] ?? 0), 0);
+      const largest = Math.max(...indexes.map((index) => sections[index] ?? 0));
+      const wall = cloneCallWallMs({
+        chars,
+        largestRow: largest,
+        rows: indexes.length,
+        shape: playStarted ? "warm" : "cold",
+        restore: !playStarted,
+      });
+      if (playStarted) {
+        const left = Math.floor(playDelivered / 1.5) - playElapsed;
+        expect(left - wall).toBeGreaterThanOrEqual(MODAL_CLONE_RAMP_SLACK_MIN_MS);
+      }
+      if (!playStarted) {
+        playStarted = true;
+        playDelivered = cloneAudioMs(chars);
+        playElapsed = 0;
+      } else {
+        playElapsed += wall;
+        playDelivered += cloneAudioMs(chars);
+        expect(Math.floor(playDelivered / 1.5) - playElapsed).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+});
+
+describe("a thrown book-wave call does not keep ramping", () => {
+  it("posts only the failed call and leaves warmth unchanged", async () => {
+    resetModalCloneRuntimeForTests();
+    noteModalClonePoolAnswered();
+    expect(modalClonePoolIsWarm()).toBe(true);
+    const render = vi.fn(async () => {
+      throw new Error("socket hang up");
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2, 3, 4],
+      textAt: (index) => text(index === 0 ? 1_000 : modalCloneSecondCallChars()),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      bookWave: true,
+      poolWarm: true,
+      playbackStarted: true,
+      bufferedMs: 10 * 60_000,
+      render,
+      stage: async () => {},
+    });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(result.staged).toBe(0);
+    expect(modalClonePoolIsWarm()).toBe(true);
+  });
+
+  it("continues when a parsed body comes back with no rows", async () => {
+    resetModalCloneRuntimeForTests();
+    let calls = 0;
+    const render = vi.fn(async (items: { key: string }[]) => {
+      calls += 1;
+      const audio = new Map<string, { audio: Buffer; durationSeconds: number }>();
+      if (calls > 1) {
+        for (const item of items) {
+          audio.set(item.key, { audio: Buffer.from("mp3"), durationSeconds: 12 });
+        }
+      }
+      return { audio, build: "abc", containerId: "gpu", seed: 1, performance: null, boot: "restored" };
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [1, 2, 3],
+      textAt: () => text(modalCloneSecondCallChars()),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      bookWave: true,
+      poolWarm: true,
+      playbackStarted: true,
+      // The opening's wall buffer fits one ramp row, so the empty body
+      // leaves the later indexes pending and the next POST still happens.
+      bufferedMs: clonePlanningBufferMs(cloneAudioMs(MODAL_CLONE_OPENING_SECTION_CHARS)),
+      render,
+      stage: async () => {},
+    });
+    expect(render.mock.calls.length).toBeGreaterThan(1);
+    expect(result.staged).toBeGreaterThan(0);
+  });
+});
+
+function frozen(index: number, body: string): FrozenSection {
+  return {
+    index,
+    text: body,
+    chapterIndex: 0,
+    chapterTitle: null,
+    charStart: 0,
+    charEnd: body.length,
+  };
+}
+
+describe("repack leaves a ready section after a hole", () => {
+  it("does not rewrite or reindex the ready section", () => {
+    const ready = "This ready section keeps its words and its index.";
+    const sections = [
+      frozen(0, text(4_000)),
+      frozen(1, ready),
+      frozen(2, text(4_000)),
+    ];
+    const packed = repackFrozenTail(
+      sections,
+      0,
+      () => 2_000,
+      new Set([1])
+    );
+    const kept = packed.find((section) => section.text === ready);
+    expect(kept?.index).toBe(1);
+    expect(packed.filter((section) => section.index === 1)).toEqual([kept]);
+    expect(packed.find((section) => section.index === 0)?.text.length).toBe(4_000);
+    const tail = packed.filter((section) => section.index > 1);
+    expect(tail.map((section) => section.text.length)).toEqual([2_000, 2_000]);
+    expect(tail.map((section) => section.index)).toEqual([2, 3]);
   });
 });
 

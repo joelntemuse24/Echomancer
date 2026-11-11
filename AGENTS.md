@@ -422,12 +422,15 @@ plain `modal deploy` resets the override, so 8c is repeated.
   15% under the server rate (~31 chars/s/row at 8 rows measured, planned
   slower; ~24 at 14; ~22 at 24). Transfer is the measured 12s per 43,907
   characters (58.7MB). Every call, including one row, leaves at least 15s
-  or 10% of the buffer. The buffer is the delivered audio at 1.5×, and a
-  seek ahead of that audio is 0. Clone section 0 is 1,000 characters
+  or 10% of the buffer. The buffer is wall time left at 1.5×
+  (`delivered / 1.5 − elapsed`), and a seek ahead of that audio is 0.
+  Clone section 0 is 1,000 characters
   (~63s of audio, cold wall 71.6s including 3s of publish, under the 75s
-  first-light wait; warm first audio is 33.6s). The next call is 786
-  characters and the one after that is 1,278, each leaving about 15s at
-  1.5× (36s at 1× on the second call). Later sections stay 2,000. A short piece whose whole
+  first-light wait; warm first audio is 33.6s). A call subtracts its wall
+  directly. The next call is 786 characters, then 984, 1,255, and 1,628,
+  each leaving at least 15s at 1.5× (36s at 1× on the second call; the
+  984-character call is the tightest, exactly 15s). Later sections stay
+  2,000. A short piece whose whole
   remaining book adds no generation beyond section 0 goes out as that one
   call instead of ramping. Two rows at this curve are a little slower per
   row than one row at 33 chars/s, so the bound is about 1,959 characters
@@ -437,8 +440,8 @@ plain `modal deploy` resets the override, so 8c is repeated.
   longer than the opening — past the 786-character second section, or any
   2,000-character row — adds generation, so a 5-minute article and anything
   longer still ramps. The prefix then grows — on a 10-hour book the calls
-  are 1, 1, 1, 2, 19, then 24 — and the next call is planned from the
-  buffer the previous call actually left.
+  are 1, 1, 1, 1, 1, 3, 16, then 24 — and the next call is planned from the
+  wall time the previous call actually left.
   Playback does not stall once it has started. A gap longer than the
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
   180s scaledown) is one cold-sized call again, then the ramp resumes.
@@ -448,6 +451,10 @@ plain `modal deploy` resets the override, so 8c is repeated.
   can spare that one section and still cover their own next row. After
   that, the book closer to a stall is served, and a call is sent only when
   it also leaves the other listener enough audio for their next section.
+  Once both books are on 2,000-character rows that spare is not there at
+  1.5× (a row is ~64s and the other listener has ~20s), so the closer book
+  still takes one row and the margin goes negative. A single book keeps
+  the 15s floor.
   The second book's first call is still one section, even on a warm pool.
   A second worker can still hold a second slot (`modalCloneLanes()` stays
   4); with `S2C_MAX_CONTAINERS=1` that POST gets 429. Do not raise the

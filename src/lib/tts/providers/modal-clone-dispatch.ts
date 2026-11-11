@@ -43,6 +43,7 @@ import { ModalWorkspaceDisabledError } from "@/lib/modal/workspace-disabled";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
   MODAL_CLONE_PUBLISH_MS,
+  advancePlanningBuffer,
   cloneAudioMs,
   cloneCallWallMs,
   clonePlanningBufferMs,
@@ -132,8 +133,9 @@ export interface LaneDispatchOptions {
    */
   entireRemainder?: boolean;
   /**
-   * Audio already delivered and not yet played. The ramp sizes the next
-   * call against this. Omit it and a warm tick does not assume a deep buffer.
+   * Wall time left at 1.5× (`delivered / 1.5 − elapsed`). The ramp sizes
+   * the next call against this and subtracts each call's wall directly.
+   * Omit it and a warm tick does not assume a deep buffer.
    */
   bufferedMs?: number;
   /** The listener has already heard audio from this book. */
@@ -221,6 +223,13 @@ interface WaveOutcome {
   builds: string[];
   boot: string[];
   generateSeconds: number;
+  /** True when `render` returned a body, including one whose rows all failed. */
+  parsed: boolean;
+  /**
+   * The call threw before a body was parsed (socket, transport, or any
+   * other unclassified rejection). The ramp stops and warmth stays as it was.
+   */
+  transport: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -398,10 +407,9 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
   let poolWarm = opts.poolWarm ?? modalClonePoolIsWarm();
   let pending = [...opts.indexes].sort((a, b) => a - b);
   let started = opts.playbackStarted === true;
-  // `bufferedMs` is already the planning buffer (1× spare / 1.5). The 1×
-  // spare is what the clock between calls consumes.
+  // `bufferedMs` is wall time left at 1.5×. Each finished call subtracts
+  // its wall directly and adds the new audio as wall time.
   let buffer = started ? Math.max(0, opts.bufferedMs ?? 0) : 0;
-  let spare1x = started ? Math.round(buffer * 1.5) : 0;
   const callLimit =
     typeof opts.maxCalls === "number" && opts.maxCalls > 0
       ? Math.floor(opts.maxCalls)
@@ -466,6 +474,10 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     });
     mergeWave(tally, wave);
     if (tally.busy > 0 || tally.providerFault) break;
+    // A socket or any other throw is not "the container parsed a body and
+    // every row failed". Stop. Do not mark the pool warm, and do not POST
+    // the next section of the ramp.
+    if (wave.transport) break;
 
     if (isHead && !tally.poolCold && tally.placement.includes(call.indexes[0]!)) {
       log(
@@ -558,9 +570,10 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     }
     if (tally.busy > 0 || pending.length === 0) break;
     if (stagedRows.length === 0) {
-      // The container answered and every row failed. The listener gained
-      // no audio, so the next section is sent on its own instead of
-      // waiting out a buffer that will not grow.
+      if (!wave.parsed) break;
+      // The container parsed a body and every row failed. The listener
+      // gained no audio, so the next section is sent on its own instead
+      // of waiting out a buffer that will not grow.
       buffer = 0;
       poolWarm = true;
       made += 1;
@@ -576,11 +589,10 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     const audio = cloneAudioMs(stagedChars);
     if (!started) {
       started = true;
-      spare1x = audio;
+      buffer = clonePlanningBufferMs(audio);
     } else {
-      spare1x = Math.max(0, spare1x - spent) + audio;
+      buffer = advancePlanningBuffer(buffer, spent, audio);
     }
-    buffer = clonePlanningBufferMs(spare1x);
     const taken = new Set(stagedRows);
     pending = pending.filter((index) => !taken.has(index));
     poolWarm = true;
@@ -678,6 +690,8 @@ async function runWave(
   const placement: number[] = [];
   const oversize: number[] = [];
   const compile: number[] = [];
+  let parsed = false;
+  let transport = false;
 
   if (attempted.length === 0) {
     return {
@@ -694,6 +708,8 @@ async function runWave(
       builds,
       boot,
       generateSeconds,
+      parsed,
+      transport,
     };
   }
 
@@ -710,8 +726,11 @@ async function runWave(
         return {
           lane,
           error: new ModalCloneLaneBusyError("shared clone lane is in use"),
+          parsed: false,
+          transport: false,
         };
       }
+      let laneParsed = false;
       try {
         for (const page of pageLane(lane, rowsPerPage)) {
           // A race is only meaningful for the call that carries section 0.
@@ -760,6 +779,7 @@ async function runWave(
               warmBatch: warm,
             }
           );
+          laneParsed = true;
           if (outcome.containerId) containers.push(outcome.containerId);
           if (outcome.build) builds.push(outcome.build);
           if (outcome.boot) boot.push(outcome.boot);
@@ -786,15 +806,20 @@ async function runWave(
           );
           if (rendered < page.length) break;
         }
-        return { lane, error: null as unknown };
+        return { lane, error: null as unknown, parsed: laneParsed, transport: false };
       } catch (error) {
         if (error instanceof ModalWorkspaceDisabledError) throw error;
         // A 429 means the lane is busy, not that the pool went cold.
-        // Dropping warmth here is what made the next tick open another GPU.
-        if (wave?.warmBatch && !(error instanceof ModalCloneLaneBusyError)) {
+        // A socket or other unclassified throw is not a reason to forget
+        // a container that already answered: warmth stays where it was.
+        const unclassified =
+          !(error instanceof ModalCloneColdError) &&
+          !(error instanceof ModalCloneLaneBusyError) &&
+          !(error instanceof ModalCloneProviderError);
+        if (wave?.warmBatch && !unclassified && !(error instanceof ModalCloneLaneBusyError)) {
           noteModalClonePoolLost();
         }
-        return { lane, error };
+        return { lane, error, parsed: laneParsed, transport: unclassified && !laneParsed };
       } finally {
         await slot.release();
       }
@@ -802,6 +827,8 @@ async function runWave(
   );
 
   for (const result of laneResults) {
+    if (result.parsed) parsed = true;
+    if (result.transport) transport = true;
     const err = result.error;
     if (!err) continue;
     if (err instanceof ModalCloneColdError && err.scope === "placement") {
@@ -853,5 +880,7 @@ async function runWave(
     builds,
     boot,
     generateSeconds,
+    parsed,
+    transport,
   };
 }

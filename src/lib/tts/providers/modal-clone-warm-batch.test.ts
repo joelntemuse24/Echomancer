@@ -11,10 +11,11 @@
  *
  *   - the first call of a book stays one section that can survive a cold restore
  *   - the next call is not a full batch
- *   - a 10-hour book played at 1× never stalls after first audio
+ *   - a 10-hour book played at 1.5× never stalls after first audio
  *   - every call stays inside the Modal web-proxy budget and the 80 MiB body
  *   - a gap longer than scaledown drops back to one cold-sized call
- *   - two listeners on one GPU never stall once each has started
+ *   - two listeners on one GPU do not POST together; once both are on
+ *     2,000-character rows the 1.5× margin goes negative
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -40,8 +41,8 @@ import {
   MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
   MODAL_CLONE_ROW_CHARS_PER_SECOND,
+  modalCloneNextSectionChars,
   modalCloneSecondCallChars,
-  modalCloneThirdCallChars,
   cloneAudioMs,
   cloneCallWallMs,
   cloneGenerationMs,
@@ -334,25 +335,18 @@ describe("one book's call schedule", () => {
 });
 
 function cloneBookSections(audioSeconds: number): number[] {
-  // The smoke's 15.85 characters per audio second. Section 0 is the clone
-  // opening, section 1 is the short second call, and the rest are the
-  // steady 2,000-character width.
+  // The smoke's 15.85 characters per audio second. Each section is the
+  // largest row that still leaves 15s at 1.5× after the sections before
+  // it, and the steady width is 2,000 once that row fits.
   const totalChars = Math.round(audioSeconds * MODAL_CLONE_CHARS_PER_AUDIO_SECOND);
-  const opening = Math.min(MODAL_CLONE_OPENING_SECTION_CHARS, Math.max(0, totalChars));
-  const sections = [opening];
-  let used = opening;
-  if (used < totalChars) {
-    const second = Math.min(modalCloneSecondCallChars(), totalChars - used);
-    sections.push(second);
-    used += second;
-  }
-  if (used < totalChars) {
-    const third = Math.min(modalCloneThirdCallChars(), totalChars - used);
-    sections.push(third);
-    used += third;
-  }
+  const sections: number[] = [];
+  let used = 0;
   while (used < totalChars) {
-    const size = Math.min(2_000, totalChars - used);
+    const cap =
+      sections.length === 0
+        ? MODAL_CLONE_OPENING_SECTION_CHARS
+        : modalCloneNextSectionChars(sections);
+    const size = Math.min(Math.max(cap, 1), totalChars - used);
     sections.push(size);
     used += size;
   }
@@ -363,7 +357,7 @@ function tenHourSections(): number[] {
   return cloneBookSections(10 * 3600);
 }
 
-describe("a 10-hour book played at 1×", () => {
+describe("a 10-hour book played at 1.5×", () => {
   it("never stalls after the first audio", () => {
     const report = simulateClonePlayback({
       sectionChars: tenHourSections(),
@@ -376,17 +370,19 @@ describe("a 10-hour book played at 1×", () => {
     // 38s restore + 1,000 characters at 33 chars/s + the measured transfer
     // + 3s of section loudnorm. Under the 75s first-light wait. The second
     // call is one 786-character row and leaves 15.0s at 1.5× (36.1s at 1×).
-    // The third call is one 1,278-character row; that is the tightest 1.5×
-    // margin, 15.0s. Then 2, 19, and full batches. 1,492,374 ms is 24.9
-    // minutes at the 15% curve.
+    // The third call is 984 characters and is the tightest 1.5× margin,
+    // exactly 15.0s, because the buffer subtracts the call's wall directly.
+    // Then 1,255 and 1,628, a 3-row call, 16, and full batches.
     expect(report.timeToFirstAudioMs).toBe(71_576);
     expect(report.steps[0]!.wallMs).toBe(71_576);
     expect(report.steps[1]!.bufferAtDispatchMs - report.steps[1]!.wallMs).toBe(15_027);
+    expect(report.steps[2]!.chars).toBe(984);
+    expect(report.steps[2]!.bufferAtDispatchMs - report.steps[2]!.wallMs).toBe(15_000);
     expect(report.minMarginMs).toBe(36_058);
-    expect(report.minMarginAt15xMs).toBe(15_022);
-    expect(report.totalWallMs).toBe(1_492_374);
+    expect(report.minMarginAt15xMs).toBe(15_000);
+    expect(report.totalWallMs).toBe(1_576_533);
     expect(report.sizeSequence).toEqual([
-      1, 1, 1, 2, 19, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 23,
+      1, 1, 1, 1, 1, 3, 16, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
     ]);
     for (const step of report.steps) {
       expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
@@ -514,7 +510,7 @@ describe("short pieces", () => {
   });
 });
 
-describe("shorter books played at 1×", () => {
+describe("shorter books played at 1.5×", () => {
   function play(audioSeconds: number, poolWarm = false) {
     const sectionChars = cloneBookSections(audioSeconds);
     const report = simulateClonePlayback({
@@ -545,32 +541,32 @@ describe("shorter books played at 1×", () => {
     // ~100s cold to first audio, against the opening's 71.6s.
     const five = play(5 * 60);
     expect(five.timeToFirstAudioMs).toBe(71_576);
-    expect(five.sizeSequence).toEqual([1, 1, 1, 1]);
+    expect(five.sizeSequence).toEqual([1, 1, 1, 1, 1]);
     expect(five.minMarginMs).toBe(36_058);
-    expect(five.minMarginAt15xMs).toBe(15_022);
-    expect(five.totalWallMs).toBe(195_389);
+    expect(five.minMarginAt15xMs).toBe(15_000);
+    expect(five.totalWallMs).toBe(198_390);
     expect(cloneAudioMs(5 * 60 * MODAL_CLONE_CHARS_PER_AUDIO_SECOND)).toBe(300_000);
 
     const ten = play(10 * 60);
     expect(ten.timeToFirstAudioMs).toBe(71_576);
-    expect(ten.sizeSequence).toEqual([1, 1, 1, 2, 2]);
+    expect(ten.sizeSequence).toEqual([1, 1, 1, 1, 1, 2]);
     expect(ten.minMarginMs).toBe(36_058);
-    expect(ten.minMarginAt15xMs).toBe(15_022);
-    expect(ten.totalWallMs).toBe(270_928);
+    expect(ten.minMarginAt15xMs).toBe(15_000);
+    expect(ten.totalWallMs).toBe(290_507);
 
     const forty = play(40 * 60);
     expect(forty.timeToFirstAudioMs).toBe(71_576);
-    expect(forty.sizeSequence).toEqual([1, 1, 1, 2, 16]);
+    expect(forty.sizeSequence).toEqual([1, 1, 1, 1, 1, 3, 14]);
     expect(forty.minMarginMs).toBe(36_058);
-    expect(forty.minMarginAt15xMs).toBe(15_022);
-    expect(forty.totalWallMs).toBe(304_585);
+    expect(forty.minMarginAt15xMs).toBe(15_000);
+    expect(forty.totalWallMs).toBe(387_572);
 
     const twoHours = play(2 * 3600);
     expect(twoHours.timeToFirstAudioMs).toBe(71_576);
-    expect(twoHours.sizeSequence).toEqual([1, 1, 1, 2, 19, 24, 11]);
+    expect(twoHours.sizeSequence).toEqual([1, 1, 1, 1, 1, 3, 16, 24, 12]);
     expect(twoHours.minMarginMs).toBe(36_058);
-    expect(twoHours.minMarginAt15xMs).toBe(15_022);
-    expect(twoHours.totalWallMs).toBe(501_954);
+    expect(twoHours.minMarginAt15xMs).toBe(15_000);
+    expect(twoHours.totalWallMs).toBe(588_152);
   });
 
   it("starts a 10-minute article on a warm pool without the restore", () => {
@@ -581,7 +577,7 @@ describe("shorter books played at 1×", () => {
     expect(warm.sizeSequence).toEqual(cold.sizeSequence);
     expect(warm.minMarginMs).toBe(cold.minMarginMs);
     expect(warm.minMarginAt15xMs).toBe(cold.minMarginAt15xMs);
-    expect(warm.totalWallMs).toBe(232_928);
+    expect(warm.totalWallMs).toBe(252_507);
     expect(warm.totalWallMs).toBe(cold.totalWallMs - 38_000);
   });
 });
@@ -641,7 +637,7 @@ describe("two books, one GPU", () => {
     expect(active.calls).toEqual([]);
   });
 
-  it("does not stall either listener of a 10-hour book", () => {
+  it("shares one GPU and records the 1.5× margin once both books are on 2,000-character rows", () => {
     const sections = tenHourSections();
     const { reports, totalWallMs, overlapping } = simulateTwoCloneListeners({
       books: [
@@ -654,30 +650,29 @@ describe("two books, one GPU", () => {
     expect(overlapping).toBe(false);
     expect(reports).toHaveLength(2);
     for (const report of reports) {
-      expect(report.stallCount).toBe(0);
       expect(report.sizeSequence[0]).toBe(1);
       expect(report.timeToFirstAudioMs).toBeGreaterThan(0);
+      expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
       expect(report.steps.every((step) => step.wallMs < MODAL_CLONE_PROXY_KILL_MS)).toBe(true);
     }
     expect(reports[1]!.timeToFirstAudioMs).toBeGreaterThan(reports[0]!.timeToFirstAudioMs);
-    // One call at a time. Each listener's tightest 1× margin is the second
-    // call (36.1s) and the tightest 1.5× margin is the third call (15.0s).
-    // 3,005,487 ms is both books.
+    // One call at a time. Opening audio is unchanged. Once both listeners
+    // are on 2,000-character rows, a row is ~64s and the other listener's
+    // spare at 1.5× is not, so the closer book still takes the row and the
+    // margin goes negative. 36,439,973 ms is both books.
     expect(reports[0]!.timeToFirstAudioMs).toBe(71_576);
-    expect(reports[1]!.timeToFirstAudioMs).toBe(240_229);
-    expect(reports[0]!.minMarginMs).toBe(36_058);
-    expect(reports[1]!.minMarginMs).toBe(36_058);
-    expect(reports[0]!.minMarginAt15xMs).toBe(15_022);
-    expect(reports[1]!.minMarginAt15xMs).toBe(15_022);
-    expect(totalWallMs).toBe(3_005_487);
-    expect(reports[0]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
-    expect(reports[1]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
-    expect(reports[0]!.sizeSequence).toEqual([
-      1, 1, 1, 2, 8, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 10,
-    ]);
-    expect(reports[1]!.sizeSequence).toEqual([
-      1, 1, 1, 2, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 18,
-    ]);
+    expect(reports[1]!.timeToFirstAudioMs).toBe(327_261);
+    expect(reports[0]!.minMarginMs).toBe(-39_289);
+    expect(reports[1]!.minMarginMs).toBe(-2_123);
+    expect(reports[0]!.minMarginAt15xMs).toBe(-64_958);
+    expect(reports[1]!.minMarginAt15xMs).toBe(-44_808);
+    expect(reports[0]!.stallCount).toBe(281);
+    expect(reports[1]!.stallCount).toBe(280);
+    expect(reports[0]!.sizeSequence.slice(0, 6)).toEqual([1, 1, 1, 1, 1, 3]);
+    expect(reports[0]!.sizeSequence.slice(6).every((n) => n === 1)).toBe(true);
+    expect(reports[1]!.sizeSequence.at(-1)).toBe(3);
+    expect(reports[1]!.sizeSequence.slice(0, -1).every((n) => n === 1)).toBe(true);
+    expect(totalWallMs).toBe(36_439_973);
   });
 });
 
@@ -723,11 +718,12 @@ describe("book-wave dispatch", () => {
     expect(rows[1]).toEqual(["1"]);
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(true);
     const widths = rows.map((keys) => keys.length);
-    // Section 2 is still one row. The call after the ramp is wider, and
-    // a later call is wider than that.
+    // The ramp's first five calls are one row (1,000 / 786 / 984 / 1,255 /
+    // 1,628). The next call is wider, and a later call is wider than that.
     expect(rows[2]).toEqual(["2"]);
-    expect(widths[3]).toBeGreaterThan(1);
-    expect(widths.some((width) => width > widths[3]!)).toBe(true);
+    expect(widths.slice(0, 5)).toEqual([1, 1, 1, 1, 1]);
+    expect(widths[5]).toBeGreaterThan(1);
+    expect(widths.some((width) => width > widths[5]!)).toBe(true);
     expect(widths.reduce((sum, n) => sum + n, 0)).toBe(30);
   });
 

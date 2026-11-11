@@ -81,6 +81,12 @@ export type BuildFrozenScriptInput = {
   /** Tighten section 2 once section 0 and section 1 have closed. */
   fitThirdSection?: (openingChars: number, secondChars: number) => number;
   /**
+   * Cap every section after the opening from the sections already closed.
+   * The clone ramp stays under 2,000 characters until that row fits the
+   * 1.5× buffer. When set, this wins over the fixed second and third caps.
+   */
+  fitNextSection?: (priorChars: number[]) => number;
+  /**
    * Take-home Fish / clone: even-pack so `fanout` workers
    * get similar-sized slices. Section 0 still uses the fast first-section cap.
    */
@@ -156,6 +162,7 @@ function resolvePackChars(
   thirdSectionMaxChars: number | undefined;
   fitSecondSection: ((openingChars: number) => number) | undefined;
   fitThirdSection: ((openingChars: number, secondChars: number) => number) | undefined;
+  fitNextSection: ((priorChars: number[]) => number) | undefined;
   evenFanout: number | undefined;
 } {
   if (input.packProvider === "edge" || input.packProvider === "google") {
@@ -166,6 +173,7 @@ function resolvePackChars(
       thirdSectionMaxChars: undefined,
       fitSecondSection: undefined,
       fitThirdSection: undefined,
+      fitNextSection: undefined,
       evenFanout: 8,
     };
   }
@@ -191,6 +199,7 @@ function resolvePackChars(
       thirdSectionMaxChars: undefined,
       fitSecondSection: undefined,
       fitThirdSection: undefined,
+      fitNextSection: undefined,
       evenFanout,
     };
   }
@@ -201,6 +210,7 @@ function resolvePackChars(
     thirdSectionMaxChars: input.thirdSectionMaxChars,
     fitSecondSection: input.fitSecondSection,
     fitThirdSection: input.fitThirdSection,
+    fitNextSection: input.fitNextSection,
     evenFanout: undefined,
   };
 }
@@ -229,6 +239,7 @@ function packFromSpeakable(
     thirdSectionMaxChars: pack.thirdSectionMaxChars,
     fitSecondSection: pack.fitSecondSection,
     fitThirdSection: pack.fitThirdSection,
+    fitNextSection: pack.fitNextSection,
     measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
     chapters,
   });
@@ -313,21 +324,33 @@ export function splitWideFrozenSection(
 }
 
 /**
- * Replace unpublished sections with rows that fit `maxCharsFor`.
- * Published indexes and their text stay where they are.
+ * Replace the unpublished suffix with rows that fit `maxCharsFor`.
+ *
+ * A ready section keeps its index and its text, including when it sits
+ * after a hole. Reindexing it would leave its audio on the old index.
+ * Only the contiguous suffix after the last published index is split,
+ * and that suffix starts at `fromIndex` when that is later.
  */
 export function repackFrozenTail(
   sections: FrozenSection[],
   fromIndex: number,
-  maxCharsFor: (section: FrozenSection) => number
+  maxCharsFor: (section: FrozenSection, priorChars: number[]) => number,
+  published: ReadonlySet<number> = new Set()
 ): FrozenSection[] {
-  const kept = sections.filter((section) => section.index < fromIndex);
-  const tail = sections
-    .filter((section) => section.index >= fromIndex)
-    .sort((a, b) => a.index - b.index);
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const lastPublished = ordered.reduce(
+    (max, section) => (published.has(section.index) ? Math.max(max, section.index) : max),
+    -1
+  );
+  const tailStart = Math.max(fromIndex, lastPublished + 1);
+  const kept = ordered.filter((section) => section.index < tailStart);
+  const tail = ordered.filter((section) => section.index >= tailStart);
+  const prior = kept.map((section) => section.text.length);
   const split: FrozenSection[] = [];
   for (const section of tail) {
-    split.push(...splitWideFrozenSection(section, maxCharsFor(section)));
+    const parts = splitWideFrozenSection(section, maxCharsFor(section, prior));
+    split.push(...parts);
+    for (const part of parts) prior.push(part.text.length);
   }
   const nextIndex = kept.reduce((max, section) => Math.max(max, section.index), -1) + 1;
   return [

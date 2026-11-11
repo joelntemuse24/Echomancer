@@ -484,32 +484,35 @@ export const MODAL_CLONE_PUBLISH_MS = 3_000;
 
 /**
  * The player's fastest listen rate (`PLAYBACK_SPEED` max, 1.5×).
- * The server has no playhead. Dividing the 1× spare by this rate is the
- * spare a listener at that speed still has, and a seek ahead of the
- * delivered audio is already zero before the division.
+ * One planning unit is one millisecond of wall time the listener still
+ * has: `delivered / 1.5 − elapsed`. A call subtracts its wall directly.
+ * A seek ahead of the delivered audio is already zero.
  */
 export const MODAL_CLONE_LISTENER_RATE = 1.5;
 
-/** 1× spare audio, as the buffer the ramp plans against. */
-export function clonePlanningBufferMs(bufferMs: number): number {
-  if (!(bufferMs > 0)) return 0;
-  return Math.floor(bufferMs / MODAL_CLONE_LISTENER_RATE);
+/**
+ * Wall time a stretch of 1× audio lasts at {@link MODAL_CLONE_LISTENER_RATE}.
+ * Pass audio duration only. A value that already subtracted wall time is
+ * a different unit and must not be divided again.
+ */
+export function clonePlanningBufferMs(audioMs: number): number {
+  if (!(audioMs > 0)) return 0;
+  return Math.floor(audioMs / MODAL_CLONE_LISTENER_RATE);
 }
 
 /**
  * Planning buffer after a call returns.
  *
- * `bufferMs` is already in planning units. Real time consumes it at
- * {@link MODAL_CLONE_LISTENER_RATE}, and the new audio is converted the
- * same way. Seeking does not add buffer: this only shrinks.
+ * `bufferMs` is wall time left. The call consumes that much wall, and the
+ * audio it adds lasts `audioMs / 1.5` of wall at the listener's fastest
+ * rate. Seeking does not add buffer: this only shrinks, then adds the take.
  */
 export function advancePlanningBuffer(
   bufferMs: number,
   wallMs: number,
   audioMs: number
 ): number {
-  const consumed = Math.round(Math.max(0, wallMs) / MODAL_CLONE_LISTENER_RATE);
-  return Math.max(0, bufferMs - consumed) + clonePlanningBufferMs(audioMs);
+  return Math.max(0, bufferMs - Math.max(0, wallMs)) + clonePlanningBufferMs(audioMs);
 }
 
 /**
@@ -556,7 +559,7 @@ export function modalCloneSecondCallChars(): number {
 
 /** Section 1 that leaves the slack against this opening's audio at 1.5×. */
 export function modalCloneSecondCallCharsFor(openingChars: number): number {
-  return modalCloneRowCharsThatFit(clonePlanningBufferMs(cloneAudioMs(openingChars)));
+  return modalCloneNextSectionChars([openingChars]);
 }
 
 /**
@@ -579,16 +582,7 @@ export function modalCloneThirdCallCharsFor(
   openingChars: number,
   secondChars: number
 ): number {
-  const secondWall = cloneCallWallMs({
-    chars: secondChars,
-    largestRow: secondChars,
-    rows: 1,
-    shape: "warm",
-    restore: false,
-  });
-  const spare =
-    Math.max(0, cloneAudioMs(openingChars) - secondWall) + cloneAudioMs(secondChars);
-  return modalCloneRowCharsThatFit(clonePlanningBufferMs(spare));
+  return modalCloneNextSectionChars([openingChars, secondChars]);
 }
 
 /**
@@ -688,6 +682,41 @@ export function modalCloneColdSafeRowChars(): number {
  */
 export const MODAL_CLONE_SECTION_CHARS_DEFAULT = 2_000;
 
+/**
+ * Wall time left after these sections have played back to back at 1.5×.
+ * Section 0's own wall is not subtracted: playback starts when it returns.
+ * Each later call subtracts its wall, then adds the audio it delivered.
+ */
+export function planningBufferAfterSections(chars: number[]): number {
+  if (chars.length === 0) return 0;
+  let buffer = clonePlanningBufferMs(cloneAudioMs(chars[0]!));
+  for (let i = 1; i < chars.length; i += 1) {
+    const size = chars[i]!;
+    const wall = cloneCallWallMs({
+      chars: size,
+      largestRow: size,
+      rows: 1,
+      shape: "warm",
+      restore: false,
+    });
+    buffer = advancePlanningBuffer(buffer, wall, cloneAudioMs(size));
+  }
+  return buffer;
+}
+
+/**
+ * Largest one-row section that still leaves {@link cloneRampSlackMs} after
+ * `prior` has played at 1.5×. The steady width is
+ * {@link MODAL_CLONE_SECTION_CHARS_DEFAULT}; earlier rows are shorter
+ * because a 2,000-character row does not fit the opening.
+ */
+export function modalCloneNextSectionChars(prior: number[]): number {
+  if (prior.length === 0) return MODAL_CLONE_OPENING_SECTION_CHARS;
+  const fit = modalCloneRowCharsThatFit(planningBufferAfterSections(prior));
+  if (fit <= 0) return 0;
+  return Math.min(MODAL_CLONE_SECTION_CHARS_DEFAULT, fit);
+}
+
 export function modalCloneSectionChars(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.MODAL_S2_SECTION_CHARS);
   const chosen = Number.isFinite(raw) && raw >= MODAL_LANE_MIN_CHARS ? Math.floor(raw) : 0;
@@ -766,9 +795,9 @@ export type CloneBookWaveInput = {
   batch: number;
   gpuBusy?: boolean;
   /**
-   * Audio already delivered and not yet played, at 1×. Omit on the first
-   * call of a book. A later tick that omits this is treated as no buffer,
-   * so it does not jump to a 24-row call.
+   * Wall time left at 1.5×: delivered audio / 1.5, minus elapsed wall.
+   * Omit on the first call of a book. A later tick that omits this is
+   * treated as no buffer, so it does not jump to a 24-row call.
    */
   bufferedMs?: number;
   /** The listener has already heard audio from this book. */
@@ -786,17 +815,14 @@ export type CloneBookWaveInput = {
 
 type ListenerState = {
   started: boolean;
-  /** Planning buffer: 1× spare divided by the listener rate. */
+  /** Wall time left at 1.5×. A call subtracts its wall from this. */
   buffer: number;
-  /** 1× spare audio. The planning buffer is derived from this. */
-  spare1x: number;
 };
 
 function listenerState(started: boolean, planningBuffer: number): ListenerState {
   return {
     started,
     buffer: Math.max(0, planningBuffer),
-    spare1x: started ? Math.round(Math.max(0, planningBuffer) * MODAL_CLONE_LISTENER_RATE) : 0,
   };
 }
 
@@ -1022,11 +1048,13 @@ export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWave
     while (rest.length > 0 && calls.length < maxCalls) {
       const prefix = largestWarmPrefix(rest, state, batch, input.textAt, env);
       // Before the listener has started, one row is the first audio.
-      // A positive buffer that cannot hold the next row waits for a
-      // re-pack. A buffer that is already empty is a listener sitting on
-      // a hole: send that one section, or the hole never fills.
-      const indexes =
-        prefix ?? (!state.started || state.buffer <= 0 ? [rest[0]!] : null);
+      // A row within one publish of the slack is still sent: the next
+      // tick's clock has moved, and refusing it leaves the book queued.
+      // A wider miss waits for a re-pack. An empty buffer is a hole, and
+      // that one section is sent so the hole can fill.
+      const ahead =
+        prefix == null ? rowThatStaysAhead(rest, state, input.textAt, env) : null;
+      const indexes = prefix ?? (!state.started || state.buffer <= 0 ? [rest[0]!] : ahead);
       if (!indexes) break;
       pushCall(calls, state, describeCloneWaveCall({
         indexes,
@@ -1044,6 +1072,40 @@ export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWave
   }
 
   return finishPlan(calls, rest, state);
+}
+
+/**
+ * One warm row that misses the slack by at most one section publish.
+ *
+ * The next tick's clock has already moved while the previous take was
+ * mastered. A sentence that still finishes before the audio runs out, and
+ * is within that publish of the 15s line, is sent. A wider miss stays
+ * unsent so the outline can be re-packed instead of playing through it.
+ */
+function rowThatStaysAhead(
+  rest: number[],
+  state: ListenerState,
+  textAt: (index: number) => string,
+  env: NodeJS.ProcessEnv
+): number[] | null {
+  if (!(state.buffer > 0) || rest.length === 0) return null;
+  const index = rest[0]!;
+  const size = textAt(index).length;
+  if (!(size > 0)) return null;
+  const wall = cloneCallWallMs({
+    chars: size,
+    largestRow: size,
+    rows: 1,
+    shape: "warm",
+    restore: false,
+  });
+  const waitCap = modalCloneWarmWaitMs(env);
+  const slack = cloneRampSlackMs(state.buffer);
+  const withinPublish = wall + slack - MODAL_CLONE_PUBLISH_MS <= state.buffer;
+  if (!withinPublish || wall > state.buffer || wall >= waitCap || wall >= MODAL_CLONE_PROXY_KILL_MS) {
+    return null;
+  }
+  return [index];
 }
 
 /**
@@ -1065,17 +1127,12 @@ function largestWarmPrefix(
   }
   const charCap = modalWarmLaneCharLimit(env);
   const waitCap = modalCloneWarmWaitMs(env);
-  // Section 1 is the short row that fits section 0's audio at 1.5×.
-  // Section 2 is the row that fits after that. A later section is sized
-  // by the buffer alone: a buffer that has fallen back near the opening
-  // must not be treated as "still the second call", or two books stay on
-  // one 2,000-character row and never catch up.
-  const rampCap =
-    rest[0] === 1
-      ? modalCloneSecondCallChars()
-      : rest[0] === 2
-        ? modalCloneThirdCallChars()
-        : null;
+  // The buffer is the only width limit. A row packed for this opening is
+  // sent when it leaves the slack; a 2,000-character row that does not fit
+  // is not sent. Index is not a second, tighter cap: section 0 often closes
+  // a sentence past 1,000 characters, and the next row is sized from that
+  // audio. Capping it again at the 1,000-character opening's row left the
+  // book queued after section 0.
   let best = 0;
   let chars = 0;
   let largest = 0;
@@ -1084,9 +1141,6 @@ function largestWarmPrefix(
     const size = textAt(rest[n - 1]!).length;
     const nextChars = chars + size;
     const nextLargest = Math.max(largest, size);
-    // One row past the ramp cap is the same miss as two rows that add
-    // up past it. A frozen 2,000-character section 1 or 2 is not sent.
-    if (rampCap != null && nextChars > rampCap) break;
     if (n > 1 && nextChars > charCap) break;
     if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
       break;
@@ -1111,12 +1165,10 @@ function pushCall(calls: CloneWaveCall[], state: ListenerState, call: CloneWaveC
   calls.push(call);
   if (!state.started) {
     state.started = true;
-    state.spare1x = call.audioMs;
     state.buffer = clonePlanningBufferMs(call.audioMs);
     return;
   }
-  state.spare1x = Math.max(0, state.spare1x - call.wallMs) + call.audioMs;
-  state.buffer = clonePlanningBufferMs(state.spare1x);
+  state.buffer = advancePlanningBuffer(state.buffer, call.wallMs, call.audioMs);
 }
 
 function finishPlan(
@@ -1539,22 +1591,24 @@ export type ClonePlaybackReport = {
    * The opening call is not included: nothing is playing yet.
    */
   minMarginMs: number;
-  /** Smallest (1× spare − call wall) once playback has started. */
+  /** Smallest (1× audio still unplayed − call wall) once playback has started. */
   minMarginAt1xMs: number;
   /**
-   * Smallest (1× spare / 1.5 − call wall) once playback has started.
-   * This is the margin the ramp plans against.
+   * Smallest (wall time left at 1.5× − call wall) once playback has started.
+   * Wall time left is delivered / 1.5 − elapsed. This is the margin the ramp
+   * plans against.
    */
   minMarginAt15xMs: number;
 };
 
 /**
- * Play one book at 1× from the moment its first audio returns.
+ * Play one book at 1.5× from the moment its first audio returns.
  *
- * Each tick claims `claim` sections (the worker's batch window) and
- * pipelines the ramp inside that window. The clock does not idle between
- * calls. A stall is a call that starts while the listener is already
- * playing and runs longer than the audio they have left.
+ * The planning buffer is wall time left (`delivered / 1.5 − elapsed`).
+ * Each call subtracts its wall directly. The 1× margin is the same clock
+ * with audio consumed one second per wall second, reported beside it.
+ * A stall is a call that starts while the listener is already playing and
+ * runs longer than the audio they have left at 1.5×.
  */
 export function simulateClonePlayback(input: {
   sectionChars: number[];
@@ -1576,7 +1630,10 @@ export function simulateClonePlayback(input: {
   let pending = charsAt.map((_, index) => index);
   let poolWarm = input.poolWarm === true;
   let started = false;
-  let buffer1x = 0;
+  /** Wall time left at 1.5×. This is the buffer the planner sees. */
+  let wallLeft = 0;
+  /** Audio still unplayed for a listener at 1×. Reported, not planned. */
+  let audio1x = 0;
   let clock = 0;
   let timeToFirstAudioMs = 0;
   const steps: ClonePlaybackStep[] = [];
@@ -1596,7 +1653,7 @@ export function simulateClonePlayback(input: {
         firstLight: windowLeft[0] === 0 && !started,
         poolWarm,
         batch,
-        bufferedMs: started ? clonePlanningBufferMs(buffer1x) : 0,
+        bufferedMs: started ? wallLeft : 0,
         playbackStarted: started,
         entireRemainder: windowLeft.length === pending.length,
         maxCalls: 1,
@@ -1609,8 +1666,8 @@ export function simulateClonePlayback(input: {
           ? Math.round(call.wallMs * input.slowCall.factor)
           : call.wallMs;
       if (started) {
-        margins1x.push(buffer1x - call.wallMs);
-        margins15.push(clonePlanningBufferMs(buffer1x) - call.wallMs);
+        margins1x.push(audio1x - call.wallMs);
+        margins15.push(wallLeft - call.wallMs);
       }
       steps.push({
         bookId: "book",
@@ -1619,16 +1676,18 @@ export function simulateClonePlayback(input: {
         shape: call.shape,
         wallMs: spent,
         audioMs: call.audioMs,
-        bufferAtDispatchMs: started ? clonePlanningBufferMs(buffer1x) : 0,
+        bufferAtDispatchMs: started ? wallLeft : 0,
         fitsBuffer: call.fitsBuffer,
       });
       clock += spent;
       if (timeToFirstAudioMs === 0) timeToFirstAudioMs = clock;
       if (!started) {
         started = true;
-        buffer1x = call.audioMs;
+        wallLeft = clonePlanningBufferMs(call.audioMs);
+        audio1x = call.audioMs;
       } else {
-        buffer1x = Math.max(0, buffer1x - spent) + call.audioMs;
+        wallLeft = advancePlanningBuffer(wallLeft, spent, call.audioMs);
+        audio1x = Math.max(0, audio1x - spent) + call.audioMs;
       }
       poolWarm = true;
       const taken = new Set(call.indexes);
@@ -1651,7 +1710,7 @@ export function simulateClonePlayback(input: {
 }
 
 /**
- * Two books, one GPU, both listened to at 1× from their own first audio.
+ * Two books, one GPU, both listened to at 1.5× from their own first audio.
  * Calls never overlap. The book closer to a stall is served, and a book
  * that has not started is served only when every current listener still
  * has a next section's worth of audio afterwards.
@@ -1672,7 +1731,10 @@ export function simulateTwoCloneListeners(input: {
     chars: book.sectionChars,
     next: 0,
     started: false,
-    buffer: 0,
+    /** Wall time left at 1.5×. */
+    wall: 0,
+    /** Audio still unplayed at 1×. */
+    audio1x: 0,
     clockAtStart: 0,
     steps: [] as ClonePlaybackStep[],
     minMarginMs: Number.POSITIVE_INFINITY,
@@ -1693,7 +1755,7 @@ export function simulateTwoCloneListeners(input: {
           pending: book.chars.slice(book.next).map((_, offset) => book.next + offset),
           textAt: (index) => "x".repeat(book.chars[index] ?? 0),
           playbackStarted: book.started,
-          bufferedMs: book.started ? clonePlanningBufferMs(book.buffer) : 0,
+          bufferedMs: book.started ? book.wall : 0,
           firstLight: book.next === 0,
         })),
       poolWarm,
@@ -1715,27 +1777,25 @@ export function simulateTwoCloneListeners(input: {
     });
     for (const other of states) {
       if (!other.started || other.id === book.id) continue;
-      const left = other.buffer - turn.call.wallMs;
-      other.minMarginMs = Math.min(other.minMarginMs, left);
-      other.minMargin15 = Math.min(
-        other.minMargin15,
-        clonePlanningBufferMs(other.buffer) - turn.call.wallMs
-      );
-      if (left < 0) other.drained += 1;
-      other.buffer = Math.max(0, left);
+      const left1x = other.audio1x - turn.call.wallMs;
+      const left15 = other.wall - turn.call.wallMs;
+      other.minMarginMs = Math.min(other.minMarginMs, left1x);
+      other.minMargin15 = Math.min(other.minMargin15, left15);
+      if (left15 < 0) other.drained += 1;
+      other.wall = Math.max(0, left15);
+      other.audio1x = Math.max(0, left1x);
     }
     clock += turn.call.wallMs;
     if (!book.started) book.clockAtStart = clock;
     if (book.started) {
-      book.minMarginMs = Math.min(book.minMarginMs, book.buffer - turn.call.wallMs);
-      book.minMargin15 = Math.min(
-        book.minMargin15,
-        clonePlanningBufferMs(book.buffer) - turn.call.wallMs
-      );
-      book.buffer = Math.max(0, book.buffer - turn.call.wallMs) + turn.call.audioMs;
+      book.minMarginMs = Math.min(book.minMarginMs, book.audio1x - turn.call.wallMs);
+      book.minMargin15 = Math.min(book.minMargin15, book.wall - turn.call.wallMs);
+      book.wall = advancePlanningBuffer(book.wall, turn.call.wallMs, turn.call.audioMs);
+      book.audio1x = Math.max(0, book.audio1x - turn.call.wallMs) + turn.call.audioMs;
     } else {
       book.started = true;
-      book.buffer = turn.call.audioMs;
+      book.wall = clonePlanningBufferMs(turn.call.audioMs);
+      book.audio1x = turn.call.audioMs;
     }
     book.next += turn.call.indexes.length;
     poolWarm = true;

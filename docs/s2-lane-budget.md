@@ -115,17 +115,18 @@ cannot hide inside a wide call's average.
 Clone section 0 is **1,000** characters, not the 800-character opening the
 other providers use. The wall includes 3s of publish/loudnorm. Its planned
 cold wall is **71,576 ms**, under the 75s first-light wait. Warm first
-audio is **33,576 ms**. The listener buffer used for planning is that
-audio at **1.5×** (`floor(buffer / 1.5)`). A seek ahead of the delivered
-audio is 0, not a larger buffer.
+audio is **33,576 ms**. The planning buffer is wall time left at 1.5×:
+`floor(delivered / 1.5) − elapsed`. A call subtracts its wall directly.
+A seek ahead of the delivered audio is 0.
 
 The next call is **786** characters (the row that leaves 15s inside the
 1,000-character opening played at 1.5×). Its warm wall is **27,033 ms**.
 The margin is **15,027 ms** at 1.5× and **36,058 ms** at 1×. The call
-after that is **1,278** characters, wall **42,076 ms**. That is the
-tightest 1.5× margin, **15,022 ms**. Later sections stay 2,000. A real
-opening that closes short of 1,000 recomputes those two caps from the
-audio it actually produced.
+after that is **984** characters, wall **33,087 ms**. That is the
+tightest 1.5× margin, **15,000 ms**. The ramp then continues at **1,255**
+and **1,628** characters, and later sections stay 2,000. A real opening
+that closes short of 1,000 recomputes each of those caps from the audio
+it actually produced.
 
 A short piece skips the ramp when one call adds no generation beyond
 section 0. The listener's extra wait is only the transfer of the rest of
@@ -139,25 +140,27 @@ one call instead of two. A 786-character second section adds no generation
 and can ride in that opening call. A longer second section, or any
 2,000-character row, does not. A 5-minute article ramps.
 
-The offline sim does not stall. Time to first audio stays **71,576 ms**
+One book does not stall. Time to first audio stays **71,576 ms**
 cold and **33,576 ms** warm. The tightest margin at 1× is the second call
 (**36,058 ms**). The tightest margin at 1.5× is the third call
-(**15,022 ms**).
+(**15,000 ms**). Warm wall is the cold wall minus the 38s restore.
 
 | Piece | Calls | Wall, cold | Wall, warm |
 | --- | --- | --- | --- |
-| ~5 minutes | 1, 1, 1, 1 | 195,389 ms | 157,389 ms |
-| ~10 minutes | 1, 1, 1, 2, 2 | 270,928 ms | 232,928 ms |
-| ~40 minutes | 1, 1, 1, 2, 16 | 304,585 ms | 266,585 ms |
-| ~2 hours | 1, 1, 1, 2, 19, 24, 11 | 501,954 ms | 463,954 ms |
-| ~10 hours | 1, 1, 1, 2, 19, then ten 24s, tail 23 | 1,492,374 ms | 1,454,374 ms |
+| ~5 minutes | 1, 1, 1, 1, 1 | 198,390 ms | 160,390 ms |
+| ~10 minutes | 1, 1, 1, 1, 1, 2 | 290,507 ms | 252,507 ms |
+| ~40 minutes | 1, 1, 1, 1, 1, 3, 14 | 387,572 ms | 349,572 ms |
+| ~2 hours | 1, 1, 1, 1, 1, 3, 16, 24, 12 | 588,152 ms | 550,152 ms |
+| ~10 hours | 1, 1, 1, 1, 1, 3, 16, then eleven 24s | 1,576,533 ms | 1,538,533 ms |
 
-Two 10-hour books on the one GPU also do not stall and their calls do not
-overlap. The pair takes **3,005,487 ms**. Book A's first audio is
-**71,576 ms** and its calls are 1, 1, 1, 2, 8, then eleven 24s, tail 10.
-Book B's first audio is **240,229 ms** and its calls are 1, 1, 1, 2, then
-eleven 24s, tail 18. Both keep the same margins: **36,058 ms** at 1× and
-**15,022 ms** at 1.5×.
+Two 10-hour books do not POST together. The pair takes **36,439,973 ms**.
+Book A's first audio is **71,576 ms** (calls: five single rows, one 3-row
+call, then single rows). Book B's first audio is **327,261 ms** (single
+rows, and a 3-row call at the end). A 2,000-character row is **64,153 ms**.
+Once both listeners are on those rows, the other listener's spare at 1.5×
+is about 20s, so the closer book still takes the row. The tightest margins
+are **−39,289 ms** at 1× and **−64,958 ms** at 1.5× for A, and **−2,123 ms**
+at 1× and **−44,808 ms** at 1.5× for B. A single book keeps the 15s floor.
 
 24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
 the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
@@ -165,9 +168,9 @@ whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
 rollback toward the cold shape.
 
 One book, one call at a time. Two books share that call. The second book's
-first call is still one section, and once that listener has audio the same
-rule applies to them: a call for either book has to finish before both
-buffers run out.
+first call is still one section. A shared call is sent when it finishes
+before both buffers run out. When no such call exists, the book closer to
+silence still takes one row, which is the two-book gap above.
 
 `MODAL_S2_LANE_MAX_CHARS` can only **lower** the cap. That is deliberate: the
 stopgap must not be able to recreate the oversized pack.
@@ -182,7 +185,7 @@ never waits on a compile).
 
 A book frozen before this fix is re-packed while section 0 is still
 unpublished, when any row is wider than the cold abort or sections 0–2 are
-wider than the ramp (1,000 / 786 / 1,278). After section 0 is published,
+wider than the ramp (1,000 / 786 / 984, then 1,255 and 1,628). After section 0 is published,
 only the unpublished tail is re-packed, and only when its next row is over
 that cap. Published timestamps are not moved.
 

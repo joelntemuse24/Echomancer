@@ -60,6 +60,7 @@ import {
   cloneAudioMs,
   clonePlanningBufferMs,
   modalCloneColdSafeRowChars,
+  modalCloneNextSectionChars,
   modalCloneSecondCallChars,
   modalCloneSecondCallCharsFor,
   modalCloneThirdCallChars,
@@ -883,33 +884,31 @@ export function cloneOutlineRepackKind(
   const unpublished = sections.filter((section) => !published.has(section.index));
   if (unpublished.length === 0) return null;
   const over = (text: string, cap: number) => text.length > cap;
-  if (published.size === 0) {
-    const first = sections.find((section) => section.index === 0);
-    const second = sections.find((section) => section.index === 1);
-    const third = sections.find((section) => section.index === 2);
-    if (
-      sections.some((section) => over(section.text, limits.coldSafe)) ||
-      (first != null && over(first.text, limits.opening + 80)) ||
-      (second != null && over(second.text, limits.second)) ||
-      (third != null && over(third.text, limits.third))
-    ) {
-      return "rebuild";
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const tooWide = (rows: { index: number; text: string }[], priorStart: number[]) => {
+    const prior = [...priorStart];
+    for (const section of rows) {
+      const cap =
+        prior.length === 0
+          ? limits.opening + 80
+          : Math.min(limits.coldSafe, modalCloneNextSectionChars(prior) || limits.coldSafe);
+      if (over(section.text, cap)) return true;
+      prior.push(section.text.length);
     }
-    return null;
+    return false;
+  };
+  if (published.size === 0) {
+    return tooWide(ordered, []) ? "rebuild" : null;
   }
-  const next = unpublished.reduce(
-    (min, section) => Math.min(min, section.index),
-    unpublished[0]!.index
+  const lastPublished = ordered.reduce(
+    (max, section) => (published.has(section.index) ? Math.max(max, section.index) : max),
+    -1
   );
-  if (unpublished.some((section) => over(section.text, limits.coldSafe))) return "tail";
-  if (next === 1) {
-    const second = unpublished.find((section) => section.index === 1);
-    if (second && over(second.text, limits.second)) return "tail";
-  }
-  if (next === 2) {
-    const third = unpublished.find((section) => section.index === 2);
-    if (third && over(third.text, limits.third)) return "tail";
-  }
+  const prior = ordered
+    .filter((section) => section.index <= lastPublished)
+    .map((section) => section.text.length);
+  const suffix = ordered.filter((section) => section.index > lastPublished);
+  if (tooWide(suffix, prior)) return "tail";
   return null;
 }
 
@@ -1401,8 +1400,6 @@ async function runClaimedTick(
     const fromIndex = frozen.sections
       .filter((section) => !publishedSections.has(section.index))
       .reduce((min, section) => Math.min(min, section.index), frozen.sections.length);
-    const secondCap = repackLimits?.second ?? modalCloneSecondCallChars();
-    const thirdCap = repackLimits?.third ?? modalCloneThirdCallChars();
     const coldSafe = repackLimits?.coldSafe ?? modalCloneColdSafeRowChars();
     console.warn(
       `[Job ${jobId}] re-packing unpublished clone sections from ${fromIndex} ` +
@@ -1410,12 +1407,14 @@ async function runClaimedTick(
     );
     frozen = {
       ...frozen,
-      sections: repackFrozenTail(frozen.sections, fromIndex, (section) =>
-        section.index === 1
-          ? secondCap
-          : section.index === 2
-            ? thirdCap
-            : Math.min(packChars, coldSafe)
+      sections: repackFrozenTail(
+        frozen.sections,
+        fromIndex,
+        (_section, prior) => {
+          const ramp = modalCloneNextSectionChars(prior);
+          return Math.min(packChars, coldSafe, ramp > 0 ? ramp : packChars);
+        },
+        publishedSections
       ),
     };
     await persistFrozenSections(jobId, frozen.sections);
@@ -1442,6 +1441,7 @@ async function runClaimedTick(
             thirdSectionMaxChars: modalCloneThirdCallChars(),
             fitSecondSection: modalCloneSecondCallCharsFor,
             fitThirdSection: modalCloneThirdCallCharsFor,
+            fitNextSection: modalCloneNextSectionChars,
           }
         : {}),
       // Even packing is for parallel Fish workers, where sections only need to
@@ -3430,10 +3430,10 @@ async function otherTakehomeListener(jobId: string): Promise<{
 }
 
 /**
- * Audio already delivered and not yet played, divided by the player's
- * fastest rate ({@link MODAL_CLONE_LISTENER_RATE}). `first_section_at` is
- * unix seconds. Elapsed time past the delivered audio is zero — a seek
- * ahead of what is ready does not inflate the buffer.
+ * Wall time left at the player's fastest rate: delivered audio / 1.5,
+ * minus elapsed wall. `first_section_at` is unix seconds. Elapsed time
+ * past that wall is zero — a seek ahead of what is ready does not inflate
+ * the buffer, and it is not subtracted from the audio before the division.
  */
 export function listenerBufferMs(
   sections: string[] | null,
@@ -3471,8 +3471,8 @@ export function listenerBufferMs(
     break;
   }
   const elapsed = Math.max(0, nowMs - firstSectionAt * 1000);
-  const at1x = Math.max(0, delivered - elapsed);
-  return { started: true, bufferedMs: clonePlanningBufferMs(at1x) };
+  const wallLeft = clonePlanningBufferMs(delivered) - elapsed;
+  return { started: true, bufferedMs: Math.max(0, wallLeft) };
 }
 
 /**

@@ -67,6 +67,12 @@ export type SplitTextOptions = {
   /** Recompute section 2 from the opening and section 1 that were closed. */
   fitThirdSection?: (openingChars: number, secondChars: number) => number;
   /**
+   * Cap each section after the opening from the sections already closed.
+   * When this is set it replaces the fixed second and third caps, so the
+   * ramp can stay short for more than two sections.
+   */
+  fitNextSection?: (priorChars: number[]) => number;
+  /**
    * Drop a leading copyright / ISBN page. Defaults to on.
    * `TTS_SKIP_FRONT_MATTER=0` turns it off for every caller.
    */
@@ -540,6 +546,26 @@ export function packSpeakableSections(
   let cursor = 0;
   let open: OpenSection | null = null;
   let seenContent = false;
+  let rampCache: { count: number; target: number } | null = null;
+
+  const nextRampTarget = (): number | null => {
+    if (!opts?.fitNextSection || finished.length === 0) return null;
+    if (rampCache && rampCache.count === finished.length) return rampCache.target;
+    const prior = finished.map((section) => measure(section.text));
+    const fitted = opts.fitNextSection(prior);
+    const target = fitted >= 10 ? Math.min(Math.floor(fitted), maxChars) : maxChars;
+    rampCache = { count: finished.length, target };
+    return target;
+  };
+
+  const onTightRamp = () => {
+    const ramp = nextRampTarget();
+    if (ramp != null) return ramp < maxChars;
+    return (
+      (finished.length === 1 && secondTarget != null) ||
+      (finished.length === 2 && thirdTarget != null)
+    );
+  };
 
   const emit = (section: OpenSection) => {
     const body = openSectionText(section);
@@ -587,7 +613,7 @@ export function packSpeakableSections(
   /**
    * Open `piece` as the next section. A piece cut for an earlier, wider
    * window can be longer than this section's ceiling (section 1 is ~786
-   * characters, section 2 ~1,278). Take only the sentences that fit and
+   * characters, section 2 ~984). Take only the sentences that fit and
    * leave the rest for the following section.
    */
   const openWithinCeiling = (
@@ -623,6 +649,8 @@ export function packSpeakableSections(
   };
 
   const targetForNext = () => {
+    const ramp = nextRampTarget();
+    if (ramp != null) return ramp;
     if (finished.length === 0) return firstTarget;
     if (finished.length === 1 && secondTarget != null) return secondTarget;
     if (finished.length === 2 && thirdTarget != null) return thirdTarget;
@@ -635,8 +663,10 @@ export function packSpeakableSections(
     if (finished.length === 0) {
       return Math.min(hardMax, target + 80);
     }
-    // Section 1 on the clone path must not grow toward the 2,000-character
+    // Sections on the clone ramp must not grow toward the 2,000-character
     // steady width. A sentence that does not fit is split, not absorbed.
+    const ramp = nextRampTarget();
+    if (ramp != null && ramp < maxChars) return ramp;
     if (finished.length === 1 && secondTarget != null) return secondTarget;
     if (finished.length === 2 && thirdTarget != null) return thirdTarget;
     return hardMax;
@@ -671,12 +701,15 @@ export function packSpeakableSections(
 
     const target = targetForNext();
     const ceiling = overflowCeiling();
+    const rampNow = nextRampTarget();
     const splitHard =
-      finished.length === 1 && secondTarget != null
-        ? secondTarget
-        : finished.length === 2 && thirdTarget != null
-          ? thirdTarget
-          : hardMax;
+      rampNow != null && rampNow < maxChars
+        ? rampNow
+        : finished.length === 1 && secondTarget != null
+          ? secondTarget
+          : finished.length === 2 && thirdTarget != null
+            ? thirdTarget
+            : hardMax;
     const pieces =
       measure(unit.text) > ceiling
         ? packSentencesWithin(unit.text, target, splitHard, measure)
@@ -717,9 +750,7 @@ export function packSpeakableSections(
       // The first take-home window should land near its target. A 55% fill
       // would close a ~450-character paragraph and leave the opening short.
       const fillRatio =
-        (finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS) ||
-        (finished.length === 1 && secondTarget != null) ||
-        (finished.length === 2 && thirdTarget != null)
+        (finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS) || onTightRamp()
           ? 0.9
           : MIN_FILL_RATIO;
       const filledEnough = currentLen >= effectiveTarget * fillRatio;
