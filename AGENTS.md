@@ -358,12 +358,12 @@ One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, and
-a production deploy leaves its env there. Staging passed on build
-`2c43f284208e`; production raises its live cap **after** the deploy with
-`Cls.from_name("echomancer-s2-clone", "S2CloneWorker")().update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)`.
-That override is not visible in `/ready` or `status()` (both read deploy-time
-env) and a plain `modal deploy` resets it, so re-apply after every deploy. See
-step 8 of `docs/s2-gpu-staging-runbook.md`.
+a production deploy leaves its env there. The live cap stays **1**. A
+previous promote may have left it at 4, and `/ready` still reports the
+deploy-time value, so step 8c of `docs/s2-gpu-staging-runbook.md` runs
+`update_autoscaler(max_containers=1, scaledown_window=180, min_containers=0)`
+after every deploy and checks the printed cap. Do not raise it to 4. A
+plain `modal deploy` resets the override, so 8c is repeated.
 
 - **One narrator per book.** `jobs.provider_pin` (`modal` / `fish`) is written
   once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
@@ -416,29 +416,29 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
   Each later call is the largest prefix that finishes, with margin, before
-  the audio already buffered ahead of a 1× listener runs out. The
+  the audio already buffered ahead of a listener at 1.5× runs out. The
   2026-11-11 smoke (one H100, HTTPS `/synthesize_batch`) measured a single
   row at ~33 chars/s, not 50. Wider calls use that smoke's per-row curve,
   15% under the server rate (~31 chars/s/row at 8 rows measured, planned
   slower; ~24 at 14; ~22 at 24). Transfer is the measured 12s per 43,907
   characters (58.7MB). Every call, including one row, leaves at least 15s
-  or 10% of the buffer. Clone section 0 is 1,000 characters (~63s, cold
-  wall ~69s, under the 75s first-light wait). The next call is capped at
-  1,300 characters so it does not run past that opening; the smoke's
-  1,300-character row left 4.3s against a 673-character opening, and this
-  pair leaves ~23s. Later sections stay 2,000. A short piece whose whole
+  or 10% of the buffer. The buffer is the delivered audio at 1.5×, and a
+  seek ahead of that audio is 0. Clone section 0 is 1,000 characters
+  (~63s of audio, cold wall 71.6s including 3s of publish, under the 75s
+  first-light wait; warm first audio is 33.6s). The next call is 786
+  characters and the one after that is 1,278, each leaving about 15s at
+  1.5× (36s at 1× on the second call). Later sections stay 2,000. A short piece whose whole
   remaining book adds no generation beyond section 0 goes out as that one
   call instead of ramping. Two rows at this curve are a little slower per
   row than one row at 33 chars/s, so the bound is about 1,959 characters
   (a 1,000-character opening and a second section of 959): ~2.1 minutes of
   audio. The extra wait is only the transfer of that second section, under
   half a second, and total time is one call instead of two. A later row
-  longer than the opening — the 1,300-character second section, or any
+  longer than the opening — past the 786-character second section, or any
   2,000-character row — adds generation, so a 5-minute article and anything
-  longer still ramps. Ten minutes would fit inside the opening's ~69s only
-  if every row were a few hundred characters. The prefix then grows — on
-  a 10-hour book the calls are 1, 1, 12, the rest of that 24-section
-  claim, then 24 — and the next call starts when the previous one returns.
+  longer still ramps. The prefix then grows — on a 10-hour book the calls
+  are 1, 1, 1, 2, 19, then 24 — and the next call is planned from the
+  buffer the previous call actually left.
   Playback does not stall once it has started. A gap longer than the
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
   180s scaledown) is one cold-sized call again, then the ramp resumes.

@@ -27,6 +27,7 @@ import {
   MODAL_LANE_RESTORE_MARGIN_MS,
   MODAL_LANE_ROW_CHARS_PER_SECOND,
   modalCloneLaneGenerateBudgetMs,
+  cloneCallWallMs,
   modalCloneSectionChars,
   modalLaneCharCap,
   planModalCloneLanes,
@@ -133,11 +134,28 @@ describe("the 7e4a8b48 pack shape", () => {
     expect(secondsForOneBigSection * 1000).toBeLessThan(generateMs);
   });
 
-  it("gives a lane enough wall time for the pack it was given", async () => {
-    // `workMs` is computed from the page's own text, so the HTTP wait can never
-    // be the tighter of the two. A 7.7k row at the single-row rate is ~154s of
-    // narration, which is why such a section must never be packed — the call
-    // wait has to cover it anyway rather than cut it off.
+  it("does not render a cold row the armed abort cannot finish", async () => {
+    // A 7.7k row at 33 chars/s plus the restore is past the 180s clamp.
+    // The old clock armed a shorter wait and sent the row anyway.
+    const render = vi.fn(async (items: { key: string }[]) =>
+      outcome(items.map((item) => item.key))
+    );
+    const result = await dispatchModalCloneLanes({
+      indexes: [1],
+      textAt: () => "x".repeat(BOOK.bigSection),
+      lanes: 1,
+      batch: 24,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      render,
+      stage: async () => {},
+    });
+    expect(render).not.toHaveBeenCalled();
+    expect(result.staged).toBe(0);
+    expect(result.oversize).toContain(1);
+  });
+
+  it("arms the abort from the same wall the planner used", async () => {
     const seen: (number | undefined)[] = [];
     const render = vi.fn(
       async (items: { key: string }[], _epoch: number, opts?: { workMs?: number }) => {
@@ -146,21 +164,23 @@ describe("the 7e4a8b48 pack shape", () => {
       }
     );
     await dispatchModalCloneLanes({
-      indexes: [1, 2],
-      textAt: () => "x".repeat(BOOK.bigSection),
-      lanes: 2,
+      indexes: [1],
+      textAt: () => "x".repeat(2_000),
+      lanes: 1,
       batch: 24,
       maxLaneChars: 8_000,
       seedEpoch: 0,
       render,
       stage: async () => {},
     });
-    expect(seen.length).toBe(2);
-    for (const workMs of seen) {
-      expect(workMs).toBe(
-        Math.round((BOOK.bigSection / MODAL_LANE_ROW_CHARS_PER_SECOND) * 1000)
-      );
-    }
+    const wall = cloneCallWallMs({
+      chars: 2_000,
+      largestRow: 2_000,
+      rows: 1,
+      shape: "cold",
+      restore: true,
+    });
+    expect(seen).toEqual([wall]);
   });
 
   it("sizes new clone books so a row fits, and still batches them", () => {
@@ -213,18 +233,18 @@ describe("a multi-section call that misses its budget", () => {
 
     const result = await dispatchModalCloneLanes({
       indexes: [1, 2, 3, 4],
-      textAt: () => "x".repeat(BOOK.bigSection),
+      textAt: () => "x".repeat(2_000),
       lanes: 4,
       batch: 24,
-      // Wider than production's ~8,000 on purpose: this is the shape an old
-      // stopgap override would produce, and it must still recover.
-      maxLaneChars: 20_000,
+      // Two 2,000-character rows fit the 180s abort, so the call is sent.
+      // A 7.7k row is refused before this path; see the test above.
+      maxLaneChars: 4_500,
       seedEpoch: 0,
       render,
       stage: async () => {},
     });
 
-    // 20,000 admits two sections per call, so the first wave is [[1,2],[3,4]].
+    // 4,500 admits two sections per call, so the first wave is [[1,2],[3,4]].
     expect(calls[0]).toEqual([1, 2]);
     expect(calls[1]).toEqual([3, 4]);
     // Both timed out, so the retry is four single-row calls, not the same two.
@@ -248,10 +268,10 @@ describe("a multi-section call that misses its budget", () => {
     });
     const result = await dispatchModalCloneLanes({
       indexes: [1, 2],
-      textAt: () => "x".repeat(BOOK.bigSection),
+      textAt: () => "x".repeat(2_000),
       lanes: 2,
       batch: 24,
-      maxLaneChars: 40_000,
+      maxLaneChars: 4_500,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -273,10 +293,10 @@ describe("a multi-section call that misses its budget", () => {
     });
     const result = await dispatchModalCloneLanes({
       indexes: [1],
-      textAt: () => "x".repeat(BOOK.bigSection),
+      textAt: () => "x".repeat(2_000),
       lanes: 1,
       batch: 24,
-      maxLaneChars: 40_000,
+      maxLaneChars: 8_000,
       seedEpoch: 0,
       render,
       stage: async () => {},

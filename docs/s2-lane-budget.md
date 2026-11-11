@@ -113,12 +113,19 @@ wall. A row is also never planned faster than 33 chars/s, so one long row
 cannot hide inside a wide call's average.
 
 Clone section 0 is **1,000** characters, not the 800-character opening the
-other providers use. Its planned cold wall is **68.6s**, under the 75s
-first-light wait. The next call is capped at **1,300** characters (one
-row, the smoke's second call). Against ~63s of opening audio that leaves
-**23.3s**. A 2,000-character second row at 33 chars/s is ~61s and does not
-clear the 15s floor, which is the stall the smoke was 4.3s away from.
-Later sections stay 2,000.
+other providers use. The wall includes 3s of publish/loudnorm. Its planned
+cold wall is **71,576 ms**, under the 75s first-light wait. Warm first
+audio is **33,576 ms**. The listener buffer used for planning is that
+audio at **1.5×** (`floor(buffer / 1.5)`). A seek ahead of the delivered
+audio is 0, not a larger buffer.
+
+The next call is **786** characters (the row that leaves 15s inside the
+1,000-character opening played at 1.5×). Its warm wall is **27,033 ms**.
+The margin is **15,027 ms** at 1.5× and **36,058 ms** at 1×. The call
+after that is **1,278** characters, wall **42,076 ms**. That is the
+tightest 1.5× margin, **15,022 ms**. Later sections stay 2,000. A real
+opening that closes short of 1,000 recomputes those two caps from the
+audio it actually produced.
 
 A short piece skips the ramp when one call adds no generation beyond
 section 0. The listener's extra wait is only the transfer of the rest of
@@ -126,38 +133,31 @@ the text. Two rows at the curve above are a little slower per row than one
 row at 33 chars/s, so a second section of 1,000 characters already adds
 generation. The bound is **1,959 characters** (opening 1,000, second
 section 959): about **2.1 minutes** of audio. At that boundary the extra
-transfer is **262 ms** (cold wall **68,838 ms**, warm **30,838 ms**),
+transfer is **262 ms** (cold wall **71,838 ms**, warm **33,838 ms**),
 first audio is still inside the 75s first-light wait, and total time is
-one call instead of two. A
-1,300-character second section or any 2,000-character row does not
-qualify. A 5-minute article contains a 2,000-character row, so a cold
-one-call would return around 100s against the ramp's 68.6s. It ramps.
-Ten minutes would fit inside that 68.6s only if every row were a few
-hundred characters and they ran in parallel.
+one call instead of two. A 786-character second section adds no generation
+and can ride in that opening call. A longer second section, or any
+2,000-character row, does not. A 5-minute article ramps.
 
-On a 10-hour book at 1× the offline sim does not stall. Time to first
-audio is **68,576 ms**. The tightest margin after that is **16,961 ms**.
-Call sizes are **1, 1, 12, 10**, then ten **24**s, tail **23**. The 10 is
-the rest of the first 24-section claim. GPU wall is **1,424,500 ms**
-(23.7 minutes) at the 15% curve. The smoke's own rates, without that
-margin, are the ~20–21 minute projection. Two books on the one GPU also
-do not stall: the second listener's first audio is at **227,301 ms**, both
-margins stay **16,961 ms**, and the pair takes **2,799,158 ms**. Each
-book's calls are **1, 1, 12**, then **24**s, tail **9**.
+The offline sim does not stall. Time to first audio stays **71,576 ms**
+cold and **33,576 ms** warm. The tightest margin at 1× is the second call
+(**36,058 ms**). The tightest margin at 1.5× is the third call
+(**15,022 ms**).
 
-The same sim on shorter books, cold, also does not stall. A 2,000-character
-row keeps them on the ramp. Time to first audio stays **68,576 ms**.
-
-| Piece | Calls | Tightest margin | Wall |
+| Piece | Calls | Wall, cold | Wall, warm |
 | --- | --- | --- | --- |
-| ~5 minutes | 1, 1, 2 | 23,342 ms | 169,602 ms |
-| ~10 minutes | 1, 1, 4 | 23,342 ms | 170,902 ms |
-| ~40 minutes | 1, 1, 12, 6 | 16,961 ms | 266,002 ms |
-| ~2 hours | 1, 1, 12, 10, 24, 10 | 16,961 ms | 463,370 ms |
+| ~5 minutes | 1, 1, 1, 1 | 195,389 ms | 157,389 ms |
+| ~10 minutes | 1, 1, 1, 2, 2 | 270,928 ms | 232,928 ms |
+| ~40 minutes | 1, 1, 1, 2, 16 | 304,585 ms | 266,585 ms |
+| ~2 hours | 1, 1, 1, 2, 19, 24, 11 | 501,954 ms | 463,954 ms |
+| ~10 hours | 1, 1, 1, 2, 19, then ten 24s, tail 23 | 1,492,374 ms | 1,454,374 ms |
 
-A warm 10-minute article is the same calls and the same 23,342 ms margin.
-First audio is **30,576 ms** and the wall is **132,902 ms**, the cold
-figures without the 38s restore.
+Two 10-hour books on the one GPU also do not stall and their calls do not
+overlap. The pair takes **3,005,487 ms**. Book A's first audio is
+**71,576 ms** and its calls are 1, 1, 1, 2, 8, then eleven 24s, tail 10.
+Book B's first audio is **240,229 ms** and its calls are 1, 1, 1, 2, then
+eleven 24s, tail 18. Both keep the same margins: **36,058 ms** at 1× and
+**15,022 ms** at 1.5×.
 
 24 × 2,000 is 48,000 characters: about 105s at the planning curve, inside
 the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
@@ -180,9 +180,11 @@ warm. Only a **single-section** placement that never came back is treated as
 cold, which is still the case the off-path `::cover` exists for (#237: a book
 never waits on a compile).
 
-A book frozen before this fix, whose sections are wider than the cap, is
-re-packed **once and only while nothing has been published**. Once a section is
-stored, the outline is the book someone is hearing and is left alone.
+A book frozen before this fix is re-packed while section 0 is still
+unpublished, when any row is wider than the cold abort or sections 0–2 are
+wider than the ramp (1,000 / 786 / 1,278). After section 0 is published,
+only the unpublished tail is re-packed, and only when its next row is over
+that cap. Published timestamps are not moved.
 
 ## Verifying a deploy
 

@@ -501,7 +501,9 @@ describe("lane staging", () => {
     const fetchMock = warmPool(2);
     vi.stubGlobal("fetch", fetchMock);
     process.env.TTS_SECTION_CACHE = "1";
+    const vitestFlag = process.env.VITEST;
     delete process.env.VITEST;
+    try {
     await seedCloneJob("A sentence. ".repeat(300));
     const fake = await fakeAdapter();
 
@@ -524,6 +526,10 @@ describe("lane staging", () => {
     // The lanes filled the sections, so the slower per-section path either had
     // nothing left to do or only handled a tail.
     expect(fake.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      if (vitestFlag === undefined) delete process.env.VITEST;
+      else process.env.VITEST = vitestFlag;
+    }
   });
 
   /**
@@ -639,9 +645,11 @@ describe("lane staging", () => {
       configureModal();
       process.env.MODAL_S2_FIRST_LIGHT = "0";
       process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
-      // One row per call. The pool has not answered, so the tick is a single
-      // cold-sized call — not four containers opened together.
+      // One row per call. A call that returns lets the tick plan the next
+      // row, still one HTTP call at a time — not four containers at once.
       process.env.MODAL_S2_BATCH_SIZE = "1";
+      // First light is off, but a call that returns still lets the tick plan
+      // the next row. One call is in flight at a time — never four H100s.
       try {
         let inflight = 0;
         let maxInflight = 0;
@@ -673,8 +681,8 @@ describe("lane staging", () => {
         await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
         expect(maxInflight).toBe(1);
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toHaveLength(1);
+        expect(rows.length).toBeGreaterThan(1);
+        expect(rows.every((row) => row.length === 1)).toBe(true);
       } finally {
         delete process.env.MODAL_S2_FIRST_LIGHT;
         delete process.env.MODAL_S2_BATCH_SIZE;
@@ -1176,6 +1184,8 @@ describe("staged clone takes are not rendered again", () => {
     const row = await jobRow(JOB_ID);
     const segments = JSON.parse(String(row?.segments_json ?? "[]")) as Array<{
       index: number;
+      path?: string;
+      rawPath?: string;
     }>;
     await execute(`UPDATE jobs SET segments_json = ? WHERE id = ?`, [
       JSON.stringify(segments.filter((segment) => !staged.includes(segment.index))),
@@ -1208,6 +1218,28 @@ describe("staged clone takes are not rendered again", () => {
     await deleteFile(`tts-cache/${keyFor(victim!, "clone-ref")}.mp3`);
     await writeSectionCache(keyFor(victim!, "other-voice"), "mp3", fakeMp3(), "audio/mpeg");
     await writeSectionCache(keyFor(silent!, "clone-ref"), "mp3", emptyWav(), "audio/wav");
+    // Raw audio would be recovered as a finished take and the cache would
+    // never be consulted. Drop it for the two indexes whose cache is bad.
+    const stored = new Map(segments.map((segment) => [segment.index, segment]));
+    for (const index of [victim!, silent!]) {
+      const pad = String(index).padStart(4, "0");
+      const segment = stored.get(index);
+      for (const storagePath of [
+        segment?.rawPath,
+        segment?.path,
+        `audiobooks/${JOB_ID}/raw/${pad}.mp3`,
+        `audiobooks/${JOB_ID}/raw/${pad}.wav`,
+        `audiobooks/${JOB_ID}/sections/${pad}.mp3`,
+      ]) {
+        if (storagePath && (await fileExists(storagePath))) {
+          await deleteFile(storagePath);
+        }
+      }
+    }
+    await execute(
+      `DELETE FROM cpu_tasks WHERE job_id = ? AND section_index IN (?, ?)`,
+      [JOB_ID, victim!, silent!]
+    );
 
     const mark = seen.length;
     await processTakehomeTick(JOB_ID, {});
@@ -1337,6 +1369,79 @@ describe("staged clone takes are not rendered again", () => {
     expect(blocked.busy).toBe(true);
     expect(seen.length).toBe(calls);
   }, 60_000);
+});
+
+describe("a book-wave miss does not open more GPU calls", () => {
+  it("posts one batch when the container answers 429", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let batchPosts = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(
+          JSON.stringify({ ready: true, warm_containers: 1, build: "abc123" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      batchPosts += 1;
+      return new Response("lane busy", { status: 429 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(400));
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+    expect(batchPosts).toBe(1);
+    expect(result.yieldSlot).toBe(true);
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).not.toBe("failed");
+  });
+
+  it("records a dropped row as a retry so the next take changes seed", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    const epochs: number[] = [];
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) !== "batch") return base(url, init);
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      epochs.push(Number(body.seed_epoch) || 0);
+      const response = await base(url, init);
+      const payload = await response.json();
+      payload.items = (payload.items as { key: string }[]).map((item) =>
+        item.key === "0"
+          ? { key: item.key, error: "row failed", error_code: "row" }
+          : item
+      );
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A short sentence. ".repeat(80));
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, {});
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json ?? "[]")) as {
+      index: number;
+      status: string;
+      attempts?: number;
+    }[];
+    const dropped = segments.find((segment) => segment.index === 0);
+    expect(dropped?.status).toBe("retry");
+    expect(dropped?.attempts).toBe(1);
+    await processTakehomeTick(JOB_ID, {});
+    expect(epochs.length).toBeGreaterThan(1);
+    expect(epochs.at(-1)).toBeGreaterThan(epochs[0] ?? 0);
+  });
 });
 
 describe("a parked provider fault does not fail the book on a later tick", () => {

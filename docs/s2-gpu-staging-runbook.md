@@ -15,10 +15,11 @@ not prove the live `/ready` body. Cover calls that answer from an already-warm
 container id do not prove that every GPU type has a snapshot of this recipe.
 There are no always-on GPUs.
 
-Production lane count is raised **at runtime**
-after the deploy — see step 8. The code default stays `max_containers=1`, and
-every production deploy leaves it there. A plain `modal deploy` resets the
-runtime override, so step 8c has to be repeated.
+The live cap stays **1**. A book sends one `synthesize_batch` at a time, so a
+cap of 4 starts H100s that call does not use. The code default is already
+`max_containers=1`. A previous promote may have left the live cap at 4, and a
+plain `modal deploy` resets the override to the baked env, so step 8c verifies
+the live cap and lowers it to 1 after every production deploy.
 
 Target shape. The table is the intended shape, not a record that every box
 was ticked for the current image:
@@ -650,7 +651,7 @@ than substituting a voice.
 
 ---
 
-## 8. Promote to four lanes in production
+## 8. Keep the live cap at 1
 
 **Leave the live cap at 1.** The worker sends one `synthesize_batch` at a time
 and fills that call once the container has answered (see
@@ -712,10 +713,17 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 - [ ] `scripts/s2/staging-smoke.mjs` passes against the production `ready` and
       `synthesize_batch` hosts (same checks as step 5)
 
-### 8c. Raise the live cap to four containers
+### 8c. Verify the live cap is 1, and lower it if it is not
+
+Do this after every production deploy, including a deploy that left
+`S2C_MAX_CONTAINERS` unset. A plain `modal deploy` resets the live autoscaler
+to the baked env, but a previous promote may have left `max_containers` at 4,
+and `/ready` still reports the deploy-time value (1) either way. The printout
+from `update_autoscaler` is the live cap.
 
 Run this from a checkout with the Modal client configured for the Echomancer
 workspace. It talks to the deployed app; it does not deploy or rebuild anything.
+`max_containers=1` is the setting to apply. Do not pass 4.
 
 ```bash
 cd <repo> && python3 - <<'PY'
@@ -724,37 +732,29 @@ import modal
 worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
 settings = worker.update_autoscaler(
     min_containers=0,        # scale to zero when idle
-    max_containers=4,        # four independent one-GPU containers
+    max_containers=1,        # one H100; a second call would start a second GPU
     scaledown_window=180,    # 180 s idle before a container is released
 )
 print("live autoscaler now:", settings)
+assert settings.max_containers == 1, settings
 PY
 ```
 
-`update_autoscaler` is a runtime call on a deployed `Cls` instance: no redeploy,
-and the snapshots already built stay valid. It returns the autoscaler settings
-**as they now stand on the server** — that printout is the only reliable
-confirmation, because `/ready` and `status()` keep reporting the deploy-time
-value (see below). Once it returns, up to four concurrent batch calls start
-four containers.
+Pass condition: the printed settings show `max_containers` 1. If a dashboard
+or an older checkout still has 4, this call is what lowers it. The worker
+stays at one in-flight `synthesize_batch`. Do not set
+`MODAL_S2_SECTION_CONCURRENCY` above 1 for this schedule.
 
-Then on the worker:
+#### Historical — do not run
 
-```bash
-MODAL_S2_SECTION_CONCURRENCY=4
-MODAL_S2_BATCH_SIZE=24
-```
-
-Confirm with a fanout against production — the same command as step 4/6, with
-no `S2C_APP_NAME`:
+An older promote raised the live cap after the deploy. That command started
+four H100s for a book that only ever has one call in flight. It is recorded
+here so a search for it does not look like the current step. Do not run it.
 
 ```bash
-modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 180
+# DO NOT RUN. Historical four-lane promote, superseded by 8c above.
+# worker.update_autoscaler(min_containers=0, max_containers=4, scaledown_window=180)
 ```
-
-Pass condition: four distinct `container_id`s across four calls. Then
-`node scripts/s2/staging-smoke.mjs --lanes 4 --sections-per-lane 2` should
-report ≥ 4 distinct containers.
 
 ### 8d. Cold first audio, from a scaled-to-zero pool
 
@@ -970,17 +970,19 @@ This is expected, not a failed override. Do not "fix" it by calling
 ### Re-apply after every deploy
 
 A plain `modal deploy` resets the live autoscaler to the values baked into the
-deployment environment. While production's env stays at 1, that means the cap
-silently drops back to **one container** on every deploy. After each production
-deploy, in this order:
+deployment environment. Production's env stays at 1, and that is the cap this
+schedule uses. A deploy can also restore a previously raised cap if the
+dashboard still has the old override in front of the new env. After each
+production deploy, in this order:
 
 1. `modal run modal/s2_clone_warm.py --verify --containers 3` (the deploy
    invalidated the snapshots — 8b)
-2. re-run the `update_autoscaler(max_containers=4, …)` call from 8c
-3. optionally re-check the fanout
+2. re-run the 8c `update_autoscaler(max_containers=1, …)` call and read the
+   printed settings. If `max_containers` is anything other than 1, 8c is what
+   lowers it.
 
-Treat step 2 as part of the deploy, not as an optional follow-up. A deploy that
-skips it leaves production at one lane and nothing in the health output says so.
+Treat step 2 as part of the deploy, not as an optional follow-up. `/ready`
+will not tell you the live cap.
 
 ### Rolling the lane count back
 
@@ -997,7 +999,8 @@ PY
 ```
 
 Existing containers finish the calls in flight and drain; new calls queue behind
-the single cap. Raising it again is the same call with `max_containers=4`.
+the single cap. The one-GPU schedule does not raise it again. The historical
+four-lane call is under 8c and is not a current step.
 
 ### Alternate: bake `S2C_MAX_CONTAINERS=4` into the deploy
 
@@ -1067,9 +1070,9 @@ Production app:     echomancer-s2-clone
 Build id:           __________  (same build validated on staging)
 Deploy env:         S2C_MAX_CONTAINERS unset (1)
 Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
-Runtime override:   update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)
-Fanout after 8c:    __ distinct containers across __ calls
-Health labels:      /ready max_containers still ____ (expected: 1 until an env redeploy)
+Runtime override:   update_autoscaler(max_containers=1, scaledown_window=180, min_containers=0)
+Live cap printed:   max_containers=1 (not the /ready label)
+Health labels:      /ready max_containers still ____ (deploy-time env; live cap is the 8c printout)
 ```
 
 ---

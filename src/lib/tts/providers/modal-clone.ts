@@ -59,19 +59,18 @@ import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
   modalCloneCallTimeoutMs,
-  modalCloneColdWaitMs,
-  modalCloneFirstLightWaitMs,
   modalCloneLanes,
   modalCloneReadyProbeEnabled,
   modalCloneReadyTimeoutMs,
   modalCloneRetryDelayMs,
   recordModalCloneUsage,
   resetModalCloneGuardForTests,
-  MODAL_CLONE_CALL_PREP_MS,
-  MODAL_CLONE_COLD_WAIT_MAX_MS,
-  modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
-import { clonePoolStillWarm } from "@/lib/tts/providers/modal-clone-lanes";
+import {
+  clonePoolStillWarm,
+  MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
+  modalCloneArmedWaitMs,
+} from "@/lib/tts/providers/modal-clone-lanes";
 import {
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
@@ -103,15 +102,22 @@ export type ModalCloneColdScope = "pool" | "placement";
 export class ModalCloneColdError extends Error {
   readonly retryAfterMs: number;
   readonly scope: ModalCloneColdScope;
+  /**
+   * Which clock expired. `warm` is a container that had already answered,
+   * so it must not kick a snapshot compile. `restore` may.
+   */
+  readonly waitKind?: "restore" | "steady" | "warm";
   constructor(
     message = "Modal clone pool is cold",
     retryAfterMs = COLD_BACKOFF_MS,
-    scope: ModalCloneColdScope = "pool"
+    scope: ModalCloneColdScope = "pool",
+    waitKind?: "restore" | "steady" | "warm"
   ) {
     super(message);
     this.name = "ModalCloneColdError";
     this.retryAfterMs = retryAfterMs;
     this.scope = scope;
+    this.waitKind = waitKind;
   }
 }
 
@@ -496,7 +502,12 @@ export async function renderModalCloneBatch(
     });
     if (verdict.truncated) continue;
     out.set(row.key, decoded);
+    // The decoded buffer is what the next stage reads. Drop the base64
+    // copy before the following call allocates another batch.
+    row.audio_b64 = undefined;
+    row.audio_base64 = undefined;
   }
+  body.items = undefined;
   if (undecodable.length > 0) {
     throw new Error(
       `Modal clone batch returned ${undecodable.length} row(s) without decodable audio (${undecodable.join(",")})`
@@ -642,11 +653,11 @@ export async function synthesizeModalClone(
   const token = process.env.MODAL_S2_TOKEN?.trim();
   if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
   input.signal?.throwIfAborted();
-  // One lane for this HTTP call. Batch dispatch holds its own lane around
-  // renderModalCloneBatch and does not call this function, so the two do
-  // not stack. A full cap is a busy lane, not a failed section and not a
-  // different voice.
-  const slot = await holdModalCloneLaneSlot(modalCloneLanes());
+  // One lane for this HTTP call. The book wave already holds one slot per
+  // batch; this path is the per-section fallback, and it must not open the
+  // other three slots `modalCloneLanes()` would allow. A full cap is a busy
+  // lane, not a failed section and not a different voice.
+  const slot = await holdModalCloneLaneSlot(1);
   if (!slot) throw new ProviderSlotBusyError("modal-clone");
   try {
 
@@ -986,32 +997,28 @@ export function modalCloneCallWait(
   workMs = 0,
   warmBatch = false
 ): ModalCallWait {
-  if (warmBatch) {
-    return { ms: modalCloneWarmWaitMs(), kind: "warm" };
+  // Same function the planner uses when it decides a cold pack fits.
+  return modalCloneArmedWaitMs(poolKnownWarm, raceForFirstAudio, workMs, warmBatch);
+}
+
+/** True when a Content-Length is past the batch body ceiling. */
+export function modalCloneResponseOverCeiling(bytes: number): boolean {
+  return Number.isFinite(bytes) && bytes > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES;
+}
+
+/**
+ * Read a Modal JSON body. A declared length past the ceiling is refused
+ * before the body is parsed, so a huge response is not kept as a string.
+ */
+export async function readModalCloneJson(response: Response): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (modalCloneResponseOverCeiling(declared)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ModalCloneProviderError(
+      `Modal clone response is ${declared} bytes, over the ${MODAL_CLONE_RESPONSE_BODY_MAX_BYTES} byte ceiling`
+    );
   }
-  const work = Number.isFinite(workMs) && workMs > 0 ? workMs : 0;
-  const need = work + MODAL_CLONE_CALL_PREP_MS;
-  if (poolKnownWarm) {
-    return {
-      ms: Math.min(
-        MODAL_CLONE_COLD_WAIT_MAX_MS,
-        Math.max(modalCloneCallTimeoutMs(), need)
-      ),
-      kind: "steady",
-    };
-  }
-  const restore = Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs(), need);
-  return {
-    // A race shortens the wait only for the restore, never below what the
-    // section itself needs — otherwise the plan would be cut by its own clock.
-    ms: Math.min(
-      MODAL_CLONE_COLD_WAIT_MAX_MS,
-      raceForFirstAudio
-        ? Math.min(restore, Math.max(modalCloneFirstLightWaitMs(), need))
-        : restore
-    ),
-    kind: "restore",
-  };
+  return response.json();
 }
 
 type ModalCallWait = { ms: number; kind: "restore" | "steady" | "warm" };
@@ -1059,16 +1066,17 @@ function coldFromWait(
   if (kind === "warm") {
     // The container had answered, so this is a slow or gone GPU, not a
     // compile. Drop the warmth bit. The next call is cold-sized. Do not
-    // kick `::cover` and do not freeze the pool.
+    // kick `::cover` and do not freeze the pool. `waitKind` is what the
+    // dispatch checks, so a placement scope cannot kick a compile anyway.
     noteModalClonePoolLost();
-    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement");
+    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement", "warm");
   }
   if (kind === "restore") {
     kickModalCloneSnapshotWarm(message);
-    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement");
+    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement", "restore");
   }
   rememberModalCloneCold();
-  return new ModalCloneColdError(message, COLD_BACKOFF_MS, "pool");
+  return new ModalCloneColdError(message, COLD_BACKOFF_MS, "pool", "steady");
 }
 
 async function postJson(
@@ -1078,7 +1086,7 @@ async function postJson(
   wait?: ModalCallWait
 ): Promise<unknown> {
   const response = await postModal(url, body, signal, wait);
-  return response.json();
+  return readModalCloneJson(response);
 }
 
 /**
@@ -1252,12 +1260,13 @@ async function postModal(
         `Modal clone rejected the reference: ${detail.slice(0, 300)}`
       );
     }
-    if (response.status >= 500) {
-      // A 500 is the container's own exception, not a cold start: retrying it
-      // cannot help, and burning the cold placement budget on it is how
-      // `job 5f09ee0e` ended with "Modal clone already retried" instead of the
-      // real TypeError. Surfaced as a hard fault so the caller can fall through
-      // to the engine fallback rather than park the book as if it were cold.
+    if (response.status === 401 || response.status === 403 || response.status >= 500) {
+      // A 401/403 is the account. A 500 is the container's own exception.
+      // Neither is a cold start: retrying it cannot help, and burning the
+      // cold placement budget on it is how `job 5f09ee0e` ended with
+      // "Modal clone already retried" instead of the real TypeError.
+      // Surfaced as a hard fault so the caller can fall through to the
+      // engine fallback rather than park the book as if it were cold.
       throw new ModalCloneProviderError(
         `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`,
         response.status

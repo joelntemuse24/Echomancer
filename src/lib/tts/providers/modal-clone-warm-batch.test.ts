@@ -4,8 +4,8 @@
  * Section 0 is about a minute of audio. A 24-row call after it takes
  * several minutes and returns every row together, so the listener hears
  * that minute and then waits. Each next call is the largest prefix that
- * finishes, with margin, before the audio already buffered ahead of a 1×
- * listener runs out. The prefix grows as that buffer grows.
+ * finishes, with margin, before the audio already buffered ahead of a
+ * listener at 1.5× runs out. The prefix grows as that buffer grows.
  *
  * These tests pin the schedule without a GPU:
  *
@@ -40,7 +40,8 @@ import {
   MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
   MODAL_CLONE_ROW_CHARS_PER_SECOND,
-  MODAL_CLONE_SECOND_CALL_CHARS,
+  modalCloneSecondCallChars,
+  modalCloneThirdCallChars,
   cloneAudioMs,
   cloneCallWallMs,
   cloneGenerationMs,
@@ -172,7 +173,7 @@ describe("one book's call schedule", () => {
     // Section 0 is 1,000 characters. The next call is the 1,300-character
     // cap, one row, and it leaves the 15s margin. It is not 24 rows.
     expect(next.indexes).toHaveLength(1);
-    expect(next.chars).toBe(MODAL_CLONE_SECOND_CALL_CHARS);
+    expect(next.chars).toBe(modalCloneSecondCallChars());
     expect(next.fitsBuffer).toBe(true);
     expect(next.bufferAtDispatchMs - next.wallMs).toBeGreaterThanOrEqual(15_000);
     expect(next.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
@@ -341,9 +342,14 @@ function cloneBookSections(audioSeconds: number): number[] {
   const sections = [opening];
   let used = opening;
   if (used < totalChars) {
-    const second = Math.min(MODAL_CLONE_SECOND_CALL_CHARS, totalChars - used);
+    const second = Math.min(modalCloneSecondCallChars(), totalChars - used);
     sections.push(second);
     used += second;
+  }
+  if (used < totalChars) {
+    const third = Math.min(modalCloneThirdCallChars(), totalChars - used);
+    sections.push(third);
+    used += third;
   }
   while (used < totalChars) {
     const size = Math.min(2_000, totalChars - used);
@@ -366,20 +372,21 @@ describe("a 10-hour book played at 1×", () => {
     });
     expect(report.stallCount).toBe(0);
     expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: MODAL_CLONE_OPENING_SECTION_CHARS });
-    expect(report.steps[1]).toMatchObject({ rows: 1, chars: MODAL_CLONE_SECOND_CALL_CHARS });
-    // 38s restore + 1,000 characters at 33 chars/s + the measured transfer.
-    // Under the 75s first-light wait. The second call is the 1,300-character
-    // row and leaves 23.3s. The tightest later margin is 17.0s. 1, 1, 12 is
-    // the ramp; 10 is the rest of that 24-section claim; then full batches.
-    // 1,424,500 ms is 23.7 minutes at the 15% curve. The smoke's own rates,
-    // without that margin, are the ~20–21 minute projection.
-    expect(report.timeToFirstAudioMs).toBe(68_576);
-    expect(report.steps[0]!.wallMs).toBe(68_576);
-    expect(report.steps[1]!.bufferAtDispatchMs - report.steps[1]!.wallMs).toBe(23_342);
-    expect(report.minMarginMs).toBe(16_961);
-    expect(report.totalWallMs).toBe(1_424_500);
+    expect(report.steps[1]).toMatchObject({ rows: 1, chars: modalCloneSecondCallChars() });
+    // 38s restore + 1,000 characters at 33 chars/s + the measured transfer
+    // + 3s of section loudnorm. Under the 75s first-light wait. The second
+    // call is one 786-character row and leaves 15.0s at 1.5× (36.1s at 1×).
+    // The third call is one 1,278-character row; that is the tightest 1.5×
+    // margin, 15.0s. Then 2, 19, and full batches. 1,492,374 ms is 24.9
+    // minutes at the 15% curve.
+    expect(report.timeToFirstAudioMs).toBe(71_576);
+    expect(report.steps[0]!.wallMs).toBe(71_576);
+    expect(report.steps[1]!.bufferAtDispatchMs - report.steps[1]!.wallMs).toBe(15_027);
+    expect(report.minMarginMs).toBe(36_058);
+    expect(report.minMarginAt15xMs).toBe(15_022);
+    expect(report.totalWallMs).toBe(1_492_374);
     expect(report.sizeSequence).toEqual([
-      1, 1, 12, 10, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 23,
+      1, 1, 1, 2, 19, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 23,
     ]);
     for (const step of report.steps) {
       expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
@@ -422,15 +429,19 @@ describe("short pieces", () => {
     expect(plan.deferred).toEqual([]);
     const transferDelta = cloneTransferMs(1_959) - cloneTransferMs(1_000);
     // Generation does not grow. The listener waits 262ms, which is the
-    // transfer of the second section. 68,838 is still under the 75s
-    // first-light wait, and ~69s.
-    expect(head).toBe(68_576);
+    // transfer of the second section. 71,838 includes the 3s loudnorm and
+    // is still under the 75s first-light wait.
+    expect(head).toBe(71_576);
     expect(transferDelta).toBe(262);
-    expect(plan.calls[0]!.wallMs).toBe(68_838);
+    expect(plan.calls[0]!.wallMs).toBe(71_838);
     expect(plan.calls[0]!.wallMs).toBeLessThan(75_000);
+    // 959 is past the 1.5× row, so a ramp does not send it. A legal ramp
+    // (section 0, then the 786-character row, then a steady row) is two
+    // calls and takes longer than this one combined call.
     const ramp = planModalCloneBookWave({
-      pending: pending(2),
-      textAt: (index) => section(chars[index] ?? 0),
+      pending: pending(3),
+      textAt: (index) =>
+        section([1_000, modalCloneSecondCallChars(), 2_000][index] ?? 0),
       firstLight: true,
       poolWarm: false,
       batch: 24,
@@ -448,14 +459,18 @@ describe("short pieces", () => {
 
   it("ramps once a later row would make first audio later than section 0", () => {
     // 960 characters on the second row pushes the page past the opening's
-    // generation time. A 1,300-character second section, and every article
-    // that contains a 2,000-character row, does the same.
+    // generation time, and it is also past the 786-character row that
+    // leaves 15s at 1.5×, so it is not sent until the outline is re-packed.
     const justOver = opening([1_000, 960]);
     expect(justOver.calls[0]!.indexes).toEqual([0]);
-    expect(justOver.calls.length).toBeGreaterThan(1);
+    expect(justOver.calls).toHaveLength(1);
+    expect(justOver.deferred).toEqual([1]);
 
-    const secondCall = opening([1_000, MODAL_CLONE_SECOND_CALL_CHARS]);
-    expect(secondCall.calls[0]!.indexes).toEqual([0]);
+    // 786 characters adds no generation past section 0, so a two-section
+    // book is still one call. A longer book ramps.
+    const secondCall = opening([1_000, modalCloneSecondCallChars()]);
+    expect(secondCall.calls).toHaveLength(1);
+    expect(secondCall.calls[0]!.indexes).toEqual([0, 1]);
 
     const fiveMinutes = opening(cloneBookSections(5 * 60));
     expect(fiveMinutes.calls[0]!.indexes).toEqual([0]);
@@ -527,41 +542,46 @@ describe("shorter books played at 1×", () => {
 
   it("ramps a 5-minute, 10-minute, and 40-minute article and a 2-hour book", () => {
     // A 2,000-character row keeps these on the ramp. One batch would be
-    // ~100s cold to first audio, against the opening's 68.6s.
+    // ~100s cold to first audio, against the opening's 71.6s.
     const five = play(5 * 60);
-    expect(five.timeToFirstAudioMs).toBe(68_576);
-    expect(five.sizeSequence).toEqual([1, 1, 2]);
-    expect(five.minMarginMs).toBe(23_342);
-    expect(five.totalWallMs).toBe(169_602);
+    expect(five.timeToFirstAudioMs).toBe(71_576);
+    expect(five.sizeSequence).toEqual([1, 1, 1, 1]);
+    expect(five.minMarginMs).toBe(36_058);
+    expect(five.minMarginAt15xMs).toBe(15_022);
+    expect(five.totalWallMs).toBe(195_389);
     expect(cloneAudioMs(5 * 60 * MODAL_CLONE_CHARS_PER_AUDIO_SECOND)).toBe(300_000);
 
     const ten = play(10 * 60);
-    expect(ten.timeToFirstAudioMs).toBe(68_576);
-    expect(ten.sizeSequence).toEqual([1, 1, 4]);
-    expect(ten.minMarginMs).toBe(23_342);
-    expect(ten.totalWallMs).toBe(170_902);
+    expect(ten.timeToFirstAudioMs).toBe(71_576);
+    expect(ten.sizeSequence).toEqual([1, 1, 1, 2, 2]);
+    expect(ten.minMarginMs).toBe(36_058);
+    expect(ten.minMarginAt15xMs).toBe(15_022);
+    expect(ten.totalWallMs).toBe(270_928);
 
     const forty = play(40 * 60);
-    expect(forty.timeToFirstAudioMs).toBe(68_576);
-    expect(forty.sizeSequence).toEqual([1, 1, 12, 6]);
-    expect(forty.minMarginMs).toBe(16_961);
-    expect(forty.totalWallMs).toBe(266_002);
+    expect(forty.timeToFirstAudioMs).toBe(71_576);
+    expect(forty.sizeSequence).toEqual([1, 1, 1, 2, 16]);
+    expect(forty.minMarginMs).toBe(36_058);
+    expect(forty.minMarginAt15xMs).toBe(15_022);
+    expect(forty.totalWallMs).toBe(304_585);
 
     const twoHours = play(2 * 3600);
-    expect(twoHours.timeToFirstAudioMs).toBe(68_576);
-    expect(twoHours.sizeSequence).toEqual([1, 1, 12, 10, 24, 10]);
-    expect(twoHours.minMarginMs).toBe(16_961);
-    expect(twoHours.totalWallMs).toBe(463_370);
+    expect(twoHours.timeToFirstAudioMs).toBe(71_576);
+    expect(twoHours.sizeSequence).toEqual([1, 1, 1, 2, 19, 24, 11]);
+    expect(twoHours.minMarginMs).toBe(36_058);
+    expect(twoHours.minMarginAt15xMs).toBe(15_022);
+    expect(twoHours.totalWallMs).toBe(501_954);
   });
 
   it("starts a 10-minute article on a warm pool without the restore", () => {
     const cold = play(10 * 60);
     const warm = play(10 * 60, true);
-    expect(warm.timeToFirstAudioMs).toBe(30_576);
+    expect(warm.timeToFirstAudioMs).toBe(33_576);
     expect(warm.timeToFirstAudioMs).toBe(cold.timeToFirstAudioMs - 38_000);
     expect(warm.sizeSequence).toEqual(cold.sizeSequence);
     expect(warm.minMarginMs).toBe(cold.minMarginMs);
-    expect(warm.totalWallMs).toBe(132_902);
+    expect(warm.minMarginAt15xMs).toBe(cold.minMarginAt15xMs);
+    expect(warm.totalWallMs).toBe(232_928);
     expect(warm.totalWallMs).toBe(cold.totalWallMs - 38_000);
   });
 });
@@ -640,21 +660,23 @@ describe("two books, one GPU", () => {
       expect(report.steps.every((step) => step.wallMs < MODAL_CLONE_PROXY_KILL_MS)).toBe(true);
     }
     expect(reports[1]!.timeToFirstAudioMs).toBeGreaterThan(reports[0]!.timeToFirstAudioMs);
-    // One call at a time, so neither book has the single-book "rest of the
-    // claim" step. Each listener's tightest margin is 17.0s. 2,799,158 ms
-    // is both books.
-    expect(reports[0]!.timeToFirstAudioMs).toBe(68_576);
-    expect(reports[1]!.timeToFirstAudioMs).toBe(227_301);
-    expect(reports[0]!.minMarginMs).toBe(16_961);
-    expect(reports[1]!.minMarginMs).toBe(16_961);
-    expect(totalWallMs).toBe(2_799_158);
+    // One call at a time. Each listener's tightest 1× margin is the second
+    // call (36.1s) and the tightest 1.5× margin is the third call (15.0s).
+    // 3,005,487 ms is both books.
+    expect(reports[0]!.timeToFirstAudioMs).toBe(71_576);
+    expect(reports[1]!.timeToFirstAudioMs).toBe(240_229);
+    expect(reports[0]!.minMarginMs).toBe(36_058);
+    expect(reports[1]!.minMarginMs).toBe(36_058);
+    expect(reports[0]!.minMarginAt15xMs).toBe(15_022);
+    expect(reports[1]!.minMarginAt15xMs).toBe(15_022);
+    expect(totalWallMs).toBe(3_005_487);
     expect(reports[0]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
     expect(reports[1]!.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(sections.length);
     expect(reports[0]!.sizeSequence).toEqual([
-      1, 1, 12, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 9,
+      1, 1, 1, 2, 8, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 10,
     ]);
     expect(reports[1]!.sizeSequence).toEqual([
-      1, 1, 12, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 9,
+      1, 1, 1, 2, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 18,
     ]);
   });
 });
@@ -701,8 +723,11 @@ describe("book-wave dispatch", () => {
     expect(rows[1]).toEqual(["1"]);
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(true);
     const widths = rows.map((keys) => keys.length);
-    expect(widths[2]).toBeGreaterThan(1);
-    expect(widths.some((width) => width > widths[2]!)).toBe(true);
+    // Section 2 is still one row. The call after the ramp is wider, and
+    // a later call is wider than that.
+    expect(rows[2]).toEqual(["2"]);
+    expect(widths[3]).toBeGreaterThan(1);
+    expect(widths.some((width) => width > widths[3]!)).toBe(true);
     expect(widths.reduce((sum, n) => sum + n, 0)).toBe(30);
   });
 

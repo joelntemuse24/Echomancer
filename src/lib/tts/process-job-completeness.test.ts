@@ -305,7 +305,10 @@ describe("a failed section is never presented as a complete book", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
-    for (let tick = 0; tick < 12; tick += 1) {
+    // A dropped row spends the section attempt budget (3) before it is
+    // failed, and this tick only claims four indexes. 18 sections need
+    // more than 12 of those ticks.
+    for (let tick = 0; tick < 24; tick += 1) {
       const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
       if (result.done) break;
     }
