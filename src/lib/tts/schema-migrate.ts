@@ -383,6 +383,15 @@ CREATE TABLE IF NOT EXISTS takehome_create_keys (
   reserved_until INTEGER NOT NULL DEFAULT 0
 )`;
 
+const CREATE_MODAL_GPU_LEASES_SQL = `
+CREATE TABLE IF NOT EXISTS modal_gpu_leases (
+  job_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  owner_token TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
 const CREATE_PROVIDER_SLOTS_SQL = `
 CREATE TABLE IF NOT EXISTS provider_slots (
   provider TEXT NOT NULL,
@@ -452,7 +461,7 @@ SELECT
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
-    'provider_throttle', 'cpu_tasks', 'capacity_warms'
+    'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -602,7 +611,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 16 &&
+      Number(row?.tables_ok || 0) >= 17 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -639,6 +648,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_YOUTUBE_CLIPS_SQL },
         { sql: CREATE_TAKEHOME_CREATE_KEYS_SQL },
         { sql: CREATE_PROVIDER_SLOTS_SQL },
+        { sql: CREATE_MODAL_GPU_LEASES_SQL },
         { sql: CREATE_TAKEHOME_FAIRNESS_SQL },
         { sql: CREATE_PROVIDER_THROTTLE_SQL },
         { sql: CREATE_CPU_TASKS_SQL },
@@ -657,6 +667,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_YOUTUBE_CLIPS_SQL);
       await execute(CREATE_TAKEHOME_CREATE_KEYS_SQL);
       await execute(CREATE_PROVIDER_SLOTS_SQL);
+      await execute(CREATE_MODAL_GPU_LEASES_SQL);
       await execute(CREATE_TAKEHOME_FAIRNESS_SQL);
       await execute(CREATE_PROVIDER_THROTTLE_SQL);
       await execute(CREATE_CPU_TASKS_SQL);

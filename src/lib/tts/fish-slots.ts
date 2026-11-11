@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { execute, queryOne } from "@/lib/turso";
 import { holdFishTakehomeSlot } from "@/lib/tts/provider-slots";
 import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
+import { modalCloneMaxGpus } from "@/lib/tts/providers/modal-gpu-lease";
 
 const fishSlotScope = new AsyncLocalStorage<true>();
 
@@ -139,9 +140,13 @@ export async function cloneTakehomeFanoutCap(): Promise<number> {
 let cloneInProcess = 0;
 const cloneWaiters: Array<() => void> = [];
 
-/** In-process gate for clone batch calls, sized like the fan-out. */
+/**
+ * In-process gate for clone batch calls. The durable cap is
+ * `modal_gpu_leases` (one row per book, global and per-user ceilings).
+ * This only stops one process opening more calls than that ceiling.
+ */
 export async function withCloneBatchSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const limit = modalCloneLanes();
+  const limit = modalCloneMaxGpus();
   while (cloneInProcess >= limit) {
     await new Promise<void>((resolve) => cloneWaiters.push(resolve));
   }

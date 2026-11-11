@@ -10,7 +10,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UPLOAD_ID_A,
+  UPLOAD_ID_B,
   USER_A,
+  USER_B,
   createFakeProvider,
   fakeMp3,
   jobRow,
@@ -1476,5 +1478,103 @@ describe("a parked provider fault does not fail the book on a later tick", () =>
       expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
       await execute(`UPDATE jobs SET status = 'queued' WHERE id = ?`, [JOB_ID]);
     }
+  });
+});
+
+describe("clone books get their own GPU until the ceiling", () => {
+  const OTHER_ID = "eeeeeeee-0000-4000-8000-000000000002";
+
+  it("keeps this book's ramp when another clone book still fits", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    let posts = 0;
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") posts += 1;
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(80));
+    const otherPath = await seedUpload({
+      id: UPLOAD_ID_B,
+      userId: USER_B,
+      text: "Another sentence in the other essay. ".repeat(80),
+    });
+    await seedJob({
+      id: OTHER_ID,
+      userId: USER_B,
+      pdfStoragePath: otherPath,
+      catalogVoiceId: CLONE_ID,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-base",
+    });
+    await execute(`UPDATE jobs SET created_at = 10 WHERE id = ?`, [JOB_ID]);
+    await execute(`UPDATE jobs SET created_at = 20, status = 'queued' WHERE id = ?`, [OTHER_ID]);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+    expect(posts).toBeGreaterThan(0);
+    expect(result.yieldSlot).not.toBe(true);
+  });
+
+  it("queues a younger book when the GPU ceiling is already full", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    const { acquireModalGpuLease } = await import("@/lib/tts/providers/modal-gpu-lease");
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    process.env.MODAL_S2_MAX_GPUS = "1";
+    process.env.MODAL_S2_MAX_GPUS_PER_USER = "5";
+    let posts = 0;
+    const fetchMock = warmPool(4);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      if (endpointOf(String(url)) === "batch") posts += 1;
+      return base(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence in this essay. ".repeat(80));
+    const otherPath = await seedUpload({
+      id: UPLOAD_ID_B,
+      userId: USER_B,
+      text: "Another sentence in the other essay. ".repeat(80),
+    });
+    await seedJob({
+      id: OTHER_ID,
+      userId: USER_B,
+      pdfStoragePath: otherPath,
+      catalogVoiceId: CLONE_ID,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-base",
+    });
+    await execute(`UPDATE jobs SET created_at = 30 WHERE id = ?`, [JOB_ID]);
+    await execute(`UPDATE jobs SET created_at = 5, status = 'queued' WHERE id = ?`, [OTHER_ID]);
+    expect(
+      (
+        await acquireModalGpuLease({
+          jobId: "holder-book",
+          userId: "user-holder",
+          ownerToken: "holder-token",
+          createdAt: 1,
+          ttlSeconds: 90,
+          globalCap: 1,
+          perUserCap: 5,
+        })
+      ).ok
+    ).toBe(true);
+    await fakeAdapter();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+    expect(posts).toBe(0);
+    expect(result.yieldSlot).toBe(true);
+    delete process.env.MODAL_S2_MAX_GPUS;
+    delete process.env.MODAL_S2_MAX_GPUS_PER_USER;
   });
 });

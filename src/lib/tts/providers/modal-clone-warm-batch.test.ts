@@ -56,6 +56,7 @@ import {
   planMixedCloneBatch,
   planModalCloneBookWave,
   planTwoBooksOnOneGpu,
+  simulateCloneFleet,
   simulateCloneListeners,
   simulateClonePlayback,
 } from "@/lib/tts/providers/modal-clone-lanes";
@@ -584,7 +585,7 @@ describe("shorter books played at 1.5×", () => {
   });
 });
 
-describe("two books, one GPU", () => {
+describe("overflow scheduler, one GPU", () => {
   const textAt = () => section(2_000);
 
   it("gives the GPU to one book at a time, and that book's first call is one section", () => {
@@ -999,5 +1000,183 @@ describe("book-wave dispatch", () => {
     expect(render.mock.calls[0]![0].map((item: { key: string }) => item.key)).toEqual(["0", "1"]);
     expect(render.mock.calls[0]![2]?.warmBatch).toBe(false);
     expect(published).toEqual([[0, 1]]);
+  });
+});
+
+describe("one H100 per book", () => {
+  function books(count: number, user: (index: number) => string) {
+    const sections = tenHourSections();
+    return Array.from({ length: count }, (_, index) => ({
+      id: `book-${index}`,
+      userId: user(index),
+      sectionChars: sections,
+      createdAt: index + 1,
+    }));
+  }
+
+  it("keeps every book on the single-book ramp while GPUs remain", () => {
+    const one = simulateCloneFleet({ books: books(1, () => "u0"), env });
+    expect(one.peakGpus).toBe(1);
+    expect(one.totalWallMs).toBe(1_576_533);
+    expect(one.reports[0]).toMatchObject({
+      mode: "solo",
+      timeToFirstAudioMs: 71_576,
+      minMarginAt1xMs: 36_058,
+      minMarginAt15xMs: 15_000,
+    });
+
+    for (const count of [2, 3, 10]) {
+      const fleet = simulateCloneFleet({
+        books: books(count, (index) => `user-${index}`),
+        env,
+      });
+      expect(fleet.peakGpus).toBe(count);
+      expect(fleet.totalWallMs).toBe(1_576_533);
+      for (const report of fleet.reports) {
+        expect(report.mode).toBe("solo");
+        expect(report.timeToFirstAudioMs).toBe(71_576);
+        expect(report.minMarginAt1xMs).toBe(36_058);
+        expect(report.minMarginAt15xMs).toBe(15_000);
+        expect(report.finishedAtMs).toBe(1_576_533);
+      }
+    }
+
+    const sameUser = simulateCloneFleet({
+      books: books(3, () => "one-user"),
+      env,
+    });
+    expect(sameUser.peakGpus).toBe(3);
+    expect(sameUser.totalWallMs).toBe(1_576_533);
+    expect(sameUser.reports.every((report) => report.minMarginAt15xMs === 15_000)).toBe(true);
+  });
+
+  it("gives a late article its own GPU and leaves the book on the 15s floor", () => {
+    const fleet = simulateCloneFleet({
+      books: [
+        {
+          id: "book",
+          userId: "reader",
+          sectionChars: tenHourSections(),
+          createdAt: 1,
+        },
+        {
+          id: "article",
+          userId: "reader",
+          sectionChars: cloneBookSections(40 * 60),
+          startAtMs: 5 * 60_000,
+          createdAt: 2,
+        },
+      ],
+      env,
+    });
+    const book = fleet.reports.find((report) => report.id === "book")!;
+    const article = fleet.reports.find((report) => report.id === "article")!;
+    const articleAlone = simulateClonePlayback({
+      sectionChars: cloneBookSections(40 * 60),
+      batch: 24,
+      env,
+    });
+    expect(fleet.peakGpus).toBe(2);
+    expect(book).toMatchObject({
+      mode: "solo",
+      timeToFirstAudioMs: 71_576,
+      minMarginAt1xMs: 36_058,
+      minMarginAt15xMs: 15_000,
+      finishedAtMs: 1_576_533,
+    });
+    expect(article.mode).toBe("solo");
+    expect(article.timeToFirstAudioMs).toBe(5 * 60_000 + articleAlone.timeToFirstAudioMs);
+    expect(article.minMarginAt1xMs).toBe(articleAlone.minMarginAt1xMs);
+    expect(article.minMarginAt15xMs).toBe(articleAlone.minMarginAt15xMs);
+    expect(article.finishedAtMs).toBe(5 * 60_000 + articleAlone.totalWallMs);
+    expect(fleet.totalWallMs).toBe(1_576_533);
+  });
+
+  it("shares only the book that does not fit, and a sixth same-user book", () => {
+    const over = simulateCloneFleet({
+      books: books(3, (index) => `user-${index}`),
+      globalCap: 2,
+      perUserCap: 5,
+      env,
+    });
+    expect(over.peakGpus).toBe(2);
+    const host = over.reports.find((report) => report.mode === "host")!;
+    const guest = over.reports.find((report) => report.mode === "guest")!;
+    const spared = over.reports.find((report) => report.mode === "solo")!;
+    expect(spared.minMarginAt15xMs).toBe(15_000);
+    expect(spared.finishedAtMs).toBe(1_576_533);
+    expect(spared.timeToFirstAudioMs).toBe(71_576);
+    expect(host.timeToFirstAudioMs).toBe(71_576);
+    expect(guest.timeToFirstAudioMs).toBe(165_272);
+    expect(over.totalWallMs).toBe(3_056_922);
+    // The shared pair is the overflow scheduler, not the one-row collapse.
+    expect(host.sizeSequence.some((rows) => rows >= 8)).toBe(true);
+    expect(guest.sizeSequence.some((rows) => rows >= 8)).toBe(true);
+    expect(over.totalWallMs).toBeLessThan(36_439_973);
+
+    const sixth = simulateCloneFleet({
+      books: books(6, () => "same"),
+      globalCap: 20,
+      perUserCap: 5,
+      env,
+    });
+    expect(sixth.peakGpus).toBe(5);
+    expect(sixth.reports.filter((report) => report.mode === "solo")).toHaveLength(4);
+    expect(sixth.reports.filter((report) => report.mode === "host")).toHaveLength(1);
+    expect(sixth.reports.filter((report) => report.mode === "guest")).toHaveLength(1);
+    const sharedHost = sixth.reports.find((report) => report.mode === "host")!;
+    const sharedGuest = sixth.reports.find((report) => report.mode === "guest")!;
+    expect(sharedHost.id).toBe("book-0");
+    expect(sharedGuest.id).toBe("book-5");
+    expect(sixth.totalWallMs).toBe(3_056_922);
+    for (const report of sixth.reports.filter((item) => item.mode === "solo")) {
+      expect(report.minMarginAt15xMs).toBe(15_000);
+      expect(report.finishedAtMs).toBe(1_576_533);
+    }
+  });
+});
+
+describe("a book wave does not fan out", () => {
+  it("keeps one call in flight when lanes is 8", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const render = vi.fn(async (items: { key: string }[]) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      inFlight -= 1;
+      const audio = new Map<string, { audio: Buffer; durationSeconds: number }>();
+      for (const item of items) {
+        audio.set(item.key, { audio: Buffer.from("mp3"), durationSeconds: 12 });
+      }
+      return {
+        audio,
+        build: "abc",
+        containerId: "gpu-1",
+        seed: 1,
+        performance: { generate_s: 4 },
+        boot: "restored" as const,
+      };
+    });
+    const indexes = Array.from({ length: 24 }, (_, index) => index);
+    await dispatchModalCloneLanes({
+      indexes,
+      textAt: () => section(2_000),
+      lanes: 8,
+      batch: 3,
+      maxLaneChars: Number.POSITIVE_INFINITY,
+      seedEpoch: 0,
+      bookWave: true,
+      committedCall: true,
+      maxCalls: 1,
+      playbackStarted: true,
+      bufferedMs: 60 * 60_000,
+      poolWarm: true,
+      render,
+      stage: async () => {},
+    });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(maxInFlight).toBe(1);
+    expect(render.mock.calls[0]![0]).toHaveLength(3);
   });
 });

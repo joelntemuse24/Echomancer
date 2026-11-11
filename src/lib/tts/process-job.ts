@@ -77,6 +77,12 @@ import {
 } from "@/lib/tts/modal-narration-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
+  admitModalCloneGpu,
+  releaseModalGpuLease,
+  releaseModalGpuLeasesForOwner,
+  renewModalGpuLeases,
+} from "@/lib/tts/providers/modal-gpu-lease";
+import {
   selectClonePublishBatch,
   selectCloneRenderIndexes,
 } from "@/lib/tts/providers/modal-clone-prefetch";
@@ -423,6 +429,9 @@ export async function releaseInFlightTakehomeLeases(): Promise<number> {
     await releaseProviderSlotsForOwner(token).catch((err) => {
       console.error(`[Job ${jobId}] slot release failed`, err);
     });
+    await releaseModalGpuLeasesForOwner(token).catch((err) => {
+      console.error(`[Job ${jobId}] gpu lease release failed`, err);
+    });
     await releaseLease(jobId, token, { status: "queued" });
     dropInFlightTakehomeLease(jobId, token);
   }
@@ -537,6 +546,8 @@ export class LeaseLostError extends Error {
 export interface StockJobRow {
   id: string;
   user_id: string;
+  /** Unix seconds. GPU admission orders books by this, then id. */
+  created_at?: number | null;
   status: string;
   pdf_storage_path: string;
   book_title: string;
@@ -696,6 +707,12 @@ function startLeaseHeartbeat(
             err instanceof Error ? err.message : err
           );
         });
+        await renewModalGpuLeases(token, LEASE_TTL_SECONDS).catch((err) => {
+          console.warn(
+            `[lease] gpu-lease renew skipped for ${jobId}`,
+            err instanceof Error ? err.message : err
+          );
+        });
       })
       .catch((err) => {
         if (isTransientWorkerError(err)) {
@@ -824,16 +841,13 @@ export function clonePendingIndexes(
  *
  * Two placeholder rows made every shared turn look like a one-row book,
  * so the chooser could not hand that book a batch and kept both listeners
- * on single rows. A missing outline still offers a full batch of the
- * steady width, which is enough to yield the GPU; that book's own tick
- * sends the sections it actually has.
+ * on single rows. A missing outline is not a book on this GPU: inventing
+ * a full batch would size a call for a listener who is not here.
  */
 export function otherCloneShareView(
   outline: { index: number; text: string }[] | null,
   segments: { index: number; status: string }[],
-  batch: number,
-  started: boolean,
-  steadyChars: number
+  batch: number
 ): { pending: number[]; textAt: (index: number) => string } {
   const published = new Set(
     segments
@@ -844,18 +858,13 @@ export function otherCloneShareView(
     .filter((section) => !published.has(section.index))
     .sort((a, b) => a.index - b.index)
     .slice(0, Math.max(1, batch));
-  if (open.length > 0) {
-    const text = new Map(open.map((section) => [section.index, section.text]));
-    return {
-      pending: open.map((section) => section.index),
-      textAt: (index) => text.get(index) ?? "",
-    };
+  if (open.length === 0) {
+    return { pending: [], textAt: () => "" };
   }
-  const width = started ? steadyChars : MODAL_CLONE_OPENING_SECTION_CHARS;
-  const count = Math.max(1, batch);
+  const text = new Map(open.map((section) => [section.index, section.text]));
   return {
-    pending: Array.from({ length: count }, (_, index) => index),
-    textAt: () => "x".repeat(Math.max(1, width)),
+    pending: open.map((section) => section.index),
+    textAt: (index) => text.get(index) ?? "",
   };
 }
 
@@ -1114,7 +1123,7 @@ export async function processTakehomeTick(
   await ensureTtsJobColumns();
 
   const job = await queryOne<StockJobRow>(
-    `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
+    `SELECT id, user_id, created_at, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
             job_kind, generation_mode, audio_storage_path, provider_pin,
@@ -1215,6 +1224,14 @@ export async function processTakehomeTick(
   } finally {
     heartbeat.stop();
     dropInFlightTakehomeLease(jobId, lease);
+    // The GPU row covers this tick's call. A dead process stops heartbeating
+    // and the row expires; a finished tick frees it for the next book.
+    await releaseModalGpuLease({ jobId, ownerToken: lease }).catch((err) => {
+      console.warn(
+        `[Job ${jobId}] gpu lease release skipped`,
+        err instanceof Error ? err.message : err
+      );
+    });
   }
 }
 
@@ -2077,57 +2094,68 @@ async function runClaimedTick(
           const playback = listenerBufferMs(sections, segments, job.first_section_at, Date.now());
           let gpuIndexes = render;
           let yieldedGpu = false;
-          let shareGpu = false;
+          // Under the GPU ceiling this book keeps its own ramp. Sharing is
+          // only the overflow path, and then one call is the whole tick.
+          let oneCall = false;
+          let committedShare = false;
           if (render.length > 0) {
-            const other = await otherTakehomeListener(jobId);
-            if (other) {
-              shareGpu = true;
-              const otherSegments = parseSegments(other.segments_json);
+            const admission = await admitModalCloneGpu({
+              jobId,
+              userId: job.user_id,
+              ownerToken: lease,
+              createdAt: Number(job.created_at) || 0,
+              ttlSeconds: LEASE_TTL_SECONDS,
+            });
+            if (admission.mode === "queue") {
+              handGpuOff = true;
+              yieldedGpu = true;
+              gpuIndexes = [];
+            } else if (admission.mode === "share") {
+              oneCall = true;
+              handGpuOff = true;
+              const other = await cloneSharePartner(admission.partnerId);
+              const otherSegments = parseSegments(other?.segments_json ?? null);
               const otherPlay = listenerBufferMs(
                 null,
                 otherSegments,
-                other.first_section_at,
+                other?.first_section_at,
                 Date.now()
               );
-              const steady = modalCloneSectionChars();
-              const outline = await loadFrozenSectionOutline(other.id);
-              const otherView = otherCloneShareView(
-                outline,
-                otherSegments,
-                batch,
-                otherPlay.started,
-                steady
-              );
-              const turn = chooseCloneGpuTurn({
-                books: [
-                  {
-                    id: jobId,
-                    pending: render,
-                    textAt: (index) => sections[index] ?? "",
-                    playbackStarted: playback.started,
-                    bufferedMs: playback.bufferedMs,
-                    firstLight: needsFirstLight,
-                  },
-                  {
-                    id: `other:${other.id}`,
-                    pending: otherView.pending,
-                    textAt: otherView.textAt,
-                    playbackStarted: otherPlay.started,
-                    bufferedMs: otherPlay.bufferedMs,
-                    firstLight: !otherPlay.started,
-                  },
-                ],
-                poolWarm: modalClonePoolIsWarm(),
-                batch,
-              });
-              // One call, then the other book. A ramp that kept this GPU
-              // for the whole claim would play out their buffer.
-              handGpuOff = true;
-              if (turn.bookId !== jobId || !turn.call) {
-                yieldedGpu = true;
-                gpuIndexes = [];
+              const outline = other ? await loadFrozenSectionOutline(other.id) : null;
+              const otherView = otherCloneShareView(outline, otherSegments, batch);
+              if (otherView.pending.length === 0) {
+                // No outline to score. One call of this book's own ramp,
+                // then the partner's tick. Do not invent their sections.
               } else {
-                gpuIndexes = turn.call.indexes;
+                committedShare = true;
+                const turn = chooseCloneGpuTurn({
+                  books: [
+                    {
+                      id: jobId,
+                      pending: render,
+                      textAt: (index) => sections[index] ?? "",
+                      playbackStarted: playback.started,
+                      bufferedMs: playback.bufferedMs,
+                      firstLight: needsFirstLight,
+                    },
+                    {
+                      id: `other:${other!.id}`,
+                      pending: otherView.pending,
+                      textAt: otherView.textAt,
+                      playbackStarted: otherPlay.started,
+                      bufferedMs: otherPlay.bufferedMs,
+                      firstLight: !otherPlay.started,
+                    },
+                  ],
+                  poolWarm: modalClonePoolIsWarm(),
+                  batch,
+                });
+                if (turn.bookId !== jobId || !turn.call) {
+                  yieldedGpu = true;
+                  gpuIndexes = [];
+                } else {
+                  gpuIndexes = turn.call.indexes;
+                }
               }
             }
           }
@@ -2175,13 +2203,12 @@ async function runClaimedTick(
                     bookWave: true,
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
-                    maxCalls: shareGpu ? 1 : undefined,
-                    // The shared-GPU chooser already sized this call. A growth
+                    maxCalls: oneCall ? 1 : undefined,
+                    // The overflow chooser already sized this call. A growth
                     // call is wider than the buffer on purpose; planning it
-                    // again would shrink it to one row and both listeners
-                    // would stay on the 33 chars/s path.
-                    committedCall: shareGpu,
-                    yieldToOther: async () => Boolean(await otherTakehomeListener(jobId)),
+                    // again would shrink it to one row.
+                    committedCall: committedShare,
+                    yieldToOther: async () => oneCall,
                     entireRemainder:
                       gpuIndexes.length > 0 &&
                       gpuIndexes.length ===
@@ -3452,20 +3479,18 @@ async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
 }
 
 /**
- * The other take-home that would use this GPU next. Its buffer is the
- * contiguous ready prefix, so a call on this book can be kept inside the
+ * The one book this GPU is sharing with. Admission already chose the id.
+ * Playback uses the contiguous ready prefix, so a call stays inside the
  * audio that listener has not played yet.
  */
-async function otherTakehomeListener(jobId: string): Promise<{
+async function cloneSharePartner(jobId: string): Promise<{
   id: string;
   first_section_at: number | null;
   segments_json: string | null;
 } | null> {
   return queryOne(
     `SELECT id, first_section_at, segments_json FROM jobs
-     WHERE ${OTHER_RUNNABLE_TAKEHOME_SQL}
-     ORDER BY updated_at ASC
-     LIMIT 1`,
+     WHERE id = ? AND deleted_at IS NULL AND job_kind = 'takehome'`,
     [jobId]
   );
 }

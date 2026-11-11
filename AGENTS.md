@@ -357,13 +357,15 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
-generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, and
-a production deploy leaves its env there. The live cap stays **1**. A
-previous promote may have left it at 4, and `/ready` still reports the
-deploy-time value, so step 8c of `docs/s2-gpu-staging-runbook.md` runs
-`update_autoscaler(max_containers=1, scaledown_window=180, min_containers=0)`
-after every deploy and checks the printed cap. Do not raise it to 4. A
-plain `modal deploy` resets the override, so 8c is repeated.
+generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
+not open a fleet. After that deploy an operator sets the live cap to
+`MODAL_S2_MAX_GPUS` (default **20**) with
+`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=180)`.
+`/ready` still reports the deploy-time value, so the printed settings are
+the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)` is
+what places a second book's call on another container; it is in the source
+and does nothing until that image is redeployed. Until then a second call
+can 429 on the one container.
 
 - **One narrator per book.** `jobs.provider_pin` (`modal` / `fish`) is written
   once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
@@ -410,9 +412,17 @@ plain `modal deploy` resets the override, so 8c is repeated.
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
   often reports `unknown` (pid 2 both before and after). Wall time is.
-- **One H100, filled.** `min_containers` stays 0. A book does not keep a GPU
-  waiting, and it does not open a second one. `planModalCloneBookWave` sends
-  one call at a time. The first call of a book is section 0, cold-sized
+- **One H100 per book.** `min_containers` stays 0. A book does not keep a
+  GPU waiting, and it does not open a second one for itself.
+  `planModalCloneBookWave` sends one call at a time. Another book, from
+  any user or the same user, gets its own GPU until `MODAL_S2_MAX_GPUS`
+  (default 20) and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). Those counts
+  are rows in `modal_gpu_leases`, renewed by the take-home heartbeat and
+  deleted when the tick ends or the worker shuts down. A dead worker stops
+  heartbeating and the row expires, so the GPU is not stuck. Past either
+  ceiling the oldest waiter shares the oldest holder's GPU (that user's
+  oldest holder, when only the per-user ceiling is full) through
+  `chooseCloneGpuTurn`. Younger waiters queue. The first call of a book is section 0, cold-sized
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
   Each later call is the largest prefix that finishes, with margin, before
@@ -446,27 +456,25 @@ plain `modal deploy` resets the override, so 8c is repeated.
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
   180s scaledown) is one cold-sized call again, then the ramp resumes.
   Warmth is in-process memory: a worker restart costs one cold call.
-  Two books share the GPU. They do not POST together, and they do not
-  alternate 2,000-character rows: one row is ~64s of wall and ~84s of
-  audio at 1.5×, so the other listener falls behind on every turn, while
-  a 24-row call is ~528 chars/s and feeds both. The second book starts
-  once the first can spare that one opening and still keep its slack.
-  After that, each turn is the feeding call with the least silence and
-  the highest characters per wall second (grow, then a batch). A growth
-  call wider than the buffer is posted as chosen (`committedCall`);
-  planning it again would shrink it to one row. Two 10-hour books take
-  **3,056,922 ms** (under twice one book's 1,576,533 ms). First audio is
-  71,576 ms and 165,272 ms. The tightest 1.5× margins are −53,121 ms and
-  −23,036 ms, both on the one growth step, then the batches stay ahead.
-  A single book keeps the 15s floor. One `synthesize_batch` still has one
+  Under the ceiling, two 10-hour books are two of those ramps at once:
+  wall **1,576,533 ms**, first audio **71,576 ms**, tightest margin
+  **36,058 ms** at 1× and **15,000 ms** at 1.5×, peak **2** GPUs. Ten
+  books from ten users stay on that same ramp, peak 10. Three books from
+  one user do too (the per-user ceiling is 5). A sixth book from that
+  user shares the oldest holder's GPU: peak stays 5, and that pair is the
+  overflow schedule (**3,056,922 ms**, first audio 71,576 ms and
+  165,272 ms, tightest 1.5× margins −53,121 ms and −23,036 ms). The other
+  four keep the 15s floor. A 10-hour book plus a 40-minute article at
+  5 minutes is two GPUs. The book is unchanged. The article's first audio
+  is **371,576 ms** (300,000 + the cold 71,576) and it keeps the 15s floor.
+  With the global ceiling at 2, three 10-hour books use 2 GPUs: the oldest
+  and the third share (same 3,056,922 ms pair) and the middle book stays
+  on the solo ramp. One `synthesize_batch` still has one
   reference and one seed, so rows from two books cannot share a call
   until the container reads a reference per item. That is a Modal
   redeploy. `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does
-  not send per-item references. The second book's first call is still
+  not send per-item references. The overflow partner's first call is still
   one section, even on a warm pool.
-  A second worker can still hold a second slot (`modalCloneLanes()` stays
-  4); with `S2C_MAX_CONTAINERS=1` that POST gets 429. Do not raise the
-  autoscaler to 4 to "use" that slot.
 - **Rows per call, not lanes, is the throughput knob — but a call must also
   finish.** A container decodes every row of a call in one batch: measured
   **2.9x realtime for a one-row call**. The 2026-11-11 smoke measured that
@@ -1235,7 +1243,7 @@ STORAGE_PATH=./data/storage # Dev only — ignored when R2 is configured
 
 `src/lib/tts/schema-migrate.ts` → `ensureTtsJobColumns()` runs on request paths
 and is **additive only** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`).
-It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`. `migrate-turso.sql` is
+It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `modal_gpu_leases`. `migrate-turso.sql` is
 the same schema for a fresh database and is also non-destructive — add new
 columns to the `JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
 

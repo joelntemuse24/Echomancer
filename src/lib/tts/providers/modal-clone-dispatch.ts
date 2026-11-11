@@ -489,7 +489,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     );
     const isHead = opts.firstLight === true && !started && call.shape === "cold";
     const startedAt = Date.now();
-    const wave = await runWave(opts, call.indexes, log, 1, isHead, undefined, {
+    const wave = await runWave(opts, call.indexes, log, opts.lanes, isHead, undefined, {
       maxLaneChars: Number.POSITIVE_INFINITY,
       warmBatch: call.shape === "warm",
     });
@@ -506,7 +506,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
       );
       mergeWave(
         tally,
-        await runWave(opts, call.indexes, log, 1, true, undefined, {
+        await runWave(opts, call.indexes, log, opts.lanes, true, undefined, {
           maxLaneChars: Number.POSITIVE_INFINITY,
           warmBatch: false,
         })
@@ -545,7 +545,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
           tally,
           // warmBatch is false because the wide call missed. compileKick is
           // false so this retry cannot start a snapshot compile.
-          await runWave(opts, one, log, 1, false, 1, {
+          await runWave(opts, one, log, opts.lanes, false, 1, {
             maxLaneChars: Number.POSITIVE_INFINITY,
             warmBatch: false,
             compileKick: call.shape === "warm" ? false : undefined,
@@ -565,7 +565,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
         log(`[S2 lanes] placement missed restore budget; retrying [${retry.join(",")}]`);
         mergeWave(
           tally,
-          await runWave(opts, retry, log, 1, false, undefined, {
+          await runWave(opts, retry, log, opts.lanes, false, undefined, {
             maxLaneChars: Number.POSITIVE_INFINITY,
             warmBatch: false,
           })
@@ -689,11 +689,15 @@ async function runWave(
   wave?: { maxLaneChars?: number; warmBatch?: boolean; compileKick?: boolean }
 ): Promise<WaveOutcome> {
   const rowsPerPage = Math.max(1, Math.floor(rowsPerCall ?? opts.batch));
+  // One book, one call in flight. A book wave never opens a second lane,
+  // even if the caller passed a fan-out. That second lane would be a second
+  // GPU for the same book.
+  const laneCount = opts.bookWave ? 1 : lanes;
   const plan = planModalCloneLanes({
     pending: indexes,
     textAt: opts.textAt,
     limits: {
-      lanes,
+      lanes: laneCount,
       batch: Math.min(opts.batch, rowsPerPage),
       maxLaneChars: wave?.maxLaneChars ?? opts.maxLaneChars,
     },
@@ -737,12 +741,13 @@ async function runWave(
   const laneResults = await Promise.all(
     plan.lanes.map(async (lane) => {
       const stagedHere: number[] = [];
-      // One shared permit per HTTP lane. A second worker blocks here instead
-      // of opening another container call. No wait: sitting out the restore
-      // budget would look like a cold compile.
-      // A book wave holds one lane. modalCloneLanes() defaults to 4, and a
-      // miss that then fans out per section would start that many H100s.
-      const slot = await holdModalCloneLaneSlot(opts.bookWave ? 1 : modalCloneLanes());
+      // A book wave is one call on the GPU this book already leased
+      // (`modal_gpu_leases`). The old modal-clone slot cap of 1 serialized
+      // every book onto one container. The per-section path still takes a
+      // lane slot so a miss cannot fan out into modalCloneLanes() H100s.
+      const slot = opts.bookWave
+        ? { slotId: 0, release: async () => {} }
+        : await holdModalCloneLaneSlot(modalCloneLanes());
       if (!slot) {
         return {
           lane,

@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS takehome_create_keys (
   reserved_until INTEGER NOT NULL DEFAULT 0
 );
 
+-- One live H100 per clone book. Expired rows are free. No sweeper.
+CREATE TABLE IF NOT EXISTS modal_gpu_leases (
+  job_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  owner_token TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 -- Shared Fish / Edge / Modal-clone permits. Slot ids are 0..cap-1.
 -- Expired rows are stolen by the next acquire. No sweeper.
 CREATE TABLE IF NOT EXISTS provider_slots (

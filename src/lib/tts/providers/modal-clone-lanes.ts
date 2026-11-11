@@ -3,8 +3,10 @@
  *
  * One lane is one HTTP batch call, and Modal starts one container per
  * concurrent call. The book schedule (`planModalCloneBookWave`) uses one
- * lane: the GPU this book already restored. Opening a second call opens a
- * second GPU when the autoscaler cap is above 1, which this path does not do.
+ * lane: the GPU this book already restored. A second call for the same book
+ * would be a second GPU, and this path does not open one. A different book
+ * gets its own GPU until `MODAL_S2_MAX_GPUS` (and the per-user ceiling).
+ * Past that ceiling the books share one call at a time.
  *
  * ## Why rows per call matter more than lanes
  *
@@ -55,6 +57,7 @@ import {
   modalCloneWarmHoldMs,
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
+import { decideCloneGpuAdmission, type GpuLeaseView } from "@/lib/tts/providers/modal-gpu-lease";
 
 export interface LaneLimits {
   /** Concurrent batch calls (containers) this book may fill. */
@@ -1960,3 +1963,181 @@ export function simulateCloneListeners(input: {
     overlapping: false,
   };
 }
+
+export type CloneFleetBook = {
+  id: string;
+  userId: string;
+  sectionChars: number[];
+  /** Wall ms when this book joins. */
+  startAtMs?: number;
+  /** Older books are admitted first. Defaults to the array index. */
+  createdAt?: number;
+};
+
+export type CloneFleetListener = {
+  id: string;
+  userId: string;
+  /** `queued` ran its own ramp after a GPU freed. `guest` shared a holder's GPU. */
+  mode: "solo" | "host" | "guest" | "queued";
+  timeToFirstAudioMs: number;
+  minMarginAt1xMs: number;
+  minMarginAt15xMs: number;
+  finishedAtMs: number;
+  sizeSequence: number[];
+  stallCount: number;
+};
+
+/**
+ * One H100 per book until the ceilings, then the shared-turn scheduler.
+ *
+ * A book under both ceilings is {@link simulateClonePlayback} on its own
+ * clock, shifted by `startAtMs`. That is the single-book ramp, not
+ * {@link chooseCloneGpuTurn}. The oldest book that does not fit shares
+ * with the oldest holder (of its own user, when only the per-user ceiling
+ * is full). A younger waiter waits until a GPU frees, then takes the
+ * single-book ramp. Peak GPUs counts holders, not guests.
+ */
+export function simulateCloneFleet(input: {
+  books: CloneFleetBook[];
+  globalCap?: number;
+  perUserCap?: number;
+  batch?: number;
+  env?: NodeJS.ProcessEnv;
+}): { totalWallMs: number; peakGpus: number; reports: CloneFleetListener[] } {
+  const env = input.env ?? process.env;
+  const batch = input.batch ?? 24;
+  const globalCap = input.globalCap ?? 20;
+  const perUserCap = input.perUserCap ?? 5;
+  type Seat = {
+    book: CloneFleetBook & { startAt: number; createdAt: number };
+    mode: CloneFleetListener["mode"];
+    report: ClonePlaybackReport;
+    gpuStart: number;
+    gpuEnd: number;
+    hostId?: string;
+  };
+  const seats: Seat[] = [];
+  const ordered = input.books
+    .map((book, index) => ({
+      ...book,
+      startAt: Math.max(0, book.startAtMs ?? 0),
+      createdAt: book.createdAt ?? index,
+    }))
+    .sort((a, b) => a.startAt - b.startAt || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+
+  const holdersAt = (t: number) =>
+    seats.filter((seat) => seat.mode !== "guest" && seat.gpuStart <= t && seat.gpuEnd > t);
+
+  const shiftSolo = (report: ClonePlaybackReport, start: number): ClonePlaybackReport => ({
+    ...report,
+    timeToFirstAudioMs: report.timeToFirstAudioMs + start,
+    totalWallMs: report.totalWallMs + start,
+  });
+
+  const viewOf = (book: { id: string; userId: string; createdAt: number }): GpuLeaseView => ({
+    jobId: book.id,
+    userId: book.userId,
+    createdAt: book.createdAt,
+  });
+
+  for (const book of ordered) {
+    const holders = holdersAt(book.startAt);
+    const unseated = ordered.filter(
+      (other) => other.startAt <= book.startAt && !seats.some((seat) => seat.book.id === other.id)
+    );
+    const guests = seats.filter((seat) => seat.mode === "guest" && seat.gpuEnd > book.startAt);
+    const decision = decideCloneGpuAdmission({
+      jobId: book.id,
+      userId: book.userId,
+      createdAt: book.createdAt,
+      leases: holders.map((seat) => viewOf(seat.book)),
+      waiters: [...guests.map((seat) => viewOf(seat.book)), ...unseated.map(viewOf)],
+      globalCap,
+      perUserCap,
+    });
+    if (decision.action === "grant" || decision.action === "solo") {
+      const solo = simulateClonePlayback({ sectionChars: book.sectionChars, batch, env });
+      const shifted = shiftSolo(solo, book.startAt);
+      seats.push({
+        book,
+        mode: "solo",
+        report: shifted,
+        gpuStart: book.startAt,
+        gpuEnd: shifted.totalWallMs,
+      });
+      continue;
+    }
+    const host =
+      decision.action === "share"
+        ? seats.find((seat) => seat.book.id === decision.partnerId && seat.mode !== "guest")
+        : undefined;
+    const sharing =
+      host != null &&
+      seats.some(
+        (seat) => seat.mode === "guest" && seat.hostId === host.book.id && seat.gpuEnd > book.startAt
+      );
+    if (host && !sharing) {
+      const shared = simulateCloneListeners({
+        books: [
+          { id: host.book.id, sectionChars: host.book.sectionChars, startAtMs: host.book.startAt },
+          { id: book.id, sectionChars: book.sectionChars, startAtMs: book.startAt },
+        ],
+        batch,
+        env,
+      });
+      host.mode = "host";
+      host.report = shared.reports[0]!;
+      host.gpuEnd = shared.totalWallMs;
+      seats.push({
+        book,
+        mode: "guest",
+        report: shared.reports[1]!,
+        gpuStart: book.startAt,
+        gpuEnd: shared.totalWallMs,
+        hostId: host.book.id,
+      });
+      continue;
+    }
+    const freeAt = holders.reduce((soonest, seat) => Math.min(soonest, seat.gpuEnd), Number.POSITIVE_INFINITY);
+    const solo = simulateClonePlayback({ sectionChars: book.sectionChars, batch, env });
+    const shifted = shiftSolo(solo, freeAt);
+    seats.push({
+      book,
+      mode: "queued",
+      report: shifted,
+      gpuStart: freeAt,
+      gpuEnd: shifted.totalWallMs,
+    });
+  }
+
+  const events: Array<{ t: number; d: number }> = [];
+  for (const seat of seats) {
+    if (seat.mode === "guest") continue;
+    events.push({ t: seat.gpuStart, d: 1 });
+    events.push({ t: seat.gpuEnd, d: -1 });
+  }
+  events.sort((a, b) => a.t - b.t || a.d - b.d);
+  let peak = 0;
+  let live = 0;
+  for (const event of events) {
+    live += event.d;
+    if (live > peak) peak = live;
+  }
+  const reports: CloneFleetListener[] = seats.map((seat) => ({
+    id: seat.book.id,
+    userId: seat.book.userId,
+    mode: seat.mode,
+    timeToFirstAudioMs: seat.report.timeToFirstAudioMs,
+    minMarginAt1xMs: seat.report.minMarginAt1xMs,
+    minMarginAt15xMs: seat.report.minMarginAt15xMs,
+    finishedAtMs: seat.mode === "guest" || seat.mode === "host" ? seat.gpuEnd : seat.report.totalWallMs,
+    sizeSequence: seat.report.sizeSequence,
+    stallCount: seat.report.stallCount,
+  }));
+  return {
+    totalWallMs: seats.reduce((end, seat) => Math.max(end, seat.gpuEnd), 0),
+    peakGpus: peak,
+    reports,
+  };
+}
+

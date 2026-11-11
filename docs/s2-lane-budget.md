@@ -153,32 +153,37 @@ cold and **33,576 ms** warm. The tightest margin at 1× is the second call
 | ~2 hours | 1, 1, 1, 1, 1, 3, 16, 24, 12 | 588,152 ms | 550,152 ms |
 | ~10 hours | 1, 1, 1, 1, 1, 3, 16, then eleven 24s | 1,576,533 ms | 1,538,533 ms |
 
-Two 10-hour books do not POST together. They also do not alternate
-2,000-character rows. One row is **64,153 ms** of wall and about 84s of
-audio at 1.5× (~33 chars/s), so the listener who does not receive it falls
-behind on every turn. A 24-row call is ~528 chars/s and feeds both. The
-second book starts once the first can spare that one opening and still
-keep its slack (after three solo calls). After that, each turn is the
-feeding call with the least silence and the highest characters per wall
-second: grow through a ramp, then 24-row batches. A call that is wider
-than the buffer is still posted (`committedCall`); planning it again would
-shrink it back to one row.
+Each clone book gets its own H100 until `MODAL_S2_MAX_GPUS` (default 20)
+and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). The count is a row in
+`modal_gpu_leases`, one per book, renewed with the take-home heartbeat
+and expired if that worker dies. A book still sends one call at a time.
+Past either ceiling the oldest waiter shares the oldest holder's call
+schedule, and younger waiters wait.
 
-The pair takes **3,056,922 ms** (under twice one book's **1,576,533 ms**).
-Book A's first audio is **71,576 ms** (calls: 1, 1, 1, 2, 3, 8, eleven 24s,
-then 8). Book B's first audio is **165,272 ms** (1, 2, 2, 2, eleven 24s,
-then 17). The tightest margins are **−5,356 ms** at 1× and **−53,121 ms**
-at 1.5× for A (the one growth call the shallow buffer cannot cover), and
-**+29,789 ms** at 1× and **−23,036 ms** at 1.5× for B. A single book keeps
-the 15s floor.
+Under the ceiling every listener is the single-book ramp. One, two, three,
+or ten concurrent 10-hour books (different users, or three from one user)
+each finish in **1,576,533 ms**, first audio **71,576 ms**, tightest margin
+**36,058 ms** at 1× and **15,000 ms** at 1.5×. Peak GPUs is the book count.
 
-Three 10-hour books take **4,544,019 ms**. First audio is **71,576 ms**,
-**165,272 ms**, and **338,392 ms**. The tightest 1.5× margins are
-**−67,838 ms**, **−67,838 ms**, and **+203 ms**. A 10-hour book plus a
-40-minute article that appears at 5 minutes takes **2,176,792 ms**. The
-book keeps the 15s floor (tightest **36,058 ms** at 1× and **15,000 ms** at
-1.5×, no stall). The article's first audio is **434,904 ms**, and its
-tightest margin is **+21,234 ms** at 1× and **−44,804 ms** at 1.5×.
+A sixth 10-hour book from the same user shares GPU 1. Peak stays **5**.
+That pair is the overflow schedule: **3,056,922 ms**, first audio
+**71,576 ms** and **165,272 ms**, tightest margins **−5,356 / −53,121 ms**
+and **+29,789 / −23,036 ms**. The other four books keep the 15s floor.
+One row is **64,153 ms** of wall and about 84s of audio at 1.5×, so the
+overflow scheduler still prefers a wide call. A growth call wider than the
+buffer is posted (`committedCall`); planning it again would shrink it to
+one row and both listeners would stall for the whole book (the old
+**36,439,973 ms** total).
+
+A 10-hour book plus a 40-minute article that starts at 5 minutes uses two
+GPUs. The book is unchanged (15s floor, no stall). The article is its own
+cold ramp: first audio **371,576 ms**, the same 15s floor, finished at
+**687,572 ms**. Fleet wall stays **1,576,533 ms**. Peak GPUs **2**.
+
+Three 10-hour books with the global ceiling set to 2 use **2** GPUs. The
+oldest and the third share (the 3,056,922 ms pair above). The middle book
+stays on the solo ramp and keeps the 15s floor. Fleet wall is
+**3,056,922 ms**.
 
 One `synthesize_batch` still carries one reference and one seed
 (`s2_clone_service.synthesize_batch`, `S2Engine.render`). Rows from two
@@ -192,10 +197,12 @@ the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
 whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
 rollback toward the cold shape.
 
-One book, one call at a time. Two books share the GPU one call at a time.
-The second book's first call is still one section. A shared call is the
-widest feeding call the buffers can hold, and a growth call when none of
-those leave the slack. One row is only the last section of a book.
+One book, one call at a time, on its own GPU. A second book gets a second
+GPU until the ceiling. The overflow share is one call at a time on the
+holder's GPU, and that partner's first call is still one section. A shared
+call is the widest feeding call the buffers can hold, and a growth call
+when none of those leave the slack. One row is only the last section of a
+book.
 
 `MODAL_S2_LANE_MAX_CHARS` can only **lower** the cap. That is deliberate: the
 stopgap must not be able to recreate the oversized pack.
