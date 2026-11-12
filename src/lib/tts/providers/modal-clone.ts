@@ -20,9 +20,11 @@
  * dropped. A gateway miss (502/503/504) may be tried once on another
  * container. A client timeout is different: the sync handler keeps rendering,
  * so those sections are not posted again in the same dispatch, and the 30s
- * backoff is this book only. An off-path RPC warm is kicked so that worker
- * variant can finish its snapshot. HTTP cannot — the proxy dies at ~542 s
- * and leaves nothing. There is no Modal-side cancel in this process.
+ * backoff is this book only. The worker also cancels its own Modal
+ * FunctionCall when this wait aborts, but only if the input is still
+ * unstarted PENDING — never mid-enter or mid-compile. An off-path RPC
+ * warm is kicked so that worker variant can finish its snapshot. HTTP
+ * cannot — the proxy dies at ~542 s and leaves nothing.
  * A probe that says the pool is empty is `scope: "pool"` and does not open
  * more calls. The worker parks the book and, only after `MODAL_S2_DEFER_MS`,
  * switches engine.
@@ -81,6 +83,10 @@ import {
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
 } from "@/lib/tts/providers/modal-clone-warm";
+import {
+  cancelAbandonedModalCallsAfterAbort,
+  resetModalCloneCancelForTests,
+} from "@/lib/tts/providers/modal-clone-cancel";
 import {
   holdModalCloneLaneSlot,
   ProviderSlotBusyError,
@@ -233,6 +239,7 @@ export function resetModalCloneRuntimeForTests(): void {
   bookAnsweredAt.clear();
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
+  resetModalCloneCancelForTests();
 }
 
 export function noteModalClonePoolAnswered(
@@ -1507,8 +1514,14 @@ async function postModal(
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      // The worker dropped the wait. The sync handler keeps the GPU.
+      // The worker dropped the wait. Cancel the unstarted PENDING Modal
+      // input so abandoned calls do not pile up and get served after the
+      // next enter. A call that has already started compile is left alone.
       // `clientAborted` tells dispatch not to POST these sections again.
+      cancelAbandonedModalCallsAfterAbort({
+        jobId: wait?.jobId,
+        reason: "first-light wait aborted",
+      });
       throw coldFromWait(
         kind,
         `Modal clone did not answer within ${Math.round(limit / 1000)}s`,
