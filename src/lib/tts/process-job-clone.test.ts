@@ -20,7 +20,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { execute, query } from "@/lib/turso";
 import {
   BATCH_HOST,
   READY_HOST,
@@ -632,14 +632,41 @@ describe("lane staging", () => {
       expect(batchCalls.length).toBe(1);
       for (const keys of batchCalls) expect(keys).toEqual([0]);
       expect(result.deferred).toBe(true);
-      // Book keeps its narrator. The timeout starts the Fish clock and
-      // holds the next claim for at least the warm HTTP wait.
+      // Book keeps its narrator. A first-light timeout holds for the rest
+      // of the restore plus the opening section (~106s), not the 400s warm
+      // wait, and the row stays processing behind a lease the old Trigger
+      // drain will not claim.
       const row = await jobRow(JOB_ID);
       expect(row?.provider_pin).toBe("modal");
       expect(Number(row?.clone_wait_started_at ?? 0)).toBeGreaterThan(0);
       const nowSec = Math.floor(Date.now() / 1000);
-      expect(Number(row?.sched_not_before)).toBeGreaterThanOrEqual(nowSec + 25);
-      expect(Number(row?.sched_not_before) - nowSec).toBeGreaterThanOrEqual(390);
+      const hold = Number(row?.lease_expires_at) - nowSec;
+      expect(hold).toBeGreaterThanOrEqual(104);
+      expect(hold).toBeLessThanOrEqual(130);
+      expect(Number(row?.sched_not_before) - nowSec).toBeGreaterThanOrEqual(104);
+      expect(Number(row?.sched_not_before) - nowSec).toBeLessThanOrEqual(130);
+      expect(row?.status).toBe("processing");
+      expect(row?.processing_lease_token).toBeTruthy();
+      const visibleToOldDrain = await query<{ id: string }>(
+        `SELECT id FROM jobs WHERE id = ? AND (
+           status = 'queued'
+           OR (
+             status = 'processing'
+             AND lease_expires_at IS NOT NULL
+             AND lease_expires_at <= unixepoch()
+           )
+         )`,
+        [JOB_ID]
+      );
+      expect(visibleToOldDrain).toEqual([]);
+      const { claimTakehomeLease, cloneParkSeconds } = await import("@/lib/tts/process-job");
+      expect(Math.abs(hold - cloneParkSeconds({
+        abortedCount: 1,
+        firstLightMiss: true,
+        warmAbort: false,
+        backoffRemainingMs: 0,
+      }))).toBeLessThanOrEqual(2);
+      expect(await claimTakehomeLease(JOB_ID)).toBeNull();
       // One pre-warm from the tick starting, one from the missed placement.
       // Both are the same cheap RPC and the book never awaits either.
       expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
@@ -819,6 +846,103 @@ describe("lane staging", () => {
         expect(segment?.attempts ?? 0).toBe(0);
         expect(segment?.status).not.toBe("failed");
       }
+      // The call after first audio is a warm call. Its park is the warm
+      // HTTP wait. A first-light-sized hold fails this.
+      const nowSec = Math.floor(Date.now() / 1000);
+      expect(Number(row?.lease_expires_at) - nowSec).toBeGreaterThanOrEqual(390);
+    });
+
+    it("parks a cold-pool backoff for the remaining 30s, not the warm wait", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      const batchCalls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url) => {
+          const host = endpointOf(String(url));
+          if (host === "batch") batchCalls.push(host);
+          if (host === "ready") {
+            return new Response(
+              JSON.stringify({ ready: false, warm_containers: 0 }),
+              { status: 503, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          throw new Error("no synthesize call should be made");
+        })
+      );
+      await seedCloneJob("A sentence for the reader.");
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const first = await jobRow(JOB_ID);
+      expect(first?.status).toBe("queued");
+      expect(first?.lease_expires_at ?? null).toBeNull();
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const second = await jobRow(JOB_ID);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const hold = Number(second?.lease_expires_at) - nowSec;
+      expect(hold).toBeGreaterThanOrEqual(20);
+      expect(hold).toBeLessThan(45);
+      expect(batchCalls).toEqual([]);
+      expect(second?.provider_pin).toBe("modal");
+    });
+
+    it("does not switch to Fish when a published section cleared the clock", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.FISH_API_KEY = "test-fish";
+      let batches = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+          if (endpointOf(String(url)) === "ready") {
+            return new Response(
+              JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          const items = Array.isArray(body.items) ? body.items : [];
+          batches += 1;
+          if (batches === 1) {
+            return new Response(
+              JSON.stringify({
+                items: items.map((item: { key: string; text: string }) => ({
+                  key: item.key,
+                  audio_b64: Buffer.from(fakeMp3(2048, 3)).toString("base64"),
+                  duration_s: (item.text.length / 900) * 60,
+                  units: 2,
+                  truncated_units: 0,
+                })),
+                build: "abc123",
+                container_id: "c-1",
+                seed: 11,
+              }),
+              { headers: { "Content-Type": "application/json" } }
+            );
+          }
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        })
+      );
+      await seedCloneJob("A sentence. ".repeat(900));
+      await execute(
+        `UPDATE jobs SET clone_wait_started_at = ? WHERE id = ?`,
+        [Math.floor(Date.now() / 1000) - 3600, JOB_ID]
+      );
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      const row = await jobRow(JOB_ID);
+      expect(row?.provider_pin).toBe("modal");
+      const started = Number(row?.clone_wait_started_at ?? 0);
+      expect(started).toBeGreaterThan(Math.floor(Date.now() / 1000) - 120);
+      delete process.env.FISH_API_KEY;
     });
 
     it("does not prewarm a book whose file is still being read", async () => {

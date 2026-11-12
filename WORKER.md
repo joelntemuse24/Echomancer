@@ -307,12 +307,16 @@ The minute cron `takehome.drain` is still deployed there and still runs
 **old** code: it claims `queued` and `processing` rows straight from Turso
 (`listDrainableTakehomeJobs` as of the last claiming revision, with no
 `sched_not_before` predicate) and fails an Edge book with `Invalid stock provider: edge`.
-A book the VM parked after a clone timeout can be claimed by that cron
-before the warm-wait hold expires. This repo no
-longer schedules that task. The live schedule has to be turned off in the
-Trigger.dev dashboard (Schedules → `takehome.drain` → disable). A redeploy
-of Trigger is not required for the `waiting` park, and it is not how you
-stop the cron that is already running.
+A clone book parked for a positive hold is left `processing` with a lease
+token the worker does not hold and `lease_expires_at` at the same instant
+as `sched_not_before`. That old claim skips a `processing` row until the
+lease expires, and the VM claim waits for the same lease, so the two
+agree. A zero-hold park stays `queued`. The cron still claims every other
+`queued` book and fails an Edge book with `Invalid stock provider: edge`.
+This repo no longer schedules that task. The live schedule has to be
+turned off in the Trigger.dev dashboard (Schedules → `takehome.drain` →
+disable). A redeploy of Trigger is not required for the `waiting` park,
+and it is not how you stop the cron that is already running.
 
 `takehome.advance` stays in the repo as a fallback only when `WORKER_URL`
 is unset. Do not turn the drain schedule back on.

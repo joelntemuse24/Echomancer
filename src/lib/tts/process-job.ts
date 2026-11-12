@@ -71,10 +71,15 @@ import {
   modalCloneThirdCallCharsFor,
   modalCloneSectionChars,
   MODAL_CLONE_OPENING_SECTION_CHARS,
+  MODAL_CLONE_ROW_CHARS_PER_SECOND,
   modalLaneCharLimit,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
-import { modalCloneWarmWaitMs } from "@/lib/tts/providers/modal-clone-guard";
+import {
+  modalCloneColdWaitMs,
+  modalCloneFirstLightWaitMs,
+  modalCloneWarmWaitMs,
+} from "@/lib/tts/providers/modal-clone-guard";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import {
   shouldPrewarmBeforeOutline,
@@ -658,9 +663,31 @@ async function releaseLease(
     errorMessage?: string | null;
     /** Seconds before the drain may claim this book again. 0 clears the delay. */
     notBeforeSec?: number;
+    /**
+     * Leave the row `processing` with a lease token this process does not
+     * hold, expiring with the delay. The VM claim waits for that lease.
+     * The deployed Trigger `takehome.drain` lists `queued` rows and
+     * `processing` rows whose lease has already expired, and it does not
+     * read `sched_not_before`, so a queued park would be claimed early.
+     */
+    sealLease?: boolean;
   }
 ): Promise<void> {
   const delay = patch.notBeforeSec && patch.notBeforeSec > 0 ? patch.notBeforeSec : 0;
+  if (delay > 0 && patch.sealLease) {
+    await execute(
+      `UPDATE jobs SET status = 'processing',
+         error_message = COALESCE(?, error_message),
+         processing_lease_token = ?,
+         lease_expires_at = unixepoch() + ?,
+         processing_started_at = NULL,
+         sched_not_before = unixepoch() + ?,
+         updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [patch.errorMessage ?? null, newLeaseToken(), delay, delay, jobId, token]
+    );
+    return;
+  }
   await execute(
     `UPDATE jobs SET status = ?, error_message = COALESCE(?, error_message),
        processing_lease_token = NULL, lease_expires_at = NULL,
@@ -975,6 +1002,38 @@ export function cloneOutlineRepackKind(
  * `false` means "carry on" (because deferral is off, or the budget is spent and
  * the book has just been pinned to the fallback).
  */
+/**
+ * How long to leave a clone book unclaimed after this tick.
+ *
+ * A backoff with no aborted rows posted nothing. That wait is the
+ * remaining 30s, so a cold probe during prewarm does not hold first
+ * audio for the warm HTTP budget. A first-light timeout waits out the
+ * rest of the restore budget plus the opening section, which is still
+ * inside the container's scaledown. A later warm call waits the warm
+ * HTTP budget, because that handler can keep rendering until the proxy
+ * kills it.
+ */
+export function cloneParkSeconds(input: {
+  abortedCount: number;
+  firstLightMiss: boolean;
+  warmAbort: boolean;
+  backoffRemainingMs: number;
+}): number {
+  const backoffSec = Math.max(1, Math.ceil(Math.max(0, input.backoffRemainingMs) / 1000));
+  if (input.abortedCount <= 0) return backoffSec;
+  if (input.warmAbort && !input.firstLightMiss) {
+    return Math.max(Math.ceil(modalCloneWarmWaitMs() / 1000), backoffSec);
+  }
+  const remainingRestoreMs = Math.max(
+    0,
+    modalCloneColdWaitMs() - modalCloneFirstLightWaitMs()
+  );
+  const workMs = Math.round(
+    (MODAL_CLONE_OPENING_SECTION_CHARS / MODAL_CLONE_ROW_CHARS_PER_SECOND) * 1000
+  );
+  return Math.max(backoffSec, Math.ceil((remainingRestoreMs + workMs) / 1000));
+}
+
 async function deferForColdClonePool(opts: {
   jobId: string;
   lease: string;
@@ -988,9 +1047,10 @@ async function deferForColdClonePool(opts: {
   reason?: "cold" | "provider-fault" | "timeout";
   lastError?: string | null;
   /**
-   * Seconds before the drain may claim the book again. A client timeout
-   * passes the warm HTTP wait so the next POST does not overlap a handler
-   * that is still rendering. 0 leaves the book claimable at once.
+   * Seconds before the drain may claim the book again. A warm-budget
+   * timeout passes the warm HTTP wait. A first-light timeout passes the
+   * rest of that call. A backoff that posted nothing passes only the
+   * remaining backoff. 0 leaves the book claimable at once.
    */
   notBeforeSec?: number;
 }): Promise<{ park: true } | { park: false; switched: boolean }> {
@@ -1033,6 +1093,7 @@ async function deferForColdClonePool(opts: {
     await releaseLease(jobId, lease, {
       status: "queued",
       notBeforeSec: holdSec,
+      sealLease: holdSec > 0,
     }).catch(() => {});
     return { park: true };
   }
@@ -1045,6 +1106,7 @@ async function deferForColdClonePool(opts: {
     await releaseLease(jobId, lease, {
       status: "queued",
       notBeforeSec: holdSec,
+      sealLease: holdSec > 0,
     }).catch(() => {});
     return { park: true };
   }
@@ -1070,6 +1132,7 @@ async function deferForColdClonePool(opts: {
     await releaseLease(jobId, lease, {
       status: "queued",
       notBeforeSec: holdSec,
+      sealLease: holdSec > 0,
     }).catch(() => {});
     return { park: true };
   }
@@ -1998,6 +2061,10 @@ async function runClaimedTick(
               JSON.stringify(ttsOptions),
             ]
           );
+          // The defer decision later in this tick reads this copy. The
+          // column is already null; leaving the tick-start value would
+          // switch the book to Fish after audio has already published.
+          job.clone_wait_started_at = null;
         });
 
         return synthesized;
@@ -2383,14 +2450,17 @@ async function runClaimedTick(
               });
             }
             const remain = modalCloneJobBackoffRemainingMs(jobId);
-            // At least the warm HTTP wait. A 30s backoff would claim the
-            // book while a 150s or 400s handler is still rendering the
-            // same rows on the first container.
-            const notBeforeSec = Math.max(
-              Math.ceil(modalCloneWarmWaitMs() / 1000),
-              Math.ceil(remain / 1000),
-              1
+            const firstLightMiss = Boolean(
+              dispatch.firstLight &&
+                !dispatch.firstLight.staged &&
+                dispatch.abortedIndexes.includes(dispatch.firstLight.index)
             );
+            const notBeforeSec = cloneParkSeconds({
+              abortedCount: dispatch.abortedIndexes.length,
+              firstLightMiss,
+              warmAbort: dispatch.abortedWarm,
+              backoffRemainingMs: remain,
+            });
             console.log(
               `[Job ${jobId}] clone call aborted; next claim in ${notBeforeSec}s`
             );
@@ -2412,6 +2482,10 @@ async function runClaimedTick(
               };
             }
             if (outcome.switched || modalCloneDeferMs() <= 0) {
+              // The aborted rows may still be rendering on Modal. This tick
+              // speaks them on Fish anyway: the handler cannot be cancelled,
+              // and holding them for the rest of that wait would leave a
+              // book that has already spent its defer budget with a hole.
               clonePin = "fish";
             }
           } else if (dispatch?.cold) {

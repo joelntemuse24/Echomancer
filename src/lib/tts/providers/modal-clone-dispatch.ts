@@ -219,6 +219,8 @@ export interface LaneDispatchResult {
   abortedIndexes: number[];
   /** The throw was this book's backoff, not an empty pool. */
   selfBackoff: boolean;
+  /** A client timeout happened on a warm-budget call. */
+  abortedWarm: boolean;
   /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
   firstLight: FirstLightReport | null;
 }
@@ -260,6 +262,7 @@ interface WaveOutcome {
   aborted: boolean;
   abortedIndexes: number[];
   selfBackoff: boolean;
+  abortedWarm: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -281,6 +284,7 @@ interface DispatchTally {
   aborted: boolean;
   abortedIndexes: number[];
   selfBackoff: boolean;
+  abortedWarm: boolean;
 }
 
 function emptyTally(): DispatchTally {
@@ -301,6 +305,7 @@ function emptyTally(): DispatchTally {
     aborted: false,
     abortedIndexes: [],
     selfBackoff: false,
+    abortedWarm: false,
   };
 }
 
@@ -332,6 +337,7 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   }
   if (wave.aborted) tally.aborted = true;
   if (wave.selfBackoff) tally.selfBackoff = true;
+  if (wave.abortedWarm) tally.abortedWarm = true;
   for (const index of wave.abortedIndexes) {
     if (!tally.abortedIndexes.includes(index)) tally.abortedIndexes.push(index);
   }
@@ -736,6 +742,7 @@ async function finishDispatch(
     generateSeconds: Math.round(tally.generateSeconds * 10) / 10,
     abortedIndexes: [...tally.abortedIndexes],
     selfBackoff: tally.selfBackoff,
+    abortedWarm: tally.abortedWarm,
     firstLight,
   };
 }
@@ -786,6 +793,7 @@ async function runWave(
   let aborted = false;
   const abortedIndexes: number[] = [];
   let selfBackoff = false;
+  let abortedWarm = false;
 
   if (attempted.length === 0) {
     return {
@@ -807,6 +815,7 @@ async function runWave(
       aborted: false,
       abortedIndexes: [],
       selfBackoff: false,
+      abortedWarm: false,
     };
   }
 
@@ -941,6 +950,7 @@ async function runWave(
     if (!err) continue;
     if (err instanceof ModalCloneColdError && err.clientAborted) {
       aborted = true;
+      if (err.waitKind === "warm") abortedWarm = true;
       for (const index of result.lane) {
         if (!staged.has(index) && !abortedIndexes.includes(index)) {
           abortedIndexes.push(index);
@@ -1005,5 +1015,6 @@ async function runWave(
     aborted,
     abortedIndexes,
     selfBackoff,
+    abortedWarm,
   };
 }

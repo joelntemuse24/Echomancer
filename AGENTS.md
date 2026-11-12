@@ -376,13 +376,17 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   restore budget (150s, or 75s for first audio). The ramp uses that same
   spare check, so a confirmed book whose container is busy is not given a
   24-row call. A miss sets the 30s
-  backoff on that book only. The book then waits on `sched_not_before`
-  for at least the warm HTTP wait (400s), so the next POST does not overlap
-  a handler that is still rendering. That wait also starts
-  `clone_wait_started_at` (an existing value is kept). Once
-  `MODAL_S2_DEFER_MS` is spent the book switches to direct Fish. A
-  published section clears the clock, so one timeout followed by audio
-  does not accumulate. The process-wide backoff is only when the
+  backoff on that book only. A backoff that posted no rows waits out
+  the rest of that 30s, so pressing go while prewarm restores still gets
+  first audio in about 68s. A first-light timeout waits out the rest of
+  the restore budget plus the opening section (~106s), so the retry finds
+  the container still warm. A later warm call waits the warm HTTP budget
+  (400s), so the next POST does not overlap a handler that is still
+  rendering. That wait also starts `clone_wait_started_at` (an existing
+  value is kept). Once `MODAL_S2_DEFER_MS` is spent the book switches to
+  direct Fish. A published section clears the stored clock and the
+  in-memory copy, so a later timeout in the same tick does not switch a
+  book that already published. The process-wide backoff is only when the
   probe sees zero warm containers and no other call in flight (or the
   call has no job id). A client timeout does not re-POST those sections
   in the same dispatch: the sync handler keeps rendering, and this
@@ -429,14 +433,21 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
   wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
   miss tries the unstaged sections once on another container. A client
-  timeout does not: the handler is still rendering, and the book waits on
-  `sched_not_before` for at least the warm HTTP wait. The same wait starts
+  timeout does not: the handler is still rendering. A warm-budget timeout
+  parks for that HTTP wait (400s). A first-light timeout parks for the
+  rest of the restore plus the opening section (~106s). A backoff that
+  posted nothing parks for the remaining 30s. The same wait starts
   `clone_wait_started_at` when it is unset. A published section clears that
-  clock. Repeated timeouts still follow the defer → direct Fish path once
-  `MODAL_S2_DEFER_MS` is spent (the same voice). A real cold probe does too.
-  The VM claim (`takehomeAdmissionSql`) honors `sched_not_before`. The
-  Trigger `takehome.drain` still deployed is the older claim, which selects
-  `queued` rows and does not read `sched_not_before`.
+  clock, including the copy this tick is holding. Repeated timeouts still
+  follow the defer → direct Fish path once `MODAL_S2_DEFER_MS` is spent
+  (the same voice). A real cold probe does too. A positive hold leaves the
+  row `processing` with a lease token nobody holds and `lease_expires_at`
+  at the same instant as `sched_not_before`. The VM claim waits for an
+  unexpired lease, and the Trigger `takehome.drain` still deployed is the
+  older claim: it selects `queued` rows and `processing` rows whose lease
+  has already expired, and it does not read `sched_not_before`. The sealed
+  lease is what that claim skips. A zero-hold park stays `queued` so the
+  VM drain can reclaim it.
   A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
