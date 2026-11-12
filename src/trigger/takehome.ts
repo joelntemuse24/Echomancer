@@ -3,17 +3,17 @@
  *
  * Preferred host is the always-on VM (`src/worker/takehome-server.ts`)
  * when `WORKER_URL` is set. `takehome.advance` stays as a fallback
- * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL). `takehome.drain` has
- * no schedule here. Turn the live minute schedule off in the Trigger
- * dashboard — that deployment is older than this file and still claims
- * `queued` rows.
+ * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL). `takehome.drain` is
+ * not a task. Deploying this file to Trigger production deletes that
+ * declarative minute cron, because the worker manifest no longer declares
+ * it. The VM drain claims queued and waiting books.
  *
  * `takehome.advance` imports the existing worker in-process — it does not
  * HTTP `POST /api/jobs/[id]/process`. Live Listen / Live Stream stay on Vercel.
  * Extract does not run here.
  */
 
-import { schedules, task } from "@trigger.dev/sdk";
+import { task } from "@trigger.dev/sdk";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
@@ -42,18 +42,5 @@ export const takehomeAdvance = task({
       process.env.TTS_TRIGGER_WAVE_BUDGET_MS || DEFAULT_TRIGGER_WAVE_BUDGET_MS
     );
     return runTakehomeUntilSettled(jobId, budgetMs);
-  },
-});
-
-/**
- * The minute schedule is gone from this file. The copy still running in
- * Trigger.dev is older than this repo and still claims `queued` rows every
- * minute — turn that schedule off in the Trigger dashboard. This task does
- * not list or claim jobs, so a later deploy of this file cannot revive it.
- */
-export const takehomeDrain = schedules.task({
-  id: "takehome.drain",
-  run: async () => {
-    return { triggered: 0, reason: "takehome-drain-disabled" };
   },
 });

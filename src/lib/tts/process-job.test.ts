@@ -204,7 +204,7 @@ describe("processTakehomeTick", () => {
     await processTakehomeTick(JOB_ID);
     expect((await jobRow(JOB_ID))?.status).toBe("waiting");
 
-    // Frozen from the deployed takehome.drain (list + claim before `waiting`).
+    // Frozen from the retired takehome.drain claim (list + claim before `waiting`).
     const legacyList = await query<{ id: string }>(
       `SELECT id FROM jobs
        WHERE deleted_at IS NULL

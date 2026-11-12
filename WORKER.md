@@ -300,26 +300,77 @@ POSTs `{ jobId }` to `WORKER_URL/jobs` with
 **before insert**. After insert, a failed worker POST leaves the job
 `queued` for the VM drain loop (still HTTP 200).
 
-### Turn off the legacy Trigger drain
+### Remove the legacy Trigger drain crons
 
 Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
-The minute cron `takehome.drain` is still deployed there and still runs
-**old** code: it claims `queued` and `processing` rows straight from Turso
-(`listDrainableTakehomeJobs` as of the last claiming revision, with no
-`sched_not_before` predicate) and fails an Edge book with `Invalid stock provider: edge`.
+The production deployment still runs declarative minute crons:
+`takehome.drain` (`sched_1mv945xbxmk4i7j6orzkf`, `* * * * *`) and
+`upload.drain`. That `takehome.drain` is older code. It claims `queued`
+and `processing` rows straight from Turso (no `sched_not_before`
+predicate) and fails an Edge book with `Invalid stock provider: edge`.
 A clone book parked for a positive hold is left `processing` with a lease
 token the worker does not hold and `lease_expires_at` at the same instant
-as `sched_not_before`. That old claim skips a `processing` row until the
+as `sched_not_before`. That claim skips a `processing` row until the
 lease expires, and the VM claim waits for the same lease, so the two
-agree. A zero-hold park stays `queued`. The cron still claims every other
-`queued` book and fails an Edge book with `Invalid stock provider: edge`.
-This repo no longer schedules that task. The live schedule has to be
-turned off in the Trigger.dev dashboard (Schedules → `takehome.drain` →
-disable). A redeploy of Trigger is not required for the `waiting` park,
-and it is not how you stop the cron that is already running.
+agree until the cron is gone. A zero-hold park stays `queued`.
 
-`takehome.advance` stays in the repo as a fallback only when `WORKER_URL`
-is unset. Do not turn the drain schedule back on.
+`takehome.drain` and `upload.drain` are not tasks in this repo.
+`TAKEHOME_TRIGGER_FALLBACK` fires `takehome.advance` only. A declarative
+schedule is deleted when a production deploy's worker manifest no longer
+includes that task's `cron`. The dashboard cannot delete it. Deploy from
+the repo root with the CLI pinned to the SDK in `package.json`
+(`@trigger.dev/sdk` / `@trigger.dev/build` 4.5.15). Set
+`TRIGGER_ACCESS_TOKEN` (personal access token, or a production environment
+API key) and, when the dashboard project ref is not the fallback in
+`trigger.config.ts`, `TRIGGER_PROJECT_ID`. Do not print either value. Do
+not pass `--skip-promotion`. Do not roll this deployment back: a rollback
+restores the previous worker's declarative crons.
+
+```bash
+npx trigger.dev@4.5.15 deploy --env prod
+```
+
+Confirm with the production `TRIGGER_SECRET_KEY` (the list is scoped to
+that key's environment). The script prints schedule ids only. Exit 0 and
+`declarativeDrainSchedules: []` means both crons are gone, including
+`sched_1mv945xbxmk4i7j6orzkf`.
+
+```bash
+python3 - <<'PY'
+import json, os, urllib.request
+key = os.environ["TRIGGER_SECRET_KEY"]
+page = 1
+found = []
+while True:
+    req = urllib.request.Request(
+        f"https://api.trigger.dev/api/v1/schedules?page={page}&perPage=100",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    with urllib.request.urlopen(req) as res:
+        body = json.load(res)
+    for row in body.get("data") or []:
+        if row.get("task") in {"takehome.drain", "upload.drain"} or row.get("id") == "sched_1mv945xbxmk4i7j6orzkf":
+            found.append({
+                "id": row.get("id"),
+                "task": row.get("task"),
+                "type": row.get("type"),
+                "active": row.get("active"),
+                "cron": (row.get("generator") or {}).get("expression"),
+            })
+    pages = (body.get("pagination") or {}).get("totalPages") or 1
+    if page >= pages:
+        break
+    page += 1
+print(json.dumps({"declarativeDrainSchedules": found}, indent=2))
+if found:
+    raise SystemExit(1)
+PY
+```
+
+The deploy does not cancel the paused backlog of those tasks. Leave those
+queues paused. `takehome.advance` stays as the fallback when `WORKER_URL`
+is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `upload.extract` stays a no-op.
+Do not add `schedules.task` crons for the drain ids.
 
 ## Endpoints
 
@@ -365,7 +416,7 @@ The script checks:
 Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 **Andrew**, Make audiobook. Library should leave
 `queued`. `pm2 logs` shows accept / settled. That is the cutover signal
-— then disable Trigger drain (above).
+— then deploy the Trigger project so the drain crons are deleted (above).
 
 ## Cancel and concurrency
 
@@ -402,8 +453,9 @@ in place. The oldest live one is the id a new create returns.
 
 On `SIGTERM` or `SIGINT` the process stops the drain, waits up to 30s for
 in-flight waves, then releases any lease this process still holds back to
-`queued` (same token-matched UPDATE as a normal release) and exits. A lease
-left to expire would be claimable by the legacy Trigger drain.
+`queued` (same token-matched UPDATE as a normal release) and exits. Until
+the production Trigger deploy above, a lease left to expire can be claimed
+by the still-deployed `takehome.drain`.
 
 ## Troubleshooting
 
@@ -422,9 +474,10 @@ left to expire would be claimable by the legacy Trigger drain.
 
 Live TLS is Caddy at `https://worker.echomancer.xyz` (Vercel A record → VM
 IPv4). Keep `WORKER_SECRET` matching `.env.worker` and Vercel Production.
-After a green tiny job, turn off Trigger `takehome.drain` in the dashboard.
-The schedule in this repo is already gone; the live task is old code and
-still claims `queued` rows until that switch is off.
+After a green tiny job, deploy this Trigger project to production so the
+declarative minute crons (`takehome.drain`, `upload.drain`) are deleted.
+Until that deploy, the current Trigger deployment still claims `queued`
+rows every minute. The dashboard cannot delete those declarative schedules.
 
 If you rebuild the box: paste the public IPv4 into the Vercel DNS A record
 for `worker`, copy Turso + R2 (+ `FISH_API_KEY` if

@@ -16,7 +16,8 @@
  * The process imports this module in-process — it never HTTP `/process`.
  * Trigger.dev `takehome.advance` remains an optional fallback when
  * `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain`
- * is not scheduled from this repo; turn the live dashboard schedule off.
+ * is not a task. Deploying this project to Trigger production deletes
+ * that declarative minute cron.
  * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
  * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
  * Library/Player polls never synthesize.
@@ -666,9 +667,10 @@ async function releaseLease(
     /**
      * Leave the row `processing` with a lease token this process does not
      * hold, expiring with the delay. The VM claim waits for that lease.
-     * The deployed Trigger `takehome.drain` lists `queued` rows and
-     * `processing` rows whose lease has already expired, and it does not
-     * read `sched_not_before`, so a queued park would be claimed early.
+     * Until this Trigger project is deployed to production, the live
+     * `takehome.drain` lists `queued` rows and `processing` rows whose
+     * lease has already expired, and it does not read `sched_not_before`,
+     * so a queued park would be claimed early.
      */
     sealLease?: boolean;
   }
@@ -1377,7 +1379,7 @@ async function runClaimedTick(
   // A job may be created while its upload is still extracting, so the first
   // thing a tick does is wait its turn: park the job as `waiting` until the
   // text exists, and fail it once the upload itself has failed. `waiting` is
-  // outside the legacy Trigger drain's `queued` / `processing` claim. Both
+  // outside the retired Trigger drain's `queued` / `processing` claim. Both
   // leave the lease clean. The path was owner-checked when the job was
   // created (`getOwnedUploadByPath`); this lookup does not re-check.
   const upload = job.pdf_storage_path

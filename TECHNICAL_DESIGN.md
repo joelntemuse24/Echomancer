@@ -185,7 +185,7 @@ Implemented hosts, plus the deploy report from the claim-class section above.
 | Clone synthesis | Modal app `echomancer-s2-clone` when `MODAL_S2_TTS_URL` is set. One GPU per container, `min_containers=0`. The VM does not run the GPU. Direct Fish is the other engine for the same reference. |
 | Stock synthesis | Edge Read Aloud for Andrew, Ava, Libby, and Ryan. Paradee for Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
-| Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. The copy still deployed on Trigger is old and still claims `queued` rows every minute until that schedule is turned off in the Trigger dashboard. |
+| Trigger.dev | **Legacy fallback** (`takehome.advance` only). **Not** the production Whole-book runner. `upload.extract` is a no-op. `takehome.drain` and `upload.drain` are not tasks. Deploying this project to Trigger production deletes their declarative minute crons. The dashboard cannot delete a declarative schedule. The VM worker drains the queue. |
 
 ---
 
@@ -909,7 +909,7 @@ Voice selection is unblocked while extract runs in the background.
    back to Node only when Node has not already used two attempts; otherwise
    the next host is Vercel. After 4 attempts or 20 minutes from the first
    accept the row is `failed` with "This file took too long to read. Try again."
-   Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
+   Trigger `upload.extract` is a no-op (`src/trigger/extract-upload.ts`). `upload.drain` is not a task.
 6. Take-home job create accepts an owned upload that is still `uploaded` or
    `extracting` and inserts `waiting`. `pending` and stream jobs stay
    `TEXT_NOT_READY`. `getUploadByStoragePath` is only used on a path that
@@ -1615,14 +1615,17 @@ voice is used.
 
 **Deprecated for production.** `takehome.advance` still imports
 `runTakehomeUntilSettled` in-process and is only a fallback when
-`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain` in
-this repo has **no cron** and its run does not claim jobs. The task still
-deployed on Trigger.dev is older: it runs every minute, lists `queued` rows,
-and claims `queued` / `processing`. Turn that schedule off in the Trigger
-dashboard — editing this file does not stop the live task. Jobs parked
-`waiting` do not match that claim. A `queued` take-home whose text is
-already ready can still be claimed until the dashboard schedule is off.
-Extract tasks in `src/trigger/extract-upload.ts` are no-ops.
+`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. That flag does
+not enqueue `takehome.drain`. `takehome.drain` and `upload.drain` are
+not tasks. A production deploy of this Trigger project deletes their
+declarative minute crons, including `sched_1mv945xbxmk4i7j6orzkf` on
+`takehome.drain`. The dashboard cannot delete a declarative
+schedule, and a rollback of that deploy restores the previous worker's
+crons. Until the deploy, the current Trigger deployment still claims
+`queued` and expired `processing` rows every minute. Jobs parked
+`waiting` do not match that claim. A positive-hold clone park stays
+`processing` with a sealed lease so that claim skips it.
+`upload.extract` in `src/trigger/extract-upload.ts` is a no-op.
 
 `TTS_POLL_NUDGE_BUDGET_MS` code default is **0**, and production is reported
 at 0. At 0, neither poll synthesizes. They are not the same write:

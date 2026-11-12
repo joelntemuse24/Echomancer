@@ -182,11 +182,14 @@ runbook: [WORKER.md](WORKER.md).
    that URL stays the Cloudflare fallback.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
-healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. The minute
-`takehome.drain` schedule is removed from this repo and must be turned off
-in the Trigger.dev dashboard. The deployed task is old code and still claims
-`queued` rows until that dashboard switch is off. `npx trigger.dev deploy`
-is no longer required for Whole book.
+healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. That flag
+fires `takehome.advance` only. `takehome.drain` and `upload.drain` are
+not tasks. Whole-book generation does not use this deploy. The deploy is
+how the live declarative minute crons come off. Pin the CLI to 4.5.15,
+pass `--env prod`, and do not pass `--skip-promotion`. Do not roll that
+deployment back. Until it is current, the previous Trigger deployment
+still runs those crons every minute. The dashboard cannot delete a
+declarative schedule. Commands and the confirm script are in `WORKER.md`.
 
 ## Cloudflare Worker (extract fallback)
 
