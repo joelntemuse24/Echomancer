@@ -337,50 +337,81 @@ export function clonePoolStillWarm(
 }
 
 /**
- * Listener-facing rates from the 2026-11-11 paid smoke (one H100, HTTPS
- * `/synthesize_batch`, sequential ramp). The cold character cap above stays
- * at 100 chars/s. These numbers are only how long the listener waits.
+ * Listener-facing generation rate.
  *
- * Single row, end to end: 1,300 characters in 39.85s → ~33 chars/s.
- * The older 50 chars/s figure was generation on one short row, and it let
- * a 2,000-character second call be planned into ~53s of section-0 audio.
- * Server aggregate for wider calls, before transfer: 266 chars/s at 8 rows,
- * 371 at 14, 617 at 24. The per-row planning rate is 15% under those, so a
- * wide call is not packed at the flat 150 chars/s cap rate.
+ * Codec frames are 44100/2048 ≈ 21.5 per audio second. Production on book
+ * e745d067 measured a 1-section call at ~2.8× realtime (~60 codec frames
+ * per wall second) and a 4-section call at ~9.2× (~197 fps). The old curve
+ * planned every width from a 33 chars/s single row and got slower per row
+ * as the call widened, so the buffer check kept emitting one-section batches.
+ *
+ * One row uses the narrow rate. Four or more rows use the wide rate.
+ * Two and three rows interpolate. `MODAL_S2_NARROW_FPS` / `MODAL_S2_WIDE_FPS`
+ * override the defaults. The cold character cap above stays at 100 chars/s;
+ * these numbers are only how long the listener waits.
  */
-export const MODAL_CLONE_ROW_CHARS_PER_SECOND = 33;
+export const MODAL_CLONE_CODEC_FPS = 44100 / 2048;
+export const MODAL_CLONE_NARROW_FPS_DEFAULT = 60;
+export const MODAL_CLONE_WIDE_FPS_DEFAULT = 190;
 
-/** 15% under the measured server per-row rate. The 1-row point is 33, not 33×0.85. */
-export const MODAL_CLONE_WIDE_RATE_MARGIN = 0.85;
+/**
+ * 1-wide chars/s at the default narrow fps (15.85 narration chars/s × ~2.8×).
+ * Park math and older callers. The live rate is {@link cloneRealtimeFactor}.
+ */
+export const MODAL_CLONE_ROW_CHARS_PER_SECOND = Math.round(
+  15.85 * (MODAL_CLONE_NARROW_FPS_DEFAULT / MODAL_CLONE_CODEC_FPS)
+);
 
-const CLONE_RATE_ANCHORS: ReadonlyArray<{ rows: number; perRow: number }> = [
-  { rows: 1, perRow: MODAL_CLONE_ROW_CHARS_PER_SECOND },
-  { rows: 8, perRow: (266 / 8) * MODAL_CLONE_WIDE_RATE_MARGIN },
-  { rows: 14, perRow: (371 / 14) * MODAL_CLONE_WIDE_RATE_MARGIN },
-  { rows: 24, perRow: (617 / 24) * MODAL_CLONE_WIDE_RATE_MARGIN },
-];
-
-/** Chars/s of one row at this call width. Wider calls are slower per row. */
-export function cloneRowCharsPerSecond(rows: number): number {
-  const n = Math.max(1, rows);
-  const first = CLONE_RATE_ANCHORS[0]!;
-  if (n <= first.rows) return first.perRow;
-  const last = CLONE_RATE_ANCHORS[CLONE_RATE_ANCHORS.length - 1]!;
-  if (n >= last.rows) return last.perRow;
-  let hi = 1;
-  while (CLONE_RATE_ANCHORS[hi]!.rows < n) hi += 1;
-  const left = CLONE_RATE_ANCHORS[hi - 1]!;
-  const right = CLONE_RATE_ANCHORS[hi]!;
-  const t = (n - left.rows) / (right.rows - left.rows);
-  return left.perRow + (right.perRow - left.perRow) * t;
+export function modalCloneThroughputFps(
+  kind: "narrow" | "wide",
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = Number(
+    kind === "narrow" ? env.MODAL_S2_NARROW_FPS : env.MODAL_S2_WIDE_FPS
+  );
+  const fallback =
+    kind === "narrow" ? MODAL_CLONE_NARROW_FPS_DEFAULT : MODAL_CLONE_WIDE_FPS_DEFAULT;
+  if (!Number.isFinite(raw) || raw <= 0) return fallback;
+  return Math.min(2_000, raw);
 }
 
-/** Generation time for the whole call. Rows share the batch; the rate already says so. */
-export function cloneGenerationMs(chars: number, rows: number): number {
+/** Realtime factor for a call of this width. 1× means wall equals audio. */
+export function cloneRealtimeFactor(
+  rows: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const narrow = modalCloneThroughputFps("narrow", env) / MODAL_CLONE_CODEC_FPS;
+  const wide = modalCloneThroughputFps("wide", env) / MODAL_CLONE_CODEC_FPS;
   const n = Math.max(1, Math.floor(rows) || 1);
-  const aggregate = cloneRowCharsPerSecond(n) * n;
-  if (!(aggregate > 0)) return 0;
-  return Math.round((Math.max(0, chars) / aggregate) * 1000);
+  if (n <= 1) return narrow;
+  if (n >= 4) return Math.max(narrow, wide);
+  const t = (n - 1) / 3;
+  return narrow + (Math.max(narrow, wide) - narrow) * t;
+}
+
+/**
+ * Chars/s of one row at this call width.
+ * The aggregate is narration rate × realtime; a wider call is faster overall,
+ * so each row's share falls as rows are added.
+ */
+export function cloneRowCharsPerSecond(
+  rows: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const n = Math.max(1, Math.floor(rows) || 1);
+  return (MODAL_CLONE_CHARS_PER_AUDIO_SECOND * cloneRealtimeFactor(n, env)) / n;
+}
+
+/** Generation time for the whole call. Rows share one batch. */
+export function cloneGenerationMs(
+  chars: number,
+  rows: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const factor = cloneRealtimeFactor(rows, env);
+  if (!(factor > 0)) return 0;
+  const audioMs = (Math.max(0, chars) / MODAL_CLONE_CHARS_PER_AUDIO_SECOND) * 1000;
+  return Math.round(audioMs / factor);
 }
 
 /**
@@ -1049,6 +1080,25 @@ export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWave
   const warm = input.firstLight || input.poolWarm;
   if (warm) {
     while (rest.length > 0 && calls.length < maxCalls) {
+      // Once section 0 is staged, do not pace the rest to the 1.5× buffer.
+      // A short remainder goes out in one or two proxy-safe batches. A long
+      // book still grows: about 1–2 min of audio, then 5–6 sections, then
+      // 12–15, then full batches.
+      if (state.started) {
+        const indexes = unpacedWarmIndexes(rest, batch, input.textAt, env);
+        if (indexes.length === 0) break;
+        pushCall(calls, state, describeCloneWaveCall({
+          indexes,
+          shape: "warm",
+          firstLight: false,
+          restore: false,
+          textAt: input.textAt,
+          env,
+          state,
+        }));
+        rest = rest.slice(indexes.length);
+        continue;
+      }
       const prefix = largestWarmPrefix(rest, state, batch, input.textAt, env);
       // Before the listener has started, one row is the first audio.
       // A row within one publish of the slack is still sent: the next
@@ -1160,6 +1210,42 @@ function warmPrefixStats(
     out.push({ indexes: rest.slice(0, n), chars, largest, wallMs });
   }
   return out;
+}
+
+/**
+ * Width of the next warm call after first light, ignoring listen slack.
+ *
+ * A remainder that fits in two proxy-safe batches is sent that way (book
+ * e745d067: eight sections after the opening, one batch). Anything longer
+ * grows by the starting index, which survives a tick boundary:
+ * indexes 1–2 stay inside about two minutes of audio, then up to 6
+ * sections, then up to 15, then a full batch.
+ */
+function unpacedWarmIndexes(
+  rest: number[],
+  batch: number,
+  textAt: (index: number) => string,
+  env: NodeJS.ProcessEnv
+): number[] {
+  const safe = warmPrefixStats(rest, batch, textAt, env);
+  if (safe.length === 0) return rest.slice(0, 1);
+  const full = safe[safe.length - 1]!.indexes;
+  const start = rest[0]!;
+  // A short book (the 9-section case) fits in two proxy-safe batches.
+  if (start <= 1 && rest.length <= full.length * 2) return full;
+  // Long book: 1–2 min of audio, then 5–6, then 12–15, then full width.
+  // The band is the index this call starts at, so a later tick continues
+  // the ramp instead of repeating the first page.
+  const audioCap =
+    start <= 1 ? 150_000 : start <= 4 ? 6.5 * 60_000 : start <= 11 ? 15.5 * 60_000 : null;
+  if (audioCap == null) return full;
+  let best = safe[0]!;
+  for (const pref of safe) {
+    const audio = cloneAudioMs(pref.chars);
+    if (audio > audioCap && pref.indexes.length > 1) break;
+    best = pref;
+  }
+  return best.indexes;
 }
 
 /**
@@ -1786,7 +1872,9 @@ export function simulateClonePlayback(input: {
   let guard = 0;
   while (pending.length > 0 && guard < charsAt.length + 5) {
     guard += 1;
-    const window = pending.slice(0, claim);
+    // The planner has to see the whole remainder. A claim-sized window of
+    // 24 looks like a short book and would skip the long-book ramp.
+    const window = claim > 0 && claim < batch ? pending.slice(0, claim) : pending;
     let windowLeft = window;
     let windowGuard = 0;
     while (windowLeft.length > 0 && windowGuard < window.length + 2) {

@@ -20,7 +20,7 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { UX } from "@/lib/ux-copy";
+import { UX, voiceEngineStarting } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
@@ -147,6 +147,8 @@ interface Job {
   /** Server-owned estimate; the library card shows this same label. */
   eta_seconds?: number | null;
   eta_label?: string | null;
+  catalog_voice_id?: string | null;
+  first_section_at?: number | null;
   eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
 }
 
@@ -1245,7 +1247,11 @@ function PlayerPageInner({ id }: { id: string }) {
         {chapterNav && view.line ? (
           <NowPlayingLine line={view.line} open={chaptersOpen} onToggle={toggleChapters} />
         ) : null}
-        {(job.status === "processing" ||
+        {voiceEngineStarting(job) ? (
+          <p className="text-xs text-muted-foreground" role="status">
+            Starting voice engine
+          </p>
+        ) : (job.status === "processing" ||
           job.status === "queued" ||
           job.status === "waiting") &&
         job.progress < 100 ? (

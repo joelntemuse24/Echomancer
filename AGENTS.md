@@ -474,51 +474,41 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `chooseCloneGpuTurn`. Younger waiters queue. The first call of a book is section 0, cold-sized
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
-  Each later call is the largest prefix that finishes, with margin, before
-  the audio already buffered ahead of a listener at 1.5× runs out. The
-  2026-11-11 smoke (one H100, HTTPS `/synthesize_batch`) measured a single
-  row at ~33 chars/s, not 50. Wider calls use that smoke's per-row curve,
-  15% under the server rate (~31 chars/s/row at 8 rows measured, planned
-  slower; ~24 at 14; ~22 at 24). Transfer is the measured 12s per 43,907
-  characters (58.7MB). Every call, including one row, leaves at least 15s
-  or 10% of the buffer. The buffer is wall time left at 1.5×
-  (`delivered / 1.5 − elapsed`), and a seek ahead of that audio is 0.
-  Clone section 0 is 1,000 characters
-  (~63s of audio, cold wall 71.6s including 3s of publish, under the 75s
-  first-light wait; warm first audio is 33.6s). A call subtracts its wall
-  directly. The next call is 786 characters, then 984, 1,255, and 1,628,
-  each leaving at least 15s at 1.5× (36s at 1× on the second call; the
-  984-character call is the tightest, exactly 15s). Later sections stay
-  2,000. A short piece whose whole
-  remaining book adds no generation beyond section 0 goes out as that one
-  call instead of ramping. Two rows at this curve are a little slower per
-  row than one row at 33 chars/s, so the bound is about 1,959 characters
-  (a 1,000-character opening and a second section of 959): ~2.1 minutes of
-  audio. The extra wait is only the transfer of that second section, under
-  half a second, and total time is one call instead of two. A later row
-  longer than the opening — past the 786-character second section, or any
-  2,000-character row — adds generation, so a 5-minute article and anything
-  longer still ramps. The prefix then grows — on a 10-hour book the calls
-  are 1, 1, 1, 1, 1, 3, 16, then 24 — and the next call is planned from the
-  wall time the previous call actually left.
+  After first light is staged, the remainder is not paced to the 1.5×
+  listen buffer. Book `e745d067` (2026-11-12, 9 sections, 11m39s) spent
+  five serial 1-section calls at 2.7–2.9× (~60 codec fps) before one
+  4-section call at 9.2× (197 fps), about 64s of GPU wall on the ramp.
+  `cloneGenerationMs` uses that shape: `MODAL_S2_NARROW_FPS` (default 60,
+  about 2.8× and ~44 chars/s) for one row, `MODAL_S2_WIDE_FPS` (default
+  190, about 8.8×) at four or more rows, with two and three rows
+  interpolated. A call is never planned faster than its largest row at
+  the narrow rate. The 2026-11-11 smoke's 33 chars/s curve, which got
+  slower per row, is not the planner. Transfer is still the measured 12s
+  per 43,907 characters. A book whose remainder fits in two proxy-safe
+  batches (the 9-section, ~11.8k-character book) goes out as that one
+  wide batch after section 0. A longer book ramps by audio from the
+  starting index: about 1–2 minutes, then 5–6 minutes, then 12–15
+  minutes, then full batches (`MODAL_S2_BATCH_SIZE`, default 24, max 32),
+  each under the ~542s proxy kill. Cold first light stays one small
+  section. Clone section 0 is 1,000 characters (~63s of audio). At the
+  narrow rate the cold wall is about 64s including restore, transfer, and
+  3s of publish, still under the 75s pack abort. A second section of
+  about 700 characters still fits in that opening call; a longer second
+  section waits so first audio stays the opening. Later sections stay
+  2,000 characters. The listen buffer is still reported. It does not
+  choose the page.
   Playback does not stall once it has started. A gap longer than the
   scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 30s, under the 45s
   autoscaler target) is one cold-sized call again, then the ramp resumes.
   Warmth is in-process memory: a worker restart costs one cold call.
-  Under the ceiling, two 10-hour books are two of those ramps at once:
-  wall **1,576,533 ms**, first audio **71,576 ms**, tightest margin
-  **36,058 ms** at 1× and **15,000 ms** at 1.5×, peak **2** GPUs. Ten
-  books from ten users stay on that same ramp, peak 10. Three books from
-  one user do too (the per-user ceiling is 5). A sixth book from that
-  user shares the oldest holder's GPU: peak stays 5, and that pair is the
-  overflow schedule (**3,056,922 ms**, first audio 71,576 ms and
-  165,272 ms, tightest 1.5× margins −53,121 ms and −23,036 ms). The other
-  four keep the 15s floor. A 10-hour book plus a 40-minute article at
-  5 minutes is two GPUs. The book is unchanged. The article's first audio
-  is **371,576 ms** (300,000 + the cold 71,576) and it keeps the 15s floor.
-  With the global ceiling at 2, three 10-hour books use 2 GPUs: the oldest
-  and the third share (same 3,056,922 ms pair) and the middle book stays
-  on the solo ramp. One `synthesize_batch` still has one
+  Under the ceiling, two 10-hour books are two of those ramps at once,
+  peak **2** GPUs. Ten books from ten users stay on that same ramp, peak
+  10. Three books from one user do too (the per-user ceiling is 5). A
+  sixth book from that user shares the oldest holder's GPU: peak stays 5.
+  A 10-hour book plus a 40-minute article at 5 minutes is two GPUs. With
+  the global ceiling at 2, three 10-hour books use 2 GPUs: the oldest and
+  the third share, and the middle book stays on its own GPU. One
+  `synthesize_batch` still has one
   reference and one seed, so rows from two books cannot share a call
   until the container reads a reference per item. That is a Modal
   redeploy. `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does
@@ -526,19 +516,23 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   one section, even on a warm pool.
 - **Rows per call, not lanes, is the throughput knob — but a call must also
   finish.** A container decodes every row of a call in one batch: measured
-  **2.9x realtime for a one-row call**. The 2026-11-11 smoke measured that
-  row at **~33 chars/s** end to end (1,300 characters in 39.85s), and a
-  24-row call at **528 chars/s** end to end (617 on the server, ~33×, 58.7MB
-  in ~12s of transfer). The listener wall uses 33 chars/s for one row and
-  15% under the server per-row curve for wider calls, plus that transfer.
+  **2.9x realtime for a one-row call** on the 2026-11-11 smoke. Production
+  on 2026-11-12 (`e745d067`) measured one row at about 2.8× (~60 codec fps,
+  ~44 chars/s) and a 4-row call at 9.2× (197 fps). The planner uses
+  `MODAL_S2_NARROW_FPS` / `MODAL_S2_WIDE_FPS` (defaults 60 and 190). A full
+  24-row call of 2,000-character sections is planned near 9×, which stays
+  under the 400s warm wait. The smoke's 528 chars/s 24-row figure is faster
+  than this plan and is not what the listener wall uses.
   `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character
   cap, above the unfinished 4-row floor on `job 7e4a8b48` (≥127 chars/s).
   The HTTP wait is
   **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill. A full
   batch of 24 sections of 2,000 characters is 48,000 characters: about 105s
   at the planning curve, under the 400s wait and
-  about 68MB of base64. The ramp sends that call only once the listener's
-  buffer covers it. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
+  about 68MB of base64. After first light, a long book reaches that call
+  on the audio ramp (1–2 min, then 5–6, then 12–15, then the full batch),
+  not when the 1.5× buffer happens to cover it. `MODAL_S2_WARM_LANE_MAX_CHARS`
+  can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
   31k characters. On `job db10a6d6` the old round-robin split made 5 sections
   into four 1-row calls on one container (`36459a5cb16f`), so 246s of audio
@@ -600,14 +594,24 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `balanced` latency and the per-engine variant; the lane prefetch and the
   per-section read must both use it, or a prefetched take is stored where
   nothing looks for it.
-- **Section 0 gets a shorter restore budget.** `MODAL_S2_FIRST_LIGHT_WAIT_MS`
-  (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
-  the first-light call only. That wait is wall clock in front of the person,
-  and a compiling placement cannot be waited out at any budget a book may use,
-  so abandoning a gateway miss retries another container sooner. A client
-  timeout does not open a second container for the same sections. It is not
-  shortened further: a measured restore is ~57s, and a budget under that parks
-  a book that would have played.
+- **Section 0 gets a shorter pack abort, and a longer placement wait.**
+  `MODAL_S2_FIRST_LIGHT_WAIT_MS` (default 75s, clamped to and never above
+  `MODAL_S2_COLD_WAIT_MS`) is still the pack cap. A 7,700-character opening
+  does not fit it. The HTTP wait on that first call is separate:
+  `MODAL_S2_PLACEMENT_BUDGET_MS` (default 360_000, six minutes), floored at
+  the 75s pack abort and capped at the proxy ceiling (542s minus 60s,
+  482s). Book `e745d067` missed a ~92s window twice while Modal placed an
+  H100; the container then restored with nothing to do. The fetch stays on
+  that same call. If the probe says the container has started, the fetch
+  is not aborted and is not cancelled; the timer extends toward the proxy
+  ceiling. A call that is still pending when the budget ends is cancelled
+  only if it never started (`mayCancelAbandonedModalCall`), and the job is
+  sealed for another placement budget so the retry does not POST a second
+  GPU. A confirmed gone call may POST again. An in-flight render for the
+  same job reattaches to the open promise. The park after a miss is the
+  rest of the cold wait plus opening generation at the narrow rate, about
+  98s, not a second placement. The player and library say "Starting voice
+  engine" while a clone book is processing with no section yet.
 - **Section 0 is published before transcript QA.** The check spawns a fresh
   Whisper process (`scripts/whisper-qa.py`), and that model load sits between
   the GPU returning and `first_section_at`. The first-light publish skips it.
@@ -935,7 +939,15 @@ take-home spawn. All voices use the same stock pipeline.
 2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence. The first section is about 800 characters for every provider, including Fish, and it ends on a sentence. A heading does not close a section until it holds about 1,500 characters; a shorter chapter stays a marker inside the section, and finalize times it from that text offset. Edge and Google run a rolling pool: the tick claims the next claimable index whenever a lane frees instead of waiting on the slowest claim in one batch (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8, up to 16; with a tick deadline the pool keeps claiming until that deadline, and with no deadline a no-deadline tick keeps the fan-out-sized claim budget). Claims are in-memory and every finished section writes `segments_json`, so a restarted worker re-claims only unfinished sections. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A Fish book whose pack leaves a short tail after a multiple of 5 folds that tail into the previous section when it is the same chapter and still under the hard max. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. Transcription is **self-hosted Whisper by default** (`TTS_QA_PROVIDER=local`, `scripts/whisper-qa.py`, `faster-whisper` `base` int8 on CPU): no API key, no per-minute bill, ~5% WER on neural TTS at RTF ~0.02 (0.07 CPU-minutes per audio-minute), measured on the 4-vCPU worker class. Edge synthesis runs at about 3.8 audio-seconds per wall-second, so Whisper keeps up with full-book generation and **every section is checked**; nothing is sampled. `TTS_QA_PROVIDER=deepgram` selects the older hosted `deepgram/nova-3` path through `OPENROUTER_API_KEY` (5s wall cap, worker thread), and `TTS_QA_PROVIDER=off` or `TTS_SECTION_QA_ENABLED=0` skips the check. An unrecognised provider value falls back to `local`, never to the paid endpoint. Local transcription is capped at `audioSeconds x 0.4` wall (10s floor, 180s ceiling) via `TTS_QA_WHISPER_BUDGET_MS`, because a flat 5s was too short for a 227-second section. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. When no transcriber can run, the worker logs the reason once (`qa skipped: whisper sidecar missing` or `qa skipped: deepgram needs OPENROUTER_API_KEY`) and finishes the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. Each section is mastered as soon as it is synthesized. Stock (Edge, Fish, Paradee) uses the podcast chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 128 kbps. A Modal clone section uses the S2 spectral chain (already applied in the container) and loudnorm −19 LUFS / −3 dBTP (`MODAL_S2_MASTERING`). Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. Frame positions come from the MP3 headers, so a long book does not start one ffprobe per section. A section under four seconds is re-encoded with the same crossfade into its neighbor (the rest of that neighbor stays a packet copy), so one heading does not send the book through the full encode. The fallback encode is limited to the decoded audio, and an upload that already landed is not marked failed when the lease has moved on. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
-5. Frontend polls and can play ready sections early
+5. Frontend polls and can play ready sections early. When the last section is
+   mastered, the job is marked `ready` with `audio_storage_path` still null
+   and the lease kept, then `materializeFullAudiobook` runs in that same
+   tick. The player already plays section files while `full.mp3` is absent.
+   The download route concatenates on demand if the file is missing. The
+   join is not detached: dropping the lease would let another worker claim
+   the row, and `releaseLease` cannot clear a ready row. If the join throws,
+   the book stays ready and the warning is "The full download is still being
+   prepared."
 
 ## Job flow (stream)
 
@@ -1193,6 +1205,9 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # account decides what it will serve. Usage is still written to `usage_logs`
 # (action `modal_s2_clone`) for cost reporting, non-blocking. Real provider
 # auth/quota/billing errors still surface as errors.
+# MODAL_S2_PLACEMENT_BUDGET_MS=360000 # First-light HTTP wait. Floor is the 75s pack abort. Ceiling is 482s (542s proxy minus 60s).
+# MODAL_S2_NARROW_FPS=60 # 1-wide codec fps (~2.8×, ~44 chars/s). Wide batches interpolate up to MODAL_S2_WIDE_FPS.
+# MODAL_S2_WIDE_FPS=190 # 4-or-more-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×.
 
 # ── MiniMax Free API (optional slim test catalog) ───────
 # When both are set: catalog = Storyteller (default) + Gemini Kore only.

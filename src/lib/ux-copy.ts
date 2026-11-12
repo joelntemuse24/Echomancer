@@ -30,7 +30,32 @@ export const UX = {
 export const WAIT = {
   ingest: ["Reading your book"],
   generating: ["Making the audiobook"],
+  startingEngine: ["Starting voice engine"],
 } as const;
+
+/**
+ * A clone book that has been claimed and has not produced a section yet.
+ * Extract (`waiting`, or `waiting_for_text`) is a different wait.
+ */
+export function voiceEngineStarting(job: {
+  catalog_voice_id?: string | null;
+  status?: string | null;
+  waiting_for_text?: boolean | null;
+  first_section_at?: number | null;
+  audio_url?: string | null;
+  segments?: Array<{ path?: string | null; status?: string | null }> | null;
+}): boolean {
+  if (job.waiting_for_text) return false;
+  if (job.status !== "processing" && job.status !== "queued") return false;
+  const voice = job.catalog_voice_id ?? "";
+  if (!voice.startsWith("clone:")) return false;
+  if (job.first_section_at) return false;
+  if (job.audio_url) return false;
+  if ((job.segments ?? []).some((segment) => segment.status === "ready" && segment.path)) {
+    return false;
+  }
+  return true;
+}
 
 /** Voice step. Stock names stay on screen; clone is a row under them. */
 export const VOICE_PATH = {

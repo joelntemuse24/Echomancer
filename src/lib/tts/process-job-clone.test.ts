@@ -641,9 +641,9 @@ describe("lane staging", () => {
       expect(Number(row?.clone_wait_started_at ?? 0)).toBeGreaterThan(0);
       const nowSec = Math.floor(Date.now() / 1000);
       const hold = Number(row?.lease_expires_at) - nowSec;
-      expect(hold).toBeGreaterThanOrEqual(104);
+      expect(hold).toBeGreaterThanOrEqual(90);
       expect(hold).toBeLessThanOrEqual(130);
-      expect(Number(row?.sched_not_before) - nowSec).toBeGreaterThanOrEqual(104);
+      expect(Number(row?.sched_not_before) - nowSec).toBeGreaterThanOrEqual(90);
       expect(Number(row?.sched_not_before) - nowSec).toBeLessThanOrEqual(130);
       expect(row?.status).toBe("processing");
       expect(row?.processing_lease_token).toBeTruthy();

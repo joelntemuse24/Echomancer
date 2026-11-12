@@ -453,6 +453,50 @@ export function modalCloneFirstLightWaitMs(
   return Math.min(modalCloneColdWaitMs(env), Math.floor(n));
 }
 
+/**
+ * How long the HTTP client keeps the original first-light POST.
+ *
+ * The pack abort stays the short first-light wait, so a 7,700-character
+ * opening is still not planned. This budget is only the wait on a call
+ * that already fits that abort. Modal can take minutes to place an H100;
+ * abandoning the POST at ~92s leaves the container with nothing to render.
+ * Default 6 minutes. Clamped under the proxy kill, and never shorter than
+ * the pack abort, so generation of a legal opening is not cut.
+ */
+export const MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS = 360_000;
+
+export function modalCloneProxyCeilingMs(): number {
+  return MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_PROXY_MARGIN_MS;
+}
+
+export function modalClonePlacementBudgetMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const ceiling = modalCloneProxyCeilingMs();
+  const raw = Number((env.MODAL_S2_PLACEMENT_BUDGET_MS ?? "").trim());
+  const chosen =
+    Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS;
+  const floor = modalCloneFirstLightWaitMs(env);
+  return Math.min(ceiling, Math.max(floor, chosen));
+}
+
+/**
+ * HTTP wait for an already-legal first-light call.
+ * Packing still uses {@link modalCloneArmedWaitMs}.
+ */
+export function modalCloneFirstLightHttpWaitMs(
+  armedMs: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const armed = Number.isFinite(armedMs) && armedMs > 0 ? armedMs : 0;
+  return Math.min(
+    modalCloneProxyCeilingMs(),
+    Math.max(armed, modalClonePlacementBudgetMs(env))
+  );
+}
+
 export function modalCloneDeferMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = (env.MODAL_S2_DEFER_MS ?? "").trim();
   if (!raw) return MODAL_CLONE_DEFER_DEFAULT_MS;

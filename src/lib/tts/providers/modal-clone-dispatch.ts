@@ -467,6 +467,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
       ? Math.floor(opts.maxCalls)
       : Number.POSITIVE_INFINITY;
   let made = 0;
+  let emptyBodies = 0;
   let handedOff = false;
 
   const enqueuePublish = (indexes: number[], head: boolean) => {
@@ -642,7 +643,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     // ledger retries it next time. The rows after it are still owed an
     // attempt, or a book that fails one section stays queued with the
     // rest never spoken.
-    if (stagedRows.length !== call.indexes.length) {
+    if (stagedRows.length > 0 && stagedRows.length !== call.indexes.length) {
       const dropped = new Set(
         call.indexes.filter((index) => !tally.staged.has(index))
       );
@@ -651,14 +652,16 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     if (tally.busy > 0 || pending.length === 0) break;
     if (stagedRows.length === 0) {
       if (!wave.parsed) break;
-      // The container parsed a body and every row failed. The listener
-      // gained no audio, so the next section is sent on its own instead
-      // of waiting out a buffer that will not grow.
+      // A parsed body with no rows is one retry of the same page. A second
+      // empty body stops the tick; the ledger retries those sections later.
+      emptyBodies += 1;
+      if (emptyBodies > 1) break;
       buffer = 0;
       poolWarm = true;
       made += 1;
       continue;
     }
+    emptyBodies = 0;
 
     const elapsed = Date.now() - startedAt;
     const spent = Math.max(elapsed + MODAL_CLONE_PUBLISH_MS, call.wallMs);
@@ -671,6 +674,9 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
       started = true;
       buffer = clonePlanningBufferMs(audio);
     } else {
+      // The buffer is still reported. The planner does not pace a started
+      // book to it: the remainder is one or two full batches, or the
+      // long-book ramp, under the proxy limit.
       buffer = advancePlanningBuffer(buffer, spent, audio);
     }
     const taken = new Set(stagedRows);

@@ -25,7 +25,7 @@ import {
   peekScreen,
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
-import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
+import { libraryStatus, UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
 import {
@@ -87,6 +87,9 @@ interface Job {
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
   eta_label?: string | null;
+  catalog_voice_id?: string | null;
+  first_section_at?: number | null;
+  waiting_for_text?: boolean | null;
   eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
   elapsed_seconds?: number | null;
   elapsed_label?: string | null;
@@ -521,7 +524,13 @@ export default function QueuePage() {
                           {job.job_kind === "stream" ? (
                             statusFor(job).label
                           ) : (
-                            <WaitMark phrases={WAIT.generating} />
+                            <WaitMark
+                              phrases={
+                                voiceEngineStarting(job)
+                                  ? WAIT.startingEngine
+                                  : WAIT.generating
+                              }
+                            />
                           )}
                         </span>
                         <span className="font-medium">

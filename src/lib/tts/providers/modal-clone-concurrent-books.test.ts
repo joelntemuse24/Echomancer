@@ -131,8 +131,12 @@ describe("spare warmth while another book occupies the only container", () => {
       workMs: 0,
     });
     const waits = timeoutsOf(timeout);
-    expect(waits).toContain(MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS);
+    // First light waits on its own timer for the placement budget. It does
+    // not arm AbortSignal.timeout at the 75s pack abort or the 60s steady
+    // budget. A book that does not own the warm container still is not
+    // given that 60s clock.
     expect(waits).not.toContain(60_000);
+    expect(waits).not.toContain(MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS);
     expect(fetchMock).toHaveBeenCalled();
   });
 
