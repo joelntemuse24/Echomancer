@@ -15,6 +15,7 @@ import {
   MODAL_CLONE_COVER_ARGS,
   setModalCloneWarmSpawnerForTests,
 } from "./modal-clone-warm";
+import { setModalCloneCallCancellerForTests } from "./modal-clone-cancel";
 import {
   BATCH_HOST,
   SINGLE_HOST,
@@ -226,6 +227,22 @@ describe("modal clone routing", () => {
       /backoff/
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("cancels the unstarted Modal call when the first-light wait aborts", async () => {
+    const fetchMock = setup();
+    vi.stubEnv("MODAL_S2_READY", "0");
+    const cancelled: string[] = [];
+    setModalCloneCallCancellerForTests((opts) => {
+      cancelled.push(opts.reason ?? "");
+      return true;
+    });
+    setModalCloneWarmSpawnerForTests(() => undefined);
+    fetchMock.mockImplementation(async () => {
+      throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    });
+    await expect(synthesizeModalClone(input)).rejects.toThrow(ModalCloneColdError);
+    expect(cancelled).toEqual(["first-light wait aborted"]);
   });
 
   it("skips the probe when MODAL_S2_READY=0", async () => {

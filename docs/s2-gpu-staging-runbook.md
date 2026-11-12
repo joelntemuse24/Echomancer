@@ -213,6 +213,8 @@ cd <repo>
 export S2C_APP_NAME=echomancer-s2-clone-staging
 
 # Build + verify + a short synthesis through the clone path.
+# The warm script refuses to start if the input queue still has PENDING calls.
+python3 scripts/s2/check-input-queue.py
 modal run modal/s2_clone_warm.py --verify --synth --containers 1
 ```
 
@@ -262,6 +264,62 @@ a redeploy does. So:
 
 ---
 
+
+### Input queue, the compile brake, and safe draining
+
+Warm (`::warm`), cover (`::cover`), fanout (`::fanout`), and
+`scripts/s2/staging-smoke.mjs` all check the function's recent inputs before
+they start, and **refuse** if any FunctionCall is still `PENDING` or otherwise
+unfinished:
+
+```bash
+python3 scripts/s2/check-input-queue.py
+# or against staging:
+S2C_APP_NAME=echomancer-s2-clone-staging python3 scripts/s2/check-input-queue.py
+```
+
+Do **not** try to clear that queue with `FunctionCall.cancel()` or
+`modal container stop` while a container is in `@modal.enter` or compiling a
+GPU snapshot.
+
+- `FunctionCall.cancel()` (including `modal`-SDK cancel after a first-light
+  abort) is **not** a reliable drain. `FunctionCall.get()` may raise NotFound
+  while `modal function calls` still lists the input as PENDING. Those
+  leftovers are served after the next enter finishes, which interrupts
+  snapshot publish: the container can finish selftest and still never log
+  `Snapshot created`.
+- `modal container stop` (even with `-y`) does not drop the input. Modal
+  reschedules the still-pending status onto a new container, which is how a
+  stopped compile turns into a compile loop.
+- A disconnected warm client also does **not** always cancel the input. If a
+  compile is already running, leave it attached, or at most walk away; do not
+  cancel the FunctionCall and do not stop the container. Let enter finish and
+  publish the snapshot.
+
+To stop **new** placements without touching an in-flight compile, apply a
+brake, then restore the production cap after the snapshot is published:
+
+```bash
+# brake: max_containers=0, min stays 0. This is not a drain.
+python3 scripts/s2/set-live-autoscaler.py --brake --scaledown-window 45
+
+# after 'Snapshot created' (or a proved publish) and the container has scaled
+# down, restore production:
+python3 scripts/s2/set-live-autoscaler.py --max-containers 1 --scaledown-window 45
+```
+
+**Safe drain** of leftover PENDING inputs: wait until a container has already
+finished enter (selftest / `[S2C]` has landed, snapshot work is done), let
+those leftovers be dispatched onto that already-ready container, and let each
+call reach a **terminal** state (`success`, `failure`, or `terminated`). Confirm
+with `modal function calls 'echomancer-s2-clone/S2CloneWorker.*' --all-variants --tail 200 --json`
+that nothing is still `pending` before starting the next warm or probe.
+
+The take-home worker cancels **its own** Modal FunctionCall when a first-light
+HTTP wait aborts, but only if that call is still an *unstarted* PENDING input.
+It never cancels a call that has already started enter or compile.
+
+---
 ## 4. Verify restores on every worker variant
 
 ```bash

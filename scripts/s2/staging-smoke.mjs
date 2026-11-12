@@ -12,6 +12,8 @@
  *   node scripts/s2/staging-smoke.mjs --lanes 4
  *
  * Checks, in order:
+ *   0. The S2 input queue has no PENDING or unfinished FunctionCalls
+ *      (refuses to start otherwise; see the runbook's safe-draining note).
  *   1. /ready reports a warm container and a build id (or explains why not).
  *   2. POST <MODAL_S2_TTS_URL>/ returns one decodable MP3 row per section, with
  *      the `audio_b64` field the worker reads.
@@ -33,6 +35,9 @@
  */
 
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -85,6 +90,27 @@ function endpoint(raw, label, { required = false } = {}) {
 const batchUrl = endpoint(process.env.MODAL_S2_TTS_URL, "MODAL_S2_TTS_URL", {
   required: true,
 });
+
+function assertInputQueueEmpty() {
+  if (args.get("skip-queue-check") === "true") return;
+  const script = join(dirname(fileURLToPath(import.meta.url)), "check-input-queue.py");
+  const result = spawnSync(process.env.PYTHON || "python3", [script], {
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.error(
+      "staging-smoke refused to start: the S2 input queue is not empty. " +
+        "See docs/s2-gpu-staging-runbook.md (safe draining). Do not cancel " +
+        "or container-stop a live compile; drain leftovers on a ready " +
+        "container or pass --skip-queue-check only if you have already drained."
+    );
+    process.exit(result.status == null ? 2 : result.status);
+  }
+}
+
 const readyUrl = endpoint(process.env.MODAL_S2_READY_URL, "MODAL_S2_READY_URL");
 const singleUrl = endpoint(
   process.env.MODAL_S2_SYNTHESIZE_URL,
@@ -349,6 +375,7 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
 }
 
 async function main() {
+  assertInputQueueEmpty();
   console.log(`staging smoke against ${new URL(batchUrl).host}`);
   if (readyUrl) console.log(`  ready:        ${new URL(readyUrl).host}`);
   if (singleUrl) console.log(`  synthesize:   ${new URL(singleUrl).host}`);

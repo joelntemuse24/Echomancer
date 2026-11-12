@@ -22,6 +22,14 @@ say "compiled", and a real restore often reports `unknown` (the process is
 pid 2 both before and after). Modal's log line
 `Restoring Function from memory snapshot` is the platform record.
 
+Never cancel a FunctionCall or `modal container stop` while enter/compile is
+running: leftovers stay PENDING and are served after the next enter, which
+interrupts snapshot publish, and container stop reschedules the input onto a
+new compile. If you must stop new placements, apply the autoscaler brake
+(`python3 scripts/s2/set-live-autoscaler.py --brake`) and let the compile
+finish. This script refuses to start when the input queue still has PENDING
+or unfinished FunctionCalls.
+
 What "warm" means now:
 
   1. One direct `status()` call builds the snapshot (a fresh deploy has none)
@@ -61,6 +69,7 @@ from s2_contract import (
     validate_reference_text,
     warm_reference_wav,
 )
+from s2_input_queue import assert_no_unfinished_inputs
 
 #: How long one RPC may sit. Long enough for an 8–16 min compile. Books never
 #: use this; their HTTP wait is the restore budget.
@@ -74,6 +83,22 @@ app = modal.App("echomancer-s2-clone-warm")
 #: touching production: `S2C_APP_NAME=echomancer-s2-clone-staging modal run …`.
 APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
 CLASS_NAME = "S2CloneWorker"
+
+
+def _require_empty_input_queue() -> None:
+    """Refuse to start if leftover PENDING or unfinished FunctionCalls exist.
+
+    Never cancel or container-stop a live enter/compile from this script. If
+    you must stop *new* placements, apply the autoscaler brake
+    (`scripts/s2/set-live-autoscaler.py --brake`) and let the compile finish.
+    See docs/s2-gpu-staging-runbook.md (safe draining).
+    """
+    print(
+        "checking the input queue for stale PENDING or unfinished FunctionCalls …"
+    )
+    rows = assert_no_unfinished_inputs(APP_NAME, CLASS_NAME)
+    print(f"  queue is empty ({len(rows)} recent calls, all terminal).")
+
 
 SAMPLE_TEXT = (
     "The river had not moved for three days. Elena stood at the window and "
@@ -213,6 +238,7 @@ def main(
     synth: bool = True,
     scaledown: int = 300,
 ) -> None:
+    _require_empty_input_queue()
     ref_b64, ref_text, stats = _reference(reference_audio)
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
 
@@ -257,6 +283,7 @@ def warm(
 ) -> None:
     """Build the GPU snapshot after a deploy, then prove it restores."""
     print(f"warming {APP_NAME}.{CLASS_NAME} …")
+    # Queue check happens inside main() before any RPC.
     main(
         reference_audio=reference_audio,
         verify=verify,
@@ -389,6 +416,7 @@ def cover(
     placement misses the restore budget: one RPC, allowed to compile.
     """
     print(f"covering {APP_NAME}.{CLASS_NAME} …")
+    _require_empty_input_queue()
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
     cover_variants(
         worker,
@@ -410,6 +438,8 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
     and the one to run before raising `S2C_MAX_CONTAINERS` to 4. It does not
     use multi-GPU code: each call is its own one-GPU container.
     """
+    print(f"fanout {APP_NAME}.{CLASS_NAME} …")
+    _require_empty_input_queue()
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
     started = time.time()
     results = _fanout_status(worker, containers, RPC_COMPILE_TIMEOUT_S)
