@@ -13,18 +13,10 @@ import {
   uploadBookViaApi,
 } from "@/test/harness";
 
-vi.mock("@trigger.dev/sdk", () => ({
-  configure: vi.fn(),
-  tasks: {
-    trigger: vi.fn().mockResolvedValue({ id: "run_test" }),
-  },
-}));
-
 const BOOK = "The lamps were lit along the quay. ".repeat(40);
 
 beforeEach(async () => {
   vi.restoreAllMocks();
-  delete process.env.TRIGGER_SECRET_KEY;
   delete process.env.VERCEL_ENV;
   await resetDatabase();
 });
@@ -219,13 +211,10 @@ describe("PUT + complete + extract", () => {
     );
   });
 
-  it("complete extracts without Trigger even when a Trigger key is set", async () => {
-    process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
+  it("complete extracts in-process when no extract worker is set", async () => {
     delete process.env.EXTRACT_WORKER_URL;
     const extract = await import("@/lib/text-extraction");
     const spy = vi.spyOn(extract, "extractDocument");
-    const triggerSdk = await import("@trigger.dev/sdk");
-    const triggerSpy = vi.spyOn(triggerSdk.tasks, "trigger");
 
     const { POST: presign } = await import("@/app/api/pdf/upload/route");
     const bytes = Buffer.from(BOOK, "utf-8");
@@ -269,7 +258,6 @@ describe("PUT + complete + extract", () => {
     expect(completeRes.status).toBe(200);
     expect(completeBody.status).toBe("ready");
     expect(spy).toHaveBeenCalled();
-    expect(triggerSpy).not.toHaveBeenCalled();
   });
 
   it("returns heading chapters on the upload GET and stores chapters.json", async () => {

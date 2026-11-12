@@ -1,10 +1,9 @@
 # Always-on Whole-book worker
 
-Trigger.dev used to host Whole-book / take-home narration. That role is now
-an always-on Node process. **Production host: an Ubuntu VPS running pm2
+**Production host: an Ubuntu VPS running pm2
 `echomancer-takehome`, with Caddy terminating HTTPS at
 `worker.echomancer.xyz`.** Docker Compose stays as an optional appendix.
-Trigger.dev is **legacy fallback only** — not the live Whole-book runner.
+Whole book runs on this process. Vercel only enqueues `POST /jobs`.
 
 **Document extract runs on this VM** in a warm child (`POST /extract`,
 `src/worker/extract-child.ts`), forked at boot and reused so a small file
@@ -239,7 +238,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `0.0.0.0` in code; pm2 and docker-compose pin `127.0.0.1` | Loopback behind Caddy. Do not expose `0.0.0.0` directly on a public NIC. |
-| `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock (same idea as Trigger) |
+| `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock for one book |
 | `DEEP_FILTER_BIN` | `/usr/local/bin/deep-filter` | Set by `install-oracle.sh` / pm2 |
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
@@ -283,8 +282,6 @@ A book already stored as Randolph plays its saved audio. New requests use Andrew
 |----------|----------|--------|
 | `WORKER_URL` | **yes** (production) | `https://worker.echomancer.xyz` (no trailing slash). Must be HTTPS. |
 | `WORKER_SECRET` | **yes** when `WORKER_URL` is set | Same value as on the VM. Falls back to `INTERNAL_JOB_SECRET` if unset. A URL without a secret is **503**. |
-| `TAKEHOME_TRIGGER_FALLBACK` | no | `1` = also fire **legacy** Trigger if the worker POST fails |
-| `TRIGGER_SECRET_KEY` | no (legacy) | Only if `WORKER_URL` is unset. Not the production Whole-book runner. |
 
 Vercel dashboard → Project → Settings → Environment Variables →
 **Production**:
@@ -295,82 +292,10 @@ Vercel dashboard → Project → Settings → Environment Variables →
 
 Once both are set, `POST /api/jobs` take-home (and retry / `/takehome`)
 POSTs `{ jobId }` to `WORKER_URL/jobs` with
-`Authorization: Bearer $WORKER_SECRET`. Missing both `WORKER_URL` and
-`TRIGGER_SECRET_KEY` in production is **503** `TAKEHOME_NOT_CONFIGURED`
-**before insert**. After insert, a failed worker POST leaves the job
-`queued` for the VM drain loop (still HTTP 200).
-
-### Remove the legacy Trigger drain crons
-
-Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
-The production deployment still runs declarative minute crons:
-`takehome.drain` (`sched_1mv945xbxmk4i7j6orzkf`, `* * * * *`) and
-`upload.drain`. That `takehome.drain` is older code. It claims `queued`
-and `processing` rows straight from Turso (no `sched_not_before`
-predicate) and fails an Edge book with `Invalid stock provider: edge`.
-A clone book parked for a positive hold is left `processing` with a lease
-token the worker does not hold and `lease_expires_at` at the same instant
-as `sched_not_before`. That claim skips a `processing` row until the
-lease expires, and the VM claim waits for the same lease, so the two
-agree until the cron is gone. A zero-hold park stays `queued`.
-
-`takehome.drain` and `upload.drain` are not tasks in this repo.
-`TAKEHOME_TRIGGER_FALLBACK` fires `takehome.advance` only. A declarative
-schedule is deleted when a production deploy's worker manifest no longer
-includes that task's `cron`. The dashboard cannot delete it. Deploy from
-the repo root with the CLI pinned to the SDK in `package.json`
-(`@trigger.dev/sdk` / `@trigger.dev/build` 4.5.15). Set
-`TRIGGER_ACCESS_TOKEN` (personal access token, or a production environment
-API key) and, when the dashboard project ref is not the fallback in
-`trigger.config.ts`, `TRIGGER_PROJECT_ID`. Do not print either value. Do
-not pass `--skip-promotion`. Do not roll this deployment back: a rollback
-restores the previous worker's declarative crons.
-
-```bash
-npx trigger.dev@4.5.15 deploy --env prod
-```
-
-Confirm with the production `TRIGGER_SECRET_KEY` (the list is scoped to
-that key's environment). The script prints schedule ids only. Exit 0 and
-`declarativeDrainSchedules: []` means both crons are gone, including
-`sched_1mv945xbxmk4i7j6orzkf`.
-
-```bash
-python3 - <<'PY'
-import json, os, urllib.request
-key = os.environ["TRIGGER_SECRET_KEY"]
-page = 1
-found = []
-while True:
-    req = urllib.request.Request(
-        f"https://api.trigger.dev/api/v1/schedules?page={page}&perPage=100",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    with urllib.request.urlopen(req) as res:
-        body = json.load(res)
-    for row in body.get("data") or []:
-        if row.get("task") in {"takehome.drain", "upload.drain"} or row.get("id") == "sched_1mv945xbxmk4i7j6orzkf":
-            found.append({
-                "id": row.get("id"),
-                "task": row.get("task"),
-                "type": row.get("type"),
-                "active": row.get("active"),
-                "cron": (row.get("generator") or {}).get("expression"),
-            })
-    pages = (body.get("pagination") or {}).get("totalPages") or 1
-    if page >= pages:
-        break
-    page += 1
-print(json.dumps({"declarativeDrainSchedules": found}, indent=2))
-if found:
-    raise SystemExit(1)
-PY
-```
-
-The deploy does not cancel the paused backlog of those tasks. Leave those
-queues paused. `takehome.advance` stays as the fallback when `WORKER_URL`
-is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `upload.extract` stays a no-op.
-Do not add `schedules.task` crons for the drain ids.
+`Authorization: Bearer $WORKER_SECRET`. Missing `WORKER_URL` in production
+is **503** `TAKEHOME_NOT_CONFIGURED` **before insert**. After insert, a
+failed worker POST leaves the job `queued` for the VM drain loop (still
+HTTP 200).
 
 ## Endpoints
 
@@ -415,8 +340,7 @@ The script checks:
 
 Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 **Andrew**, Make audiobook. Library should leave
-`queued`. `pm2 logs` shows accept / settled. That is the cutover signal
-— then deploy the Trigger project so the drain crons are deleted (above).
+`queued`. `pm2 logs` shows accept / settled. That is the cutover signal.
 
 ## Cancel and concurrency
 
@@ -453,16 +377,14 @@ in place. The oldest live one is the id a new create returns.
 
 On `SIGTERM` or `SIGINT` the process stops the drain, waits up to 30s for
 in-flight waves, then releases any lease this process still holds back to
-`queued` (same token-matched UPDATE as a normal release) and exits. Until
-the production Trigger deploy above, a lease left to expire can be claimed
-by the still-deployed `takehome.drain`.
+`queued` (same token-matched UPDATE as a normal release) and exits.
 
 ## Troubleshooting
 
 | Issue | Check |
 |-------|--------|
 | Jobs sit at `queued` | VM down, `WORKER_URL` unreachable from Vercel, or Turso creds missing on the VM |
-| `TAKEHOME_NOT_CONFIGURED` 503 | Production has neither `WORKER_URL` nor `TRIGGER_SECRET_KEY`, or `WORKER_URL` is set without a secret |
+| `TAKEHOME_NOT_CONFIGURED` 503 | Production is missing `WORKER_URL`, or `WORKER_URL` is set without a secret |
 | Worker 401 | `WORKER_SECRET` / `INTERNAL_JOB_SECRET` mismatch |
 | `/ready` 503 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` on the VM |
 | OOM during master | Keep `WORKER_CONCURRENCY=1` |
@@ -474,10 +396,6 @@ by the still-deployed `takehome.drain`.
 
 Live TLS is Caddy at `https://worker.echomancer.xyz` (Vercel A record → VM
 IPv4). Keep `WORKER_SECRET` matching `.env.worker` and Vercel Production.
-After a green tiny job, deploy this Trigger project to production so the
-declarative minute crons (`takehome.drain`, `upload.drain`) are deleted.
-Until that deploy, the current Trigger deployment still claims `queued`
-rows every minute. The dashboard cannot delete those declarative schedules.
 
 If you rebuild the box: paste the public IPv4 into the Vercel DNS A record
 for `worker`, copy Turso + R2 (+ `FISH_API_KEY` if
@@ -503,8 +421,7 @@ Compose publishes `127.0.0.1:8788` only — still put **Caddy** in front
 The image installs debian `ffmpeg` and the rust `deep-filter` 0.5.6
 binary (SHA-pinned, not Python+torch) and sets `WORKER=1` +
 `DEEP_FILTER_BIN`. On arm64, BuildKit `TARGETARCH=arm64` selects the
-aarch64 gnu binary. On x86_64 it keeps the musl pin shared with
-`trigger.config.ts`.
+aarch64 gnu binary. On x86_64 it keeps the musl pin.
 
 Without Compose, `npm ci && npm run worker:takehome` is the same process
 the pm2 file runs.

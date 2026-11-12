@@ -4,8 +4,7 @@ import type { NextConfig } from "next";
  * File tracing follows `process.cwd()` and dynamic imports into every
  * function that can reach them. Drop the repo metadata and the libsql
  * builds Vercel cannot run. Document parsers stay on the extract route
- * only; every other route drops them. Trigger stays where take-home
- * dispatch can call it, and is omitted everywhere else.
+ * only; every other route drops them.
  */
 const UNUSED_AT_RUNTIME = [
   ".git/**",
@@ -31,9 +30,7 @@ const DOCUMENT_PARSERS = [
   "node_modules/pako/**",
 ];
 
-const TRIGGER_SDK = ["node_modules/@trigger.dev/**"];
-
-/** Routes that never parse a PDF/DOCX/EPUB and never call Trigger. */
+/** Routes that never parse a PDF/DOCX/EPUB. */
 const SLIM_ROUTES = [
   "/api/auth/**",
   "/api/viewer",
@@ -73,16 +70,14 @@ const nextConfig: NextConfig = {
     "unpdf",
     "jszip",
     "pdfjs-dist",
-    "@trigger.dev/sdk",
   ],
   outputFileTracingExcludes: {
     "*": UNUSED_AT_RUNTIME,
     "/api/jobs": DOCUMENT_PARSERS.filter(
       (pattern) => !pattern.includes("jszip") && !pattern.includes("pako")
     ),
-    "/api/jobs/[id]/download": TRIGGER_SDK,
     "/api/tts/clones/upload": DOCUMENT_PARSERS,
-    ...Object.fromEntries(SLIM_ROUTES.map((route) => [route, [...DOCUMENT_PARSERS, ...TRIGGER_SDK]])),
+    ...Object.fromEntries(SLIM_ROUTES.map((route) => [route, DOCUMENT_PARSERS])),
   },
 
   async headers() {

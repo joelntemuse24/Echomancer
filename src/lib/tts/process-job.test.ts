@@ -181,7 +181,7 @@ describe("processTakehomeTick", () => {
     expect(row?.processing_lease_token).toBeNull();
   });
 
-  it("is not matched by the legacy Trigger drain claim while parked", async () => {
+  it("is not matched by a queued-or-processing claim while parked", async () => {
     await seedTakehomeJob();
     await execute(
       `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
@@ -204,7 +204,7 @@ describe("processTakehomeTick", () => {
     await processTakehomeTick(JOB_ID);
     expect((await jobRow(JOB_ID))?.status).toBe("waiting");
 
-    // Frozen from the retired takehome.drain claim (list + claim before `waiting`).
+    // A selector that only sees queued rows and expired processing leases.
     const legacyList = await query<{ id: string }>(
       `SELECT id FROM jobs
        WHERE deleted_at IS NULL

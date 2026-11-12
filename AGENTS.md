@@ -36,7 +36,7 @@
 sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
 `user_*` id stored in Turso `users` — never the Google `sub`.
 
-- Routes read identity through `resolveSessionUserId()`. Trigger jobs keep
+- Routes read identity through `resolveSessionUserId()`. Whole-book jobs keep
   using `jobs.user_id` (that same id after a merge).
 - On Google sign-in, this browser's `anon_*` jobs / uploads / cloned_voices
   are reassigned to the signed-in `user_*`. The same Google account on two
@@ -107,7 +107,7 @@ and returns 503. See `TECHNICAL_DESIGN.md`.
 ## Who runs generation
 
 **Whole book runs on an always-on VPS worker (pm2)**, not inside Vercel
-isolates and **not** on Trigger.dev in production. Document extract,
+isolates. Document extract,
 section mastering, local Whisper, and the final concat are CPU tasks
 (`cpu_tasks`). With `CPU_RUNNER` unset they still run on that VM, bounded
 per host, and this process orchestrates **one book**. `CPU_RUNNER=modal`
@@ -138,11 +138,10 @@ under `audiobooks/<jobId>/raw/` until the master task publishes
 |------|-------|------|
 | Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process. CPU tasks run here when `CPU_RUNNER` is unset. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Modal CPU | `modal/cpu_worker.py` | Extract, section master, local Whisper, and concat when `CPU_RUNNER=modal`. Separate app from the S2 GPU app. `min_containers=0`. Not deployed until the runbook smoke. |
-| Trigger.dev (**legacy**) | `takehome.advance` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. `takehome.drain` and `upload.drain` are not tasks. Deploying this project to Trigger production deletes their declarative minute crons. The VM worker drains the queue. |
 | Cloudflare Worker | `workers/extract` | Extract fallback when the Node worker is unreachable or unhealthy. Same `runUploadExtract` pipeline. Free-plan CPU still kills a large PDF, so it is not the default. |
 | Vercel | `GET /api/storage/**` | Ownership check, then 302 to presigned R2. **No audio bytes.** |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
-| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare if that POST fails, then Vercel (`inline` / `after()`), then fail. **Not Trigger.** `GET` and the player job poll share `advanceStuckExtract`: one attempt counter (4) and a 20-minute cap, message "This file took too long to read. Try again." |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare if that POST fails, then Vercel (`inline` / `after()`), then fail. `GET` and the player job poll share `advanceStuckExtract`: one attempt counter (4) and a 20-minute cap, message "This file took too long to read. Try again." |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -174,8 +173,7 @@ still honor `ttsOptions` when sent.
 synthesizes. `GET /api/jobs` still releases expired leases when the library
 page contains a take-home that is not `ready`. `GET /api/jobs/[id]` returns
 immediately and does not sweep. Lease reclaim for a live book belongs to the
-VM worker's drain loop. Missing both `WORKER_URL` and
-`TRIGGER_SECRET_KEY`
+VM worker's drain loop. Missing `WORKER_URL`
 on Vercel is a **503** (`TAKEHOME_NOT_CONFIGURED`) **before insert**. After
 insert, a worker POST failure leaves the job `queued` for the VM drain loop
 and still returns 200.
@@ -217,10 +215,7 @@ every attempt budget plus three minutes for mastering. A batch that started
 just before the wave budget still holds its lease while ffmpeg is running.
 The heartbeat pauses once that cap has passed, so a stuck step lets go. On
 worker shutdown, after the 30s idle wait, this process releases the leases
-it still holds back to `queued`, matched to the lease token, so a lapsed
-`processing` row is not what the still-deployed Trigger `takehome.drain`
-claims. That task is deleted here; the production Trigger deploy removes
-its cron. After each wave, if
+it still holds back to `queued`, matched to the lease token. After each wave, if
 another take-home is `queued`, or `waiting` with an upload that is already
 `ready` or `failed`, the run returns and the drain takes the oldest runnable
 job. Sections already stored stay put. While CPU tasks run on this
@@ -445,12 +440,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   (the same voice). A real cold probe does too. A positive hold leaves the
   row `processing` with a lease token nobody holds and `lease_expires_at`
   at the same instant as `sched_not_before`. The VM claim waits for an
-  unexpired lease. Until this Trigger project is deployed to production,
-  the live `takehome.drain` is that older claim: it selects `queued` rows
-  and `processing` rows whose lease has already expired, and it does not
-  read `sched_not_before`. The sealed lease is what that claim skips.
-  That task is not in this repo; the production deploy deletes its
-  declarative cron (`sched_1mv945xbxmk4i7j6orzkf`). A zero-hold park stays
+  unexpired lease. A claim that selects `queued` rows and `processing`
+  rows whose lease has already expired, and does not read
+  `sched_not_before`, skips that sealed lease. A zero-hold park stays
   `queued` so the VM drain can reclaim it.
   A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
@@ -939,7 +931,7 @@ take-home spawn. All voices use the same stock pipeline.
 
 ## Job flow (take-home)
 
-1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued` when the text is ready, or `waiting` while the upload is still `uploaded` or `extracting`. The path is owner-checked with `getOwnedUploadByPath` (`pending` and streams stay `TEXT_NOT_READY`). A second tap for the same book and voice returns that live job, including one parked `waiting`. The reservation is `takehome_create_keys` (one statement). Historical duplicate rows are kept. The oldest live row is the one returned. A failed or cancelled book can be created again. Make audiobook opens the player, which shows "Reading your book" and calls `advanceStuckExtract` while it waits. The worker claims `waiting`, returns `deferred` on the first tick (the TTS slot is released, the drain cadence picks it up again), and adopts the upload's failure message if the read failed. `waiting` is not `queued` or `processing`, so the retired Trigger `takehome.drain` claim does not match it. That task is deleted from this repo. When a read finishes — the VM extract hook, Vercel `extractUploadedDocument`, a stall fail, and the Cloudflare Worker — that upload's `waiting` take-homes become `queued`, or `failed` with the upload's message, and the VM hook wakes the drain. A `waiting` job whose file is already `ready` or `failed` also counts as runnable, so a book created while its file was still being read gets a turn at the next wave even if that handoff was missed. The drain already claims `waiting`.
+1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued` when the text is ready, or `waiting` while the upload is still `uploaded` or `extracting`. The path is owner-checked with `getOwnedUploadByPath` (`pending` and streams stay `TEXT_NOT_READY`). A second tap for the same book and voice returns that live job, including one parked `waiting`. The reservation is `takehome_create_keys` (one statement). Historical duplicate rows are kept. The oldest live row is the one returned. A failed or cancelled book can be created again. Make audiobook opens the player, which shows "Reading your book" and calls `advanceStuckExtract` while it waits. The worker claims `waiting`, returns `deferred` on the first tick (the TTS slot is released, the drain cadence picks it up again), and adopts the upload's failure message if the read failed. `waiting` is not `queued` or `processing`, so a claim that only matches those two statuses does not pick it up. When a read finishes — the VM extract hook, Vercel `extractUploadedDocument`, a stall fail, and the Cloudflare Worker — that upload's `waiting` take-homes become `queued`, or `failed` with the upload's message, and the VM hook wakes the drain. A `waiting` job whose file is already `ready` or `failed` also counts as runnable, so a book created while its file was still being read gets a turn at the next wave even if that handoff was missed. The drain already claims `waiting`.
 2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence. The first section is about 800 characters for every provider, including Fish, and it ends on a sentence. A heading does not close a section until it holds about 1,500 characters; a shorter chapter stays a marker inside the section, and finalize times it from that text offset. Edge and Google run a rolling pool: the tick claims the next claimable index whenever a lane frees instead of waiting on the slowest claim in one batch (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8, up to 16; with a tick deadline the pool keeps claiming until that deadline, and with no deadline a no-deadline tick keeps the fan-out-sized claim budget). Claims are in-memory and every finished section writes `segments_json`, so a restarted worker re-claims only unfinished sections. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A Fish book whose pack leaves a short tail after a multiple of 5 folds that tail into the previous section when it is the same chapter and still under the hard max. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. Transcription is **self-hosted Whisper by default** (`TTS_QA_PROVIDER=local`, `scripts/whisper-qa.py`, `faster-whisper` `base` int8 on CPU): no API key, no per-minute bill, ~5% WER on neural TTS at RTF ~0.02 (0.07 CPU-minutes per audio-minute), measured on the 4-vCPU worker class. Edge synthesis runs at about 3.8 audio-seconds per wall-second, so Whisper keeps up with full-book generation and **every section is checked**; nothing is sampled. `TTS_QA_PROVIDER=deepgram` selects the older hosted `deepgram/nova-3` path through `OPENROUTER_API_KEY` (5s wall cap, worker thread), and `TTS_QA_PROVIDER=off` or `TTS_SECTION_QA_ENABLED=0` skips the check. An unrecognised provider value falls back to `local`, never to the paid endpoint. Local transcription is capped at `audioSeconds x 0.4` wall (10s floor, 180s ceiling) via `TTS_QA_WHISPER_BUDGET_MS`, because a flat 5s was too short for a 227-second section. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. When no transcriber can run, the worker logs the reason once (`qa skipped: whisper sidecar missing` or `qa skipped: deepgram needs OPENROUTER_API_KEY`) and finishes the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. Each section is mastered as soon as it is synthesized. Stock (Edge, Fish, Paradee) uses the podcast chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 128 kbps. A Modal clone section uses the S2 spectral chain (already applied in the container) and loudnorm −19 LUFS / −3 dBTP (`MODAL_S2_MASTERING`). Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. Frame positions come from the MP3 headers, so a long book does not start one ffprobe per section. A section under four seconds is re-encoded with the same crossfade into its neighbor (the rest of that neighbor stays a packet copy), so one heading does not send the book through the full encode. The fallback encode is limited to the decoded audio, and an upload that already landed is not marked failed when the lease has moved on. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
@@ -1103,7 +1095,7 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
-src/lib/jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-secrets}.ts
+src/lib/jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,worker-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
@@ -1133,14 +1125,11 @@ src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop + POST /extract
 scripts/oracle/ # VPS worker bootstrap (install-oracle.sh, pm2, smoke)
-src/trigger/takehome.ts # Optional Trigger takehome.advance (no drain task)
 src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
 workers/extract/ # Cloudflare Worker extract host
 workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
 docker-compose.yml # Optional Docker path (pm2 is primary)
 WORKER.md # VPS + pm2 + Caddy (`worker.echomancer.xyz`) runbook
-src/trigger/extract-upload.ts # upload.extract is a no-op; upload.drain is not a task
-trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
 src/app/api/pdf/upload/[id]/narrator/ # DeepSeek stock suggestion on the cleaned book
@@ -1222,7 +1211,7 @@ TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–16. 
 # TTS_SKIP_FRONT_MATTER=0 # Read a leading copyright / ISBN / Library of Congress page. Unset: those notice lines are left out of narration.
 # REFERENCE_QUALITY_GATE=0 # Vercel kill switch. Unset: worker POST /reference-quality scores the clone sample. 0 skips the gate (cloning proceeds).
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
-TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
+TTS_VM_WAVE_BUDGET_MS=900000 # Always-on VM wave clock
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
 TTS_CRON_JOBS_PER_RUN=3 # Fallback cron batch size
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
@@ -1231,9 +1220,6 @@ TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
 WORKER_URL=https://worker.echomancer.xyz # Vercel → Caddy on the VPS
 WORKER_SECRET=... # Shared with the VM (falls back to INTERNAL_JOB_SECRET)
-# TAKEHOME_TRIGGER_FALLBACK=1 # Also fire **legacy** Trigger if the worker POST fails
-TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
-TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Fallback only, when WORKER_URL is down
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
 # EXTRACT_NODE_CONCURRENCY=1 # Warm extract children on the VM. Separate from WORKER_CONCURRENCY. 1–4.

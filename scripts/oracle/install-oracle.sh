@@ -64,8 +64,8 @@ case "$ARCH" in
     ;;
 esac
 
-# DeepFilterNet rust CLI 0.5.6 — same release as workers/takehome/Dockerfile
-# and trigger.config.ts. Not Python+torch.
+# DeepFilterNet rust CLI 0.5.6 — same release as workers/takehome/Dockerfile.
+# Not Python+torch.
 DEEP_FILTER_VERSION="0.5.6"
 DEEP_FILTER_URL_AMD64="https://github.com/Rikorose/DeepFilterNet/releases/download/v${DEEP_FILTER_VERSION}/deep-filter-${DEEP_FILTER_VERSION}-x86_64-unknown-linux-musl"
 DEEP_FILTER_SHA256_AMD64="70775e251eee44c0f2451a1e833326cf8bcbbe304d3e7cd12851e6fce72ef7da"

@@ -576,7 +576,8 @@ async function widenJobsStatusCheck(): Promise<void> {
 
 /**
  * Take-homes still marked `queued` while their file is unread are visible to
- * the deployed Trigger drain. Move them to `waiting` once that status is legal.
+ * a claim that only matches queued rows. Move them to `waiting` once that
+ * status is legal.
  */
 async function parkTakehomesWaitingOnText(): Promise<void> {
   const parked = await execute(

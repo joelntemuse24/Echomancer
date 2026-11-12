@@ -12,8 +12,6 @@
     "test:run": "vitest run",
     "test:clip-slider": "playwright test",
     "typecheck": "tsc --noEmit",
-    "trigger:dev": "npx trigger.dev@latest dev",
-    "trigger:deploy": "npx trigger.dev@latest deploy",
     "extract:deploy": "npm --prefix workers/extract run deploy",
     "worker:takehome": "tsx src/worker/takehome-server.ts"
   },
@@ -25,7 +23,6 @@
     "@mozilla/readability": "^0.6.0",
     "@radix-ui/react-slider": "^1.3.6",
     "@smithy/node-http-handler": "^4.0.0",
-    "@trigger.dev/sdk": "^4.5.15",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
     "jszip": "^3.10.2",
@@ -49,7 +46,6 @@
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4",
-    "@trigger.dev/build": "^4.5.15",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^20.19.39",
     "@types/react": "^19",

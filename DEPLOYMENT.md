@@ -20,12 +20,10 @@ Browser → Vercel (Next.js)
 | Live Stream | `POST /api/jobs` → player → `GET /api/jobs/[id]/stream` (Vercel) |
 | Whole book | `POST /api/jobs` (enqueue + `POST $WORKER_URL/jobs`) → VM `runTakehomeUntilSettled` → sections on R2 → `full.*` |
 
-Job creation never synthesizes. The VM worker is the durable host. Trigger.dev
-is an optional fallback when `WORKER_URL` is unset or
-`TAKEHOME_TRIGGER_FALLBACK=1`. Vercel `/api/cron/process-jobs` and
-`/api/jobs/[id]/process` remain operator fallbacks. Document extract is
-`POST $WORKER_URL/extract` on that same VM. Cloudflare is the fallback
-when the VM is unreachable. See [WORKER.md](WORKER.md).
+Job creation never synthesizes. The VM worker is the durable host. Vercel
+`/api/cron/process-jobs` and `/api/jobs/[id]/process` remain operator
+fallbacks. Document extract is `POST $WORKER_URL/extract` on that same VM.
+Cloudflare is the fallback when the VM is unreachable. See [WORKER.md](WORKER.md).
 
 ## Prerequisites
 
@@ -52,7 +50,6 @@ OPENROUTER_API_KEY=...           # VM worker: listen-prep fallback and section t
 FISH_API_KEY=...                 # Clones, Live Listen, direct Fish take-home
 WORKER_URL=https://worker.example.com  # Always-on Whole-book VM
 WORKER_SECRET=...                # Shared with the VM (or reuse INTERNAL_JOB_SECRET)
-TRIGGER_SECRET_KEY=...           # Optional Trigger fallback if WORKER_URL is unset
 TURSO_DATABASE_URL=libsql://...
 TURSO_AUTH_TOKEN=...
 R2_ACCOUNT_ID=...
@@ -85,7 +82,7 @@ NEXT_PUBLIC_MAX_UPLOAD_MB=512
 # Workers
 TTS_SECTIONS_PER_TICK=8
 TTS_WORKER_WAVE_BUDGET_MS=240000
-TTS_TRIGGER_WAVE_BUDGET_MS=900000
+TTS_VM_WAVE_BUDGET_MS=900000
 TTS_CRON_JOBS_PER_RUN=3
 TTS_LEASE_TTL_SECONDS=90
 TTS_POLL_NUDGE_BUDGET_MS=0        # Production: polls are read-only (hard-capped at 45s if set)
@@ -93,9 +90,6 @@ TTS_POLL_NUDGE_BUDGET_MS=0        # Production: polls are read-only (hard-capped
 # Always-on VM (Whole book) — see WORKER.md
 WORKER_URL=https://worker.example.com
 WORKER_SECRET=...
-# TAKEHOME_TRIGGER_FALLBACK=1
-# TRIGGER_SECRET_KEY=tr_...       # Only if the VM URL is not set yet
-# TRIGGER_PROJECT_ID=proj_...
 
 # Stream + pricing
 STREAM_MAX_AUDIO_SECONDS=3600
@@ -180,16 +174,6 @@ runbook: [WORKER.md](WORKER.md).
 5. Restart the worker after this change (`pm2 restart echomancer-takehome --update-env`)
    so `POST /extract` exists. Do not point `EXTRACT_WORKER_URL` at the VM;
    that URL stays the Cloudflare fallback.
-
-Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
-healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. That flag
-fires `takehome.advance` only. `takehome.drain` and `upload.drain` are
-not tasks. Whole-book generation does not use this deploy. The deploy is
-how the live declarative minute crons come off. Pin the CLI to 4.5.15,
-pass `--env prod`, and do not pass `--skip-promotion`. Do not roll that
-deployment back. Until it is current, the previous Trigger deployment
-still runs those crons every minute. The dashboard cannot delete a
-declarative schedule. Commands and the confirm script are in `WORKER.md`.
 
 ## Cloudflare Worker (extract fallback)
 

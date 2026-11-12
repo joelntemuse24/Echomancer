@@ -3,26 +3,15 @@ import { USER_A, resetDatabase, seedUpload } from "@/test/harness";
 import { execute, queryOne } from "@/lib/turso";
 import { UPLOAD_ID_A } from "@/test/harness";
 
-const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
-
-vi.mock("@trigger.dev/sdk", () => ({
-  configure: vi.fn(),
-  tasks: {
-    trigger: (...args: unknown[]) => trigger(...args),
-  },
-}));
-
 describe("dispatchUploadExtract", () => {
   beforeEach(async () => {
     vi.unstubAllGlobals();
-    trigger.mockClear();
     delete process.env.EXTRACT_WORKER_URL;
     delete process.env.EXTRACT_WORKER_SECRET;
     delete process.env.WORKER_URL;
     delete process.env.TAKEHOME_WORKER_URL;
     delete process.env.WORKER_SECRET;
     delete process.env.VERCEL_ENV;
-    process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
     await resetDatabase();
   });
 
@@ -34,7 +23,7 @@ describe("dispatchUploadExtract", () => {
     delete process.env.EXTRACT_WORKER_SECRET;
   });
 
-  it("does not enqueue Trigger upload.extract when a Worker URL is set", async () => {
+  it("posts the extract worker when a Worker URL is set", async () => {
     await seedUpload({
       id: UPLOAD_ID_A,
       userId: USER_A,
@@ -55,7 +44,6 @@ describe("dispatchUploadExtract", () => {
     const result = await dispatchUploadExtract(UPLOAD_ID_A);
 
     expect(result).toBe("worker");
-    expect(trigger).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://extract.example.workers.dev");
@@ -73,7 +61,7 @@ describe("dispatchUploadExtract", () => {
     expect(row?.status).toBe("extracting");
   });
 
-  it("extracts in-process without Trigger when no Worker is configured", async () => {
+  it("extracts in-process when no Worker is configured", async () => {
     const text = "The lamps were lit along the quay. ".repeat(20);
     const path = await seedUpload({
       id: UPLOAD_ID_A,
@@ -96,7 +84,6 @@ describe("dispatchUploadExtract", () => {
     const result = await dispatchUploadExtract(UPLOAD_ID_A);
 
     expect(result).toBe("inline");
-    expect(trigger).not.toHaveBeenCalled();
     const row = await queryOne<{ status: string; char_count: number }>(
       `SELECT status, char_count FROM uploads WHERE id = ?`,
       [UPLOAD_ID_A]
@@ -106,7 +93,7 @@ describe("dispatchUploadExtract", () => {
     expect(path).toContain(UPLOAD_ID_A);
   });
 
-  it("production without Worker extracts small docs inline and never hits Trigger", async () => {
+  it("production without Worker extracts small docs inline", async () => {
     const previousVercel = process.env.VERCEL_ENV;
     const previousNode = process.env.NODE_ENV;
     process.env.VERCEL_ENV = "production";
@@ -134,7 +121,6 @@ describe("dispatchUploadExtract", () => {
     const result = await dispatchUploadExtract(UPLOAD_ID_A);
 
     expect(result).toBe("inline");
-    expect(trigger).not.toHaveBeenCalled();
     const row = await queryOne<{ status: string }>(
       `SELECT status FROM uploads WHERE id = ?`,
       [UPLOAD_ID_A]
@@ -175,7 +161,6 @@ describe("dispatchUploadExtract", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       "https://extract.example.workers.dev"
     );
-    expect(trigger).not.toHaveBeenCalled();
     const row = await queryOne<{ status: string }>(
       `SELECT status FROM uploads WHERE id = ?`,
       [UPLOAD_ID_A]

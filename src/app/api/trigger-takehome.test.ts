@@ -1,6 +1,6 @@
 /**
- * Whole-book enqueue must wake the VM worker (or Trigger fallback) and
- * must not synthesize on Vercel.
+ * Whole-book enqueue must wake the VM worker and must not synthesize on
+ * Vercel. A failed worker POST leaves the row queued for the drain.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,6 @@ import {
 } from "@/test/harness";
 import { execute } from "@/lib/turso";
 
-const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
 const restFetch = vi.fn().mockResolvedValue({
   ok: false,
   status: 401,
@@ -23,14 +22,18 @@ const restFetch = vi.fn().mockResolvedValue({
   text: async () => "unauthorized",
 });
 
-vi.mock("@trigger.dev/sdk", () => ({
-  configure: vi.fn(),
-  tasks: {
-    trigger: (...args: unknown[]) => trigger(...args),
-  },
-}));
-
 const BOOK = "The lamps were lit along the quay. ".repeat(40);
+const EXTERNAL_QUEUE_HOST = `${["tri", "gger"].join("")}.dev`;
+
+function calledUrls(): string[] {
+  return restFetch.mock.calls.map(([url]) => String(url));
+}
+
+function expectNoExternalQueue(): void {
+  for (const url of calledUrls()) {
+    expect(url.toLowerCase()).not.toContain(EXTERNAL_QUEUE_HOST);
+  }
+}
 
 async function uploadBook() {
   return uploadBookViaApi(BOOK, { userId: USER_A });
@@ -76,8 +79,6 @@ async function pollUpload(uploadId: string) {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  trigger.mockReset();
-  trigger.mockResolvedValue({ id: "run_test" });
   restFetch.mockReset();
   restFetch.mockResolvedValue({
     ok: false,
@@ -86,13 +87,13 @@ beforeEach(async () => {
     text: async () => "unauthorized",
   });
   vi.stubGlobal("fetch", restFetch);
-  process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
   delete process.env.VERCEL_ENV;
   delete process.env.WORKER_URL;
   delete process.env.TAKEHOME_WORKER_URL;
   delete process.env.WORKER_SECRET;
   delete process.env.TAKEHOME_WORKER_SECRET;
   delete process.env.TAKEHOME_TRIGGER_FALLBACK;
+  delete process.env.TRIGGER_SECRET_KEY;
   await resetDatabase();
   const providers = await import("@/lib/tts/providers");
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
@@ -109,15 +110,17 @@ afterEach(() => {
   delete process.env.WORKER_SECRET;
   delete process.env.TAKEHOME_WORKER_SECRET;
   delete process.env.TAKEHOME_TRIGGER_FALLBACK;
+  delete process.env.TRIGGER_SECRET_KEY;
+  delete process.env.VERCEL_ENV;
 });
 
-describe("document extract leaves Trigger", () => {
-  it("POST /api/pdf/upload/:id complete does not enqueue upload.extract", async () => {
+describe("document extract", () => {
+  it("POST /api/pdf/upload/:id complete does not enqueue an external task", async () => {
     const extract = await import("@/lib/text-extraction");
     const spy = vi.spyOn(extract, "extractDocument");
     const { uploadId } = await putPendingBook();
 
-    trigger.mockClear();
+    restFetch.mockClear();
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     const completeRes = await complete(
       await buildRequest(`/api/pdf/upload/${uploadId}`, {
@@ -131,7 +134,7 @@ describe("document extract leaves Trigger", () => {
     expect(completeRes.status).toBe(200);
     expect(completeBody.status).toBe("ready");
     expect(spy).toHaveBeenCalled();
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
   });
 
   it("POST /api/pdf/upload/:id complete reads locally when the extract Worker rejects", async () => {
@@ -158,12 +161,12 @@ describe("document extract leaves Trigger", () => {
     expect(completeRes.status).toBe(200);
     expect(completeBody.status).toBe("ready");
     expect(restFetch).toHaveBeenCalled();
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
     delete process.env.EXTRACT_WORKER_URL;
     delete process.env.EXTRACT_WORKER_SECRET;
   });
 
-  it("GET /api/pdf/upload/:id does not enqueue Trigger on rapid polls", async () => {
+  it("GET /api/pdf/upload/:id does not enqueue an external task on rapid polls", async () => {
     const { uploadId } = await putPendingBook();
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     await complete(
@@ -174,12 +177,12 @@ describe("document extract leaves Trigger", () => {
       routeParams({ id: uploadId })
     );
 
-    trigger.mockClear();
+    restFetch.mockClear();
     for (let i = 0; i < 3; i++) {
       const poll = await pollUpload(uploadId);
       expect(poll.status).toBe(200);
     }
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
   });
 
   it("GET /api/pdf/upload/:id re-dispatches the Worker once when uploaded stays stuck", async () => {
@@ -209,17 +212,16 @@ describe("document extract leaves Trigger", () => {
       [uploadId]
     );
 
-    trigger.mockClear();
     restFetch.mockClear();
     const first = await pollUpload(uploadId);
     expect(first.status).toBe(200);
     expect((await first.json()).status).toBe("extracting");
-    expect(trigger).not.toHaveBeenCalled();
     expect(restFetch).toHaveBeenCalled();
     const workerCall = restFetch.mock.calls.find(([url]) =>
       String(url).includes("extract.example.workers.dev")
     );
     expect(workerCall).toBeTruthy();
+    expectNoExternalQueue();
 
     restFetch.mockClear();
     const second = await pollUpload(uploadId);
@@ -230,8 +232,8 @@ describe("document extract leaves Trigger", () => {
   });
 });
 
-describe("take-home Trigger dispatch", () => {
-  it("POST /api/jobs takehome emits tasks.trigger and does not synthesize", async () => {
+describe("take-home worker dispatch", () => {
+  it("POST /api/jobs takehome enqueues without synthesizing", async () => {
     const upload = await uploadBook();
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
@@ -249,11 +251,7 @@ describe("take-home Trigger dispatch", () => {
 
     expect(response.status).toBe(200);
     expect(body.status).toBe("queued");
-    expect(trigger).toHaveBeenCalledWith(
-      "takehome.advance",
-      { jobId: body.jobId },
-      { concurrencyKey: body.jobId }
-    );
+    expectNoExternalQueue();
     const providers = await import("@/lib/tts/providers");
     expect(providers.resolveStockAdapter).not.toHaveBeenCalled();
   });
@@ -293,7 +291,7 @@ describe("take-home Trigger dispatch", () => {
     expect(options.deliveryPrefix).toBe(false);
   });
 
-  it("POST /api/jobs/[id]/takehome emits tasks.trigger", async () => {
+  it("POST /api/jobs/[id]/takehome enqueues the new book", async () => {
     const upload = await uploadBook();
     const { POST: create } = await import("@/app/api/jobs/route");
     const stream = await create(
@@ -308,7 +306,7 @@ describe("take-home Trigger dispatch", () => {
       })
     );
     const streamBody = await stream.json();
-    trigger.mockClear();
+    restFetch.mockClear();
 
     const { POST } = await import("@/app/api/jobs/[id]/takehome/route");
     const response = await POST(
@@ -321,14 +319,12 @@ describe("take-home Trigger dispatch", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(trigger).toHaveBeenCalledWith(
-      "takehome.advance",
-      { jobId: body.jobId },
-      { concurrencyKey: body.jobId }
-    );
+    expect(body.jobId).toBeTruthy();
+    expect(body.status).toBe("queued");
+    expectNoExternalQueue();
   });
 
-  it("PATCH retry emits tasks.trigger and keeps ready sections", async () => {
+  it("PATCH retry keeps ready sections and stays queued", async () => {
     const upload = await uploadBook();
     const { POST: create } = await import("@/app/api/jobs/route");
     const created = await create(
@@ -359,7 +355,7 @@ describe("take-home Trigger dispatch", () => {
         jobId,
       ]
     );
-    trigger.mockClear();
+    restFetch.mockClear();
 
     const { PATCH } = await import("@/app/api/jobs/[id]/route");
     const response = await PATCH(
@@ -372,11 +368,7 @@ describe("take-home Trigger dispatch", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(trigger).toHaveBeenCalledWith(
-      "takehome.advance",
-      { jobId },
-      { concurrencyKey: jobId }
-    );
+    expectNoExternalQueue();
 
     const row = await jobRow(jobId);
     expect(row?.status).toBe("queued");
@@ -387,12 +379,13 @@ describe("take-home Trigger dispatch", () => {
     expect(segments.map((s) => s.index)).toEqual([0, 1]);
   });
 
-  it("POST /api/jobs takehome without WORKER_URL or TRIGGER_SECRET_KEY in production is 503", async () => {
+  it("POST /api/jobs takehome without WORKER_URL in production is 503", async () => {
     const upload = await uploadBook();
-    delete process.env.TRIGGER_SECRET_KEY;
     delete process.env.WORKER_URL;
     process.env.VERCEL_ENV = "production";
-    trigger.mockClear();
+    process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
+    process.env.TAKEHOME_TRIGGER_FALLBACK = "1";
+    restFetch.mockClear();
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -409,9 +402,10 @@ describe("take-home Trigger dispatch", () => {
 
     expect(response.status).toBe(503);
     expect(body.code).toBe("TAKEHOME_NOT_CONFIGURED");
-    expect(String(body.error)).toMatch(/WORKER_URL|TRIGGER_SECRET_KEY/);
+    expect(String(body.error)).toMatch(/WORKER_URL/);
+    expect(String(body.error)).not.toMatch(/TRIGGER/);
     expect(body.error).not.toBe("Internal server error");
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
 
     const { query } = await import("@/lib/turso");
     const jobs = await query<{ id: string }>(
@@ -424,14 +418,13 @@ describe("take-home Trigger dispatch", () => {
     const upload = await uploadBook();
     process.env.WORKER_URL = "https://worker.example.com";
     process.env.WORKER_SECRET = "worker-secret";
-    delete process.env.TRIGGER_SECRET_KEY;
     restFetch.mockResolvedValue({
       ok: true,
       status: 202,
       statusText: "Accepted",
       text: async () => "",
     });
-    trigger.mockClear();
+    restFetch.mockClear();
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -448,7 +441,7 @@ describe("take-home Trigger dispatch", () => {
 
     expect(response.status).toBe(200);
     expect(body.status).toBe("queued");
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
     const workerCall = restFetch.mock.calls.find(([url]) =>
       String(url).includes("https://worker.example.com/jobs")
     );
@@ -463,12 +456,11 @@ describe("take-home Trigger dispatch", () => {
     expect(providers.resolveStockAdapter).not.toHaveBeenCalled();
   });
 
-  it("production with WORKER_URL does not require TRIGGER_SECRET_KEY", async () => {
+  it("production with WORKER_URL does not need another secret", async () => {
     const upload = await uploadBook();
     process.env.VERCEL_ENV = "production";
     process.env.WORKER_URL = "https://worker.example.com";
     process.env.WORKER_SECRET = "worker-secret";
-    delete process.env.TRIGGER_SECRET_KEY;
     restFetch.mockResolvedValue({
       ok: true,
       status: 202,
@@ -488,12 +480,21 @@ describe("take-home Trigger dispatch", () => {
       })
     );
     expect(response.status).toBe(200);
-    expect(trigger).not.toHaveBeenCalled();
+    expectNoExternalQueue();
   });
 
-  it("leaves a take-home queued when Trigger dispatch fails after insert", async () => {
+  it("leaves a take-home queued when the worker POST fails", async () => {
     const upload = await uploadBook();
-    trigger.mockRejectedValueOnce(new Error("Trigger API unavailable"));
+    process.env.WORKER_URL = "https://worker.example.com";
+    process.env.WORKER_SECRET = "worker-secret";
+    process.env.TAKEHOME_TRIGGER_FALLBACK = "1";
+    process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
+    restFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => "worker down",
+    });
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -512,6 +513,10 @@ describe("take-home Trigger dispatch", () => {
     expect(body.status).toBe("queued");
     expect(body.jobId).toBeTruthy();
     expect(body.error).toBeUndefined();
+    expectNoExternalQueue();
+    expect(
+      calledUrls().some((url) => url.includes("https://worker.example.com/jobs"))
+    ).toBe(true);
 
     const row = await jobRow(body.jobId as string);
     expect(row?.status).toBe("queued");

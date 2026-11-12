@@ -140,8 +140,6 @@ Tiny real-job enqueue (after Vercel WORKER_URL is set):
   4. Library should leave queued. On the VM:
        pm2 logs echomancer-takehome
      Look for accept / settled. GET /health inflight should rise then return to 0.
-
-Do not disable Trigger drain until that first job finishes on this VM.
 EOF
 
 if [[ "$fail" -ne 0 ]]; then

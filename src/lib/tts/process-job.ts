@@ -14,10 +14,6 @@
  *
  * Primary host: always-on VM worker (`src/worker/takehome-server.ts`).
  * The process imports this module in-process — it never HTTP `/process`.
- * Trigger.dev `takehome.advance` remains an optional fallback when
- * `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain`
- * is not a task. Deploying this project to Trigger production deletes
- * that declarative minute cron.
  * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
  * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
  * Library/Player polls never synthesize.
@@ -234,13 +230,12 @@ export const LEASE_TTL_SECONDS = Number(
 
 /**
  * Production default: Library/Player polls are read-only. The VM worker
- * (or Trigger fallback) runs Whole book. Set a positive value only for
- * local-without-a-worker.
+ * runs Whole book. Set a positive value only for local-without-a-worker.
  */
 export const DEFAULT_POLL_NUDGE_BUDGET_MS = 0;
 
-/** Trigger Cloud wave budget — minutes, not the 45s Hobby poll nudge. */
-export const DEFAULT_TRIGGER_WAVE_BUDGET_MS = 900_000;
+/** VM wave budget — minutes, not the 45s Hobby poll nudge. */
+export const DEFAULT_VM_WAVE_BUDGET_MS = 900_000;
 
 /** Hard ceiling so a mis-set env cannot blow past route maxDuration. */
 export const MAX_POLL_NUDGE_BUDGET_MS = 45_000;
@@ -667,10 +662,9 @@ async function releaseLease(
     /**
      * Leave the row `processing` with a lease token this process does not
      * hold, expiring with the delay. The VM claim waits for that lease.
-     * Until this Trigger project is deployed to production, the live
-     * `takehome.drain` lists `queued` rows and `processing` rows whose
-     * lease has already expired, and it does not read `sched_not_before`,
-     * so a queued park would be claimed early.
+     * A claim that lists `queued` rows and `processing` rows whose lease
+     * has already expired, and does not read `sched_not_before`, would
+     * pick up a queued park early.
      */
     sealLease?: boolean;
   }
@@ -1379,8 +1373,8 @@ async function runClaimedTick(
   // A job may be created while its upload is still extracting, so the first
   // thing a tick does is wait its turn: park the job as `waiting` until the
   // text exists, and fail it once the upload itself has failed. `waiting` is
-  // outside the retired Trigger drain's `queued` / `processing` claim. Both
-  // leave the lease clean. The path was owner-checked when the job was
+  // not `queued` or `processing`. Both leave the lease clean. The path was
+  // owner-checked when the job was
   // created (`getOwnedUploadByPath`); this lookup does not re-check.
   const upload = job.pdf_storage_path
     ? await getUploadByStoragePath(job.pdf_storage_path).catch(() => null)
@@ -3599,7 +3593,7 @@ function extensionForContentType(contentType: string): string {
 /**
  * Run ticks until the job is done or the invocation's budget runs out.
  * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
- * The VM worker / Trigger use {@link runTakehomeUntilSettled} with a
+ * The VM worker uses {@link runTakehomeUntilSettled} with a
  * multi-minute budget.
  *
  * `changed` says whether the row may have moved, so a poller knows if its
@@ -3761,7 +3755,7 @@ export function listenerBufferMs(
 }
 
 /**
- * VM / Trigger host: keep waving until the job settles. Long budget
+ * VM host: keep waving until the job settles. Long budget
  * (minutes), not the poll-nudge cap. Stops on ready / failed / cancelled
  * / lease loss. After each wave, if someone else is queued, the lease is
  * already back on `queued` (the tick releases it) and this run returns so
@@ -3772,7 +3766,7 @@ export function listenerBufferMs(
  */
 export async function runTakehomeUntilSettled(
   jobId: string,
-  budgetMs = DEFAULT_TRIGGER_WAVE_BUDGET_MS
+  budgetMs = DEFAULT_VM_WAVE_BUDGET_MS
 ): Promise<{ status: string }> {
   const maxWaves = Number(process.env.TTS_MAX_WAVES_PER_RUN || "80");
   for (let n = 0; n < maxWaves; n++) {
@@ -3884,9 +3878,7 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
 
 /**
  * VM drain: queued take-homes, jobs parked `waiting` for extract, and
- * processing rows whose lease expired. The deployed Trigger drain does not
- * have this `waiting` clause — that is what keeps a parked book off it.
- * Deduped by job id.
+ * processing rows whose lease expired. Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
   const claim = takehomeClaimSql(takehomeInflightCap());

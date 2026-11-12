@@ -68,7 +68,7 @@ export function shouldSectionMaster(
     return false;
   }
   if (env.TTS_SECTION_MASTER === "1") return true;
-  if (env.WORKER === "1" || env.TRIGGER === "1" || env.TTS_MASTER_FULL_BOOK === "1") {
+  if (env.WORKER === "1" || env.TTS_MASTER_FULL_BOOK === "1") {
     return true;
   }
   return false;

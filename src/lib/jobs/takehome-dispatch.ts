@@ -1,12 +1,10 @@
 /**
- * Dispatch Whole-book work. Preferred host is the always-on VM worker
- * (`WORKER_URL`). Trigger.dev remains an optional fallback when the worker
- * URL is unset, or when `TAKEHOME_TRIGGER_FALLBACK=1` and the worker POST
- * fails. Next.js only enqueues; it never synthesizes.
+ * Dispatch Whole-book work to the always-on VM worker (`WORKER_URL`).
+ * Next.js only enqueues; it never synthesizes. If the worker POST fails,
+ * the job stays queued for the worker drain loop.
  */
 
 import { AppError } from "@/lib/errors";
-import { triggerTask } from "@/lib/jobs/trigger-api";
 import {
   enqueueTakehomeOnWorker,
   isTakehomeWorkerConfigured,
@@ -14,10 +12,8 @@ import {
   takehomeWorkerUrl,
 } from "@/lib/jobs/takehome-worker-client";
 
-export const TAKEHOME_ADVANCE_TASK_ID = "takehome.advance";
-
 const TAKEHOME_MISSING_MESSAGE =
-  "Whole book generation is not configured (WORKER_URL or TRIGGER_SECRET_KEY is missing).";
+  "Whole book generation is not configured (WORKER_URL is missing).";
 
 export function isProductionDispatch(): boolean {
   return (
@@ -26,17 +22,8 @@ export function isProductionDispatch(): boolean {
   );
 }
 
-export function isTriggerTakehomeConfigured(): boolean {
-  return Boolean(process.env.TRIGGER_SECRET_KEY?.trim());
-}
-
-export function isTakehomeTriggerFallbackEnabled(): boolean {
-  const raw = process.env.TAKEHOME_TRIGGER_FALLBACK?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes";
-}
-
 export function canDispatchTakehome(): boolean {
-  return isTakehomeWorkerConfigured() || isTriggerTakehomeConfigured();
+  return isTakehomeWorkerConfigured();
 }
 
 /** Fail loud in production when no Whole-book host can be reached — before insert. */
@@ -60,10 +47,8 @@ export function assertCanDispatchTakehome(): void {
 export { isTakehomeWorkerConfigured };
 
 /**
- * Wake the VM worker (preferred) or Trigger `takehome.advance`.
- * After a job row exists, dispatch failures are logged and the job stays
- * `queued` for the worker drain loop. `TAKEHOME_TRIGGER_FALLBACK` fires
- * `takehome.advance` only. There is no Trigger drain task.
+ * Wake the VM worker. After a job row exists, a failed POST is logged and
+ * the job stays `queued` for the worker drain loop.
  */
 export async function enqueueTakehomeAdvance(jobId: string): Promise<void> {
   if (isTakehomeWorkerConfigured()) {
@@ -76,40 +61,11 @@ export async function enqueueTakehomeAdvance(jobId: string): Promise<void> {
         `[takehome] VM worker dispatch failed for ${jobId}; job left queued for drain`,
         err
       );
-      if (
-        isTakehomeTriggerFallbackEnabled() &&
-        isTriggerTakehomeConfigured()
-      ) {
-        await enqueueOnTrigger(jobId);
-      }
       return;
     }
   }
 
-  if (isTriggerTakehomeConfigured()) {
-    await enqueueOnTrigger(jobId);
-    return;
-  }
-
   if (isProductionDispatch()) {
-    console.error(
-      `[takehome] WORKER_URL and TRIGGER_SECRET_KEY missing; job ${jobId} left queued`
-    );
-  }
-}
-
-async function enqueueOnTrigger(jobId: string): Promise<void> {
-  try {
-    const handle = await triggerTask(
-      TAKEHOME_ADVANCE_TASK_ID,
-      { jobId },
-      { concurrencyKey: jobId }
-    );
-    console.info(`[takehome] enqueued job ${jobId} Trigger run ${handle.id}`);
-  } catch (err) {
-    console.error(
-      `[takehome] Trigger dispatch failed for ${jobId}; job left queued for the worker drain`,
-      err
-    );
+    console.error(`[takehome] WORKER_URL missing; job ${jobId} left queued`);
   }
 }

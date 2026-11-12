@@ -12,11 +12,10 @@ function readRepo(...parts: string[]): string {
   return readFileSync(resolve(process.cwd(), ...parts), "utf8");
 }
 
-describe("DeepFilterNet pin (installer + Docker + Trigger)", () => {
+describe("DeepFilterNet pin (installer + Docker)", () => {
   it("keeps the same 0.5.6 checksums on the installer and Dockerfile", () => {
     const install = readRepo("scripts/oracle/install-oracle.sh");
     const docker = readRepo("workers/takehome/Dockerfile");
-    const trigger = readRepo("trigger.config.ts");
 
     for (const source of [install, docker]) {
       expect(source).toContain(VERSION);
@@ -26,11 +25,5 @@ describe("DeepFilterNet pin (installer + Docker + Trigger)", () => {
         /deep-filter-(?:\$\{DEEP_FILTER_VERSION\}|0\.5\.6)-aarch64-unknown-linux-gnu/
       );
     }
-
-    expect(trigger).toContain(VERSION);
-    expect(trigger).toContain(X64_MUSL_SHA);
-    expect(trigger).toContain(
-      `deep-filter-${VERSION}-x86_64-unknown-linux-musl`
-    );
   });
 });

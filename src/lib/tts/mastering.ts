@@ -6,7 +6,7 @@
  * wide low-mid cut, a small presence lift, a light de-esser, then EBU
  * R128 `loudnorm`. DeepFilterNet3 is opt-in (`TTS_MASTER_DFN=1` and/or
  * `TTS_MASTER_DFN_WET>0`) and is the only path that still runs a second
- * pass. Only on the always-on VM worker (or Trigger fallback). Live
+ * pass. Only on the always-on VM worker. Live
  * Listen / preview / clone POST never call this. Cue tags are already
  * on the frozen speakable; this pass does not retag. The spawn pipeline
  * lives in `mastering-worker.ts` and is loaded with a dynamic import
@@ -105,10 +105,9 @@ export function shouldAttemptMastering(
   if (env.TTS_MASTER_SKIP === "1") return false;
   // Never on Vercel — ffmpeg / deep-filter are not in the isolate image.
   if (env.VERCEL === "1") return false;
-  if (env.TRIGGER === "1") return true;
   if (env.WORKER === "1") return true;
   if (env.TTS_MASTER_FULL_BOOK === "1") return true;
-  // Trigger Cloud does not inject TRIGGER=1; the deploy layer sets this.
+  // The VM installer sets this. A Vercel isolate does not.
   if (env.DEEP_FILTER_BIN) return true;
   return false;
 }
