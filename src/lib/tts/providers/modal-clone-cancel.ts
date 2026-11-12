@@ -107,7 +107,7 @@ function defaultCancel(opts: ModalCloneCancelOpts): boolean {
     return false;
   }
   const cwd = process.env.MODAL_S2_WARM_CWD?.trim() || process.cwd();
-  const args = [...MODAL_CLONE_CANCEL_UNSTARTED_ARGS];
+  const args: string[] = [...MODAL_CLONE_CANCEL_UNSTARTED_ARGS];
   if (opts.jobId) args.push("--job-id", opts.jobId);
   const custom = process.env.MODAL_S2_CANCEL_CMD?.trim();
   const command = custom || process.env.MODAL_S2_CANCEL_PYTHON?.trim() || "python3";
