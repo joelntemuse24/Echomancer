@@ -127,11 +127,10 @@ describe("warm batch constants", () => {
   });
 
   it("treats the pool as warm only inside the scaledown hold", () => {
-    expect(MODAL_CLONE_WARM_HOLD_DEFAULT_MS).toBe(165_000);
-    expect(modalCloneWarmHoldMs(env)).toBe(165_000);
-    expect(clonePoolStillWarm(100_000, 0, env)).toBe(true);
-    expect(clonePoolStillWarm(165_000, 0, env)).toBe(true);
-    expect(clonePoolStillWarm(165_001, 0, env)).toBe(false);
+    expect(MODAL_CLONE_WARM_HOLD_DEFAULT_MS).toBe(30_000);
+    expect(modalCloneWarmHoldMs(env)).toBe(30_000);
+    expect(clonePoolStillWarm(30_000, 0, env)).toBe(true);
+    expect(clonePoolStillWarm(30_001, 0, env)).toBe(false);
     expect(clonePoolStillWarm(50_000, null, env)).toBe(false);
   });
 });

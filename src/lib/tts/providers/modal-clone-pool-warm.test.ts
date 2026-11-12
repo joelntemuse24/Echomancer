@@ -1,7 +1,6 @@
 /**
- * A restore started before "make audiobook" is the only way under the cold
- * floor without leaving a GPU up. It must not fire for an account that has
- * no trained clone.
+ * A voice list or an extract must not start a GPU. The book's synthesize
+ * call is the container, and a cover beside it is a spare H100.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -63,12 +62,11 @@ describe("clone pool prewarm", () => {
     expect(spawned).toEqual([]);
   });
 
-  it("starts one restore for a trained clone and ignores the next call inside the cooldown", async () => {
+  it("does not start a GPU for a trained clone on the voice list", async () => {
     await seedTrainedClone(USER);
-    expect(await prewarmClonePoolForUser(USER, "voice list")).toBe(true);
+    expect(await prewarmClonePoolForUser(USER, "voice list")).toBe(false);
     expect(await prewarmClonePoolForUser(USER, "voice list again")).toBe(false);
-    expect(spawned).toHaveLength(1);
-    expect(spawned[0]?.[0]).toBe("modal");
+    expect(spawned).toEqual([]);
   });
 
   it("stays dark when clones are not rendered on Modal", async () => {
@@ -95,7 +93,7 @@ describe("clone pool prewarm", () => {
     expect(await prewarmClonePoolForUpload(owned)).toBe(false);
 
     await seedTrainedClone(USER);
-    expect(await prewarmClonePoolForUpload(owned)).toBe(true);
-    expect(spawned).toHaveLength(1);
+    expect(await prewarmClonePoolForUpload(owned)).toBe(false);
+    expect(spawned).toEqual([]);
   });
 });

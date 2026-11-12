@@ -29,7 +29,6 @@ import {
 } from "./modal-clone-guard";
 import { dispatchModalCloneLanes } from "./modal-clone-dispatch";
 import {
-  MODAL_CLONE_PREWARM_COOLDOWN_MS,
   prewarmModalCloneSnapshot,
   resetModalCloneWarmForTests,
   setModalCloneWarmSpawnerForTests,
@@ -37,7 +36,6 @@ import {
 import { downloadFile } from "@/lib/storage";
 import { query, queryOne } from "@/lib/turso";
 import { endpointOf, stubModalEndpoints } from "./modal-endpoints.fixture";
-import { modalCloneMaxGpus } from "./modal-gpu-lease";
 
 vi.mock("@/lib/turso", () => ({
   queryOne: vi.fn(),
@@ -207,107 +205,36 @@ describe("one book's miss does not stall another book's ramp", () => {
   });
 });
 
-describe("prewarm is per book and still inside the GPU cap", () => {
-  function spawner() {
+describe("a book does not start a side cover", () => {
+  it("gives two synthesizing books no extra container", () => {
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    vi.stubEnv("MODAL_S2_MAX_GPUS", "2");
     const calls: string[][] = [];
     setModalCloneWarmSpawnerForTests((command, args) => {
       calls.push([command, ...args]);
     });
-    return calls;
-  }
-
-  it("starts a restore for book B even when book A just prewarmed", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    const calls = spawner();
     expect(
-      prewarmModalCloneSnapshot("book A is starting", 1_000, { jobId: "job-a" })
-    ).toBe(true);
-    expect(
-      prewarmModalCloneSnapshot("book B is starting", 2_000, { jobId: "job-b" })
-    ).toBe(true);
-    expect(calls).toHaveLength(2);
-    expect(
-      prewarmModalCloneSnapshot("book A again", 3_000, { jobId: "job-a" })
-    ).toBe(false);
-    expect(
-      prewarmModalCloneSnapshot(
-        "book A after cooldown",
-        1_000 + MODAL_CLONE_PREWARM_COOLDOWN_MS,
-        { jobId: "job-a" }
-      )
-    ).toBe(true);
-    expect(calls).toHaveLength(3);
-  });
-
-  it("does not start a restore once the shared GPU cap is full", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    const calls = spawner();
-    const cap = modalCloneMaxGpus();
-    const leases = Array.from({ length: cap }, (_, index) => ({
-      jobId: `held-${index}`,
-      userId: `user-${index}`,
-    }));
-    expect(
-      prewarmModalCloneSnapshot("book B is starting", 1_000, {
-        jobId: "job-b",
-        userId: "user-b",
-        leases,
+      prewarmModalCloneSnapshot("book A is starting", 1_000, {
+        jobId: "job-a",
+        userId: "user-a",
+        leases: [],
       })
     ).toBe(false);
-    expect(calls).toHaveLength(0);
-  });
-
-  it("does not start a restore once this user is at their GPU cap", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    vi.stubEnv("MODAL_S2_MAX_GPUS_PER_USER", "1");
-    const calls = spawner();
     expect(
-      prewarmModalCloneSnapshot("book B is starting", 1_000, {
+      prewarmModalCloneSnapshot("book B is starting", 2_000, {
         jobId: "job-b",
-        userId: "user-b",
-        leases: [{ jobId: "job-a", userId: "user-b" }],
+        userId: "user-a",
+        leases: [{ jobId: "job-a", userId: "user-a" }],
       })
     ).toBe(false);
-    expect(calls).toHaveLength(0);
-  });
-
-  it("still prewarms when the only lease is this book's own row", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    vi.stubEnv("MODAL_S2_MAX_GPUS", "1");
-    const calls = spawner();
     expect(
-      prewarmModalCloneSnapshot("book B is starting", 1_000, {
+      prewarmModalCloneSnapshot("book B owns the only row", 3_000, {
         jobId: "job-b",
         userId: "user-b",
         leases: [{ jobId: "job-b", userId: "user-b" }],
       })
-    ).toBe(true);
-    expect(calls).toHaveLength(1);
-  });
-
-  it("counts restores already started, even with an empty lease table", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    vi.stubEnv("MODAL_S2_MAX_GPUS", "2");
-    const calls = spawner();
-    expect(
-      prewarmModalCloneSnapshot("book A", 1_000, {
-        jobId: "job-a",
-        leases: [],
-      })
-    ).toBe(true);
-    expect(
-      prewarmModalCloneSnapshot("book B", 1_000, {
-        jobId: "job-b",
-        leases: [],
-      })
-    ).toBe(true);
-    expect(
-      prewarmModalCloneSnapshot("book C", 1_000, {
-        jobId: "job-c",
-        leases: [],
-      })
     ).toBe(false);
-    expect(calls).toHaveLength(2);
+    expect(calls).toEqual([]);
   });
 });
 

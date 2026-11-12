@@ -114,29 +114,28 @@ export function kickModalCloneSnapshotWarm(reason: string, now = Date.now()): bo
 }
 
 /**
- * Start the restore **before** the book needs it.
+ * Do not start a side restore.
  *
- * Called when a file starts being read for someone who already has a trained
- * clone, when that person's voice list is built, and again at the top of a
- * clone tick. The point is overlap: a restore is ~1 min, so a container that
- * starts restoring while the file is read or the voice is chosen is often
- * already warm by the time section 0 is sent. A restore that is still in
- * progress does not join that HTTP call — Modal places a second container —
- * so this only removes the restore when it finishes first. The tick-start
- * call still covers a book whose prewarm missed, overlapping packing and the
- * reference download with whatever restore is left.
+ * `modal run …::cover` is its own Modal input. The class is
+ * `@modal.concurrent(max_inputs=1)`, so a cover that is still restoring
+ * does not take the book's later `POST /synthesize_batch`. Modal places
+ * that POST on a second container. The cover container then finishes
+ * restoring, serves nothing, and idles for `scaledown_window`.
  *
- * It is deliberately cheap and idempotent: one RPC `status()` per cooldown, no
- * wait, and no GPU left running afterwards (the app is `min_containers=0`, so
- * the container still scales to zero when idle). It cannot compile on the book
- * path — it is a separate RPC that the book never awaits — so #237 holds.
+ * The synthesize call is the container the book uses: one H100 per book
+ * that will actually render, inside `MODAL_S2_MAX_GPUS`. A voice-list or
+ * extract cover is the same spare. A placement that already missed its
+ * restore budget still uses {@link kickModalCloneSnapshotWarm}, which is
+ * off the book path.
  */
 export function prewarmModalCloneSnapshot(
-  reason: string,
+  _reason: string,
   now = Date.now(),
   opts?: ModalClonePrewarmOptions
 ): boolean {
-  return startWarm(reason, now, "prewarm", opts);
+  void now;
+  void opts;
+  return false;
 }
 
 /**

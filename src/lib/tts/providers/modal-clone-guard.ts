@@ -377,15 +377,54 @@ export const MODAL_CLONE_PROXY_MARGIN_MS = 60_000;
 export const MODAL_CLONE_WARM_WAIT_DEFAULT_MS = 400_000;
 
 /**
- * How long after a successful call this process still treats the one H100
- * as restored.
+ * Idle time after the last synthesize before Modal releases the H100.
  *
- * `S2C_SCALEDOWN` defaults to 300s. The production autoscaler override in
- * the runbook is 180s, and this hold is the shorter of those minus 15s so a
- * fat call is not planned after the container can already be gone. Raise
- * `MODAL_S2_WARM_HOLD_MS` only when the live scaledown is longer.
+ * Applied with `Function.update_autoscaler(scaledown_window=…)`. It is not
+ * the decorator default, and it does not take effect until an operator runs
+ * `scripts/s2/set-live-autoscaler.py`. 45s is inside the 30–60s band: the
+ * worker posts the next batch as soon as the previous one returns, so a
+ * mid-book gap stays under this window, and a finished book no longer pays
+ * the old 180s tail (~$0.20 at $3.95/h). A gap longer than 45s costs one
+ * restore and a cold-sized call, then the ramp resumes on that container.
  */
-export const MODAL_CLONE_WARM_HOLD_DEFAULT_MS = 165_000;
+export const MODAL_CLONE_SCALEDOWN_TARGET_S = 45;
+
+/**
+ * How long after a successful call this process still treats that book's
+ * H100 as restored.
+ *
+ * Fifteen seconds under {@link MODAL_CLONE_SCALEDOWN_TARGET_S} so a fat
+ * batch is not planned after the container can already be gone. Raise
+ * `MODAL_S2_WARM_HOLD_MS` only when the live scaledown is longer, and keep
+ * it shorter than that window. Restart the worker before lowering the live
+ * window, or a 165s hold will plan a warm batch at a container that scaled
+ * away at 45s.
+ */
+export const MODAL_CLONE_WARM_HOLD_DEFAULT_MS =
+  (MODAL_CLONE_SCALEDOWN_TARGET_S - 15) * 1000;
+
+/**
+ * What happens when a clone book settles. The GPU lease row is already
+ * released by the tick. The container itself goes away when it has had no
+ * input for `scaledown_window`. This process does not spawn a cover to
+ * "let it go", and it does not release a container another book still holds.
+ */
+export function cloneIdleScaledown(input: {
+  bookSettled: boolean;
+  otherLiveGpuLeases: number;
+}): {
+  releaseContainer: boolean;
+  spawn: false;
+  mechanism: "scaledown_window";
+  scaledownSeconds: number;
+} {
+  return {
+    releaseContainer: input.bookSettled && input.otherLiveGpuLeases <= 0,
+    spawn: false,
+    mechanism: "scaledown_window",
+    scaledownSeconds: MODAL_CLONE_SCALEDOWN_TARGET_S,
+  };
+}
 
 export function modalCloneWarmWaitMs(env: NodeJS.ProcessEnv = process.env): number {
   const ceiling = MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_PROXY_MARGIN_MS;

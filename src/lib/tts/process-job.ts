@@ -196,8 +196,10 @@ import {
   markTakehomeServed,
   takehomeAdmissionSql,
   takehomeClaimSql,
+  takehomeGlobalActiveCap,
   takehomeInflightCap,
 } from "@/lib/jobs/takehome-fairness";
+import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
 import {
   holdEdgeSectionSlot,
   holdNamedProviderSlot,
@@ -622,6 +624,93 @@ export async function claimTakehomeLease(
   if (result.rowsAffected <= 0) return null;
   await markTakehomeServed(jobId);
   return token;
+}
+
+export type TakehomeClaimMiss = "held" | "capped" | "scheduled" | "unavailable";
+
+/**
+ * Why {@link claimTakehomeLease} returned null. The UPDATE cannot say which
+ * predicate failed, and the old log called every miss a held lease. A cap
+ * miss is not a second owner, and neither one is worth another immediate try.
+ */
+export async function classifyTakehomeClaimMiss(
+  jobId: string
+): Promise<TakehomeClaimMiss> {
+  const row = await queryOne<{
+    status: string;
+    token: string | null;
+    lease_expires_at: number | null;
+    sched_not_before: number | null;
+    user_id: string;
+    now: number;
+  }>(
+    `SELECT status, processing_lease_token AS token, lease_expires_at,
+            sched_not_before, user_id, unixepoch() AS now
+     FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+    [jobId]
+  );
+  if (!row || !["queued", "processing", "waiting"].includes(row.status)) {
+    return "unavailable";
+  }
+  if (row.sched_not_before != null && row.sched_not_before > row.now) {
+    return "scheduled";
+  }
+  if (
+    row.token &&
+    row.lease_expires_at != null &&
+    row.lease_expires_at > row.now
+  ) {
+    return "held";
+  }
+  const perUser = takehomeInflightCap();
+  if (perUser > 0) {
+    const count = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM jobs
+       WHERE user_id = ? AND deleted_at IS NULL AND job_kind = 'takehome'
+         AND status = 'processing'
+         AND lease_expires_at IS NOT NULL AND lease_expires_at > unixepoch()
+         AND id != ?`,
+      [row.user_id, jobId]
+    );
+    if ((count?.n ?? 0) >= perUser) return "capped";
+  }
+  const globalCap = takehomeGlobalActiveCap();
+  if (globalCap > 0) {
+    const count = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM jobs
+       WHERE deleted_at IS NULL AND job_kind = 'takehome'
+         AND status = 'processing'
+         AND lease_expires_at IS NOT NULL AND lease_expires_at > unixepoch()
+         AND id != ?`,
+      [jobId]
+    );
+    if ((count?.n ?? 0) >= globalCap) return "capped";
+  }
+  return "held";
+}
+
+function claimMissLog(jobId: string, miss: TakehomeClaimMiss): string {
+  if (miss === "capped") {
+    return `[Job ${jobId}] per-user or global inflight cap is full`;
+  }
+  if (miss === "scheduled") {
+    return `[Job ${jobId}] not eligible until its backoff`;
+  }
+  if (miss === "unavailable") return `[Job ${jobId}] not claimable`;
+  return `[Job ${jobId}] another worker holds the lease`;
+}
+
+/**
+ * A second book can run beside this one only when this process has a free
+ * orchestrator slot and neither cap is exactly one. Cap 0 is unlimited.
+ * Cap 1 is the single-slot fairness yield.
+ */
+function takehomeMayOverlap(): boolean {
+  if (effectiveOrchestratorConcurrency() <= 1) return false;
+  const perUser = takehomeInflightCap();
+  const globalCap = takehomeGlobalActiveCap();
+  if (perUser === 1 || globalCap === 1) return false;
+  return true;
 }
 
 async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boolean> {
@@ -1197,10 +1286,8 @@ async function writeWithLease(
 }
 
 /**
- * Start this book's restore. Keyed by job id, so a second book is not
- * swallowed by the first book's 3-minute clock. The live lease rows are
- * the GPU cap. A ledger the worker cannot read is omitted, and the kick
- * then has no cap check rather than refusing every book.
+ * Kept so a tick can ask. A side cover is not started: the synthesize
+ * call is the container, and a cover beside it is a spare H100.
  */
 async function prewarmCloneBook(
   jobId: string,
@@ -1230,6 +1317,8 @@ export async function processTakehomeTick(
   total: number;
   busy?: boolean;
   deferred?: boolean;
+  /** Why the claim UPDATE matched nothing. Set only when `busy` and not deferred. */
+  claimMiss?: TakehomeClaimMiss;
   /** Release this process slot so another book can run. */
   yieldSlot?: boolean;
 }> {
@@ -1263,6 +1352,7 @@ export async function processTakehomeTick(
     return {
       done: false,
       busy: true,
+      claimMiss: await classifyTakehomeClaimMiss(jobId),
       nextIndex: job.next_section_index ?? 0,
       total: job.total_sections ?? 0,
     };
@@ -1326,6 +1416,7 @@ export async function processTakehomeTick(
       return {
         done: false,
         busy: true,
+        claimMiss: "held",
         nextIndex: job.next_section_index ?? 0,
         total: job.total_sections ?? 0,
       };
@@ -3603,7 +3694,12 @@ function extensionForContentType(contentType: string): string {
 export async function runTakehomeWave(
   jobId: string,
   budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
-): Promise<{ deferred: boolean; changed: boolean; yieldSlot?: boolean }> {
+): Promise<{
+  deferred: boolean;
+  changed: boolean;
+  yieldSlot?: boolean;
+  claimMiss?: TakehomeClaimMiss;
+}> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   // Tight budgets synthesize one section at a time so the caller can respond.
@@ -3632,9 +3728,10 @@ export async function runTakehomeWave(
         console.log(`[Job ${jobId}] deferred until a later wave`);
         return { deferred: true, changed: true };
       }
-      if (result.busy) {
-        console.log(`[Job ${jobId}] another worker holds the lease`);
-        return { deferred: false, changed: false };
+      if (result.busy && !result.deferred) {
+        const claimMiss = result.claimMiss ?? "held";
+        console.log(claimMissLog(jobId, claimMiss));
+        return { deferred: false, changed: false, claimMiss };
       }
       if (result.done) {
         console.log(`[Job ${jobId}] finished after ${ticks} tick(s)`);
@@ -3792,6 +3889,10 @@ export async function runTakehomeUntilSettled(
       // the book is not eligible again until sched_not_before, so the
       // drain can run someone else on this slot.
       if (outcome.yieldSlot) return { status: "yielded" };
+      // One owner. A held lease, a full inflight cap, or a future
+      // sched_not_before is not a reason to claim again in this loop.
+      // The drain backs off and retries when the row is eligible.
+      if (outcome.claimMiss) return { status: "busy" };
     } catch (err) {
       if (err instanceof LeaseLostError) {
         return { status: "lease_lost" };
@@ -3812,7 +3913,7 @@ export async function runTakehomeUntilSettled(
       return { status: after.status };
     }
 
-    if (await hasOtherRunnableTakehome(jobId)) {
+    if (!takehomeMayOverlap() && (await hasOtherRunnableTakehome(jobId))) {
       await releaseHeldTakehomeIfAny(jobId);
       console.log(
         `[Job ${jobId}] yielding after wave ${n + 1} so another take-home can run`

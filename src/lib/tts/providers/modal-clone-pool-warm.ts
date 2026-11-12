@@ -1,21 +1,9 @@
 /**
- * Start a scale-to-zero GPU restore before the person presses go.
- *
- * A cold first section is ~57s of snapshot restore plus ~14s of one-row
- * synthesis. The restore only has to sit on that clock if it starts when
- * the synth call does. Starting it while the file is being read, or while
- * the voice list is on screen, lands a warm container before section 0
- * whenever that gap is longer than the restore and shorter than
- * `scaledown_window` (production: 180s after the container goes idle).
- *
- * A restore that is still in progress does not help. Modal will not attach
- * the later HTTP call to a container that has not finished booting, so a
- * fast click still pays a full cold start and the prewarm is spent for
- * nothing. `min_containers` stays 0.
- *
- * Stock-only accounts never start a GPU. The same 3-minute cooldown as
- * `prewarmModalCloneSnapshot` keeps a voice-list refresh from stacking a
- * second container on top of the one extract just started.
+ * Voice-list and extract used to start `modal run …::cover` before a book
+ * existed. That input restores a container the later `/synthesize_batch`
+ * does not join while the restore is in progress, so the cover idles for
+ * the whole scaledown window. Both callers stay, and both return false
+ * without spawning. The book's synthesize call is the container it uses.
  */
 
 import { queryOne } from "@/lib/turso";

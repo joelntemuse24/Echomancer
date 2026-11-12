@@ -1,7 +1,7 @@
 /**
- * A clone book that only has CPU work left must not start a GPU restore.
- * Concat, saved raw, an exhausted concat retry, a fish pin, and a full
- * cache hit are the cases. A new book with nothing cached still may.
+ * A clone book must not start a side `::cover`. Concat, saved raw, an
+ * exhausted concat retry, a fish pin, a full cache hit, and a book that
+ * will synthesize all stay off that RPC. The synthesize call is the GPU.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -310,7 +310,7 @@ describe("CPU-only clone ticks do not start a GPU", () => {
     expect(gpuCalls).toEqual([]);
   });
 
-  it("still pre-warms a narration retry even when a cached take exists", async () => {
+  it("does not start a side cover for a narration retry", async () => {
     const text = "Speak this section again.";
     const pdfPath = await seedClone(text);
     await persistFrozenScript(JOB_ID, {
@@ -353,10 +353,10 @@ describe("CPU-only clone ticks do not start a GPU", () => {
     await execute(`UPDATE jobs SET provider_pin = 'modal' WHERE id = ?`, [JOB_ID]);
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 }).catch(() => undefined);
-    expect(gpuCalls.length).toBeGreaterThan(0);
+    expect(gpuCalls).toEqual([]);
   });
 
-  it("still pre-warms a new book that has no cached take", async () => {
+  it("does not start a side cover for a new book that will synthesize", async () => {
     const pdfPath = await seedClone("A sentence that has not been spoken.");
     await seedJob({
       id: JOB_ID,
@@ -370,11 +370,6 @@ describe("CPU-only clone ticks do not start a GPU", () => {
     });
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 }).catch(() => undefined);
-    expect(gpuCalls.length).toBeGreaterThan(0);
-    expect(
-      gpuCalls.every(
-        (cmd) => cmd[0] === "modal" && cmd.includes("modal/s2_clone_warm.py::cover")
-      )
-    ).toBe(true);
+    expect(gpuCalls).toEqual([]);
   });
 });

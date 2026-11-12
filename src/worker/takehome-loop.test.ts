@@ -227,4 +227,39 @@ describe("TakehomeWorkerLoop", () => {
     });
     await expect(broken.drain()).rejects.toThrow(TypeError);
   });
+
+  it("waits out a bounded backoff before restarting a lease loser", async () => {
+    let now = 1_000;
+    let calls = 0;
+    const runner = {
+      runUntilSettled: vi.fn(async () => {
+        calls += 1;
+        if (calls > 25) return { status: "deferred" };
+        return { status: "busy" };
+      }),
+      listDrainable: vi.fn(async () => ["book"]),
+      releaseExpired: vi.fn(async () => 0),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      now: () => now,
+      contentionBackoffMs: () => 1_000,
+      runner,
+      log: { info: () => {}, error: () => {} },
+    });
+    try {
+      expect(loop.enqueue("book")).toBe(true);
+      await vi.waitFor(() => expect(loop.inflightCount).toBe(0));
+      expect(calls).toBe(1);
+      await loop.drain();
+      expect(calls).toBe(1);
+      now += 1_000;
+      await loop.drain();
+      await vi.waitFor(() => expect(calls).toBe(2));
+    } finally {
+      loop.stop();
+      await loop.waitIdle(1_000);
+    }
+  });
 });
