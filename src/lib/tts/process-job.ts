@@ -74,6 +74,7 @@ import {
   modalLaneCharLimit,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
+import { modalCloneWarmWaitMs } from "@/lib/tts/providers/modal-clone-guard";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import {
   shouldPrewarmBeforeOutline,
@@ -984,12 +985,23 @@ async function deferForColdClonePool(opts: {
    * fault parks here too: the clock and the fallback are the same, but the log
    * line and the warning on the finished book must name the real cause.
    */
-  reason?: "cold" | "provider-fault";
+  reason?: "cold" | "provider-fault" | "timeout";
   lastError?: string | null;
+  /**
+   * Seconds before the drain may claim the book again. A client timeout
+   * passes the warm HTTP wait so the next POST does not overlap a handler
+   * that is still rendering. 0 leaves the book claimable at once.
+   */
+  notBeforeSec?: number;
 }): Promise<{ park: true } | { park: false; switched: boolean }> {
   const { jobId, lease, job, stagedCount } = opts;
   const providerFault = opts.reason === "provider-fault";
-  const label = providerFault ? "Modal provider fault" : "GPU pool cold";
+  const label =
+    opts.reason === "timeout"
+      ? "clone call timed out"
+      : providerFault
+        ? "Modal provider fault"
+        : "GPU pool cold";
   const warning = providerFault
     ? CLONE_PROVIDER_FAULT_WARNING
     : CLONE_COLD_TIMEOUT_WARNING;
@@ -1001,20 +1013,27 @@ async function deferForColdClonePool(opts: {
     );
     return { park: false, switched: false };
   }
+  const holdSec =
+    opts.notBeforeSec && opts.notBeforeSec > 0 ? Math.floor(opts.notBeforeSec) : 0;
   const started = Number(job.clone_wait_started_at ?? 0);
   if (!started) {
-    // First cold (or faulty) answer for this book: start the clock and park it.
+    // First cold answer, provider fault, or client timeout: start the
+    // clock and park. COALESCE keeps a clock another writer already set.
     await execute(
       `UPDATE jobs SET clone_wait_started_at = COALESCE(clone_wait_started_at, ?),
          updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
       [nowSec, jobId, lease]
     ).catch(() => undefined);
+    job.clone_wait_started_at = nowSec;
     console.log(
       `[Job ${jobId}] ${label} after ${stagedCount} staged — parking` +
         (opts.lastError ? ` (${opts.lastError.slice(0, 200)})` : "")
     );
-    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    await releaseLease(jobId, lease, {
+      status: "queued",
+      notBeforeSec: holdSec,
+    }).catch(() => {});
     return { park: true };
   }
   const waitedMs = (nowSec - started) * 1000;
@@ -1023,7 +1042,10 @@ async function deferForColdClonePool(opts: {
       `[Job ${jobId}] ${label} after ${Math.round(waitedMs / 1000)}s ` +
         `of ${Math.round(budget / 1000)}s — parking again`
     );
-    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    await releaseLease(jobId, lease, {
+      status: "queued",
+      notBeforeSec: holdSec,
+    }).catch(() => {});
     return { park: true };
   }
   // Out of patience. Fall back for the REST of the book, not this section, and
@@ -1045,7 +1067,10 @@ async function deferForColdClonePool(opts: {
       `[Job ${jobId}] ${label} for ${Math.round(waitedMs / 1000)}s and no Fish ` +
         `fallback is configured — parking without substituting a voice`
     );
-    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    await releaseLease(jobId, lease, {
+      status: "queued",
+      notBeforeSec: holdSec,
+    }).catch(() => {});
     return { park: true };
   }
   console.warn(
@@ -2317,10 +2342,12 @@ async function runClaimedTick(
             dispatch &&
             (dispatch.abortedIndexes.length > 0 || dispatch.selfBackoff)
           ) {
-            // The handler is still rendering, or this book is already
-            // waiting. Park on that delay. Do not start the Fish clock:
-            // a single timeout is not an empty pool. Rows from this
-            // abort are still rendering, so they do not spend an attempt.
+            // The handler is still rendering. Those rows do not spend an
+            // attempt. The Fish clock starts here (an existing
+            // clone_wait_started_at is kept) so a book whose calls keep
+            // timing out still switches once MODAL_S2_DEFER_MS is spent.
+            // A published section clears that clock, so one timeout
+            // followed by audio does not accumulate.
             await publishChain.catch(() => undefined);
             const aborted = new Set(dispatch.abortedIndexes);
             const charge = dispatch.missing.filter((index) => !aborted.has(index));
@@ -2356,24 +2383,38 @@ async function runClaimedTick(
               });
             }
             const remain = modalCloneJobBackoffRemainingMs(jobId);
-            const notBeforeSec = Math.max(1, Math.ceil(remain / 1000));
+            // At least the warm HTTP wait. A 30s backoff would claim the
+            // book while a 150s or 400s handler is still rendering the
+            // same rows on the first container.
+            const notBeforeSec = Math.max(
+              Math.ceil(modalCloneWarmWaitMs() / 1000),
+              Math.ceil(remain / 1000),
+              1
+            );
             console.log(
               `[Job ${jobId}] clone call aborted; next claim in ${notBeforeSec}s`
             );
-            await releaseLease(jobId, lease, {
-              status: "queued",
+            const outcome = await deferForColdClonePool({
+              jobId,
+              lease,
+              job,
+              stagedCount: dispatch.staged,
               notBeforeSec,
-            }).catch(() => {});
-            return {
-              done: false,
-              busy: true,
-              deferred: true,
-              nextIndex: job.next_section_index ?? 0,
-              total: job.total_sections ?? 0,
-            };
-          }
-
-          if (dispatch?.cold) {
+              reason: "timeout",
+            });
+            if (outcome.park) {
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+            if (outcome.switched || modalCloneDeferMs() <= 0) {
+              clonePin = "fish";
+            }
+          } else if (dispatch?.cold) {
             const outcome = await deferForColdClonePool({
               jobId,
               lease,
@@ -2456,9 +2497,7 @@ async function runClaimedTick(
               dispatch.missing.length > 0
             ) {
               await writeLock(async () => {
-                const aborted = new Set(dispatch.abortedIndexes);
                 for (const index of dispatch.missing) {
-                  if (aborted.has(index)) continue;
                   const prev = segments.find((segment) => segment.index === index);
                   const ledger = cloneDropLedger(prev);
                   segments = upsertSegment(segments, {

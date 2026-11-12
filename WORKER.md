@@ -305,7 +305,10 @@ POSTs `{ jobId }` to `WORKER_URL/jobs` with
 Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
 The minute cron `takehome.drain` is still deployed there and still runs
 **old** code: it claims `queued` and `processing` rows straight from Turso
-and fails an Edge book with `Invalid stock provider: edge`. This repo no
+(`listDrainableTakehomeJobs` as of the last claiming revision, with no
+`sched_not_before` predicate) and fails an Edge book with `Invalid stock provider: edge`.
+A book the VM parked after a clone timeout can be claimed by that cron
+before the warm-wait hold expires. This repo no
 longer schedules that task. The live schedule has to be turned off in the
 Trigger.dev dashboard (Schedules → `takehome.drain` → disable). A redeploy
 of Trigger is not required for the `waiting` park, and it is not how you

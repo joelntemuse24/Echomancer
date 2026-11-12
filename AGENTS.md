@@ -376,8 +376,13 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   restore budget (150s, or 75s for first audio). The ramp uses that same
   spare check, so a confirmed book whose container is busy is not given a
   24-row call. A miss sets the 30s
-  backoff on that book only. The book then waits on `sched_not_before`.
-  That wait does not start `clone_wait_started_at`. The process-wide backoff is only when the
+  backoff on that book only. The book then waits on `sched_not_before`
+  for at least the warm HTTP wait (400s), so the next POST does not overlap
+  a handler that is still rendering. That wait also starts
+  `clone_wait_started_at` (an existing value is kept). Once
+  `MODAL_S2_DEFER_MS` is spent the book switches to direct Fish. A
+  published section clears the clock, so one timeout followed by audio
+  does not accumulate. The process-wide backoff is only when the
   probe sees zero warm containers and no other call in flight (or the
   call has no job id). A client timeout does not re-POST those sections
   in the same dispatch: the sync handler keeps rendering, and this
@@ -424,10 +429,14 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
   wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
   miss tries the unstaged sections once on another container. A client
-  timeout does not: the handler is still rendering, the book waits on
-  `sched_not_before`, and that wait does not start the Fish defer clock.
-  When a real cold probe comes back empty the book parks and later follows
-  the defer → direct Fish path (the same voice).
+  timeout does not: the handler is still rendering, and the book waits on
+  `sched_not_before` for at least the warm HTTP wait. The same wait starts
+  `clone_wait_started_at` when it is unset. A published section clears that
+  clock. Repeated timeouts still follow the defer → direct Fish path once
+  `MODAL_S2_DEFER_MS` is spent (the same voice). A real cold probe does too.
+  The VM claim (`takehomeAdmissionSql`) honors `sched_not_before`. The
+  Trigger `takehome.drain` still deployed is the older claim, which selects
+  `queued` rows and does not read `sched_not_before`.
   A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
