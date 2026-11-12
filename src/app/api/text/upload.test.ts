@@ -8,13 +8,6 @@ import { parseChaptersDocument } from "@/lib/book-chapters";
 import { setPageDepsForTests } from "@/lib/fetch-public-page";
 import { USER_A, buildRequest, resetDatabase } from "@/test/harness";
 
-vi.mock("@trigger.dev/sdk", () => ({
-  configure: vi.fn(),
-  tasks: {
-    trigger: vi.fn().mockResolvedValue({ id: "run_test" }),
-  },
-}));
-
 const CHAPTERED = [
   "Chapter One",
   "The lamps were lit along the quay and the tide was turning before midnight.",

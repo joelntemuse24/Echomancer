@@ -1,5 +1,5 @@
 /**
- * VM-worker (and Trigger fallback) spawn pipeline: podcast delivery
+ * VM-worker spawn pipeline: podcast delivery
  * chain (high-pass, low-mid cut, presence, light de-ess, loudnorm) at
  * 44.1 kHz mono speech MP3. DeepFilterNet3 `deep-filter` amix is opt-in
  * (`TTS_MASTER_DFN=1` or `TTS_MASTER_DFN_WET>0`). The default Whole-book

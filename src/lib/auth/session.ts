@@ -8,7 +8,7 @@
  * HMAC check and is treated as no session at all.
  *
  * {@link resolveSessionUserId} is the single function routes use to read the
- * caller. Trigger jobs keep using `jobs.user_id`, which is that same id after
+ * caller. Whole-book jobs keep using `jobs.user_id`, which is that same id after
  * a merge.
  */
 

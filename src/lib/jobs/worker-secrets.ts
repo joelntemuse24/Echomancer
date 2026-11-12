@@ -1,6 +1,6 @@
 /**
- * Secrets the Trigger take-home runtime must have. Missing any of these
- * must fail the task immediately — a queued job with no keys just stalls.
+ * Secrets the always-on Whole-book worker must have. Missing any of these
+ * must fail startup immediately — a queued job with no keys just stalls.
  */
 
 function isMemoryTurso(url: string | undefined): boolean {
@@ -10,9 +10,7 @@ function isMemoryTurso(url: string | undefined): boolean {
 function isDeployed(): boolean {
   return (
     process.env.VERCEL === "1" ||
-    process.env.TRIGGER === "1" ||
     process.env.WORKER === "1" ||
-    Boolean(process.env.TRIGGER_SECRET_KEY) ||
     process.env.NODE_ENV === "production"
   );
 }

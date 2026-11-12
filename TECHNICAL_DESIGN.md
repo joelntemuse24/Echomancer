@@ -180,12 +180,11 @@ Implemented hosts, plus the deploy report from the claim-class section above.
 |-------|----------------|
 | App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`). Live Listen and Live Stream stay here. |
 | Database / objects | Turso + Cloudflare R2 |
-| Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
+| Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. Voice pick stays unblocked while extract runs. |
 | Whole-book orchestration | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Code default `WORKER_CONCURRENCY=1`. Reported host on 2026-11-07: Contabo. The process does not check the vendor. |
 | Clone synthesis | Modal app `echomancer-s2-clone` when `MODAL_S2_TTS_URL` is set. One GPU per container, `min_containers=0`. The VM does not run the GPU. Direct Fish is the other engine for the same reference. |
 | Stock synthesis | Edge Read Aloud for Andrew, Ava, Libby, and Ryan. Paradee for Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
-| Trigger.dev | **Legacy fallback** (`takehome.advance` only). **Not** the production Whole-book runner. `upload.extract` is a no-op. `takehome.drain` and `upload.drain` are not tasks. Deploying this project to Trigger production deletes their declarative minute crons. The dashboard cannot delete a declarative schedule. The VM worker drains the queue. |
 
 ---
 
@@ -231,7 +230,7 @@ src/
   lib/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
-    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-secrets}.ts
+    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,worker-secrets}.ts
     turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
@@ -478,7 +477,7 @@ Important columns on `jobs` (non-exhaustive):
 - Output: `audio_storage_path`, `duration_seconds`, `price_estimate_eur`, `parent_job_id`, `error_message`, `warning`
 - Clone engine: `provider_pin` (`modal` / `fish`; a legacy `drama3` value is read and re-pinned, never synthesized), `clone_wait_started_at`
 
-Statuses used in practice: `queued`, `waiting`, `processing`, `ready`, `failed`, `cancelled`. `waiting` is a take-home whose file is still being read. The deployed Trigger drain only claims `queued` and `processing`, so a parked book is inserted and released as `waiting`. SQLite cannot alter a CHECK: when a live `jobs` table rejects `waiting` or `cancelled`, `ensureTtsJobColumns` copies the rows into a new table and renames it.
+Statuses used in practice: `queued`, `waiting`, `processing`, `ready`, `failed`, `cancelled`. `waiting` is a take-home whose file is still being read. A claim that only matches `queued` and `processing` does not pick up a parked book. SQLite cannot alter a CHECK: when a live `jobs` table rejects `waiting` or `cancelled`, `ensureTtsJobColumns` copies the rows into a new table and renames it.
 
 `users` (`id` = `user_*`, unique `google_sub`) is additive. A pre-existing
 `users` table without `google_sub` is healed with `ALTER TABLE ADD COLUMN`
@@ -855,7 +854,7 @@ stays on the element until then. One quiet tap control, not a pill row.
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
-Extract is **not** Trigger.dev. Parsing (unpdf / mammoth / JSZip) runs on
+Extract runs on the always-on VPS. Parsing (unpdf / mammoth / JSZip) runs on
 the always-on VPS, in a warm child process so it does not take a Whole-book
 slot and a tiny file does not pay Node startup on every upload. The
 Cloudflare extract Worker (`workers/extract`) is on the Free plan (~10 ms
@@ -870,7 +869,6 @@ Voice selection is unblocked while extract runs in the background.
    - Returns `{ uploadId, putUrl, putHeaders, storagePath }`
    - Production: R2 presigned PUT (`getUploadUrl`). Dev/tests without R2:
      `putUrl` is `/api/pdf/upload/<id>/object`
-   - Does **not** require `TRIGGER_SECRET_KEY`
 2. **Browser `PUT putUrl`** — file bytes go to R2 (CORS required) or the local
    object route. Secrets never leave the server.
 3. **`POST /api/pdf/upload/[id]`** — complete: HEAD the object (no download),
@@ -881,7 +879,6 @@ Voice selection is unblocked while extract runs in the background.
    - both of those fail, or neither is configured → Vercel: tests / local
      and files ≤ 8MB extract in-process; a larger production file uses
      `after(() => extractUploadedDocument)`
-   Does **not** enqueue `upload.extract` on Trigger.
 4. **Node child** `src/worker/extract-child.ts` is forked once per slot and
    reused. It loads the parsers before it reports ready. The parent
    heartbeats `extract_started_at` every 20s. On a successful read the child
@@ -909,7 +906,6 @@ Voice selection is unblocked while extract runs in the background.
    back to Node only when Node has not already used two attempts; otherwise
    the next host is Vercel. After 4 attempts or 20 minutes from the first
    accept the row is `failed` with "This file took too long to read. Try again."
-   Trigger `upload.extract` is a no-op (`src/trigger/extract-upload.ts`). `upload.drain` is not a task.
 6. Take-home job create accepts an owned upload that is still `uploaded` or
    `extracting` and inserts `waiting`. `pending` and stream jobs stay
    `TEXT_NOT_READY`. `getUploadByStoragePath` is only used on a path that
@@ -1190,7 +1186,7 @@ for that one recovery.
 | `tts/providers/modal-clone-guard.ts` | Engine pin parsing, lane/batch/cold-wait/defer knobs, the 900 chars/min truncation rule, and non-blocking `usage_logs` writes (`recordModalCloneUsage`). There is no daily character cap. The old `ensureModalCloneJobAllowed` gate is gone. |
 | `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at about 2.9× realtime against 35–65× for a full one. Those multiples are audio-seconds per wall-second, measured, not a rate the next book is guaranteed to hit. `modalLaneCharCap` is the cold-wait generation budget (`modalCloneColdWaitMs` minus `MODAL_LANE_RESTORE_MARGIN_MS`, 70 s) times `MODAL_LANE_CHARS_PER_SECOND` (100). It is not the steady-state 60 s timeout. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a cold lane. `planModalCloneBookWave` is the book schedule: section 0 alone and cold-sized, except a short piece (about 1,959 characters / ~2.1 minutes) whose whole remaining book adds no generation beyond that section and so goes out as one call, then a ramp while `clonePoolStillWarm` (default hold 165s) — each call is the largest prefix whose wall finishes before the listener's buffered audio runs out, growing until a full batch fits — and one cold-sized call again after that hold. Warm calls plan a single row at 33 chars/s and a wider call from the 2026-11-11 per-row curve (15% under the measured server rate), plus transfer at 12s per 43,907 characters, and wait `modalCloneWarmWaitMs` (400s, under the 542s proxy kill). `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character cap. `simulateClonePlayback` plays a 10-hour book at 1× and is what fails if that ramp stalls. `simulateCloneFleet` gives each book that ramp until the GPU ceilings, then one overflow pair. `chooseCloneGpuTurn` is that overflow schedule: the next unstarted book gets one section once every playing listener keeps slack, then each turn is the feeding call with the least silence and the highest characters per wall second. A one-row call does not feed two 1.5× listeners. `simulateCloneListeners` replays that loop for two and three books. `planMixedCloneBatch` packs rows from several books into one call, each with its own reference; the deployed container takes one reference for the call, so `MODAL_S2_MIXED_BOOK_BATCH` stays off and the tick does not send that payload. `modalWarmLaneCharLimit` is the minimum of that time budget and an 80 MiB base64 body estimate; `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower it. `sectionSeedEpoch` turns a retry into a different take. |
 | `tts/providers/modal-clone-prefetch.ts` | `selectCloneRenderIndexes` fills the batch with cache misses and steps over takes already stored. `selectClonePublishBatch` walks claimable indexes in order and stops at the publish window (8), at an index still on the GPU, and at the first uncached index. |
-| `tts/providers/modal-clone-dispatch.ts` | Runs the lanes and stages every rendered section. `bookWave` forces one lane even when the caller passed a fan-out, does not take the old cap-1 `modal-clone` slot (the durable cap is `modal_gpu_leases`), and pipelines the ramp: the next call starts when the previous returns, and `publishStaged` masters that call's audio without holding the GPU. `firstLight` renders section 0 alone (or the whole short piece, when that one call is no slower), publishes it through the real per-section path, and only then starts the ramp on that same GPU. A container answers a whole batch together, so a section 0 batched beside a neighbour is exactly as late as that neighbour, and a 24-row call behind one minute of audio stalls the listener. If section 0 cannot be placed the ramp is skipped. A gateway miss on a warm call is retried as one cold section and does not kick `::cover`. A gateway miss (502/503/504) that misses the restore budget is retried once on another container; a pool that is already empty is not. A client timeout (`clientAborted`) is not retried in the same dispatch: the sync handler keeps rendering those sections, and the book parks. A warm-budget call parks for the warm HTTP wait (400s). A first-light timeout parks for the rest of the restore budget plus the opening section at 33 chars/s (~106s), inside the 180s scaledown. A backoff that posted nothing parks only for the remaining 30s. A positive hold leaves the row `processing` with a lease token this process does not hold, expiring with that hold, because the deployed Trigger drain lists `queued` rows and does not read `sched_not_before`; the VM claim waits for the same lease. That park starts `clone_wait_started_at` when unset and switches to Fish once `MODAL_S2_DEFER_MS` is spent. A published section clears the stored clock and the in-memory copy, so a later timeout in the same tick does not switch a book that already published. `cold` is set when nothing was staged, so the tick can park instead of switching. A missed placement also kicks the off-path RPC warm. `committedCall` posts the indexes `chooseCloneGpuTurn` already sized, so a growth call wider than the buffer is not re-planned down to one row. |
+| `tts/providers/modal-clone-dispatch.ts` | Runs the lanes and stages every rendered section. `bookWave` forces one lane even when the caller passed a fan-out, does not take the old cap-1 `modal-clone` slot (the durable cap is `modal_gpu_leases`), and pipelines the ramp: the next call starts when the previous returns, and `publishStaged` masters that call's audio without holding the GPU. `firstLight` renders section 0 alone (or the whole short piece, when that one call is no slower), publishes it through the real per-section path, and only then starts the ramp on that same GPU. A container answers a whole batch together, so a section 0 batched beside a neighbour is exactly as late as that neighbour, and a 24-row call behind one minute of audio stalls the listener. If section 0 cannot be placed the ramp is skipped. A gateway miss on a warm call is retried as one cold section and does not kick `::cover`. A gateway miss (502/503/504) that misses the restore budget is retried once on another container; a pool that is already empty is not. A client timeout (`clientAborted`) is not retried in the same dispatch: the sync handler keeps rendering those sections, and the book parks. A warm-budget call parks for the warm HTTP wait (400s). A first-light timeout parks for the rest of the restore budget plus the opening section at 33 chars/s (~106s), inside the 180s scaledown. A backoff that posted nothing parks only for the remaining 30s. A positive hold leaves the row `processing` with a lease token this process does not hold, expiring with that hold, because a claim that lists `queued` rows and does not read `sched_not_before` would take a queued park early; the VM claim waits for the same lease. That park starts `clone_wait_started_at` when unset and switches to Fish once `MODAL_S2_DEFER_MS` is spent. A published section clears the stored clock and the in-memory copy, so a later timeout in the same tick does not switch a book that already published. `cold` is set when nothing was staged, so the tick can park instead of switching. A missed placement also kicks the off-path RPC warm. `committedCall` posts the indexes `chooseCloneGpuTurn` already sized, so a growth call wider than the buffer is not re-planned down to one row. |
 | `tts/providers/modal-clone-warm.ts` | Starts `modal run modal/s2_clone_warm.py::cover` detached. Two entries: `kickModalCloneSnapshotWarm` after a placement misses the restore budget (20 min cooldown, may sit through a compile), and `prewarmModalCloneSnapshot` (3 min cooldown, never waited on; a `jobId` uses that book's own clock and the GPU lease cap, while a call with no job id stays on the shared clock). `MODAL_S2_WARM_HOOK=0` disables both. The book does not wait on either process. |
 | `tts/providers/modal-clone-pool-warm.ts` | Decides *when* a prewarm is worth a GPU. `prewarmClonePoolForUpload` runs when the worker accepts an extract; `prewarmClonePoolForUser` runs for `POST /clone-prewarm`, which `GET /api/tts/voices` fires (via `after`) when the account has a trained clone. Anonymous and stock-only accounts return false. A take-home tick calls `prewarmModalCloneSnapshot` only when it will send uncached S2 narration (`shouldPrewarmBeforeOutline` for a book with no outline yet, `shouldPrewarmModalNarration` once the cache misses are known). Concat, saved raw, a fish pin, and an all-cache tick do not. |
 | `tts/process-job.ts` | `admitModalCloneGpu` leases one GPU per book (`modal_gpu_leases`) and only then calls `chooseCloneGpuTurn`, when a ceiling is already full. `resolveCloneProviderPin` makes the one engine decision; `deferForColdClonePool` parks the book, arms `clone_wait_started_at`, and only after `MODAL_S2_DEFER_MS` pins it to `fish` (the same voice) with a warning — or, with no `FISH_API_KEY`, parks again rather than substituting anything. A cold section does not burn one of the section's attempts. `takehomeSectionCacheKey` is the single content-addressed key for a take — section-0 `balanced` latency plus the per-engine variant — shared by the lane prefetch and the per-section read, so a prefetched take is always found rather than paid for twice. The prefetch skips indexes that already hit that key (`selectCloneRenderIndexes`); `S2 lane staged` is only a GPU row that was just written. Already-staged indexes are mastered while the next uncached batch renders, and a tick with nothing staged still publishes one window of 8 afterwards. `narrationSpeed` is not calibrated on a Modal tick, because the batch request does not send it and a changed speed would miss the take just staged. |
@@ -1557,8 +1553,7 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 
 ## 19. Take-home worker (always-on VM + index-stable fan-out)
 
-**Production Whole-book host:** an always-on Ubuntu VPS running pm2,
-**not Trigger.dev**.
+**Production Whole-book host:** an always-on Ubuntu VPS running pm2.
 
 | | |
 |--|--|
@@ -1577,10 +1572,6 @@ Runbook: `WORKER.md`. Docker Compose is an optional appendix.
 
 `trycloudflare.com` quick tunnels are **not** production `WORKER_URL`.
 
-Trigger.dev (`src/trigger/takehome.ts`) is **legacy fallback** when
-`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. It is not the live
-Whole-book runner.
-
 ### VM worker — `src/worker/`
 
 | Piece | Role |
@@ -1597,35 +1588,18 @@ Turso is the queue. No Redis / BullMQ. Cancel and leases are the existing
 | When | Where the wake-up goes |
 |------|------------------------|
 | `WORKER_URL` + secret set (**production**) | `POST $WORKER_URL/jobs` `{ jobId }` (`takehome-worker-client.ts`) → Caddy → `127.0.0.1:8788` |
-| Worker POST fails and `TAKEHOME_TRIGGER_FALLBACK=1` | **Legacy** Trigger `takehome.advance` |
-| No `WORKER_URL` but `TRIGGER_SECRET_KEY` | **Legacy** Trigger path (migration only) |
+| Worker POST fails | Logged. The job stays `queued` for the VM drain loop |
 
 Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
 `POST /api/jobs/[id]/takehome`, `PATCH` retry.
 
-Missing both `WORKER_URL` and `TRIGGER_SECRET_KEY` in production:
+Missing `WORKER_URL` in production:
 `POST /api/jobs` takehome returns **503** `TAKEHOME_NOT_CONFIGURED`
 **before insert**. After a job row exists, dispatch failures are logged and
 the job stays `queued` for the VM drain loop (still HTTP 200). The VM
 runtime must have Turso, R2, `INTERNAL_JOB_SECRET` / `WORKER_SECRET`
-(`src/lib/jobs/trigger-secrets.ts`). Fish / Google keys only when that
+(`src/lib/jobs/worker-secrets.ts`). Fish / Google keys only when that
 voice is used.
-
-### Legacy Trigger tasks — `src/trigger/takehome.ts`
-
-**Deprecated for production.** `takehome.advance` still imports
-`runTakehomeUntilSettled` in-process and is only a fallback when
-`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. That flag does
-not enqueue `takehome.drain`. `takehome.drain` and `upload.drain` are
-not tasks. A production deploy of this Trigger project deletes their
-declarative minute crons, including `sched_1mv945xbxmk4i7j6orzkf` on
-`takehome.drain`. The dashboard cannot delete a declarative
-schedule, and a rollback of that deploy restores the previous worker's
-crons. Until the deploy, the current Trigger deployment still claims
-`queued` and expired `processing` rows every minute. Jobs parked
-`waiting` do not match that claim. A positive-hold clone park stays
-`processing` with a sealed lease so that claim skips it.
-`upload.extract` in `src/trigger/extract-upload.ts` is a no-op.
 
 `TTS_POLL_NUDGE_BUDGET_MS` code default is **0**, and production is reported
 at 0. At 0, neither poll synthesizes. They are not the same write:
@@ -1638,12 +1612,6 @@ at 0. At 0, neither poll synthesizes. They are not the same write:
 
 Lease reclaim for a live book belongs to the VM drain. A non-zero budget is
 the old Hobby path that also synthesizes; do not turn it on in production.
-
-If the **legacy** Trigger Cloud path is still deployed, it indexes
-`takehome.ts` by importing it, which loads Turso via `@libsql/client` →
-`libsql`. That package `require`s `@libsql/linux-x64-gnu` at import time.
-`trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`.
-Production Whole book does not use that image.
 
 ### Machine auth — `src/lib/jobs/worker-auth.ts`
 
@@ -1812,8 +1780,7 @@ Env knobs (defaults):
 | `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set per tick; with a tick deadline, the Edge/Google rolling pool keeps claiming until the deadline instead (no deadline keeps this budget) |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–16). Fish ignores it. Halves on 429/503. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
-| `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
-| `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
+| `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock |
 | `TTS_TAKEHOME_FANOUT` | 4 or 5 | Fish/clone pin; else 4 if live in flight. Does not raise Edge/Google. |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
@@ -1839,7 +1806,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → hole-retry → assemble only when nothing is still claimable. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
+| `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
@@ -2080,8 +2047,8 @@ does not retag.
 |--|--|
 | Recipe | Two chains, chosen in `prepareSectionForStorage` (`src/lib/tts/section-master.ts`). **Stock** (Edge, Fish, Paradee): `masterPodcastFiltersAf` — highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11` (`MASTER_LOUDNORM_*`). **Modal clone** passes `"s2"`: the container already applied `S2_SPECTRAL_CHAIN` (highpass 70 Hz, cuts at 190/430/3400/6800 Hz, +5 dB at 8 kHz, lowpass 15.5 kHz). The app then loudnorms to `I=-19` `TP=-3` `LRA=11` (`MODAL_S2_MASTERING`). That is not the −16 podcast pass. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. Encode **44.1 kHz mono 128 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 128 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. Frame positions are read from the MP3 headers (a per-section ffprobe crowd timed out a 1,297-section book at 60s). A section under four seconds is re-encoded with the same crossfade into the next section, or into the previous section at the end of the book, and the rest of that neighbor is still packet-copied, so one heading does not send the book through the full encode. The fallback encode is capped to the decoded sample count, and a full file that already uploaded is not marked failed when the lease is gone. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
 | DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
-| Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
-| Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. Dockerfile musl pin is the Docker/Trigger appendix. |
+| Host | Always-on VM (`WORKER=1`). `VERCEL=1` always skips. Enabled when `WORKER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
+| Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. The Dockerfile keeps the same musl pin. |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1` |
@@ -2556,11 +2523,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out; normalized fallback text and engine ceiling in actual synthesis calls; Edge rolling pool claims over a stalled section and the no-deadline claim budget |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4; `nextClaimableIndex` skips in-flight claims; rolling pool claims over a hung slot and honors `shouldStop` |
-| `trigger-takehome.test.ts` | create / retry / takehome wake Trigger when `WORKER_URL` is unset; VM worker when it is set; extract stays off Trigger |
-| `takehome-dispatch.test.ts` / `takehome-worker-client.test.ts` | Worker preferred; Trigger fallback flag; production 503; HTTP retries |
+| `trigger-takehome.test.ts` | create / retry / takehome wake the VM worker; a failed POST stays queued; production without `WORKER_URL` is 503; extract does not leave the worker path |
+| `takehome-dispatch.test.ts` / `takehome-worker-client.test.ts` | Worker POST; failed POST stays with the caller; production 503 without `WORKER_URL`; dispatch source never imports another host; HTTP retries |
 | `worker/takehome-loop.test.ts` / `takehome-http.test.ts` | Per-job inflight + concurrency; health / auth / enqueue |
-| `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare and never Trigger; local/tests extract inline |
-| `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
+| `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare; local/tests extract inline |
 | `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 96 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
 | `fish-s2-cues.test.ts` | Official S2 allowlist strips unknown tags; length-scaled cap; reject prose rewrite |
@@ -2636,7 +2602,7 @@ TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
 TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
 TTS_MASTER_DFN_WET           # default 0 = ffmpeg-only remaster; >0 enables DFN mix (0–1)
 DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`); unused unless DFN is opted in
-FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
+FFMPEG_PATH                  # Ubuntu apt on the VM
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 ECHOMANCER_SCRATCH_DIR       # default os.tmpdir()/echomancer; per-job finalize scratch
@@ -2647,9 +2613,7 @@ AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET / AUTH_URL
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
 TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (VM worker runs generation)
-TAKEHOME_TRIGGER_FALLBACK  # 1 = also fire **legacy** Trigger if worker POST fails
-TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID  # legacy fallback only
-TTS_TRIGGER_WAVE_BUDGET_MS / TTS_VM_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
+TTS_VM_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ```
@@ -2670,7 +2634,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 1. **Identity is server-minted.** Cookie/header always re-verified with HMAC.
 2. **Wrong owner → 404** on jobs/storage (not 403).
-3. **Job create never synthesizes.** The VPS worker does. Trigger.dev is a legacy fallback only. Polls do not synthesize.
+3. **Job create never synthesizes.** The VPS worker does. Polls do not synthesize.
 4. **Lease token gates all take-home progress writes.**
 5. **Silence is failure.** Preview / sections / stream windows all guard.
 6. **Stream cursor advances only after audible bytes.**
@@ -2722,6 +2686,5 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 *Document tracks Echomancer v2 source as of 2026-11-07 (`a975b42`, #248):
 Next.js on Vercel (`echomancer.xyz`), Turso + R2, VM extract with a Cloudflare
 fallback, VPS + pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`,
-Modal S2-Pro for clones when `MODAL_S2_TTS_URL` is set. Trigger.dev is legacy
-fallback only. Live deploy overrides and unverified gaps are in "How to read
+Modal S2-Pro for clones when `MODAL_S2_TTS_URL` is set. Live deploy overrides and unverified gaps are in "How to read
 claims" at the top. Job `75944dc9` was not repaired.*

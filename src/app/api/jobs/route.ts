@@ -324,9 +324,8 @@ export async function POST(request: NextRequest) {
       takehomeKey = opened.idemKey;
     }
 
-    // `waiting` is invisible to the deployed Trigger drain, which only claims
-    // `queued` and `processing`. A book whose file is still being read is
-    // inserted there so that drain cannot fail it before the VM worker runs.
+    // A book whose file is still being read is inserted as `waiting`.
+    // The VM drain claims it once the upload is ready or failed.
     const initialStatus =
       jobKind === "takehome" && extract !== "ready" ? "waiting" : "queued";
 
@@ -369,8 +368,7 @@ export async function POST(request: NextRequest) {
       throw err;
     }
 
-    // Generation is *enqueued*, never run here. The VM worker (or Trigger
-    // fallback) picks take-homes up.
+    // Generation is *enqueued*, never run here. The VM worker picks take-homes up.
     if (jobKind === "takehome") {
       await enqueueTakehomeAdvance(jobId);
     }

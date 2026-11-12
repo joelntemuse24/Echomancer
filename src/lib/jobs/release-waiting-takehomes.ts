@@ -1,9 +1,8 @@
 /**
  * When a file finishes reading, its parked take-homes become runnable.
  * `ready` → `queued`. `failed` → `failed` with the upload's message.
- * Anything still being read is left `waiting`, so a `queued` /
- * `processing` claim (the retired Trigger drain, until its prod deploy
- * deletes the cron) does not pick it up.
+ * Anything still being read is left `waiting`. The VM drain claims a
+ * book once its file is ready or failed.
  */
 
 import { execute } from "@/lib/turso";

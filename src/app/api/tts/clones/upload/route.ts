@@ -21,7 +21,7 @@ import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
-import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
+import { isProductionDispatch } from "@/lib/jobs/takehome-dispatch";
 import {
   PRESIGN_EXPIRES_SECONDS,
   getUploadUrl,

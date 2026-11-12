@@ -1,6 +1,6 @@
 /**
  * Always-on Whole-book host. Vercel POSTs `{ jobId }` here; this process
- * imports `runTakehomeUntilSettled` in-process (same as takehome.advance).
+ * imports `runTakehomeUntilSettled` in-process.
  * Document extract also runs here, in a child process (`POST /extract`),
  * so a large parse does not take a Whole-book concurrency slot.
  */
@@ -10,9 +10,9 @@ import "@/worker/load-env";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { queryOne } from "@/lib/turso";
-import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
+import { assertTakehomeWorkerSecrets } from "@/lib/jobs/worker-secrets";
 import {
-  DEFAULT_TRIGGER_WAVE_BUDGET_MS,
+  DEFAULT_VM_WAVE_BUDGET_MS,
   listDrainableTakehomeJobs,
   releaseExpiredTakehomeLeases,
   releaseInFlightTakehomeLeases,
@@ -44,9 +44,7 @@ const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
 const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "15000");
 const CONCURRENCY = effectiveOrchestratorConcurrency(process.env);
 const WAVE_BUDGET_MS = Number(
-  process.env.TTS_VM_WAVE_BUDGET_MS ||
-    process.env.TTS_TRIGGER_WAVE_BUDGET_MS ||
-    DEFAULT_TRIGGER_WAVE_BUDGET_MS
+  process.env.TTS_VM_WAVE_BUDGET_MS || DEFAULT_VM_WAVE_BUDGET_MS
 );
 
 function header(req: IncomingMessage, name: string): string | undefined {
@@ -130,7 +128,7 @@ async function main(): Promise<void> {
     concurrency: CONCURRENCY,
     budgetMs: Number.isFinite(WAVE_BUDGET_MS)
       ? WAVE_BUDGET_MS
-      : DEFAULT_TRIGGER_WAVE_BUDGET_MS,
+      : DEFAULT_VM_WAVE_BUDGET_MS,
     runner: {
       runUntilSettled: runTakehomeUntilSettled,
       listDrainable: listDrainableTakehomeJobs,
@@ -212,9 +210,8 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await loop.waitIdle(30_000);
     // A job still inside a hung synthesize would otherwise exit with a live
-    // token. When that lease lapses, the Trigger deployment that still has
-    // `takehome.drain` can claim a processing row. Release only the tokens
-    // this process still holds.
+    // token. Release only the tokens this process still holds so the row
+    // returns to queued instead of sitting in processing.
     const released = await releaseInFlightTakehomeLeases().catch((err) => {
       console.error("[takehome-worker] lease release failed", err);
       return 0;

@@ -4,7 +4,7 @@
  * Worker is next when that POST is unreachable or the worker reports
  * itself unhealthy. Vercel is the last resort (inline for a small file,
  * `after()` otherwise), then the stall cap fails the row. This module
- * never enqueues `upload.extract` on Trigger.
+ * never enqueues a background task outside the worker, Cloudflare, and Vercel.
  */
 
 import { after } from "next/server";
@@ -13,7 +13,7 @@ import {
   enqueueExtractOnWorker,
   isTakehomeWorkerConfigured,
 } from "@/lib/jobs/takehome-worker-client";
-import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
+import { isProductionDispatch } from "@/lib/jobs/takehome-dispatch";
 import {
   claimExtractAdvance,
   failUploadExtract,
@@ -226,7 +226,6 @@ function nudgeInput(row: {
 /**
  * Status poll and the player job poll. Node, then Cloudflare, then Vercel,
  * then fail. One attempt counter and the 20-minute cap. Never throws.
- * Never Trigger.
  */
 export async function advanceStuckExtract(uploadId: string): Promise<boolean> {
   try {

@@ -29,13 +29,6 @@ import {
   uploadBookViaApi,
 } from "@/test/harness";
 
-vi.mock("@trigger.dev/sdk", () => ({
-  configure: vi.fn(),
-  tasks: {
-    trigger: vi.fn().mockResolvedValue({ id: "run_test" }),
-  },
-}));
-
 /**
  * The same book in three line shapes: a paste with hard wraps, the HTML a page
  * would serve, and the uploaded .txt. Every shape must land on this string.

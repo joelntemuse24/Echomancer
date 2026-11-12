@@ -1,6 +1,6 @@
 /**
  * Fish Starter allows 5 concurrent requests account-wide. Live Listen /
- * Live Stream on Vercel share FISH_API_KEY with Trigger take-home, so
+ * Live Stream on Vercel share FISH_API_KEY with Whole book on the VM, so
  * Whole book defaults to 4 and only uses 5 when no live request is in flight.
  */
 
@@ -163,7 +163,7 @@ let inProcess = 0;
 const waiters: Array<() => void> = [];
 
 /**
- * In-process gate so one Trigger worker never opens a sixth Fish call.
+ * In-process gate so one worker never opens a sixth Fish call.
  */
 export async function withFishSlot<T>(fn: () => Promise<T>): Promise<T> {
   while (inProcess >= FISH_ACCOUNT_CONCURRENCY) {

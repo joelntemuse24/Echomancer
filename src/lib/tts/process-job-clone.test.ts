@@ -634,8 +634,8 @@ describe("lane staging", () => {
       expect(result.deferred).toBe(true);
       // Book keeps its narrator. A first-light timeout holds for the rest
       // of the restore plus the opening section (~106s), not the 400s warm
-      // wait, and the row stays processing behind a lease the old Trigger
-      // drain will not claim.
+      // wait, and the row stays processing behind a lease an expired-lease
+      // claim will not take.
       const row = await jobRow(JOB_ID);
       expect(row?.provider_pin).toBe("modal");
       expect(Number(row?.clone_wait_started_at ?? 0)).toBeGreaterThan(0);

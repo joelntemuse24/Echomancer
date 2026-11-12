@@ -33,7 +33,7 @@ describe("Vercel hot path stays free of ffmpeg/torch", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("does not statically import the Trigger mastering worker from concat-audio", () => {
+  it("does not statically import the mastering worker from concat-audio", () => {
     const concat = readFileSync(
       path.join(root, "src/lib/tts/concat-audio.ts"),
       "utf8"

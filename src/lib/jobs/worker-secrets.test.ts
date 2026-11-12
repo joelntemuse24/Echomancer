@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { assertTakehomeWorkerSecrets } from "./trigger-secrets";
+import { assertTakehomeWorkerSecrets } from "./worker-secrets";
 
 const KEYS = [
   "FISH_API_KEY",
@@ -15,9 +15,7 @@ const KEYS = [
   "WORKER_SECRET",
   "TAKEHOME_WORKER_SECRET",
   "VERCEL",
-  "TRIGGER",
   "WORKER",
-  "TRIGGER_SECRET_KEY",
   "NODE_ENV",
 ] as const;
 
@@ -47,9 +45,7 @@ describe("assertTakehomeWorkerSecrets", () => {
     setEnv("TURSO_DATABASE_URL", ":memory:");
     setEnv("STORAGE_PATH", "/tmp/echomancer-test");
     setEnv("VERCEL", undefined);
-    setEnv("TRIGGER", undefined);
     setEnv("WORKER", undefined);
-    setEnv("TRIGGER_SECRET_KEY", undefined);
     setEnv("NODE_ENV", "test");
     expect(() => assertTakehomeWorkerSecrets()).not.toThrow();
   });

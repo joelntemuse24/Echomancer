@@ -20,7 +20,6 @@ const STUCK = "This file took too long to read. Try again.";
 beforeEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  delete process.env.TRIGGER_SECRET_KEY;
   delete process.env.VERCEL_ENV;
   delete process.env.EXTRACT_WORKER_URL;
   delete process.env.EXTRACT_WORKER_SECRET;

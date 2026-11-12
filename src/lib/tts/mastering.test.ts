@@ -212,41 +212,43 @@ describe("mastering constants", () => {
 });
 
 describe("shouldAttemptMastering", () => {
-  it("never runs on the Vercel isolate, even if Trigger flags leak in", () => {
+  it("never runs on the Vercel isolate", () => {
     process.env.VERCEL = "1";
-    process.env.TRIGGER = "1";
     process.env.TTS_MASTER_FULL_BOOK = "1";
     expect(shouldAttemptMastering()).toBe(false);
   });
 
-  it("runs on the Trigger worker", () => {
+  it("does not treat a leftover host flag as the VM", () => {
     delete process.env.VERCEL;
+    delete process.env.WORKER;
+    delete process.env.TTS_MASTER_FULL_BOOK;
+    delete process.env.DEEP_FILTER_BIN;
     process.env.TRIGGER = "1";
-    expect(shouldAttemptMastering()).toBe(true);
+    expect(shouldAttemptMastering()).toBe(false);
+    delete process.env.TRIGGER;
   });
 
   it("runs on the always-on VM worker", () => {
     delete process.env.VERCEL;
-    delete process.env.TRIGGER;
     process.env.WORKER = "1";
     expect(shouldAttemptMastering()).toBe(true);
   });
 
   it("honors skip and local opt-in flags", () => {
     delete process.env.VERCEL;
-    process.env.TRIGGER = "1";
+    process.env.WORKER = "1";
     process.env.TTS_MASTER_SKIP = "1";
     expect(shouldAttemptMastering()).toBe(false);
 
     delete process.env.TTS_MASTER_SKIP;
-    delete process.env.TRIGGER;
+    delete process.env.WORKER;
     process.env.TTS_MASTER_FULL_BOOK = "1";
     expect(shouldAttemptMastering()).toBe(true);
   });
 
-  it("treats DEEP_FILTER_BIN as the Trigger deploy signal", () => {
+  it("treats DEEP_FILTER_BIN as a worker host signal", () => {
     delete process.env.VERCEL;
-    delete process.env.TRIGGER;
+    delete process.env.WORKER;
     delete process.env.TTS_MASTER_FULL_BOOK;
     process.env.DEEP_FILTER_BIN = "/usr/local/bin/deep-filter";
     expect(shouldAttemptMastering()).toBe(true);

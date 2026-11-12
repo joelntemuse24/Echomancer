@@ -4,7 +4,7 @@
  *
  * Complete never downloads the source. It HEADs storage, then the always-on
  * Node worker reads the file from R2. Cloudflare extract is only used when
- * that worker is unreachable or unhealthy. Trigger is not used for extract.
+ * that worker is unreachable or unhealthy. Extract does not leave this app.
  */
 
 import { NextRequest, NextResponse } from "next/server";
