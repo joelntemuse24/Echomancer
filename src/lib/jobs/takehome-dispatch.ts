@@ -62,8 +62,8 @@ export { isTakehomeWorkerConfigured };
 /**
  * Wake the VM worker (preferred) or Trigger `takehome.advance`.
  * After a job row exists, dispatch failures are logged and the job stays
- * `queued` for the worker drain loop. The Trigger minute schedule is not
- * a fallback: turn `takehome.drain` off in the Trigger dashboard.
+ * `queued` for the worker drain loop. `TAKEHOME_TRIGGER_FALLBACK` fires
+ * `takehome.advance` only. There is no Trigger drain task.
  */
 export async function enqueueTakehomeAdvance(jobId: string): Promise<void> {
   if (isTakehomeWorkerConfigured()) {

@@ -212,8 +212,9 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await loop.waitIdle(30_000);
     // A job still inside a hung synthesize would otherwise exit with a live
-    // token. When that lease lapses, the legacy drain can claim a processing
-    // row. Release only the tokens this process still holds.
+    // token. When that lease lapses, the Trigger deployment that still has
+    // `takehome.drain` can claim a processing row. Release only the tokens
+    // this process still holds.
     const released = await releaseInFlightTakehomeLeases().catch((err) => {
       console.error("[takehome-worker] lease release failed", err);
       return 0;

@@ -1,8 +1,9 @@
 /**
  * When a file finishes reading, its parked take-homes become runnable.
  * `ready` → `queued`. `failed` → `failed` with the upload's message.
- * Anything still being read is left `waiting`, so the legacy Trigger
- * drain still cannot claim it.
+ * Anything still being read is left `waiting`, so a `queued` /
+ * `processing` claim (the retired Trigger drain, until its prod deploy
+ * deletes the cron) does not pick it up.
  */
 
 import { execute } from "@/lib/turso";

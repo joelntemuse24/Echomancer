@@ -3,7 +3,7 @@
  *
  * Production incident 2026-09-13: POST /api/pdf/upload/[id] complete returned
  * 200 with no error, but `upload.extract` only started as a child of the
- * minute cron `upload.drain`. `await import("@trigger.dev/sdk")` +
+ * minute cron `upload.drain`. That cron task is deleted. `await import("@trigger.dev/sdk")` +
  * `tasks.trigger` either no-oped or failed without a run id; the catch in
  * `enqueueUploadExtract` swallowed it.
  *
