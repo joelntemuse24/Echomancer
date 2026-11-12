@@ -112,62 +112,36 @@ describe("pre-warming the pool while the book is still packing", () => {
     return calls;
   }
 
-  it("starts a restore when a book is starting, not only after a miss", () => {
+  it("does not start a side cover when a book is starting", () => {
     vi.stubEnv("MODAL_TOKEN_ID", "test-token");
     const calls = spawner();
-    expect(prewarmModalCloneSnapshot("book starting", 1_000)).toBe(true);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]![0]).toBe("modal");
-  });
-
-  it("collapses a burst of books into one restore", () => {
-    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    const calls = spawner();
-    expect(prewarmModalCloneSnapshot("book a", 1_000)).toBe(true);
-    // A second book moments later must not start a second container.
+    expect(prewarmModalCloneSnapshot("book starting", 1_000)).toBe(false);
     expect(prewarmModalCloneSnapshot("book b", 2_000)).toBe(false);
     expect(
-      prewarmModalCloneSnapshot("book c", 1_000 + MODAL_CLONE_PREWARM_COOLDOWN_MS - 1)
-    ).toBe(false);
-    expect(calls).toHaveLength(1);
-    // Past the short pre-warm cooldown it may try again.
-    expect(
       prewarmModalCloneSnapshot("book d", 1_000 + MODAL_CLONE_PREWARM_COOLDOWN_MS)
-    ).toBe(true);
-    expect(calls).toHaveLength(2);
+    ).toBe(false);
+    expect(calls).toEqual([]);
   });
 
-  it("will not start a pre-warm while a compile kick is already running", () => {
+  it("still kicks one compile after a missed placement, and does not add a cover", () => {
     vi.stubEnv("MODAL_TOKEN_ID", "test-token");
     const calls = spawner();
-    // A placement miss kicks a compile-length cover and claims both clocks, so
-    // the next book cannot stack a second container on the same cold variant.
     expect(kickModalCloneSnapshotWarm("placement missed", 1_000)).toBe(true);
     expect(kickModalCloneSnapshotWarm("placement missed again", 2_000)).toBe(false);
     expect(
-      prewarmModalCloneSnapshot("book e", 1_000 + MODAL_CLONE_PREWARM_COOLDOWN_MS)
+      prewarmModalCloneSnapshot("book e", 1_000 + MODAL_CLONE_WARM_COOLDOWN_MS)
     ).toBe(false);
     expect(calls).toHaveLength(1);
-    // Once the compile cooldown is over a pre-warm is allowed again.
-    expect(
-      prewarmModalCloneSnapshot(
-        "book f",
-        1_000 + MODAL_CLONE_WARM_COOLDOWN_MS
-      )
-    ).toBe(true);
-    expect(MODAL_CLONE_PREWARM_COOLDOWN_MS).toBeLessThan(
-      MODAL_CLONE_WARM_COOLDOWN_MS
-    );
+    expect(calls[0]![0]).toBe("modal");
   });
 
   it("does nothing without credentials, and never throws", () => {
     vi.stubEnv("MODAL_TOKEN_ID", "");
     vi.stubEnv("MODAL_TOKEN_SECRET", "");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const calls = spawner();
     expect(prewarmModalCloneSnapshot("book g", 1_000)).toBe(false);
+    expect(kickModalCloneSnapshotWarm("miss", 1_000)).toBe(false);
     expect(calls).toHaveLength(0);
-    expect(warn).toHaveBeenCalled();
   });
 
   it("respects MODAL_S2_WARM_HOOK=0", () => {

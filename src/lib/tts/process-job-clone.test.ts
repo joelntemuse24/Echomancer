@@ -667,8 +667,8 @@ describe("lane staging", () => {
         backoffRemainingMs: 0,
       }))).toBeLessThanOrEqual(2);
       expect(await claimTakehomeLease(JOB_ID)).toBeNull();
-      // One pre-warm from the tick starting, one from the missed placement.
-      // Both are the same cheap RPC and the book never awaits either.
+      // The tick does not start a side cover. The missed placement still
+      // kicks one compile off the book path, and the book never awaits it.
       expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
       expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
     });
@@ -973,7 +973,7 @@ describe("lane staging", () => {
       expect(warmSpawn).toHaveLength(0);
     });
 
-    it("prewarms when the only GPU lease is this book's own row", async () => {
+    it("does not start a side cover when the only GPU lease is this book's own row", async () => {
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
@@ -1000,7 +1000,7 @@ describe("lane staging", () => {
       });
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
-      expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
+      expect(warmSpawn).toEqual([]);
     });
 
     it("keeps one call in flight when first light is off", async () => {

@@ -91,8 +91,8 @@ minute of audio, the 24 rows come back together, and the listener waits
 through the whole call.
 
 `planModalCloneBookWave` keeps the cold cap for the first call and for any
-call whose last success is older than `MODAL_S2_WARM_HOLD_MS` (default 165s,
-under the production 180s scaledown). After a successful answer each next
+call whose last success is older than `MODAL_S2_WARM_HOLD_MS` (default 30s,
+under the 45s autoscaler target). After a successful answer each next
 call is the largest prefix that finishes before the buffered audio runs out:
 
 ```

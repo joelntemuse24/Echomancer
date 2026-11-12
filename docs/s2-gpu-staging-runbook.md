@@ -662,8 +662,10 @@ than substituting a voice.
 book sends one `synthesize_batch` at a time on its own H100 (see
 `docs/s2-lane-budget.md`). The worker will not start a 21st GPU; the
 autoscaler has to allow the ones it does start. `min_containers` stays 0.
-`scaledown_window` can stay 180s; the client treats the pool as warm for
-165s after the last answer (`MODAL_S2_WARM_HOLD_MS`).
+`scaledown_window` is 45s (`scripts/s2/set-live-autoscaler.py`). The worker
+treats the pool as warm for 30s after the last answer
+(`MODAL_S2_WARM_HOLD_MS`), which is under that window. Restart the worker
+before lowering the live window. The script does not deploy.
 
 **Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
 already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
@@ -751,17 +753,24 @@ worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
 settings = worker.update_autoscaler(
     min_containers=0,        # scale to zero when idle; do not leave GPUs up
     max_containers=20,       # MODAL_S2_MAX_GPUS; one H100 per active clone book
-    scaledown_window=180,    # 180 s idle before a container is released
+    scaledown_window=45,     # 45 s idle before a container is released
 )
 print("live autoscaler now:", settings)
 assert settings.max_containers == 20, settings
 assert settings.min_containers == 0, settings
+assert settings.scaledown_window == 45, settings
 PY
 ```
 
+The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 45`.
+Restart the take-home worker before this, so its 30s warm hold is already
+under 45s. This does not deploy and does not wipe snapshots.
+
 Pass condition: the printed settings show `max_containers` 20 (or whatever
-`MODAL_S2_MAX_GPUS` is on the worker) and `min_containers` 0. A book wave
-still posts one call. A second book posts on a second container.
+`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 45, and
+`min_containers` 0. A book wave still posts one call. A second book posts
+on a second container. After the last book, the container releases in about
+45s instead of 180s. A gap longer than 45s mid-book costs one restore.
 
 #### Historical — do not run
 
@@ -903,21 +912,15 @@ because it cannot tell you the narration sounds right:
    shortfall, which is now how an incomplete book reports itself.
 
 **~57s of the cold figure is the Modal restore, and it is the floor when the
-restore starts at the synth call.** Two things move it off that clock without
-`min_containers>0`. Both are the same detached `modal run …::cover` (one
-`status()`), 3-minute cooldown, off when `MODAL_S2_WARM_HOOK=0`:
-
-- the worker starts it when extract is accepted, if that account already has a
-  trained clone
-- `GET /api/tts/voices` asks the worker (`POST /clone-prewarm`) when the list
-  contains a trained clone. Vercel has no Modal token
-
-A container that **finished** restoring before section 0 is the ~16–20s row.
-A restore still in progress does not take the HTTP call: Modal places a
-second container, the book still pays ~68s, and the prewarm was spent. The
-hit window is about 60s after the prewarm starts, then `scaledown_window`
-(production 180s) of idle. A fast click, or a pause longer than that window,
-stays cold. Stock-only accounts never start a GPU.
+restore starts at the synth call.** A side `modal run …::cover` is not used
+for that. With `max_inputs=1` the cover is a second container the book's
+POST does not join, and that container then idles for `scaledown_window`.
+Extract, the voice list, and the tick do not start one. The book's
+`/synthesize_batch` is the container. The first call pays about 68s. Later
+calls stay on it while the worker posts them back to back. A gap longer
+than the 45s window costs one restore, then the ramp resumes. Stock-only
+accounts never start a GPU. A placement that already missed its restore
+budget still kicks `::cover` off the book path.
 
 Section 0 is not held for transcript QA. That check spawns a fresh Whisper
 process, and the model load sat between the GPU and `first_section_at`. Later
@@ -926,17 +929,16 @@ The reference sample downloads beside packing, not after it. Section 0 stays
 ~800 characters: the container returns the whole batch at once, so a shorter
 first section underruns playback while the rest of the book is still in that
 one call. Switching the audio call itself from the HTTP gateway to RPC does
-not skip the restore — the 57s smoke was already an HTTP call, and the
-prewarm is already the RPC.
+not skip the restore — the 57s smoke was already an HTTP call.
 
 **Cost, so the floor can be beaten on purpose.** H100 is $0.001097/s
 ($3.95/hr) in `modal/s2_batch.py`.
 
 | Option | What it buys | Cost |
 |--|--|--|
-| This prewarm, and the book uses the container | ~16–20s first audio | the idle seconds between "warm" and the call, a few cents |
-| This prewarm, unused (opened the list, picked a stock voice, or left) | nothing on that book | ~60s restore + 180s scaledown ≈ **$0.26** |
-| Longer `scaledown_window` (runtime `update_autoscaler`, no redeploy) | a wider hit window after each prewarm. 600s instead of 180s | about **$0.46** extra per trailing idle, on every book that was last, not a standing GPU |
+| No side cover; the synthesize call restores the container | one H100 per book, no spare | the cold first call, about 68s of GPU |
+| `scaledown_window=45` after the last book (runtime `update_autoscaler`, no redeploy) | the idle tail drops from ~180s (~$0.20) to ~45s (~$0.05) | a mid-book gap past 45s pays one more restore |
+| Longer `scaledown_window` (same runtime call, no redeploy) | more room for a stall between batches | about $0.0011 per extra idle second, on the book that was last |
 | `min_containers=1` | the restore is gone for every book, including a fast click | **$3.95/hr**, about $2,840/mo continuous, or ~$870/mo for a 10-hour weekday |
 
 Before first light and the batching fix the same book spent **~4m38s** getting
@@ -1087,7 +1089,7 @@ Production app:     echomancer-s2-clone
 Build id:           __________  (same build validated on staging)
 Deploy env:         S2C_MAX_CONTAINERS unset (1)
 Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
-Runtime override:   update_autoscaler(max_containers=N, scaledown_window=180, min_containers=0)
+Runtime override:   update_autoscaler(max_containers=N, scaledown_window=45, min_containers=0)
 Live cap printed:   max_containers=N (N = MODAL_S2_MAX_GPUS, default 20; not the /ready label)
 Health labels:      /ready max_containers still ____ (deploy-time env; live cap is the 8c printout)
 ```

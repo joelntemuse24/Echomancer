@@ -197,6 +197,15 @@ cannot clobber its successor. Reclaim happens only when a lease actually expires
 The previous "stale after 75s" rule could not distinguish a hung worker from a
 slow one, so any section slower than the window was synthesized twice.
 
+A claim that loses — the token is already held, or the per-user or global
+inflight cap is full — returns once. `runTakehomeUntilSettled` does not walk
+`TTS_MAX_WAVES_PER_RUN` on that miss. The drain waits 400–1199ms before it
+tries that job again. While a wave is in progress and a slot is free, the
+drain still starts another queued book. The caps are the same SQL on the
+list and on the claim. When both the orchestrator and the caps allow a
+second book, the running book does not yield its slot just because the
+other one is queued. Cap 1 still yields so the single slot rotates.
+
 An Edge edge-tts whole book section is split into ~1,000–1,500-char chunks at
 paragraph / sentence boundaries before synthesis: up to 4 chunk sockets per
 section run in parallel (`EDGE_CHUNK_CONCURRENCY`, under a process-wide
@@ -357,7 +366,11 @@ one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
 not open a fleet. After that deploy an operator sets the live cap to
 `MODAL_S2_MAX_GPUS` (default **20**) with
-`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=180)`.
+`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=45)`
+(`scripts/s2/set-live-autoscaler.py`). That call does not deploy and does
+not wipe snapshots. Restart the worker first so its 30s warm hold is under
+the 45s window. A later `modal deploy` resets the override and must be
+followed by the script again.
 `/ready` still reports the deploy-time value, so the printed settings are
 the check. `min_containers` stays 0. The deployed class already has
 `@modal.concurrent(max_inputs=1)`, so a second book's POST is placed on
@@ -489,8 +502,8 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   are 1, 1, 1, 1, 1, 3, 16, then 24 — and the next call is planned from the
   wall time the previous call actually left.
   Playback does not stall once it has started. A gap longer than the
-  scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 165s, under the production
-  180s scaledown) is one cold-sized call again, then the ramp resumes.
+  scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 30s, under the 45s
+  autoscaler target) is one cold-sized call again, then the ramp resumes.
   Warmth is in-process memory: a worker restart costs one cold call.
   Under the ceiling, two 10-hour books are two of those ramps at once:
   wall **1,576,533 ms**, first audio **71,576 ms**, tightest margin
@@ -607,31 +620,18 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   warm GPU does not wait on the sample. A book already pinned to Fish does not
   download it. (A legacy `drama3` row is re-pinned before this point, so it
   follows whichever real engine that resolves to.)
-- **The restore starts before the person presses go**, for an account that
-  already has a trained clone. Two triggers, both the same
-  `prewarmModalCloneSnapshot` RPC (`modal run …::cover`, one `status()`, never
-  awaited, `MODAL_S2_WARM_HOOK=0` disables it). A book-start kick is keyed
-  by job id (still inside `MODAL_S2_MAX_GPUS` and the per-user cap, counted
-  from `modal_gpu_leases`). Voice-list and extract kicks stay on one shared
-  3-minute clock: the worker starts one when extract is accepted
-  (`prewarmClonePoolForUpload`), and the voice list asks the worker
-  (`POST /clone-prewarm`) when `GET /api/tts/voices` sees a trained clone.
-  Vercel does not hold
-  `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. A tick pre-warms
-  only when it will send uncached S2 narration: a new book with no outline
-  yet, so the restore overlaps packing, or a later tick that still has a
-  cache miss. Concat, saved-raw mastering, a fish pin, a retry of that CPU
-  work, and a tick whose remaining sections are all cached do not.
-  A container that **finished** restoring before the first HTTP call is a warm
-  first light: ~14s of section 0 at the one-row rate plus the section
-  loudnorm, about **16–20s** to `first_section_at`. A restore still in
-  progress does not join that call — Modal places a second container — so a
-  fast click still pays the cold figure, about **68s** (57s restore + 14s
-  synth + ~2s loudnorm). The warm window is restore (~60s) plus
-  `scaledown_window` (production 180s). `min_containers` stays 0. An unused
-  prewarm is ~60s of restore plus 180s of idle ≈ **$0.26** at the $3.95/hr
-  H100 in `modal/s2_batch.py`. A prewarm the book then uses costs only the
-  idle gap before the call.
+- **The book's `/synthesize_batch` is the only container it starts.** A side
+  `modal run …::cover` is a second input. `@modal.concurrent(max_inputs=1)`
+  will not attach that POST to a cover that is still restoring, so the cover
+  comes up, serves nothing, and idles for `scaledown_window`. Extract, the
+  voice list, and the tick do not call `prewarmModalCloneSnapshot`.
+  `POST /clone-prewarm` still answers and starts nothing. A stock-only
+  account never starts a GPU. Concat, saved-raw mastering, a fish pin, and a
+  tick whose sections are cached do not either. The first call pays the cold
+  figure, about **68s** (57s restore + 14s synth + ~2s loudnorm). Later calls
+  stay on that same container while the worker posts them back to back.
+  `min_containers` stays 0. A placement that already missed its restore
+  budget still kicks `::cover` off the book path so the snapshot can finish.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or

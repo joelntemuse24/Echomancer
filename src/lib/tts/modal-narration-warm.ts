@@ -1,12 +1,11 @@
 import type { CloneProviderChoice } from "@/lib/tts/providers/modal-clone-guard";
 
 /**
- * Whether this tick may start a GPU snapshot restore before it has an outline.
+ * A tick must not start a side `::cover` before the outline exists.
  *
- * A brand-new book has no sections yet, so the restore overlaps packing.
- * A book that already has an outline waits until we know a section still
- * needs S2: concat, saved raw, and a cache hit must not start a container.
- * A fish pin never does, including a book that fell back off the GPU.
+ * The book's `POST /synthesize_batch` is the container it will use. A cover
+ * beside that POST restores a second H100 that never receives the request.
+ * Concat, a fish pin, and a book with nothing left to speak stay dark too.
  */
 export function shouldPrewarmBeforeOutline(input: {
   modalVoice: boolean;
@@ -14,24 +13,19 @@ export function shouldPrewarmBeforeOutline(input: {
   totalSections: number;
   claimableCount: number;
 }): boolean {
-  if (!input.modalVoice) return false;
-  if (input.clonePin === "fish") return false;
-  if (input.totalSections > 0 && input.claimableCount === 0) return false;
-  if (input.totalSections > 0 && input.claimableCount > 0) return false;
-  return true;
+  void input;
+  return false;
 }
 
 /**
- * Whether a tick that already classified its sections should start a restore.
- * Only an uncached S2 render does. Cache hits, a fish pin, and an empty
- * claim set do not.
+ * A tick that already knows it will synthesize must not start a side cover.
+ * The uncached rows go out on `/synthesize_batch`, and that call is the GPU.
  */
 export function shouldPrewarmModalNarration(input: {
   modalVoice: boolean;
   clonePin: CloneProviderChoice | null;
   uncachedRenderCount: number;
 }): boolean {
-  if (!input.modalVoice) return false;
-  if (input.clonePin !== "modal") return false;
-  return input.uncachedRenderCount > 0;
+  void input;
+  return false;
 }

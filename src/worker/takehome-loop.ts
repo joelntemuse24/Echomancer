@@ -29,8 +29,22 @@ export interface TakehomeWorkerLoopOptions {
   drainLimit?: number;
   /** How long to skip the database after a transient error. Default 5s. */
   backoffMs?: number;
+  /**
+   * How long to wait before starting a job whose claim just lost.
+   * Default is 400–1199ms from {@link leaseContentionBackoffMs}.
+   */
+  contentionBackoffMs?: (now: number) => number;
   now?: () => number;
   log?: Pick<typeof console, "info" | "error">;
+}
+
+/**
+ * Pause before the drain starts a job that just lost its claim.
+ * 400ms plus up to 799ms from the clock, so two losers do not retry together
+ * and a free slot is tried again within a couple of seconds.
+ */
+export function leaseContentionBackoffMs(now = Date.now()): number {
+  return 400 + (Math.abs(now) % 800);
 }
 
 export class TakehomeWorkerLoop {
@@ -39,6 +53,8 @@ export class TakehomeWorkerLoop {
     null;
   private stopped = false;
   private nextDrainAt = 0;
+  /** A job that just lost a claim. The drain skips it until this time. */
+  private nextAttemptAt = new Map<string, number>();
   /** A drain arrived while a job was already in flight. Run once more when it settles. */
   private rerunAfterSettle = false;
   private readonly log: Pick<typeof console, "info" | "error">;
@@ -73,6 +89,8 @@ export class TakehomeWorkerLoop {
     if (!jobId) return false;
     if (this.inflight.has(jobId)) return false;
     if (this.inflight.size >= this.concurrency) return false;
+    const now = this.opts.now?.() ?? Date.now();
+    if (now < (this.nextAttemptAt.get(jobId) ?? 0)) return false;
     this.start(jobId);
     return true;
   }
@@ -107,6 +125,7 @@ export class TakehomeWorkerLoop {
           this.rerunAfterSettle = true;
           continue;
         }
+        if ((this.nextAttemptAt.get(id) ?? 0) > now) continue;
         if (this.inflight.size >= this.concurrency) break;
         this.start(id);
         started.push(id);
@@ -139,9 +158,11 @@ export class TakehomeWorkerLoop {
     // is parked `waiting` and the drain cadence (not an immediate re-drain)
     // picks it up again, so one waiting book cannot hold a TTS slot.
     let deferred = false;
+    let settled = "failed";
     const run = this.opts.runner
       .runUntilSettled(jobId, this.opts.budgetMs)
       .then((result) => {
+        settled = result.status;
         deferred = result.status === "deferred";
         this.log.info(
           `[takehome-worker] job ${jobId} settled status=${result.status}`
@@ -152,6 +173,14 @@ export class TakehomeWorkerLoop {
       })
       .finally(() => {
         this.inflight.delete(jobId);
+        if (settled === "busy") {
+          const now = this.opts.now?.() ?? Date.now();
+          const delay =
+            this.opts.contentionBackoffMs?.(now) ?? leaseContentionBackoffMs(now);
+          this.nextAttemptAt.set(jobId, now + Math.max(0, delay));
+        } else {
+          this.nextAttemptAt.delete(jobId);
+        }
         const rerun = this.rerunAfterSettle;
         this.rerunAfterSettle = false;
         // A deferred book must not spin. A drain that overlapped this run

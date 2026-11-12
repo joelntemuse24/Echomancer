@@ -5,7 +5,7 @@ import {
 } from "@/lib/tts/modal-narration-warm";
 
 describe("shouldPrewarmBeforeOutline", () => {
-  it("starts a restore for a new modal book that has no outline yet", () => {
+  it("does not start a side cover for a new modal book", () => {
     expect(
       shouldPrewarmBeforeOutline({
         modalVoice: true,
@@ -13,7 +13,7 @@ describe("shouldPrewarmBeforeOutline", () => {
         totalSections: 0,
         claimableCount: 0,
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not start one for concat, saved raw, cache, or a fish pin", () => {
@@ -53,14 +53,14 @@ describe("shouldPrewarmBeforeOutline", () => {
 });
 
 describe("shouldPrewarmModalNarration", () => {
-  it("starts a restore only for uncached modal renders", () => {
+  it("does not start a side cover for uncached modal renders", () => {
     expect(
       shouldPrewarmModalNarration({
         modalVoice: true,
         clonePin: "modal",
         uncachedRenderCount: 2,
       })
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldPrewarmModalNarration({
         modalVoice: true,
