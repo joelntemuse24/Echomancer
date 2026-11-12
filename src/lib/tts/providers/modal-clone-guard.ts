@@ -253,9 +253,11 @@ function clampMs(
  * Shared slot cap across workers, not the number of GPUs one book opens.
  *
  * A book wave sends one call. This cap stays at 4 so a second worker blocks
- * on the slot instead of posting without a limit. With `S2C_MAX_CONTAINERS=1`
- * a second POST is 429, not a second H100. Do not raise the autoscaler to
- * match this number. `min_containers` stays 0.
+ * on the slot instead of posting without a limit. The deployed class is
+ * `@modal.concurrent(max_inputs=1)`, so a second POST is placed on another
+ * container (its own snapshot restore) rather than answered 429. A 429
+ * `lane_busy` body is still busy, not cold. Do not raise the autoscaler
+ * to match this number. `min_containers` stays 0.
  */
 export const MODAL_CLONE_LANES_DEFAULT = 4;
 export const MODAL_CLONE_LANES_MAX = 8;

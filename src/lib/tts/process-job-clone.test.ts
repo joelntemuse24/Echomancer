@@ -20,7 +20,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { execute, query } from "@/lib/turso";
 import {
   BATCH_HOST,
   READY_HOST,
@@ -615,7 +615,7 @@ describe("lane staging", () => {
           (item: { key: string }) => Number(item.key)
         );
         batchCalls.push(keys);
-        // Both attempts at section 0 miss the restore budget.
+        // The worker drops this wait. The handler would still be rendering.
         throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -625,18 +625,382 @@ describe("lane staging", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
-      // Section 0 and its one retry. Sections 1..N never open a lane: on a pool
-      // that could not restore one call, four calls are four more failures.
-      expect(batchCalls.length).toBe(2);
+      // The worker dropped the HTTP wait. The sync handler keeps rendering
+      // section 0, so those sections are not posted again in this dispatch
+      // (a second POST would be another container and a second bill).
+      // Sections 1..N never open a lane either.
+      expect(batchCalls.length).toBe(1);
       for (const keys of batchCalls) expect(keys).toEqual([0]);
       expect(result.deferred).toBe(true);
-      // Book keeps its narrator and the compile is finished off this path.
+      // Book keeps its narrator. A first-light timeout holds for the rest
+      // of the restore plus the opening section (~106s), not the 400s warm
+      // wait, and the row stays processing behind a lease the old Trigger
+      // drain will not claim.
       const row = await jobRow(JOB_ID);
       expect(row?.provider_pin).toBe("modal");
+      expect(Number(row?.clone_wait_started_at ?? 0)).toBeGreaterThan(0);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const hold = Number(row?.lease_expires_at) - nowSec;
+      expect(hold).toBeGreaterThanOrEqual(104);
+      expect(hold).toBeLessThanOrEqual(130);
+      expect(Number(row?.sched_not_before) - nowSec).toBeGreaterThanOrEqual(104);
+      expect(Number(row?.sched_not_before) - nowSec).toBeLessThanOrEqual(130);
+      expect(row?.status).toBe("processing");
+      expect(row?.processing_lease_token).toBeTruthy();
+      const visibleToOldDrain = await query<{ id: string }>(
+        `SELECT id FROM jobs WHERE id = ? AND (
+           status = 'queued'
+           OR (
+             status = 'processing'
+             AND lease_expires_at IS NOT NULL
+             AND lease_expires_at <= unixepoch()
+           )
+         )`,
+        [JOB_ID]
+      );
+      expect(visibleToOldDrain).toEqual([]);
+      const { claimTakehomeLease, cloneParkSeconds } = await import("@/lib/tts/process-job");
+      expect(Math.abs(hold - cloneParkSeconds({
+        abortedCount: 1,
+        firstLightMiss: true,
+        warmAbort: false,
+        backoffRemainingMs: 0,
+      }))).toBeLessThanOrEqual(2);
+      expect(await claimTakehomeLease(JOB_ID)).toBeNull();
       // One pre-warm from the tick starting, one from the missed placement.
       // Both are the same cheap RPC and the book never awaits either.
       expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
       expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
+    });
+
+    it("switches to Fish once repeated timeouts spend the defer budget", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.MODAL_S2_READY = "0";
+      process.env.MODAL_S2_DEFER_MS = "120000";
+      process.env.FISH_API_KEY = "test-fish";
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const batchCalls: number[][] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+          if (endpointOf(String(url)) !== "batch") {
+            throw new Error("probe is off");
+          }
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          const keys = (Array.isArray(body.items) ? body.items : []).map(
+            (item: { key: string }) => Number(item.key)
+          );
+          batchCalls.push(keys);
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        })
+      );
+      await seedCloneJob("Hello from the book.");
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      for (let tick = 0; tick < 6; tick += 1) {
+        const row = await jobRow(JOB_ID);
+        if (row?.provider_pin === "fish" || row?.status === "ready") break;
+        await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+        // The park is real SQLite time. Clearing it stands in for that
+        // hold expiring, while Date.now moves the Fish clock.
+        await execute(
+          `UPDATE jobs SET sched_not_before = NULL, status = 'queued',
+             processing_lease_token = NULL, lease_expires_at = NULL
+           WHERE id = ? AND status != 'ready'`,
+          [JOB_ID]
+        );
+        now += 50_000;
+      }
+      const row = await jobRow(JOB_ID);
+      expect(row?.provider_pin).toBe("fish");
+      expect(row?.status).toBe("ready");
+      expect(batchCalls.length).toBeGreaterThan(0);
+      expect(batchCalls.length).toBeLessThanOrEqual(4);
+      delete process.env.FISH_API_KEY;
+      delete process.env.MODAL_S2_DEFER_MS;
+      delete process.env.MODAL_S2_READY;
+    });
+
+    it("switches to Fish on one timeout when the clock is already spent", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.MODAL_S2_READY = "0";
+      process.env.FISH_API_KEY = "test-fish";
+      const batchCalls: number[][] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+          if (endpointOf(String(url)) !== "batch") throw new Error("probe is off");
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          batchCalls.push(
+            (Array.isArray(body.items) ? body.items : []).map(
+              (item: { key: string }) => Number(item.key)
+            )
+          );
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        })
+      );
+      await seedCloneJob("Hello from the book.");
+      await execute(
+        `UPDATE jobs SET clone_wait_started_at = ? WHERE id = ?`,
+        [Math.floor(Date.now() / 1000) - 3600, JOB_ID]
+      );
+      const fake = await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      const row = await jobRow(JOB_ID);
+      expect(row?.provider_pin).toBe("fish");
+      expect(batchCalls.length).toBe(1);
+      expect(fake.calls.length).toBeGreaterThan(0);
+      expect(row?.status).toBe("ready");
+      delete process.env.FISH_API_KEY;
+      delete process.env.MODAL_S2_READY;
+    });
+
+    it("clears the Fish clock when a section publishes", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      vi.stubGlobal("fetch", warmPool(2));
+      await seedCloneJob("A sentence. ".repeat(40));
+      await execute(
+        `UPDATE jobs SET provider_pin = 'modal', clone_wait_started_at = ? WHERE id = ?`,
+        [Math.floor(Date.now() / 1000) - 100, JOB_ID]
+      );
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const row = await jobRow(JOB_ID);
+      const segments = JSON.parse(String(row?.segments_json ?? "[]")) as {
+        status?: string;
+      }[];
+      expect(segments.some((segment) => segment.status === "ready")).toBe(true);
+      expect(Number(row?.clone_wait_started_at ?? 0)).toBe(0);
+    });
+
+    it("does not charge an attempt for a section whose call was aborted", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      let batches = 0;
+      const timedOut: number[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+          if (endpointOf(String(url)) === "ready") {
+            return new Response(
+              JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          const items = Array.isArray(body.items) ? body.items : [];
+          const keys = items.map((item: { key: string }) => Number(item.key));
+          batches += 1;
+          if (batches === 1) {
+            return new Response(
+              JSON.stringify({
+                items: items.map((item: { key: string; text: string }) => ({
+                  key: item.key,
+                  audio_b64: Buffer.from(fakeMp3(2048, 3)).toString("base64"),
+                  duration_s: (item.text.length / 900) * 60,
+                  units: 2,
+                  truncated_units: 0,
+                })),
+                build: "abc123",
+                container_id: "c-1",
+                seed: 11,
+              }),
+              { headers: { "Content-Type": "application/json" } }
+            );
+          }
+          timedOut.push(...keys);
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        })
+      );
+      await seedCloneJob("A sentence. ".repeat(900));
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      expect(timedOut.length).toBeGreaterThan(0);
+      const row = await jobRow(JOB_ID);
+      const segments = JSON.parse(String(row?.segments_json ?? "[]")) as {
+        index: number;
+        attempts?: number;
+        status?: string;
+      }[];
+      for (const index of timedOut) {
+        const segment = segments.find((row) => row.index === index);
+        expect(segment?.attempts ?? 0).toBe(0);
+        expect(segment?.status).not.toBe("failed");
+      }
+      // The call after first audio is a warm call. Its park is the warm
+      // HTTP wait. A first-light-sized hold fails this.
+      const nowSec = Math.floor(Date.now() / 1000);
+      expect(Number(row?.lease_expires_at) - nowSec).toBeGreaterThanOrEqual(390);
+    });
+
+    it("parks a cold-pool backoff for the remaining 30s, not the warm wait", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      const batchCalls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url) => {
+          const host = endpointOf(String(url));
+          if (host === "batch") batchCalls.push(host);
+          if (host === "ready") {
+            return new Response(
+              JSON.stringify({ ready: false, warm_containers: 0 }),
+              { status: 503, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          throw new Error("no synthesize call should be made");
+        })
+      );
+      await seedCloneJob("A sentence for the reader.");
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const first = await jobRow(JOB_ID);
+      expect(first?.status).toBe("queued");
+      expect(first?.lease_expires_at ?? null).toBeNull();
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const second = await jobRow(JOB_ID);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const hold = Number(second?.lease_expires_at) - nowSec;
+      expect(hold).toBeGreaterThanOrEqual(20);
+      expect(hold).toBeLessThan(45);
+      expect(batchCalls).toEqual([]);
+      expect(second?.provider_pin).toBe("modal");
+    });
+
+    it("does not switch to Fish when a published section cleared the clock", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.FISH_API_KEY = "test-fish";
+      let batches = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+          if (endpointOf(String(url)) === "ready") {
+            return new Response(
+              JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          const items = Array.isArray(body.items) ? body.items : [];
+          batches += 1;
+          if (batches === 1) {
+            return new Response(
+              JSON.stringify({
+                items: items.map((item: { key: string; text: string }) => ({
+                  key: item.key,
+                  audio_b64: Buffer.from(fakeMp3(2048, 3)).toString("base64"),
+                  duration_s: (item.text.length / 900) * 60,
+                  units: 2,
+                  truncated_units: 0,
+                })),
+                build: "abc123",
+                container_id: "c-1",
+                seed: 11,
+              }),
+              { headers: { "Content-Type": "application/json" } }
+            );
+          }
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        })
+      );
+      await seedCloneJob("A sentence. ".repeat(900));
+      await execute(
+        `UPDATE jobs SET clone_wait_started_at = ? WHERE id = ?`,
+        [Math.floor(Date.now() / 1000) - 3600, JOB_ID]
+      );
+      await fakeAdapter();
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      const row = await jobRow(JOB_ID);
+      expect(row?.provider_pin).toBe("modal");
+      const started = Number(row?.clone_wait_started_at ?? 0);
+      expect(started).toBeGreaterThan(Math.floor(Date.now() / 1000) - 120);
+      delete process.env.FISH_API_KEY;
+    });
+
+    it("does not prewarm a book whose file is still being read", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      const { resetModalCloneWarmForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      resetModalCloneRuntimeForTests();
+      resetModalCloneWarmForTests();
+      configureModal();
+      process.env.MODAL_TOKEN_ID = "test-token";
+      await seedCloneJob("One sentence for the reader.");
+      await execute(`UPDATE uploads SET status = 'extracting' WHERE id = ?`, [
+        UPLOAD_ID_A,
+      ]);
+      const warmSpawn: string[][] = [];
+      const { setModalCloneWarmSpawnerForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      setModalCloneWarmSpawnerForTests((command, args) => {
+        warmSpawn.push([command, ...args]);
+      });
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      expect(result.deferred).toBe(true);
+      expect(warmSpawn).toHaveLength(0);
+    });
+
+    it("prewarms when the only GPU lease is this book's own row", async () => {
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      const { resetModalCloneWarmForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      resetModalCloneRuntimeForTests();
+      resetModalCloneWarmForTests();
+      configureModal();
+      process.env.MODAL_TOKEN_ID = "test-token";
+      process.env.MODAL_S2_MAX_GPUS = "1";
+      await seedCloneJob("One sentence for the reader.");
+      await execute(
+        `INSERT INTO modal_gpu_leases (job_id, user_id, owner_token, created_at, expires_at)
+         VALUES (?, ?, 'owner', unixepoch(), unixepoch() + 120)`,
+        [JOB_ID, USER_A]
+      );
+      const warmSpawn: string[][] = [];
+      const { setModalCloneWarmSpawnerForTests } = await import(
+        "@/lib/tts/providers/modal-clone-warm"
+      );
+      setModalCloneWarmSpawnerForTests((command, args) => {
+        warmSpawn.push([command, ...args]);
+      });
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
+      expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
     });
 
     it("keeps one call in flight when first light is off", async () => {

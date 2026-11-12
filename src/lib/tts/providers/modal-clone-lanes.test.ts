@@ -436,7 +436,7 @@ describe("lane dispatch", () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
-  it("retries a placement that missed the restore budget on another container", async () => {
+  it("retries a gateway miss on another container", async () => {
     const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
     const failed = new Set<string>();
     const render = vi.fn(async (items: { key: string }[]) => {
@@ -643,7 +643,7 @@ describe("first light: section 0 before the fan-out", () => {
     expect(result.cold).toBe(false);
   });
 
-  it("does not fan out when section 0 never comes back", async () => {
+  it("retries a gateway miss of section 0 once, and does not fan out", async () => {
     // One cold restore for the section the player needs, then stop. Opening
     // three more lanes would be the same restore budget three more times.
     const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
@@ -663,13 +663,39 @@ describe("first light: section 0 before the fan-out", () => {
       render,
       stage: async () => {},
     });
-    // Two attempts at section 0 (the original plus one retry), and nothing else.
+    // A gateway miss is one retry. A client timeout is a different test.
     expect(render).toHaveBeenCalledTimes(2);
     expect(result.cold).toBe(true);
     expect(result.staged).toBe(0);
     expect(result.firstLight).toMatchObject({ index: 0, staged: false });
     // The off-path RPC is still what finishes the compile.
     expect(kick).toHaveBeenCalled();
+  });
+
+  it("does not retry section 0 when the worker drops the HTTP wait", async () => {
+    const render = vi.fn(async () => {
+      throw new ModalCloneColdError(
+        "did not answer within 75s",
+        30_000,
+        "placement",
+        "restore",
+        true
+      );
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2, 3],
+      textAt: () => "x".repeat(500),
+      lanes: 4,
+      batch: 24,
+      seedEpoch: 0,
+      firstLight: true,
+      jobId: "job-b",
+      render,
+      stage: async () => {},
+    });
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(result.abortedIndexes).toEqual([0]);
+    expect(result.staged).toBe(0);
   });
 
   it("keeps the whole book moving when only section 0 is retried", async () => {

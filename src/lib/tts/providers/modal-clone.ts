@@ -17,11 +17,15 @@
  * `MODAL_S2_COLD_WAIT_MS`, hard ceiling 180 s). It must not wait for a compile
  * (8–16 min). A placement that is still cold at that budget throws
  * {@link ModalCloneColdError} with `scope: "placement"`: the HTTP wait is
- * dropped, another lane may try, and an off-path RPC warm is kicked so that
- * worker variant can finish its snapshot. HTTP cannot — the proxy dies at
- * ~542 s and leaves nothing. A probe that says the pool is empty is
- * `scope: "pool"` and does not open more calls. The worker parks the book
- * and, only after `MODAL_S2_DEFER_MS`, switches engine.
+ * dropped. A gateway miss (502/503/504) may be tried once on another
+ * container. A client timeout is different: the sync handler keeps rendering,
+ * so those sections are not posted again in the same dispatch, and the 30s
+ * backoff is this book only. An off-path RPC warm is kicked so that worker
+ * variant can finish its snapshot. HTTP cannot — the proxy dies at ~542 s
+ * and leaves nothing. There is no Modal-side cancel in this process.
+ * A probe that says the pool is empty is `scope: "pool"` and does not open
+ * more calls. The worker parks the book and, only after `MODAL_S2_DEFER_MS`,
+ * switches engine.
  *
  * Falling through to another engine mid-book is what produced two narrators in
  * one audiobook, so it only happens when the worker has run out of defer
@@ -73,6 +77,7 @@ import {
   modalCloneArmedWaitMs,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import {
+  forgetModalClonePrewarm,
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
 } from "@/lib/tts/providers/modal-clone-warm";
@@ -108,17 +113,34 @@ export class ModalCloneColdError extends Error {
    * so it must not kick a snapshot compile. `restore` may.
    */
   readonly waitKind?: "restore" | "steady" | "warm";
+  /**
+   * The worker dropped the HTTP wait (`TimeoutError` / `AbortError`).
+   * The sync Modal handler keeps rendering that input. A second POST of
+   * the same sections is another container (`max_inputs=1` does not
+   * answer 429) and bills the text twice, so dispatch must not send
+   * them again in this wave.
+   */
+  readonly clientAborted: boolean;
+  /**
+   * This process asked this book to wait. It is not an empty pool, and it
+   * must not start or advance `clone_wait_started_at`.
+   */
+  readonly selfBackoff: boolean;
   constructor(
     message = "Modal clone pool is cold",
     retryAfterMs = COLD_BACKOFF_MS,
     scope: ModalCloneColdScope = "pool",
-    waitKind?: "restore" | "steady" | "warm"
+    waitKind?: "restore" | "steady" | "warm",
+    clientAborted = false,
+    selfBackoff = false
   ) {
     super(message);
     this.name = "ModalCloneColdError";
     this.retryAfterMs = retryAfterMs;
     this.scope = scope;
     this.waitKind = waitKind;
+    this.clientAborted = clientAborted;
+    this.selfBackoff = selfBackoff;
   }
 }
 
@@ -131,10 +153,12 @@ export class ModalCloneReferenceError extends Error {
 }
 
 /**
- * The container answered 429: its single GPU lane is already rendering.
+ * The container answered 429: its lane is already rendering.
  *
- * Retryable, and distinct from cold: another container may be free right now,
- * so this must not start a cold backoff.
+ * The deployed class is `@modal.concurrent(max_inputs=1)`, so Modal places
+ * a second input on another container instead of returning 429. This error
+ * stays as the backstop for a container that still answers `lane_busy`.
+ * It is busy, not cold, and must not start a cold backoff.
  */
 export class ModalCloneLaneBusyError extends Error {
   constructor(message: string) {
@@ -181,28 +205,81 @@ interface AttemptState {
 const EMPTY_ATTEMPT: AttemptState = { count: 0, hardFaults: 0, lastError: null };
 
 const attempts = new Map<string, AttemptState>();
-let notReadyUntil = 0;
+/** App-wide backoff. Set only when the pool itself is empty. */
+let poolColdUntil = 0;
+/** Per-book backoff. One book's miss must not delay another book. */
+const jobColdUntil = new Map<string, number>();
+/** Live GPU leases, reused for a couple of seconds across calls in one tick. */
+let leaseCache: {
+  at: number;
+  rows: { jobId: string; userId: string }[];
+} | null = null;
+const LEASE_CACHE_MS = 2_000;
 /**
  * When this process last got audio back from the one H100.
  * Lost on restart, which costs one cold-sized call and then fat batches again.
  * Not a database column: a worker restart must not write production rows.
  */
 let poolAnsweredAt: number | null = null;
+/** When this book last got audio back from its own container. */
+const bookAnsweredAt = new Map<string, number>();
 
 export function resetModalCloneRuntimeForTests(): void {
   attempts.clear();
-  notReadyUntil = 0;
+  poolColdUntil = 0;
+  jobColdUntil.clear();
+  leaseCache = null;
   poolAnsweredAt = null;
+  bookAnsweredAt.clear();
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
 }
 
-export function noteModalClonePoolAnswered(now: number = Date.now()): void {
+export function noteModalClonePoolAnswered(
+  now: number = Date.now(),
+  jobId?: string
+): void {
   poolAnsweredAt = now;
+  if (!jobId) return;
+  touchBookMap(bookAnsweredAt, jobId, now);
+}
+
+function touchBookMap(map: Map<string, number>, key: string, value: number): void {
+  // Re-insert so a live book is not the first entry evicted.
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > 4_000) {
+    const oldest = map.keys().next().value;
+    if (oldest) map.delete(oldest);
+  }
+}
+
+/** Drop this book's in-process warmth, backoff, and prewarm clock. */
+export function forgetModalCloneJob(jobId: string): void {
+  bookAnsweredAt.delete(jobId);
+  jobColdUntil.delete(jobId);
+  forgetModalClonePrewarm(jobId);
 }
 
 export function noteModalClonePoolLost(): void {
   poolAnsweredAt = null;
+}
+
+export function noteModalCloneBookLost(jobId: string): void {
+  bookAnsweredAt.delete(jobId);
+}
+
+/**
+ * True while this book has heard its own container inside the scaledown hold.
+ * Another book's answer does not count: that container is busy with them,
+ * and this book's call is placed on a container that still has to restore.
+ */
+export function modalCloneBookContainerWarm(
+  jobId: string | undefined,
+  now: number = Date.now()
+): boolean {
+  if (!jobId) return clonePoolStillWarm(now, poolAnsweredAt);
+  return clonePoolStillWarm(now, bookAnsweredAt.get(jobId) ?? null);
 }
 
 /** True while the last successful answer is still inside the scaledown hold. */
@@ -472,7 +549,8 @@ export async function renderModalCloneBatch(
     signal,
     opts?.raceForFirstAudio === true,
     opts?.workMs ?? 0,
-    opts?.warmBatch === true
+    opts?.warmBatch === true,
+    jobId
   );
   // Accounting only. It cannot refuse, and failing to record never blocks.
   await recordModalCloneUsage(userId, chars);
@@ -529,13 +607,18 @@ export async function renderModalCloneBatch(
     row.audio_b64 = undefined;
     row.audio_base64 = undefined;
   }
+  const parsedRows = (body.items ?? []).length;
   body.items = undefined;
   if (undecodable.length > 0) {
     throw new Error(
       `Modal clone batch returned ${undecodable.length} row(s) without decodable audio (${undecodable.join(",")})`
     );
   }
-  if (out.size > 0) noteModalClonePoolAnswered();
+  // A parsed body is this book's container, even when every row errored.
+  // Otherwise the next call is sized warm and then waited on as a restore.
+  if (out.size > 0 || parsedRows > 0) {
+    noteModalClonePoolAnswered(Date.now(), jobId);
+  }
   return {
     audio: out,
     build: body.build ?? null,
@@ -686,7 +769,13 @@ export async function synthesizeModalClone(
   const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
   const userId = reference.userId;
   const catalogVoiceId = input.catalogVoiceId || input.voiceId;
-  const wait = await assertModalCloneReady(input.signal);
+  const wait = await assertModalCloneReady(
+    input.signal,
+    false,
+    0,
+    false,
+    input.jobId
+  );
 
   const key = attemptKey(catalogVoiceId, input.text);
   const state = attemptState(key);
@@ -726,7 +815,9 @@ export async function synthesizeModalClone(
       // process must not open another compile-length wait. Lane dispatch uses
       // the batch call, which does not set this, so it can still retry once.
       if (err instanceof ModalCloneColdError && err.scope === "placement") {
-        rememberModalCloneCold();
+        // The next section of this book waits out the backoff. Another
+        // book's ramp is a different key and is not held.
+        rememberModalCloneCold(input.jobId);
       }
       // A hard fault is recorded so the next call surfaces it rather than
       // reporting a spent ledger. Cold and lane-busy are not the section's
@@ -1043,62 +1134,240 @@ export async function readModalCloneJson(response: Response): Promise<unknown> {
   return response.json();
 }
 
-type ModalCallWait = { ms: number; kind: "restore" | "steady" | "warm" };
+type ModalCallWait = {
+  ms: number;
+  kind: "restore" | "steady" | "warm";
+  jobId?: string;
+  /**
+   * The probe saw zero warm containers and no other S2 call. Only then
+   * does a miss freeze every book.
+   */
+  appWideCold?: boolean;
+};
+
+/**
+ * Whether this call may use the steady budget.
+ *
+ * `warm_containers > 0` means some container finished restoring. With
+ * `max_inputs=1` that container is busy for the book that holds it, so
+ * another book's call is placed on a container that still has to restore.
+ * Spare warmth is `warm_containers` above the other live GPU leases.
+ * A book's first call, and any call before that book has heard its own
+ * container, always uses the restore budget. A spare container is still
+ * not this book's. Probe unknown (`warmContainers < 0`) is not warmth for
+ * an unconfirmed book; a book that already heard its container keeps the
+ * warm budget when the probe is missing. A call with no job id keeps the
+ * old rule (`warm_containers > 0`).
+ */
+export function modalCloneKnownWarmForCall(input: {
+  warmContainers: number;
+  inflightCalls: number;
+  bookContainerWarm: boolean;
+  jobScoped: boolean;
+}): boolean {
+  if (!input.jobScoped) return input.warmContainers > 0;
+  if (!input.bookContainerWarm) return false;
+  if (input.warmContainers < 0) return true;
+  if (!Number.isFinite(input.inflightCalls)) return false;
+  return input.warmContainers > input.inflightCalls;
+}
+
+/**
+ * Other books' live GPU leases. This book's own row is the call that has
+ * not been posted yet, so it does not count. A ledger that cannot be read
+ * is treated as full: an unconfirmed book then still gets the restore
+ * budget, and a confirmed book is not given a steady wait it cannot prove.
+ */
+/** Shared lease read. A tick's prewarm and its calls reuse one query. */
+export async function modalCloneLiveLeases(): Promise<
+  { jobId: string; userId: string }[]
+> {
+  const now = Date.now();
+  if (leaseCache && now - leaseCache.at < LEASE_CACHE_MS) return leaseCache.rows;
+  const { listLiveModalGpuLeases } = await import(
+    "@/lib/tts/providers/modal-gpu-lease"
+  );
+  const rows = await listLiveModalGpuLeases();
+  leaseCache = { at: now, rows };
+  return rows;
+}
+
+async function inflightCloneCallsExcluding(jobId: string): Promise<number> {
+  try {
+    const leases = await modalCloneLiveLeases();
+    return leases.filter((row) => row.jobId !== jobId).length;
+  } catch (err) {
+    console.warn(
+      "[modal-clone] GPU lease ledger unreadable; treating the pool as busy",
+      err instanceof Error ? err.message : err
+    );
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/**
+ * Whether this book's next call may use the warm ramp.
+ *
+ * The book must have heard its own container, and `warm_containers` must
+ * exceed the other live leases. A warm batch flag alone is not enough:
+ * that container may be busy with another book.
+ */
+export async function modalCloneBookHasSpareContainer(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (!modalCloneBookContainerWarm(jobId)) return false;
+  const inflight = await inflightCloneCallsExcluding(jobId);
+  const state = await modalClonePoolReady(signal);
+  return modalCloneKnownWarmForCall({
+    warmContainers: state.ready ? state.warmContainers : 0,
+    inflightCalls: inflight,
+    bookContainerWarm: true,
+    jobScoped: true,
+  });
+}
+
+/** Milliseconds left on this book's backoff. 0 when it may call again. */
+export function modalCloneJobBackoffRemainingMs(
+  jobId: string,
+  now: number = Date.now()
+): number {
+  return Math.max(0, (jobColdUntil.get(jobId) ?? 0) - now);
+}
 
 async function assertModalCloneReady(
   signal?: AbortSignal,
   raceForFirstAudio = false,
   workMs = 0,
-  warmBatch = false
+  warmBatch = false,
+  jobId?: string
 ): Promise<ModalCallWait> {
-  if (Date.now() < notReadyUntil) {
-    throw new ModalCloneColdError("Modal clone pool is cold (backoff)", COLD_BACKOFF_MS, "pool");
+  const now = Date.now();
+  const ownBackoff = jobId ? modalCloneJobBackoffRemainingMs(jobId, now) : 0;
+  if (ownBackoff > 0) {
+    // Not an empty pool. The caller parks on this delay and leaves the
+    // Fish defer clock alone.
+    throw new ModalCloneColdError(
+      "Modal clone book is waiting out its own backoff",
+      ownBackoff,
+      "pool",
+      undefined,
+      false,
+      true
+    );
   }
+  const bookWarm = jobId ? modalCloneBookContainerWarm(jobId, now) : false;
+  // A confirmed book already has a container. An app-wide clock left by
+  // an empty probe must not hold its next ramp call.
+  if (now < poolColdUntil && (!jobId || !bookWarm)) {
+    throw new ModalCloneColdError(
+      "Modal clone pool is cold (backoff)",
+      COLD_BACKOFF_MS,
+      "pool"
+    );
+  }
+  const inflight = jobId ? await inflightCloneCallsExcluding(jobId) : 0;
   const state = await modalClonePoolReady(signal);
   if (!state.ready) {
-    rememberModalCloneCold();
+    const appWide = state.warmContainers <= 0 && inflight === 0;
+    // No job id keeps the process-wide clock, including a probe that
+    // omitted `warm_containers` (the parser then reports 1).
+    if (!jobId || appWide) rememberModalCloneCold();
+    if (jobId) rememberModalCloneCold(jobId);
     throw new ModalCloneColdError(
       "Modal clone pool has no warm container",
       COLD_BACKOFF_MS,
       "pool"
     );
   }
-  return modalCloneCallWait(
-    state.warmContainers > 0,
+  const poolKnownWarm = modalCloneKnownWarmForCall({
+    warmContainers: state.warmContainers,
+    inflightCalls: inflight,
+    bookContainerWarm: bookWarm,
+    jobScoped: Boolean(jobId),
+  });
+  // A warm-batch flag still has to clear the spare-container rule. Another
+  // book's lease means this call is a new container, not the 400s ramp.
+  const honorWarmBatch = jobId ? warmBatch && poolKnownWarm : warmBatch;
+  const wait = modalCloneCallWait(
+    poolKnownWarm,
     raceForFirstAudio,
     workMs,
-    warmBatch
+    honorWarmBatch
   );
+  return {
+    ...wait,
+    jobId,
+    appWideCold: state.warmContainers === 0 && inflight === 0,
+  };
 }
 
-/** Skip Modal briefly so the rest of this tick does not open more cold calls. */
-export function rememberModalCloneCold(): void {
-  notReadyUntil = Date.now() + COLD_BACKOFF_MS;
+/**
+ * Skip Modal briefly so the next call does not open another cold wait.
+ *
+ * With a job id, only that book waits. Without one, the whole process
+ * waits — that is the path a probe uses when it is not tied to a book.
+ */
+export function rememberModalCloneCold(jobId?: string): void {
+  const until = Date.now() + COLD_BACKOFF_MS;
+  if (jobId) {
+    touchBookMap(jobColdUntil, jobId, until);
+    return;
+  }
+  poolColdUntil = until;
 }
 
 /**
  * A restore-budget miss is one placement: kick the RPC that is allowed to
- * finish a compile, and leave the backoff unset so another lane can try.
- * A steady-state miss freezes the pool — the container was already warm.
+ * finish a compile. A gateway miss leaves the backoff unset so dispatch can
+ * try another container once. A client timeout sets this book's backoff and
+ * dispatch does not post those sections again — the handler is still
+ * rendering them. A steady-state miss freezes this book. It freezes every
+ * book only when the pool itself is empty, or the call has no book.
  */
 function coldFromWait(
   kind: "restore" | "steady" | "warm",
-  message: string
+  message: string,
+  ctx: { jobId?: string; appWide?: boolean; clientAborted?: boolean } = {}
 ): ModalCloneColdError {
+  const aborted = ctx.clientAborted === true;
   if (kind === "warm") {
     // The container had answered, so this is a slow or gone GPU, not a
-    // compile. Drop the warmth bit. The next call is cold-sized. Do not
-    // kick `::cover` and do not freeze the pool. `waitKind` is what the
-    // dispatch checks, so a placement scope cannot kick a compile anyway.
-    noteModalClonePoolLost();
-    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement", "warm");
+    // compile. Drop that book's warmth. Do not kick `::cover` and do not
+    // freeze other books. `waitKind` is what the dispatch checks, so a
+    // placement scope cannot kick a compile anyway.
+    if (ctx.jobId) noteModalCloneBookLost(ctx.jobId);
+    else noteModalClonePoolLost();
+    if (aborted) rememberModalCloneCold(ctx.jobId);
+    return new ModalCloneColdError(
+      message,
+      COLD_BACKOFF_MS,
+      "placement",
+      "warm",
+      aborted
+    );
   }
   if (kind === "restore") {
     kickModalCloneSnapshotWarm(message);
-    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement", "restore");
+    if (aborted) rememberModalCloneCold(ctx.jobId);
+    return new ModalCloneColdError(
+      message,
+      COLD_BACKOFF_MS,
+      "placement",
+      "restore",
+      aborted
+    );
   }
-  rememberModalCloneCold();
-  return new ModalCloneColdError(message, COLD_BACKOFF_MS, "pool", "steady");
+  const appWide = ctx.appWide === true || !ctx.jobId;
+  if (appWide) rememberModalCloneCold();
+  if (ctx.jobId) rememberModalCloneCold(ctx.jobId);
+  return new ModalCloneColdError(
+    message,
+    COLD_BACKOFF_MS,
+    "pool",
+    "steady",
+    aborted
+  );
 }
 
 async function postJson(
@@ -1150,7 +1419,7 @@ async function postSynthesize(
       wait
     );
     const audio = Buffer.from(await response.arrayBuffer());
-    if (audio.length > 0) noteModalClonePoolAnswered();
+    if (audio.length > 0) noteModalClonePoolAnswered(Date.now(), input.jobId);
     return {
       audio,
       durationSeconds: Number(response.headers.get("x-s2-duration")),
@@ -1190,7 +1459,7 @@ async function postSynthesize(
       "Modal clone returned a row without decodable audio"
     );
   }
-  noteModalClonePoolAnswered();
+  noteModalClonePoolAnswered(Date.now(), input.jobId);
   return {
     audio: decoded.audio,
     durationSeconds: decoded.durationSeconds,
@@ -1238,7 +1507,17 @@ async function postModal(
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      throw coldFromWait(kind, `Modal clone did not answer within ${Math.round(limit / 1000)}s`);
+      // The worker dropped the wait. The sync handler keeps the GPU.
+      // `clientAborted` tells dispatch not to POST these sections again.
+      throw coldFromWait(
+        kind,
+        `Modal clone did not answer within ${Math.round(limit / 1000)}s`,
+        {
+          jobId: wait?.jobId,
+          appWide: wait?.appWideCold,
+          clientAborted: true,
+        }
+      );
     }
     throw err;
   }
@@ -1267,12 +1546,15 @@ async function postModal(
     if (response.status === 502 || response.status === 503 || response.status === 504) {
       throw coldFromWait(
         kind,
-        `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`
+        `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+        { jobId: wait?.jobId, appWide: wait?.appWideCold }
       );
     }
     if (response.status === 429) {
-      // The lane is busy inside the container; another lane may be free, so
-      // this is retryable and explicitly not a cold pool.
+      // Backstop. The deployed class is `@modal.concurrent(max_inputs=1)`,
+      // so Modal places a second POST on another container instead of
+      // answering 429. A container that still returns `lane_busy` is busy,
+      // not cold, and must not start a backoff.
       throw new ModalCloneLaneBusyError(
         `Modal clone lane busy${detail ? `: ${detail.slice(0, 200)}` : ""}`
       );

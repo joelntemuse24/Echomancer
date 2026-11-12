@@ -362,10 +362,36 @@ not open a fleet. After that deploy an operator sets the live cap to
 `MODAL_S2_MAX_GPUS` (default **20**) with
 `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=180)`.
 `/ready` still reports the deploy-time value, so the printed settings are
-the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)` is
-what places a second book's call on another container; it is in the source
-and does nothing until that image is redeployed. Until then a second call
-can 429 on the one container.
+the check. `min_containers` stays 0. The deployed class already has
+`@modal.concurrent(max_inputs=1)`, so a second book's POST is placed on
+another container (that container restores its own snapshot) rather than
+answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
+
+- **A warm container is not a free container.** `/ready` reporting
+  `warm_containers > 0` means some container finished restoring. That
+  container is busy with the book that holds it. The worker treats the
+  pool as warm for this book only when `warm_containers` exceeds the other
+  live `modal_gpu_leases` rows and this book has already heard its own
+  container. A book's first call, and any call before that, uses the
+  restore budget (150s, or 75s for first audio). The ramp uses that same
+  spare check, so a confirmed book whose container is busy is not given a
+  24-row call. A miss sets the 30s
+  backoff on that book only. A backoff that posted no rows waits out
+  the rest of that 30s, so pressing go while prewarm restores still gets
+  first audio in about 68s. A first-light timeout waits out the rest of
+  the restore budget plus the opening section (~106s), so the retry finds
+  the container still warm. A later warm call waits the warm HTTP budget
+  (400s), so the next POST does not overlap a handler that is still
+  rendering. That wait also starts `clone_wait_started_at` (an existing
+  value is kept). Once `MODAL_S2_DEFER_MS` is spent the book switches to
+  direct Fish. A published section clears the stored clock and the
+  in-memory copy, so a later timeout in the same tick does not switch a
+  book that already published. The process-wide backoff is only when the
+  probe sees zero warm containers and no other call in flight (or the
+  call has no job id). A client timeout does not re-POST those sections
+  in the same dispatch: the sync handler keeps rendering, and this
+  process does not cancel it. A missing ready URL stays "not proven
+  warm" for a book that has not heard its own container.
 
 - **One narrator per book.** `jobs.provider_pin` (`modal` / `fish`) is written
   once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
@@ -405,9 +431,23 @@ can 429 on the one container.
 - **A book never builds a snapshot.** One placement may wait the restore
   budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
-  wait is dropped (`ModalCloneColdError` `scope: "placement"`), the unstaged
-  sections are tried once on another container, and if nothing comes back the
-  book parks and later follows the defer → direct Fish path (the same voice).
+  wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
+  miss tries the unstaged sections once on another container. A client
+  timeout does not: the handler is still rendering. A warm-budget timeout
+  parks for that HTTP wait (400s). A first-light timeout parks for the
+  rest of the restore plus the opening section (~106s). A backoff that
+  posted nothing parks for the remaining 30s. The same wait starts
+  `clone_wait_started_at` when it is unset. A published section clears that
+  clock, including the copy this tick is holding. Repeated timeouts still
+  follow the defer → direct Fish path once `MODAL_S2_DEFER_MS` is spent
+  (the same voice). A real cold probe does too. A positive hold leaves the
+  row `processing` with a lease token nobody holds and `lease_expires_at`
+  at the same instant as `sched_not_before`. The VM claim waits for an
+  unexpired lease, and the Trigger `takehome.drain` still deployed is the
+  older claim: it selects `queued` rows and `processing` rows whose lease
+  has already expired, and it does not read `sched_not_before`. The sealed
+  lease is what that claim skips. A zero-hold park stays `queued` so the
+  VM drain can reclaim it.
   A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
@@ -555,7 +595,8 @@ can 429 on the one container.
   (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
   the first-light call only. That wait is wall clock in front of the person,
   and a compiling placement cannot be waited out at any budget a book may use,
-  so abandoning it sooner only retries another container sooner. It is not
+  so abandoning a gateway miss retries another container sooner. A client
+  timeout does not open a second container for the same sections. It is not
   shortened further: a measured restore is ~57s, and a budget under that parks
   a book that would have played.
 - **Section 0 is published before transcript QA.** The check spawns a fresh
@@ -573,10 +614,13 @@ can 429 on the one container.
 - **The restore starts before the person presses go**, for an account that
   already has a trained clone. Two triggers, both the same
   `prewarmModalCloneSnapshot` RPC (`modal run …::cover`, one `status()`, never
-  awaited, 3-minute cooldown, `MODAL_S2_WARM_HOOK=0` disables it):
-  the worker starts it when extract is accepted (`prewarmClonePoolForUpload`),
-  and the voice list asks the worker (`POST /clone-prewarm`) when
-  `GET /api/tts/voices` sees a trained clone. Vercel does not hold
+  awaited, `MODAL_S2_WARM_HOOK=0` disables it). A book-start kick is keyed
+  by job id (still inside `MODAL_S2_MAX_GPUS` and the per-user cap, counted
+  from `modal_gpu_leases`). Voice-list and extract kicks stay on one shared
+  3-minute clock: the worker starts one when extract is accepted
+  (`prewarmClonePoolForUpload`), and the voice list asks the worker
+  (`POST /clone-prewarm`) when `GET /api/tts/voices` sees a trained clone.
+  Vercel does not hold
   `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. A tick pre-warms
   only when it will send uncached S2 narration: a new book with no outline
   yet, so the restore overlaps packing, or a later tick that still has a
@@ -609,8 +653,9 @@ can 429 on the one container.
   keeps working. `@modal.enter(snap=True)` starts a `GpuExecutor`
   (`s2_contract.py`), does all CUDA there, and every handler submits through
   `_run_on_gpu`. Never call `self.engine.*` from a request handler, and never
-  call `_resolve_reference` off that thread. A busy lane answers 429
-  (`ModalCloneLaneBusyError`), not cold. `engine.selftest()` runs at boot so the
+  call `_resolve_reference` off that thread. A container that still answers
+  429 is `ModalCloneLaneBusyError` (busy, not cold). The deployed class does
+  not send a second input to a busy container. `engine.selftest()` runs at boot so the
   allocator paths are proven on both the compile and the restore path.
 - **`boot` says what a container can prove, not what it assumes.** There is no
   `compiled` value. Two attempts to infer a compile were wrong: `now -

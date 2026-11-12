@@ -19,10 +19,12 @@ The live cap matches `MODAL_S2_MAX_GPUS` (default **20**): one container per
 active clone book, and one call in flight per book. The code default is
 `max_containers=1`, so a plain `modal deploy` does not open that fleet by
 itself. Step 8c sets the live cap after every production deploy and checks
-the printed settings. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
-is in `modal/s2_clone_service.py` and needs a redeploy before Modal will
-place a second book's call on a new container. Until that deploy, a second
-call can queue on the one container and the GPU thread answers 429.
+the printed settings. `min_containers` stays 0. The deployed
+`echomancer-s2-clone` image already has `@modal.concurrent(max_inputs=1)`
+on `S2CloneWorker`, so a second book's POST is placed on another container
+(that container restores its own snapshot) rather than queued onto the busy
+one. A 429 `lane_busy` answer is a backstop for an older image and is busy,
+not cold. Do not redeploy to change that: a redeploy wipes GPU snapshots.
 
 Target shape. The table is the intended shape, not a record that every box
 was ticked for the current image:
@@ -663,12 +665,13 @@ autoscaler has to allow the ones it does start. `min_containers` stays 0.
 `scaledown_window` can stay 180s; the client treats the pool as warm for
 165s after the last answer (`MODAL_S2_WARM_HOLD_MS`).
 
-**Redeploy first.** `S2CloneWorker` now carries
-`@modal.concurrent(max_inputs=1)`. That decorator is source until
-`modal deploy` ships it. Without it, Modal can queue a second book's call
-onto the container that is already rendering, and the GPU thread answers
-429. Do not run the autoscaler command below until that deploy is the live
-image. This runbook does not run it.
+**Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
+already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
+book's POST is placed on another container. It is not queued onto the busy
+one, and it is not answered 429. A 429 `lane_busy` body is only the
+backstop if an older image is still serving, and the worker treats it as
+busy, not cold. A `modal deploy` wipes the GPU memory snapshots. This
+runbook does not deploy.
 
 8a deploys with the baked cap at 1. 8b warms snapshots while that cap is
 still 1. 8c then raises the live cap. The `max_containers=4` command further
