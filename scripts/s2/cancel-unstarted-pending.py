@@ -25,8 +25,22 @@ sys.path.insert(0, str(ROOT / "modal"))
 from s2_input_queue import (  # noqa: E402
     cancel_candidates,
     function_spec,
+    has_started,
+    is_unfinished,
     list_function_calls,
 )
+
+
+def probe_placement(rows: list[dict]) -> str:
+    """started if a container has the call, pending if it can still be cancelled, else gone."""
+    unfinished = [row for row in rows if is_unfinished(row)]
+    if any(has_started(row) for row in unfinished):
+        return "started"
+    if cancel_candidates(rows):
+        return "pending"
+    if not unfinished:
+        return "gone"
+    return "unknown"
 
 
 def cancel_call(function_call_id: str, *, dry_run: bool) -> None:
@@ -52,10 +66,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cls", default="S2CloneWorker")
     parser.add_argument("--job-id", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="Print started, pending, gone, or unknown. Do not cancel.",
+    )
     parser.add_argument("--tail", type=int, default=200)
     args = parser.parse_args(argv)
 
     rows = list_function_calls(args.app, args.cls, tail=args.tail)
+    if args.probe:
+        print(probe_placement(rows))
+        return 0
     chosen = cancel_candidates(rows)
     if args.job_id:
         # job_id is not always a column in `function calls`; keep only rows

@@ -53,6 +53,7 @@
  * so an older fixture keeps working. A row with neither an error nor decodable
  * MP3 fails the call instead of staging zero sections.
  */
+import { spawn } from "node:child_process";
 import { createHash } from "crypto";
 import type { SynthesizeInput } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
@@ -65,6 +66,9 @@ import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
   modalCloneCallTimeoutMs,
+  modalCloneFirstLightHttpWaitMs,
+  modalClonePlacementBudgetMs,
+  modalCloneProxyCeilingMs,
   modalCloneMixedBookBatchEnabled,
   modalCloneLanes,
   modalCloneReadyProbeEnabled,
@@ -85,6 +89,7 @@ import {
 } from "@/lib/tts/providers/modal-clone-warm";
 import {
   cancelAbandonedModalCallsAfterAbort,
+  modalCloneCancelConfigured,
   resetModalCloneCancelForTests,
 } from "@/lib/tts/providers/modal-clone-cancel";
 import {
@@ -237,6 +242,9 @@ export function resetModalCloneRuntimeForTests(): void {
   leaseCache = null;
   poolAnsweredAt = null;
   bookAnsweredAt.clear();
+  inflightRenders.clear();
+  sealedRenderUntil.clear();
+  placementProbe = null;
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
   resetModalCloneCancelForTests();
@@ -535,6 +543,42 @@ export async function renderModalCloneBatch(
      * The container already answered this process. Wait the warm budget and
      * do not treat a miss as a compile.
      */
+    warmBatch?: boolean;
+  }
+): Promise<CloneBatchOutcome> {
+  if (jobId) {
+    const existing = inflightRenders.get(jobId);
+    if (existing) return existing;
+    const until = sealedRenderUntil.get(jobId) ?? 0;
+    if (Date.now() < until) {
+      throw new ModalCloneColdError(
+        "Modal clone is still waiting on the original placement",
+        until - Date.now(),
+        "placement",
+        "restore",
+        true,
+        true
+      );
+    }
+  }
+  const run = renderModalCloneBatchBody(items, reference, signal, jobId, opts);
+  if (jobId) inflightRenders.set(jobId, run);
+  try {
+    return await run;
+  } finally {
+    if (jobId && inflightRenders.get(jobId) === run) inflightRenders.delete(jobId);
+  }
+}
+
+async function renderModalCloneBatchBody(
+  items: CloneBatchItem[],
+  reference: CloneReference,
+  signal?: AbortSignal,
+  jobId?: string,
+  opts?: {
+    seedEpoch?: number;
+    raceForFirstAudio?: boolean;
+    workMs?: number;
     warmBatch?: boolean;
   }
 ): Promise<CloneBatchOutcome> {
@@ -1146,11 +1190,103 @@ type ModalCallWait = {
   kind: "restore" | "steady" | "warm";
   jobId?: string;
   /**
+   * Section 0 of a cold book. The HTTP client waits the placement budget
+   * on this same POST. Packing still uses the short abort in `ms`.
+   */
+  firstLight?: boolean;
+  /**
    * The probe saw zero warm containers and no other S2 call. Only then
    * does a miss freeze every book.
    */
   appWideCold?: boolean;
 };
+
+export type ModalPlacementState = "started" | "pending" | "gone" | "unknown";
+
+type PlacementProbe = (jobId?: string) => Promise<ModalPlacementState>;
+
+let placementProbe: PlacementProbe | null = null;
+const inflightRenders = new Map<string, Promise<CloneBatchOutcome>>();
+const sealedRenderUntil = new Map<string, number>();
+
+export function setModalClonePlacementProbeForTests(
+  fn: PlacementProbe | null
+): void {
+  placementProbe = fn;
+}
+
+const PLACEMENT_STATES = new Set<ModalPlacementState>([
+  "started",
+  "pending",
+  "gone",
+  "unknown",
+]);
+
+/** Last line of `cancel-unstarted-pending.py --probe`. Anything else is unknown. */
+export function parsePlacementProbeOutput(text: string): ModalPlacementState {
+  const line = text
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .pop();
+  return line && PLACEMENT_STATES.has(line as ModalPlacementState)
+    ? (line as ModalPlacementState)
+    : "unknown";
+}
+
+/**
+ * Ask Modal whether this book's call has a container yet.
+ *
+ * The HTTP budget is about to end. `started` means keep the same fetch.
+ * Tests inject a probe; this default is not used under Vitest.
+ */
+export function probeModalClonePlacement(jobId?: string): Promise<ModalPlacementState> {
+  if (process.env.VITEST || !modalCloneCancelConfigured()) {
+    return Promise.resolve("unknown");
+  }
+  const cwd = process.env.MODAL_S2_WARM_CWD?.trim() || process.cwd();
+  const python = process.env.MODAL_S2_CANCEL_PYTHON?.trim() || "python3";
+  const args = ["scripts/s2/cancel-unstarted-pending.py", "--probe"];
+  if (jobId) args.push("--job-id", jobId);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (state: ModalPlacementState) => {
+      if (settled) return;
+      settled = true;
+      resolve(state);
+    };
+    const child = spawn(python, args, {
+      cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish("unknown");
+    }, 8_000);
+    let out = "";
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      out += String(chunk);
+    });
+    child.once("error", () => {
+      clearTimeout(timer);
+      finish("unknown");
+    });
+    child.once("close", () => {
+      clearTimeout(timer);
+      finish(parsePlacementProbeOutput(out));
+    });
+  });
+}
+
+function sealModalCloneRender(jobId: string | undefined, ms: number): void {
+  if (!jobId || !(ms > 0)) return;
+  sealedRenderUntil.set(jobId, Date.now() + ms);
+}
+
+function clearModalCloneRenderSeal(jobId: string | undefined): void {
+  if (jobId) sealedRenderUntil.delete(jobId);
+}
 
 /**
  * Whether this call may use the steady budget.
@@ -1305,6 +1441,7 @@ async function assertModalCloneReady(
   return {
     ...wait,
     jobId,
+    firstLight: raceForFirstAudio === true && wait.kind === "restore",
     appWideCold: state.warmContainers === 0 && inflight === 0,
   };
 }
@@ -1495,10 +1632,58 @@ async function postModal(
   wait?: ModalCallWait
 ): Promise<Response> {
   signal?.throwIfAborted();
-  const limit = wait && wait.ms > 0 ? wait.ms : modalCloneCallTimeoutMs();
+  const armed = wait && wait.ms > 0 ? wait.ms : modalCloneCallTimeoutMs();
   const kind = wait?.kind ?? "steady";
-  const timeout = AbortSignal.timeout(limit);
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const firstLight = wait?.firstLight === true;
+  const limit = firstLight ? modalCloneFirstLightHttpWaitMs(armed) : armed;
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  signal?.addEventListener("abort", onExternalAbort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let containerStarted = false;
+  let extended = false;
+  let settled = false;
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  const armAbort = (ms: number) => {
+    clearTimer();
+    timer = setTimeout(() => {
+      if (firstLight && !extended) {
+        void expireFirstLightWait();
+        return;
+      }
+      controller.abort();
+    }, ms);
+  };
+  const expireFirstLightWait = async () => {
+    if (settled) return;
+    const state = await (placementProbe ?? probeModalClonePlacement)(wait?.jobId).catch(
+      () => "unknown" as const
+    );
+    if (settled) return;
+    if (state === "started") {
+      containerStarted = true;
+      if (!extended) {
+        extended = true;
+        const remain = modalCloneProxyCeilingMs() - limit;
+        if (remain > 1_000) {
+          armAbort(remain);
+          return;
+        }
+      }
+      return;
+    }
+    if (state === "gone") clearModalCloneRenderSeal(wait?.jobId);
+    else sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
+    controller.abort();
+  };
+  if (firstLight) armAbort(limit);
+  else {
+    const timeout = AbortSignal.timeout(limit);
+    timeout.addEventListener("abort", onExternalAbort, { once: true });
+  }
   let response: Response;
   try {
     response = await fetch(url, {
@@ -1508,7 +1693,7 @@ async function postModal(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-      signal: combined,
+      signal: controller.signal,
     });
   } catch (err) {
     signal?.throwIfAborted();
@@ -1516,12 +1701,16 @@ async function postModal(
     if (name === "TimeoutError" || name === "AbortError") {
       // The worker dropped the wait. Cancel the unstarted PENDING Modal
       // input so abandoned calls do not pile up and get served after the
-      // next enter. A call that has already started compile is left alone.
-      // `clientAborted` tells dispatch not to POST these sections again.
-      cancelAbandonedModalCallsAfterAbort({
-        jobId: wait?.jobId,
-        reason: "first-light wait aborted",
-      });
+      // next enter. A call that has already started is left alone: the
+      // first-light path only aborts after the probe says it never started,
+      // and a started container is waited out to the proxy ceiling.
+      if (!containerStarted) {
+        cancelAbandonedModalCallsAfterAbort({
+          jobId: wait?.jobId,
+          reason: "first-light wait aborted",
+        });
+        if (firstLight) sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
+      }
       throw coldFromWait(
         kind,
         `Modal clone did not answer within ${Math.round(limit / 1000)}s`,
@@ -1533,6 +1722,10 @@ async function postModal(
       );
     }
     throw err;
+  } finally {
+    settled = true;
+    clearTimer();
+    signal?.removeEventListener("abort", onExternalAbort);
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");

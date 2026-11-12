@@ -2919,17 +2919,40 @@ async function runClaimedTick(
     let audioPath: string | null = null;
     let uploadedPath: string | null = null;
     let markedReady = false;
+    let readyKeepsLease = false;
     // The user deleted or cancelled the job while we were finalizing. The
     // uploaded file must be removed instead of published.
     let publishRefused = false;
-    const markReady = async (path: string | null) => {
-      if (markedReady || publishRefused || !path) return;
+    const markReady = async (
+      path: string | null,
+      opts?: { sectionsOnly?: boolean }
+    ) => {
+      if (publishRefused) return;
+      if (markedReady && path && isPlayableBookPath(path)) {
+        await execute(
+          `UPDATE jobs SET status = 'ready', audio_storage_path = ?, warning = NULL,
+             updated_at = unixepoch()
+           WHERE id = ? AND status != 'cancelled' AND deleted_at IS NULL`,
+          [path, jobId]
+        );
+        return;
+      }
+      if (markedReady && path && !isPlayableBookPath(path)) {
+        await execute(
+          `UPDATE jobs SET audio_storage_path = NULL, warning = ?, updated_at = unixepoch()
+           WHERE id = ? AND status = 'ready' AND deleted_at IS NULL`,
+          [UNJOINED_BOOK_WARNING, jobId]
+        );
+        return;
+      }
+      if (markedReady || (!path && !opts?.sectionsOnly)) return;
       // The concat fallback ships audiobooks/<id>/sections.zip. Publishing it
       // as the book would hand the player a zip as its <audio src>. Every
       // section is still ready, so publish the book without a full file: the
       // player streams it section by section and the warning says why.
       const playable = isPlayableBookPath(path);
-      if (!playable) {
+      const keepLease = opts?.sectionsOnly === true;
+      if (!playable && !keepLease) {
         console.error(
           `[Job ${jobId}] not publishing ${path} as the book file: not a playable audio file`
         );
@@ -2949,8 +2972,12 @@ async function runClaimedTick(
       const readySql = `UPDATE jobs SET status = ?, progress = ?, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = ?,
-           processing_lease_token = NULL,
-           lease_expires_at = NULL, processing_started_at = NULL,
+           ${
+             keepLease
+               ? ""
+               : `processing_lease_token = NULL,
+           lease_expires_at = NULL, processing_started_at = NULL,`
+           }
            updated_at = unixepoch()`;
       const readyArgs = [
         publishedStatus,
@@ -2960,7 +2987,7 @@ async function runClaimedTick(
         playable ? path : null,
         doneCount,
         total,
-        playable ? warning : UNJOINED_BOOK_WARNING,
+        playable || keepLease ? warning : UNJOINED_BOOK_WARNING,
         failureMessage,
       ];
       try {
@@ -2994,10 +3021,13 @@ async function runClaimedTick(
         }
       }
       markedReady = true;
+      if (keepLease) readyKeepsLease = true;
       console.log(
-        complete
-          ? `[Job ${jobId}] full file uploaded — marking ready`
-          : `[Job ${jobId}] only ${doneCount}/${total} sections exist — marking FAILED, ` +
+        keepLease
+          ? `[Job ${jobId}] sections ready — joining the full file`
+          : complete
+            ? `[Job ${jobId}] full file uploaded — marking ready`
+            : `[Job ${jobId}] only ${doneCount}/${total} sections exist — marking FAILED, ` +
               `not a complete audiobook (${total - doneCount} missing)`
       );
     };
@@ -3018,6 +3048,14 @@ async function runClaimedTick(
       return { done: true, nextIndex, total };
     }
     if (concatHold.kind === "deferred") throw new CpuBacklogError();
+    // Sections are already playable. Mark the book ready before the join so
+    // the player does not sit on "generating" while full.mp3 is concatenated.
+    // The lease stays until the join finishes so the heartbeat can renew it.
+    // A missing full.mp3 is not a broken player: section files keep playing,
+    // and the download route concatenates them if the file is not there yet.
+    if (complete && holesLeft === 0) {
+      await markReady(null, { sectionsOnly: true });
+    }
     const finalizing = markJobFinalizing(jobId);
     try {
       if (concatHold.kind === "already") {
@@ -3050,22 +3088,34 @@ async function runClaimedTick(
       }
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
+      if (markedReady && !uploadedPath) {
+        await execute(
+          `UPDATE jobs SET warning = ?, updated_at = unixepoch()
+           WHERE id = ? AND status = 'ready' AND audio_storage_path IS NULL`,
+          ["The full download is still being prepared.", jobId]
+        ).catch(() => undefined);
+      }
     } finally {
       finalizing.end();
     }
     // A delete or cancel can land while materialize runs. The lease write
     // above sees a lost token, but a row that was already deleted is worth a
     // direct read so its uploaded file can be removed.
-    if (!markedReady) {
-      const afterFinalize = await queryOne<{
-        status: string;
-        deleted_at: number | null;
-      }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
-      if (
-        afterFinalize &&
-        (afterFinalize.deleted_at != null || afterFinalize.status === "cancelled")
-      ) {
-        publishRefused = true;
+    const afterFinalize = await queryOne<{
+      status: string;
+      deleted_at: number | null;
+    }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+    if (
+      afterFinalize &&
+      (afterFinalize.deleted_at != null || afterFinalize.status === "cancelled")
+    ) {
+      publishRefused = true;
+      if (afterFinalize.status === "ready" && afterFinalize.deleted_at != null) {
+        await execute(
+          `UPDATE jobs SET status = 'cancelled', updated_at = unixepoch()
+           WHERE id = ? AND deleted_at IS NOT NULL`,
+          [jobId]
+        ).catch(() => undefined);
       }
     }
     const removeUploadedFullFile = async () => {
@@ -3103,6 +3153,15 @@ async function runClaimedTick(
 
     if (!markedReady) {
       await markReady(audioPath);
+    }
+
+    if (readyKeepsLease) {
+      await execute(
+        `UPDATE jobs SET processing_lease_token = NULL, lease_expires_at = NULL,
+           processing_started_at = NULL, updated_at = unixepoch()
+         WHERE id = ? AND processing_lease_token = ?`,
+        [jobId, lease]
+      ).catch(() => undefined);
     }
 
     await logUsage({

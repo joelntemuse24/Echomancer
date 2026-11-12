@@ -1660,3 +1660,47 @@ describe("take-home fairness", () => {
     }
   });
 });
+
+describe("ready before the full file is joined", () => {
+  it("marks the book ready while concat is still running", async () => {
+    await seedTakehomeJob("The harbor was quiet after the rain. ".repeat(12));
+    await useProvider(async () => ({ audio: fakeMp3(), contentType: "audio/mpeg" }));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let statusAtConcat: string | null = null;
+    let pathAtConcat: string | null = null;
+    const concat = await import("@/lib/tts/concat-audio");
+    const concatSpy = vi
+      .spyOn(concat, "materializeFullAudiobook")
+      .mockImplementation(async (jobId, _segments, _total, opts) => {
+        const row = await jobRow(JOB_ID);
+        statusAtConcat = String(row?.status ?? "");
+        pathAtConcat = row?.audio_storage_path ?? null;
+        await gate;
+        const path = `audiobooks/${jobId}/full.mp3`;
+        await opts?.onDryUploaded?.(path);
+        return path;
+      });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const tick = processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 60_000 });
+    for (let i = 0; i < 400 && statusAtConcat == null; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    expect(statusAtConcat).toBe("ready");
+    expect(pathAtConcat).toBeFalsy();
+    const mid = await jobRow(JOB_ID);
+    expect(mid?.status).toBe("ready");
+    expect(mid?.audio_storage_path).toBeFalsy();
+    expect(mid?.processing_lease_token).toBeTruthy();
+    release();
+    const result = await tick;
+    expect(result.done).toBe(true);
+    const done = await jobRow(JOB_ID);
+    expect(done?.status).toBe("ready");
+    expect(done?.audio_storage_path).toBe(`audiobooks/${JOB_ID}/full.mp3`);
+    expect(done?.processing_lease_token).toBeNull();
+    concatSpy.mockRestore();
+  });
+});
