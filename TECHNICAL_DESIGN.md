@@ -2190,6 +2190,19 @@ header. That helper no longer runs the jobs schema migrator first. The
 viewer revalidates on focus and when the tab becomes visible, and a
 BroadcastChannel message asks other tabs to do the same.
 
+The page ground is the root background (`src/app/globals.css` on `body`).
+A seamless SVG tile — `public/patterns/hatch-dots-dark.svg` in the default
+dark theme, `public/patterns/hatch-dots-light.svg` under `.light` — repeats
+a sparse field of hand-hatched dots. Light mode draws them in a cool
+grey-blue a little darker than the cream; dark mode draws them a little
+lighter than the near-black, both at a low opacity so the field stays quiet.
+The tile is 800px square. Below 768px it is drawn at 640px, so the dots are
+slightly smaller. It does not animate. `forced-colors` drops the image.
+Full-page shells are transparent so the tile shows on every route. Cards
+(`bg-card`), the landing composer, the sticky header, the mobile tab bar,
+menus, player sheets, and the read-along overlay keep an opaque fill, so
+type on those surfaces is unchanged.
+
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.

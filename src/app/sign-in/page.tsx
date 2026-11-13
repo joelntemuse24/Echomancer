@@ -34,7 +34,7 @@ export default async function SignInPage({
   const available = identity.googleEnabled || identity.emailEnabled;
 
   return (
-    <main className="min-h-screen bg-background px-8 py-24 font-serif text-foreground">
+    <main className="min-h-screen px-8 py-24 font-serif text-foreground">
       <div className="mx-auto max-w-sm space-y-12 font-sans">
         <p>
           <Link href="/" className="text-foreground hover:opacity-70">
@@ -62,7 +62,7 @@ export default async function SignInPage({
           <form action={signInWithGoogle.bind(null, next)}>
             <button
               type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 border border-border/40 px-5 py-2.5 text-sm text-foreground hover:border-border transition-colors"
+              className="inline-flex w-full items-center justify-center gap-2 border border-border/40 bg-background px-5 py-2.5 text-sm text-foreground hover:border-border transition-colors"
             >
               {SIGN_IN.google}
             </button>

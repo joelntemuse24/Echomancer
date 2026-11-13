@@ -24,7 +24,7 @@ const sections = [
 
 export default function PrivacyPage() {
   return (
-    <main className="min-h-screen bg-background px-8 py-24 font-sans text-foreground">
+    <main className="min-h-screen px-8 py-24 font-sans text-foreground">
       <div className="mx-auto max-w-xl space-y-12">
         <p>
           <Link href="/" className="text-foreground hover:opacity-70">

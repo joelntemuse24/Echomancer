@@ -44,8 +44,8 @@ export function DashboardChrome({
   }, []);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col font-sans">
-      <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
+    <div className="min-h-screen flex flex-col font-sans">
+      <header className="sticky top-0 z-50 bg-background">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
             <Link
