@@ -219,18 +219,24 @@ export function LandingPage() {
           prefetch={PREFETCH_SCREEN}
           onMouseEnter={() => warmVoices()}
           onFocus={() => warmVoices()}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
         >
           {NAV.voices}
         </Link>
         <Link
           href={LIBRARY_HREF}
           prefetch={PREFETCH_SCREEN}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
         >
           {NAV.library}
         </Link>
-        <AuthControls identity={identity} callbackUrl="/" menu={false} />
+        {/* Phone: Voices and Library live in this menu. Wide screens keep them in the bar, and Sign in stays a link. */}
+        <div className="contents md:hidden">
+          <AuthControls identity={identity} callbackUrl="/" />
+        </div>
+        <div className="hidden md:contents">
+          <AuthControls identity={identity} callbackUrl="/" menu={false} />
+        </div>
       </nav>
 
       <section className="px-8 pb-28 pt-28 sm:pt-36">
