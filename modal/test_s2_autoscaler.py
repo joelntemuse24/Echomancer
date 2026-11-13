@@ -22,10 +22,11 @@ def test_validate_allows_brake_and_live_caps():
     mod = load_script()
     assert mod.validate_autoscaler_values(0, 45) is None
     assert mod.validate_autoscaler_values(1, 45) is None
+    assert mod.validate_autoscaler_values(64, 15) is None
     assert mod.validate_autoscaler_values(64, 30) is None
-    assert mod.validate_autoscaler_values(-1, 45) is not None
-    assert mod.validate_autoscaler_values(65, 45) is not None
-    assert mod.validate_autoscaler_values(1, 29) is not None
+    assert mod.validate_autoscaler_values(-1, 15) is not None
+    assert mod.validate_autoscaler_values(65, 15) is not None
+    assert mod.validate_autoscaler_values(1, 14) is not None
     assert mod.validate_autoscaler_values(1, 61) is not None
 
 
@@ -34,7 +35,7 @@ def test_parse_brake_flag_sets_max_zero():
     args = mod.parse_args(["--brake"])
     assert args.max_containers == 0
     assert args.brake is True
-    assert args.scaledown_window == 45
+    assert args.scaledown_window == 15
 
 
 def test_parse_max_containers_zero_is_brake():

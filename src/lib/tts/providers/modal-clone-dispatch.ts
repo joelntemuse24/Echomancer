@@ -140,9 +140,9 @@ export interface LaneDispatchOptions {
    */
   entireRemainder?: boolean;
   /**
-   * Wall time left at 1.5× (`delivered / 1.5 − elapsed`). The ramp sizes
-   * the next call against this and subtracts each call's wall directly.
-   * Omit it and a warm tick does not assume a deep buffer.
+   * Wall time left at 1.5× (`delivered / 1.5 − elapsed`). Reported for
+   * the listener. A started book's next call is the largest proxy-safe
+   * batch, not a page sized to this buffer.
    */
   bufferedMs?: number;
   /** The listener has already heard audio from this book. */
@@ -440,11 +440,11 @@ export async function dispatchModalCloneLanes(
 /**
  * One book, one H100. Section 0 (or the first cold call after a scaledown)
  * stays one section, unless the indexes are the whole remaining book and
- * one call adds no generation beyond that section. Each later call is only
- * as wide as the audio already buffered for the listener, and the next
- * call starts as soon as the previous one returns. A warm call that misses
- * its budget is retried as one section and the rest waits for the next
- * tick, so this book does not open a second GPU.
+ * one call adds no generation beyond that section. Each later call is the
+ * largest prefix that fits the warm character cap, the response body, and
+ * the 400s wait. The next call starts as soon as the previous one returns.
+ * A warm call that misses its budget is retried as one section and the
+ * rest waits for the next tick, so this book does not open a second GPU.
  */
 async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});

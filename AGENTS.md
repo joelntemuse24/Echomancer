@@ -366,10 +366,10 @@ one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
 not open a fleet. After that deploy an operator sets the live cap to
 `MODAL_S2_MAX_GPUS` (default **20**) with
-`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=45)`
+`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)`
 (`scripts/s2/set-live-autoscaler.py`). That call does not deploy and does
-not wipe snapshots. Restart the worker first so its 30s warm hold is under
-the 45s window. A later `modal deploy` resets the override and must be
+not wipe snapshots. Restart the worker first so its 10s warm hold is under
+the 15s window. A later `modal deploy` resets the override and must be
 followed by the script again.
 `/ready` still reports the deploy-time value, so the printed settings are
 the check. `min_containers` stays 0. The deployed class already has
@@ -378,14 +378,16 @@ another container (that container restores its own snapshot) rather than
 answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
 
 - **A warm container is not a free container.** `/ready` reporting
-  `warm_containers > 0` means some container finished restoring. That
-  container is busy with the book that holds it. The worker treats the
-  pool as warm for this book only when `warm_containers` exceeds the other
-  live `modal_gpu_leases` rows and this book has already heard its own
-  container. A book's first call, and any call before that, uses the
-  restore budget (150s, or 75s for first audio). The ramp uses that same
-  spare check, so a confirmed book whose container is busy is not given a
-  24-row call. A miss sets the 30s
+  `warm_containers > 0` means some container finished restoring. Spare
+  warmth is `warm_containers` above the other live `modal_gpu_leases`
+  rows: a container that finished and is not held by another book. The
+  next book's first call uses that spare instead of paying a restore,
+  including a book that has not heard a container of its own. A container
+  already counted in the leases is busy, and that call stays on the
+  restore budget so it does not arm the 400s warm wait against a new
+  restore. A book's first call with no spare uses the restore budget
+  (150s, or 75s for first audio). The same spare check keeps a busy
+  container off the 400s wait. A miss sets the 30s
   backoff on that book only. A backoff that posted no rows waits out
   the rest of that 30s, so pressing go while prewarm restores still gets
   first audio in about 68s. A first-light timeout waits out the rest of
@@ -474,46 +476,51 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `chooseCloneGpuTurn`. Younger waiters queue. The first call of a book is section 0, cold-sized
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
-  After first light is staged, the remainder is not paced to the 1.5×
-  listen buffer. Book `e745d067` (2026-11-12, 9 sections, 11m39s) spent
-  five serial 1-section calls at 2.7–2.9× (~60 codec fps) before one
-  4-section call at 9.2× (197 fps), about 64s of GPU wall on the ramp.
-  `cloneGenerationMs` uses that shape: `MODAL_S2_NARROW_FPS` (default 60,
-  about 2.8× and ~44 chars/s) for one row, `MODAL_S2_WIDE_FPS` (default
-  190, about 8.8×) at four or more rows, with two and three rows
+  After first light the next call is the largest prefix that fits the
+  warm character cap, the 80 MiB body, and the 400s wait. It is not sized
+  so playback at 1.5× stays ahead. Book `e745d067` (2026-11-12, 9 sections,
+  11m39s) spent five serial 1-section calls at 2.7–2.9× (~60 codec fps)
+  before one 4-section call at 9.2× (197 fps), about 64s of GPU wall on
+  the old ramp. `cloneGenerationMs` uses that shape: `MODAL_S2_NARROW_FPS`
+  (default 60, about 2.8× and ~44 chars/s) for one row, `MODAL_S2_WIDE_FPS`
+  (default 190, about 8.8×) at four or more rows, with two and three rows
   interpolated. A call is never planned faster than its largest row at
   the narrow rate. The 2026-11-11 smoke's 33 chars/s curve, which got
-  slower per row, is not the planner. Transfer is still the measured 12s
-  per 43,907 characters. A book whose remainder fits in two proxy-safe
-  batches (the 9-section, ~11.8k-character book) goes out as that one
-  wide batch after section 0. A longer book ramps by audio from the
-  starting index: about 1–2 minutes, then 5–6 minutes, then 12–15
-  minutes, then full batches (`MODAL_S2_BATCH_SIZE`, default 24, max 32),
-  each under the ~542s proxy kill. Cold first light stays one small
-  section. Clone section 0 is 1,000 characters (~63s of audio). At the
-  narrow rate the cold wall is about 64s including restore, transfer, and
-  3s of publish, still under the 75s pack abort. A second section of
-  about 700 characters still fits in that opening call; a longer second
-  section waits so first audio stays the opening. Later sections stay
-  2,000 characters. The listen buffer is still reported. It does not
-  choose the page.
-  Playback does not stall once it has started. A gap longer than the
-  scaledown hold (`MODAL_S2_WARM_HOLD_MS`, default 30s, under the 45s
-  autoscaler target) is one cold-sized call again, then the ramp resumes.
+  slower per row, is not the planner, and the 24-row ~33× smoke is faster
+  than this curve. Transfer is still the measured 12s per 43,907
+  characters. Each call stays under the ~542s proxy kill
+  (`MODAL_S2_BATCH_SIZE`, default 24, max 32, is the row ceiling). Cold
+  first light stays one small section. Clone section 0 is 1,000 characters
+  (~63s of audio). At the narrow rate the cold wall is about 64s including
+  restore, transfer, and 3s of publish, still under the 75s pack abort. A
+  second section of about 700 characters still fits in that opening call;
+  a longer second section waits so first audio stays the opening. Later
+  sections are 4,000 characters. The listen buffer is still reported. It
+  does not choose the page.
+  A listener at 1.5× can catch the playhead on a wide call. That is
+  accepted. A gap longer than the scaledown hold
+  (`MODAL_S2_WARM_HOLD_MS`, default 10s, under the 15s autoscaler target)
+  is one cold-sized call again, then full batches resume.
   Warmth is in-process memory: a worker restart costs one cold call.
   Under the ceiling, two 10-hour books are two of those ramps at once,
   peak **2** GPUs. Ten books from ten users stay on that same ramp, peak
   10. Three books from one user do too (the per-user ceiling is 5). A
   sixth book from that user shares the oldest holder's GPU: peak stays 5.
-  A 10-hour book plus a 40-minute article at 5 minutes is two GPUs. With
-  the global ceiling at 2, three 10-hour books use 2 GPUs: the oldest and
-  the third share, and the middle book stays on its own GPU. One
-  `synthesize_batch` still has one
-  reference and one seed, so rows from two books cannot share a call
-  until the container reads a reference per item. That is a Modal
-  redeploy. `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does
-  not send per-item references. The overflow partner's first call is still
-  one section, even on a warm pool.
+  A 10-hour book plus a 40-minute article at 5 minutes is two GPUs when
+  both are long enough to keep their own. A book of 20,000 characters or
+  less (~21 minutes) shares the oldest running GPU even when the ceiling
+  still has room, one call at a time, so a short article does not pay its
+  own restore and idle while another book already holds an H100. Younger
+  short books wait. A longer book under the ceiling still gets its own
+  GPU. When the ready probe reports a spare warm container, that share
+  uses the warm budget. With the global ceiling at 2, three 10-hour books
+  use 2 GPUs: the oldest and the third share, and the middle book stays on
+  its own GPU. One `synthesize_batch` still has one reference and one
+  seed, so rows from two books cannot share a call until the container
+  reads a reference per item. That is a Modal redeploy.
+  `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does not send
+  per-item references. The overflow partner's first call is still one
+  section, even on a warm pool.
 - **Rows per call, not lanes, is the throughput knob — but a call must also
   finish.** A container decodes every row of a call in one batch: measured
   **2.9x realtime for a one-row call** on the 2026-11-11 smoke. Production
@@ -526,12 +533,15 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character
   cap, above the unfinished 4-row floor on `job 7e4a8b48` (≥127 chars/s).
   The HTTP wait is
-  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill. A full
-  batch of 24 sections of 2,000 characters is 48,000 characters: about 105s
-  at the planning curve, under the 400s wait and
-  about 68MB of base64. After first light, a long book reaches that call
-  on the audio ramp (1–2 min, then 5–6, then 12–15, then the full batch),
-  not when the 1.5× buffer happens to cover it. `MODAL_S2_WARM_LANE_MAX_CHARS`
+  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill.   A warm page of about twelve 4,000-character sections is 48,000
+  characters, the same page as 24 rows of 2,000: about 105s at the
+  planning curve, under the 400s wait and about 68MB of base64. After
+  first light a long book sends that page on the next call. The planner
+  treats every call of four or more rows as ~8.8×, so it does not show
+  the measured jump from a 4-row ~9× call to a 24-row ~33× call. A
+  10-hour book now posts about 13-wide pages. If real throughput still
+  climbs with width, those pages cost more GPU time than the old 24-wide
+  ones. That difference is not in the planner. `MODAL_S2_WARM_LANE_MAX_CHARS`
   can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
   31k characters. On `job db10a6d6` the old round-robin split made 5 sections
@@ -559,17 +569,19 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   can only lower a cold lane. The wait for a cold call is sized from that
   call's own text (`modalLaneWorkMs`), so the packer and the timeout cannot
   disagree. A warm call waits the full 400s rather than its optimistic time.
-- **A row must fit too, so clone sections are packed at ~2,000 characters.**
+- **A row must fit too, so sections after the first are 4,000 characters.**
   Section sizes were the other half of `job 7e4a8b48`: at the Fish 8,000
   ceiling the book froze four 7.7k sections, and a row renders its paragraph
   units in sequence at ~50 chars/s, so one 7.7k row needs ~154s of generation —
   more than the whole placement budget. No packer or retry can rescue a row
-  larger than a call. `MODAL_S2_SECTION_CHARS` (default 2,000) sets the width. Warm calls add
-  rows, not wider rows: 24 of those sections is one batch. A cold call still
-  holds about four. A clone book frozen
-  wider than the cap is **re-packed once, only while nothing has been
-  published**; an outline with a ready section is kept so published timestamps
-  never move.
+  larger than a call. `MODAL_S2_SECTION_CHARS` (default 4,000) sets the width
+  after section 0, which stays 1,000. A single cold row still fits 6,000
+  characters inside the 180s abort and rejects 6,400; 4,000 keeps the 20s
+  prep margin. Warm calls add rows, not wider rows: about twelve of those
+  sections is one batch. A cold call holds two. A clone book frozen wider
+  than the cap is **re-packed once, only while nothing has been published**;
+  an outline already at 2,000 is under the cap and is kept. An outline with
+  a ready section is kept so published timestamps never move.
 - **A multi-section call that misses its budget is split, not resent.**
   `job 7e4a8b48` packed 31k characters into one call, aborted it at 150s,
   classified it as a cold placement, and resent the same pack on another

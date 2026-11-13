@@ -6,7 +6,10 @@
  * ceiling and the per-user ceiling are counted from unexpired rows, in the
  * same statement that inserts, so two processes cannot both pass a full cap.
  *
- * Under the ceiling every book runs its own single-GPU ramp. Past it, the
+ * Under the ceiling a long book runs its own single-GPU ramp. A short book
+ * (at most {@link MODAL_CLONE_SHORT_BOOK_CHARS}) shares the oldest holder's
+ * already-restored GPU instead of paying its own snapshot restore, and a
+ * younger short book queues behind that one. Past either ceiling, the
  * oldest book still waiting shares the oldest holder's GPU, and younger
  * waiters queue. `min_containers` stays 0; this table does not keep a
  * container up.
@@ -72,13 +75,41 @@ export type GpuLeaseView = {
   jobId: string;
   userId: string;
   createdAt: number;
+  /**
+   * Speakable characters, once the book is frozen. 0 means unknown.
+   * A short book may share an already-restored GPU instead of opening one.
+   */
+  charCount?: number;
 };
+
+/**
+ * A book this short hitchhikes on a warm GPU another book already holds.
+ *
+ * 20,000 characters is about 21 minutes at 15.85 characters per audio
+ * second. An 11-minute book and a 2-page article are under it. A 10-hour
+ * book is not, and still gets its own H100 while the ceiling has room.
+ * Joining both books' rows in one `synthesize_batch` needs a per-item
+ * reference in the container, which is a Modal redeploy. This share is
+ * one call at a time on the container that is already up.
+ */
+export const MODAL_CLONE_SHORT_BOOK_CHARS = 20_000;
+
+export function isShortCloneBook(charCount: number | undefined): boolean {
+  return (charCount ?? 0) > 0 && (charCount ?? 0) <= MODAL_CLONE_SHORT_BOOK_CHARS;
+}
 
 export type CloneGpuDecision =
   | { action: "grant" }
   | { action: "solo" }
   | { action: "share"; partnerId: string }
   | { action: "queue" };
+
+function inputCharCount(
+  input: { jobId: string },
+  waiters: GpuLeaseView[]
+): number | undefined {
+  return waiters.find((waiter) => waiter.jobId === input.jobId)?.charCount;
+}
 
 function byAge(a: GpuLeaseView, b: GpuLeaseView): number {
   if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
@@ -90,11 +121,13 @@ function byAge(a: GpuLeaseView, b: GpuLeaseView): number {
 /**
  * Who may take a GPU, given the leases already held.
  *
- * A free slot goes to the oldest book that fits both ceilings. A book that
- * does not fit shares only when it is the oldest waiter, and only with the
- * oldest holder (the oldest holder of its own user when the per-user ceiling
- * is what blocked it and the global ceiling still has room). Every other
- * waiter queues. A holder keeps its own ramp unless it is that share partner.
+ * A free slot goes to the oldest long book that fits both ceilings. A short
+ * book with a live holder shares that holder's GPU even when the ceiling
+ * has room. A book that does not fit shares only when it is the oldest
+ * waiter, and only with the oldest holder (the oldest holder of its own
+ * user when the per-user ceiling is what blocked it and the global ceiling
+ * still has room). Every other waiter queues. A holder keeps its own ramp
+ * unless it is that share partner.
  */
 export function decideCloneGpuAdmission(input: {
   jobId: string;
@@ -115,17 +148,35 @@ export function decideCloneGpuAdmission(input: {
   const userLeases = leases.filter((lease) => lease.userId === input.userId).length;
   const globalFull = leases.length >= input.globalCap;
   const userFull = userLeases >= input.perUserCap;
+  const oldestShort = waiters.find((waiter) => isShortCloneBook(waiter.charCount));
 
   const oldestLive = (userId?: string): GpuLeaseView | undefined =>
     leases.find((lease) => !userId || lease.userId === userId);
 
   if (held) {
     const oldestWaiter = waiters[0];
-    if (!oldestWaiter || (!globalFull && !userFull)) return { action: "solo" };
+    const ceilingBlocks = globalFull || userFull;
+    if (!ceilingBlocks && oldestShort) {
+      const holder = oldestLive();
+      if (holder?.jobId === input.jobId) {
+        return { action: "share", partnerId: oldestShort.jobId };
+      }
+      return { action: "solo" };
+    }
+    if (!oldestWaiter || !ceilingBlocks) return { action: "solo" };
     const partnerPool = globalFull ? undefined : oldestWaiter.userId;
     const holder = oldestLive(partnerPool);
     if (!holder || holder.jobId !== input.jobId) return { action: "solo" };
     return { action: "share", partnerId: oldestWaiter.jobId };
+  }
+
+  const thisBookIsShort = isShortCloneBook(inputCharCount(input, waiters));
+  if (!globalFull && !userFull && thisBookIsShort && leases.length > 0) {
+    if (oldestShort?.jobId === input.jobId) {
+      const holder = oldestLive();
+      if (holder) return { action: "share", partnerId: holder.jobId };
+    }
+    return { action: "queue" };
   }
 
   const eligible = waiters.filter((waiter) => {
@@ -284,7 +335,8 @@ export async function releaseModalGpuLeasesForOwner(
 }
 
 const RUNNABLE_CLONE_SQL = `
-SELECT id, user_id, COALESCE(created_at, 0) AS created_at
+SELECT id, user_id, COALESCE(created_at, 0) AS created_at,
+       COALESCE(char_count, 0) AS char_count
 FROM jobs
 WHERE deleted_at IS NULL
   AND job_kind = 'takehome'
@@ -305,11 +357,17 @@ ORDER BY created_at ASC, id ASC`;
 
 /** Clone books the drain can still run. Holders and waiters are split by the lease table. */
 export async function listRunnableCloneBooks(): Promise<GpuLeaseView[]> {
-  const rows = await query<{ id: string; user_id: string; created_at: number }>(RUNNABLE_CLONE_SQL);
+  const rows = await query<{
+    id: string;
+    user_id: string;
+    created_at: number;
+    char_count: number;
+  }>(RUNNABLE_CLONE_SQL);
   return rows.map((row) => ({
     jobId: row.id,
     userId: row.user_id,
     createdAt: Number(row.created_at) || 0,
+    charCount: Number(row.char_count) || 0,
   }));
 }
 
@@ -324,6 +382,8 @@ export async function admitModalCloneGpu(opts: {
   ownerToken: string;
   createdAt: number;
   ttlSeconds: number;
+  /** Frozen speakable length. A short book can share a warm GPU. */
+  charCount?: number;
 }): Promise<
   | { mode: "solo"; holdsLease: boolean }
   | { mode: "queue"; holdsLease: false }
@@ -334,12 +394,16 @@ export async function admitModalCloneGpu(opts: {
   const decide = async () => {
     const leases = await listLiveModalGpuLeases();
     const waiters = await listRunnableCloneBooks();
-    if (!waiters.some((book) => book.jobId === opts.jobId)) {
+    const self = waiters.find((book) => book.jobId === opts.jobId);
+    if (!self) {
       waiters.push({
         jobId: opts.jobId,
         userId: opts.userId,
         createdAt: opts.createdAt,
+        charCount: opts.charCount,
       });
+    } else if ((opts.charCount ?? 0) > 0) {
+      self.charCount = opts.charCount;
     }
     return {
       leases,

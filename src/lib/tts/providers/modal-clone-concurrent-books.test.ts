@@ -290,12 +290,20 @@ describe("warmth is spare containers plus this book's own answer", () => {
     ).toBe(false);
     expect(
       modalCloneKnownWarmForCall({
+        warmContainers: 1,
+        inflightCalls: 0,
+        bookContainerWarm: false,
+        jobScoped: true,
+      })
+    ).toBe(true);
+    expect(
+      modalCloneKnownWarmForCall({
         warmContainers: 2,
         inflightCalls: 0,
         bookContainerWarm: false,
         jobScoped: true,
       })
-    ).toBe(false);
+    ).toBe(true);
     expect(
       modalCloneKnownWarmForCall({
         warmContainers: 2,

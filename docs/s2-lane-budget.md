@@ -77,9 +77,34 @@ lane cap          = 80s x 100 chars/s
 - `modalLaneWorkMs` — the wait handed to the HTTP call, derived from that call's
   own text at the worse of the aggregate and single-row rates. The packer and
   the timeout therefore cannot disagree.
-- `modalCloneSectionChars` — **2,000** characters per clone section (~40s as a
-  row). Four of them still fit one cold call. A warm call carries up to 24,
-  and only once the listener's buffer covers that call.
+- `modalCloneSectionChars` — **4,000** characters after section 0 (~4.2 min).
+  Section 0 stays **1,000**. A cold call holds two of the steady rows. A
+  warm call carries the largest prefix under the 400s wait and the ~57,000
+  character / 80 MiB cap, about twelve or thirteen rows. It is not sized
+  so playback at 1.5× stays ahead.
+
+## Current schedule
+
+Section 0 is one quick section. Every later section is the steady width.
+The next GPU call is the largest proxy-safe batch, not a page grown so a
+1.5× listener cannot catch up. A book of 20,000 characters or less shares
+an already-running H100, one call at a time, even when the GPU ceiling
+still has room. An idle restored container (`warm_containers` above the
+other live leases) is a warm start for the next book. The worker's warm
+hold is 10s. The live autoscaler target is `scaledown_window=15`, set by
+`scripts/s2/set-live-autoscaler.py` after the worker that holds for 10s is
+restarted. That script does not deploy. Until it is run, production stays
+at the previous 45s window; a 10s hold is safe under that longer window.
+
+Dollars in `modal-clone-short-book-cost.test.ts` use this planner curve
+plus restore and idle at $3.95/h. They are estimates. The curve is ~2.8×
+for one row and ~8.8× at four or more rows. The 24-row smoke was ~33×.
+A 13-wide page is not that smoke.
+
+## The previous ramp, kept as the measurement it was
+
+The numbers below are the schedule this file described before the
+4,000-character width. They are not the current plan.
 
 ## The ramp, after the container has answered
 
@@ -230,12 +255,12 @@ pm2 logs echomancer-takehome --lines 300 \
 
 Healthy:
 
-- `pack evenFanout=… target=2000` — the clone width, not 7797
-- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:12`
-  on the first claim of a book that has the GPU to itself, then `warm:24`
-  once the buffer is deep. A second runnable book stops the tick after one
-  call, and once both buffers are deep that line is `warm:24`, not `warm:1`.
-  A `warm:24` on the call immediately after section 0 means the ramp is not running.
+- `pack evenFanout=… target=4000` — the clone width after section 0, not 7797
+- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:N`
+  on the first claim, where N is the largest proxy-safe page (about 13
+  rows of 4,000 characters). A second runnable book stops the tick after
+  one call. A wide page on the call immediately after section 0 is the
+  schedule.
   A `cold:` page stays **at or under 8,000** characters. A `warm:` page
   stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
   and at or under 24 rows.

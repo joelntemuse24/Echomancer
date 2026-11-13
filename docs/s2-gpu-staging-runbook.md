@@ -720,10 +720,12 @@ than substituting a voice.
 book sends one `synthesize_batch` at a time on its own H100 (see
 `docs/s2-lane-budget.md`). The worker will not start a 21st GPU; the
 autoscaler has to allow the ones it does start. `min_containers` stays 0.
-`scaledown_window` is 45s (`scripts/s2/set-live-autoscaler.py`). The worker
-treats the pool as warm for 30s after the last answer
+`scaledown_window` is 15s (`scripts/s2/set-live-autoscaler.py`). The worker
+treats the pool as warm for 10s after the last answer
 (`MODAL_S2_WARM_HOLD_MS`), which is under that window. Restart the worker
-before lowering the live window. The script does not deploy.
+before lowering the live window. The script does not deploy. A 10s hold is
+safe under a window that is still 45s; the live window stays at its
+previous value until this script is run.
 
 **Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
 already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
@@ -811,24 +813,26 @@ worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
 settings = worker.update_autoscaler(
     min_containers=0,        # scale to zero when idle; do not leave GPUs up
     max_containers=20,       # MODAL_S2_MAX_GPUS; one H100 per active clone book
-    scaledown_window=45,     # 45 s idle before a container is released
+    scaledown_window=15,     # 15 s idle before a container is released
 )
 print("live autoscaler now:", settings)
 assert settings.max_containers == 20, settings
 assert settings.min_containers == 0, settings
-assert settings.scaledown_window == 45, settings
+assert settings.scaledown_window == 15, settings
 PY
 ```
 
-The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 45`.
-Restart the take-home worker before this, so its 30s warm hold is already
-under 45s. This does not deploy and does not wipe snapshots.
+The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15`.
+Restart the take-home worker before this, so its 10s warm hold is already
+under 15s. This does not deploy and does not wipe snapshots. Scaledown
+applies once the container has no input. It does not cancel a call that is
+still restoring or compiling.
 
 Pass condition: the printed settings show `max_containers` 20 (or whatever
-`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 45, and
+`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 15, and
 `min_containers` 0. A book wave still posts one call. A second book posts
 on a second container. After the last book, the container releases in about
-45s instead of 180s. A gap longer than 45s mid-book costs one restore.
+15s. A gap longer than 15s mid-book costs one restore.
 
 #### Historical — do not run
 
@@ -846,11 +850,10 @@ here so a search for it does not look like the current step. Do not run it.
 Section 0 is the only section the player can start with, so it is rendered
 alone on one lane and published before the rest of the book starts
 (`MODAL_S2_FIRST_LIGHT`, default on). Each later call is the largest prefix
-that finishes before the audio already published runs out, so the batch
-grows (one row, then a few, then 24) instead of jumping to a full batch
-behind one minute of audio. A container still answers every row of a call
-together, which is why the planner counts the whole call as the wait. A
-`warm:24` immediately after section 0 means that ramp is not running. The
+that fits the warm wait, the response body, and the proxy ceiling. It is
+not grown so a 1.5× listener stays ahead. A container still answers every
+row of a call together, which is why the planner counts the whole call as
+the wait. A wide page on the call after section 0 is the schedule. The
 5-section row below is the old one-call measurement, kept as a GPU rate.
 
 | | Budget |
@@ -874,10 +877,9 @@ The in-book ramp plans from those numbers, 15% slower on wide calls. A
 **full batch** is faster because rows run in parallel — not because a row
 gets faster. A call's wall time is set by its longest row, so section size
 is a hard bound, not a tuning preference. Clone section 0 is 1,000
-characters and the next call is capped at 1,300. A piece of about 2.1
-minutes or less, whose rows add no generation beyond that opening, is one
-call. A 5-minute article still ramps, because a 2,000-character row would
-make first audio later than the opening.
+characters. Later sections are 4,000. A piece whose rows add no generation
+beyond that opening is one call. A longer second section waits so first
+audio stays the opening.
 
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 
@@ -976,7 +978,7 @@ POST does not join, and that container then idles for `scaledown_window`.
 Extract, the voice list, and the tick do not start one. The book's
 `/synthesize_batch` is the container. The first call pays about 68s. Later
 calls stay on it while the worker posts them back to back. A gap longer
-than the 45s window costs one restore, then the ramp resumes. Stock-only
+than the 15s window costs one restore, then full batches resume. Stock-only
 accounts never start a GPU. A placement that already missed its restore
 budget still kicks `::cover` off the book path.
 
@@ -995,7 +997,7 @@ not skip the restore — the 57s smoke was already an HTTP call.
 | Option | What it buys | Cost |
 |--|--|--|
 | No side cover; the synthesize call restores the container | one H100 per book, no spare | the cold first call, about 68s of GPU |
-| `scaledown_window=45` after the last book (runtime `update_autoscaler`, no redeploy) | the idle tail drops from ~180s (~$0.20) to ~45s (~$0.05) | a mid-book gap past 45s pays one more restore |
+| `scaledown_window=15` after the last book (runtime `update_autoscaler`, no redeploy) | the idle tail drops from ~180s (~$0.20) through the previous 45s (~$0.05) to ~15s (~$0.016) | a mid-book gap past 15s pays one more restore |
 | Longer `scaledown_window` (same runtime call, no redeploy) | more room for a stall between batches | about $0.0011 per extra idle second, on the book that was last |
 | `min_containers=1` | the restore is gone for every book, including a fast click | **$3.95/hr**, about $2,840/mo continuous, or ~$870/mo for a 10-hour weekday |
 
@@ -1147,7 +1149,7 @@ Production app:     echomancer-s2-clone
 Build id:           __________  (same build validated on staging)
 Deploy env:         S2C_MAX_CONTAINERS unset (1)
 Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
-Runtime override:   update_autoscaler(max_containers=N, scaledown_window=45, min_containers=0)
+Runtime override:   update_autoscaler(max_containers=N, scaledown_window=15, min_containers=0)
 Live cap printed:   max_containers=N (N = MODAL_S2_MAX_GPUS, default 20; not the /ready label)
 Health labels:      /ready max_containers still ____ (deploy-time env; live cap is the 8c printout)
 ```

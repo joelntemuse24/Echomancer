@@ -1294,13 +1294,14 @@ function clearModalCloneRenderSeal(jobId: string | undefined): void {
  * `warm_containers > 0` means some container finished restoring. With
  * `max_inputs=1` that container is busy for the book that holds it, so
  * another book's call is placed on a container that still has to restore.
- * Spare warmth is `warm_containers` above the other live GPU leases.
- * A book's first call, and any call before that book has heard its own
- * container, always uses the restore budget. A spare container is still
- * not this book's. Probe unknown (`warmContainers < 0`) is not warmth for
- * an unconfirmed book; a book that already heard its container keeps the
- * warm budget when the probe is missing. A call with no job id keeps the
- * old rule (`warm_containers > 0`).
+ * Spare warmth is `warm_containers` above the other live GPU leases: a
+ * container that finished restoring and is not held by another book. A
+ * book's first call uses that spare container instead of paying a restore.
+ * A container already counted in the leases is busy, and this call is a
+ * new one. Probe unknown (`warmContainers < 0`) is not warmth for a book
+ * that has not heard its own container; a book that already heard its
+ * container keeps the warm budget when the probe is missing. A call with
+ * no job id keeps the old rule (`warm_containers > 0`).
  */
 export function modalCloneKnownWarmForCall(input: {
   warmContainers: number;
@@ -1309,9 +1310,8 @@ export function modalCloneKnownWarmForCall(input: {
   jobScoped: boolean;
 }): boolean {
   if (!input.jobScoped) return input.warmContainers > 0;
-  if (!input.bookContainerWarm) return false;
-  if (input.warmContainers < 0) return true;
   if (!Number.isFinite(input.inflightCalls)) return false;
+  if (input.bookContainerWarm && input.warmContainers < 0) return true;
   return input.warmContainers > input.inflightCalls;
 }
 
@@ -1349,23 +1349,24 @@ async function inflightCloneCallsExcluding(jobId: string): Promise<number> {
 }
 
 /**
- * Whether this book's next call may use the warm ramp.
+ * Whether this book's next call may use the warm budget.
  *
- * The book must have heard its own container, and `warm_containers` must
- * exceed the other live leases. A warm batch flag alone is not enough:
- * that container may be busy with another book.
+ * Spare warmth is `warm_containers` above the other live leases, including
+ * a book that has not heard a container of its own. A container already
+ * counted in the leases is busy. A warm batch flag alone is not enough.
  */
 export async function modalCloneBookHasSpareContainer(
   jobId: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  if (!modalCloneBookContainerWarm(jobId)) return false;
+  if (modalCloneJobBackoffRemainingMs(jobId) > 0) return false;
+  const heard = modalCloneBookContainerWarm(jobId);
   const inflight = await inflightCloneCallsExcluding(jobId);
   const state = await modalClonePoolReady(signal);
   return modalCloneKnownWarmForCall({
     warmContainers: state.ready ? state.warmContainers : 0,
     inflightCalls: inflight,
-    bookContainerWarm: true,
+    bookContainerWarm: heard,
     jobScoped: true,
   });
 }

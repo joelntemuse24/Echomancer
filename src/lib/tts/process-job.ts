@@ -47,6 +47,7 @@ import {
   modalCloneJobBackoffRemainingMs,
   modalCloneLiveLeases,
   renderModalCloneBatch,
+  modalClonePoolReady,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
 import {
@@ -2305,10 +2306,11 @@ async function runClaimedTick(
           const playback = listenerBufferMs(sections, segments, job.first_section_at, Date.now());
           let gpuIndexes = render;
           let yieldedGpu = false;
-          // Under the GPU ceiling this book keeps its own ramp. Sharing is
-          // only the overflow path, and then one call is the whole tick.
+          // A long book keeps its own GPU under the ceiling. A short book
+          // shares a holder that is already up, and then one call is the tick.
           let oneCall = false;
           let committedShare = false;
+          let reuseWarmGpu = false;
           if (render.length > 0) {
             const admission = await admitModalCloneGpu({
               jobId,
@@ -2316,7 +2318,15 @@ async function runClaimedTick(
               ownerToken: lease,
               createdAt: Number(job.created_at) || 0,
               ttlSeconds: LEASE_TTL_SECONDS,
+              charCount: text.length,
             });
+            if (
+              admission.mode === "share" &&
+              modalCloneJobBackoffRemainingMs(jobId) <= 0
+            ) {
+              const ready = await modalClonePoolReady();
+              reuseWarmGpu = ready.ready && ready.warmContainers > 0;
+            }
             if (admission.mode === "queue") {
               handGpuOff = true;
               yieldedGpu = true;
@@ -2358,7 +2368,8 @@ async function runClaimedTick(
                       firstLight: !otherPlay.started,
                     },
                   ],
-                  poolWarm: await modalCloneBookHasSpareContainer(jobId),
+                  poolWarm:
+                    reuseWarmGpu || (await modalCloneBookHasSpareContainer(jobId)),
                   batch,
                 });
                 if (turn.bookId !== jobId || !turn.call) {
@@ -2417,6 +2428,10 @@ async function runClaimedTick(
                     firstLight: needsFirstLight && gpuIndexes[0] === 0,
                     bookWave: true,
                     jobId,
+                    // A short book sharing a container that is already up
+                    // must not arm the restore budget. An idle spare
+                    // container is detected inside the dispatch probe.
+                    ...(reuseWarmGpu ? { poolWarm: true as const } : {}),
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
                     maxCalls: oneCall ? 1 : undefined,

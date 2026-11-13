@@ -1341,9 +1341,11 @@ describe("lane staging", () => {
 });
 
 describe("staged clone takes are not rendered again", () => {
-  const LONG = "A sentence. ".repeat(6000);
+  // Longer than one 24-section claim, so a tick that sends full batches
+  // still leaves a later tick something to render.
+  const LONG = "A sentence. ".repeat(12_000);
   /** Every sentence names its place, so two sections cannot share a cache key. */
-  const UNIQUE = Array.from({ length: 48 }, (_, index) =>
+  const UNIQUE = Array.from({ length: 140 }, (_, index) =>
     `Paragraph ${index} is only this paragraph. `.repeat(30)
   ).join("\n\n");
 
