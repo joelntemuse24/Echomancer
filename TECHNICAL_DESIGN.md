@@ -1364,6 +1364,7 @@ snapshot would hand a restored container a path it never compiled.
 | `masked_fill` instead of `torch.where(…, float("-inf"), …)` | upstream `logits_to_probs` | `S2B_FAST_DECODE=0` |
 | Codec decoded per finished section during AR, then encoded and uploaded | all AR, then all codec, then all encode, then all upload | `S2B_PIPELINE_CODEC=0` |
 | `weight_norm` frozen, codec mask cached, micro-batch 16, length-sorted | parametrized convs, mask rebuilt per call, micro-batch 8 | `S2B_CODEC_TUNING=0` |
+| The opening wave's prompts prefilled in one right-padded causal pass | one serial prefill per lane | `S2B_BATCHED_PREFILL=0` |
 | `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
 | Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
 | Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
@@ -1378,7 +1379,8 @@ down to the 128-token KV rounding and the upstream fast-transformer call.
 codec mask, length-sorting the codec micro-batch, `EOS_CHECK_EVERY`, the coarse
 KV buckets and the streaming order change no sample, and each has a test that
 says so (`modal/test_s2_codec_tuning.py`, `modal/test_s2_numerics.py`). The
-fast-transformer rewrite is numerically equal to upstream's step in fp32 —
+fast-transformer rewrite and the batched prefill are numerically equal to
+upstream's step and to the single-row prefill in fp32 —
 asserted against the pinned upstream source, which is how two real bugs were
 found: the fast loop must write fast-KV position 0 from the **slow** hidden
 state (its logits are discarded, but every later codebook step attends it), and

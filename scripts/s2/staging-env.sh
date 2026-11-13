@@ -58,3 +58,4 @@ export S2C_CPU=8
 #   S2B_PIPELINE_CODEC=0     serial codec → encode → upload
 #   S2B_CODEC_TUNING=0       keep weight_norm and rebuild the codec's mask
 #   S2B_FAST_DECODE=0        call upstream's fast-transformer step
+#   S2B_BATCHED_PREFILL=0    prefill one lane at a time

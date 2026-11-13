@@ -64,6 +64,7 @@ def test_a_plain_deploy_reproduces_the_deployed_decode_path(engine):
     assert engine.PIPELINE_CODEC is False, "v9 decoded everything after AR"
     assert engine.CODEC_TUNING is False, "v9 kept weight_norm and rebuilt the mask"
     assert engine.FAST_DECODE is False, "v9 called upstream's fast step"
+    assert engine.BATCHED_PREFILL is False, "v9 prefilled one lane at a time"
 
 
 @pytest.mark.engine("v9")
@@ -103,6 +104,7 @@ def test_v10_turns_on_every_speedup_switch(engine):
     assert engine.PIPELINE_CODEC is True
     assert engine.CODEC_TUNING is True
     assert engine.FAST_DECODE is True
+    assert engine.BATCHED_PREFILL is True
 
 
 @pytest.mark.engine("v10")
