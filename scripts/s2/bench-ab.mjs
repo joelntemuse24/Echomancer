@@ -446,26 +446,35 @@ async function runWorkload(name, spec, reference, ready) {
   mkdirSync(outDir, { recursive: true });
   const rows = [];
   const deferred = [];
+  const keysToDelete = [];
   const r2Started = Date.now();
-  // The r2 page's objects are read **concurrently**, at the same bound the
-  // worker uses. Reading them one at a time measured a serial round-trip chain
-  // the production path never pays, which made the r2 build look slower than it
-  // is at exactly the stage the transport change was meant to fix.
-  const audioRows = (body.items ?? []).filter(
-    (row) => !row.error && typeof row.storage_key === "string"
-  );
+  // Read every section's audio into RAM with bounded 8-way concurrency, matching
+  // `MODAL_CLONE_AUDIO_READ_CONCURRENCY` on the worker. Stop `r2ReadMs` and
+  // `wallMs` as soon as all audio Buffers are in memory: local disk writes,
+  // `ffprobe` validation, and R2 `DELETE` cleanup (which the worker schedules
+  // asynchronously off the critical path) must not inflate either build's clock.
+  const validRows = (body.items ?? []).filter((row) => !row.error);
   const prefetched = new Map();
-  await Promise.all(
-    audioRows.map(async (row) => {
-      prefetched.set(row.key, await takeBytes(row));
-    })
-  );
+  const READ_CONCURRENCY = 8;
+  for (let i = 0; i < validRows.length; i += READ_CONCURRENCY) {
+    const slice = validRows.slice(i, i + READ_CONCURRENCY);
+    await Promise.all(
+      slice.map(async (row) => {
+        prefetched.set(row.key, await takeBytes(row));
+      })
+    );
+  }
+  const r2ReadMs = Date.now() - r2Started;
+  // The clock the A/B uses: headers + body + every audio read, i.e. everything
+  // between "post" and "all audio in RAM".
+  const wallMs = Date.now() - started;
+
   for (const row of body.items ?? []) {
     if (row.error) {
       rows.push({ key: row.key, error: row.error, error_code: row.error_code });
       continue;
     }
-    const bytes = prefetched.has(row.key) ? prefetched.get(row.key) : await takeBytes(row);
+    const bytes = prefetched.get(row.key) ?? null;
     if (Buffer.isBuffer(bytes)) {
       const file = `${row.key}.mp3`;
       writeFileSync(join(outDir, file), bytes);
@@ -474,13 +483,10 @@ async function runWorkload(name, spec, reference, ready) {
       } else if (decodable(join(outDir, file)) == null) {
         console.error(`  FAIL row ${row.key} does not decode`);
       }
-      // **Delete the object now that its bytes are on disk.** Waiting until the
-      // end of the workload, or only deleting the rows that failed, leaked 24–32
-      // objects per page under `s2-takes/bench-*` — and a forgotten benchmark
-      // bucket is exactly what the lifecycle rule exists to mop up.
-      if (typeof row.storage_key === "string") await deleteTake(row.storage_key);
+      if (typeof row.storage_key === "string") keysToDelete.push(row.storage_key);
     } else if (bytes && bytes.storageKey) {
       deferred.push({ key: row.key, reason: bytes.deferred, storageKey: bytes.storageKey });
+      keysToDelete.push(bytes.storageKey);
     }
     rows.push({
       key: row.key,
@@ -498,12 +504,12 @@ async function runWorkload(name, spec, reference, ready) {
       truncated_units: row.truncated_units,
     });
   }
-  const r2ReadMs = Date.now() - r2Started;
-  // Objects we could not read back (no local R2 credentials) are still swept.
-  for (const entry of deferred) await deleteTake(entry.storageKey);
-  // The clock the A/B uses: headers + body + every audio read, i.e. everything
-  // between "post" and "all audio in RAM".
-  const wallMs = Date.now() - started;
+  // Sweep all `s2-takes/` objects concurrently after timing has stopped so
+  // staging leaves nothing behind and warm-container idle gap stays tiny.
+  for (let i = 0; i < keysToDelete.length; i += READ_CONCURRENCY) {
+    const slice = keysToDelete.slice(i, i + READ_CONCURRENCY);
+    await Promise.all(slice.map((key) => deleteTake(key)));
+  }
 
   const audioSeconds = rows.reduce((sum, row) => sum + (Number(row.duration_s) || 0), 0);
   const realtime = wallMs > 0 ? audioSeconds / (wallMs / 1000) : 0;

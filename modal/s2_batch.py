@@ -169,7 +169,7 @@ FAST_DECODE = os.environ.get("S2B_FAST_DECODE", "1" if NEW_ENGINE else "0") == "
 #: active batch cannot broadcast into it. The v10 loop only ever passes `width=b`
 #: to `_prefill`, so bucketing and the upstream fast step are mutually exclusive.
 _BUCKET_DEFAULT = "1" if (NEW_ENGINE and FAST_DECODE) else "0"
-BUCKET_BATCH = os.environ.get("S2B_BUCKET", _BUCKET_DEFAULT) == "1"
+BUCKET_BATCH = FAST_DECODE and (os.environ.get("S2B_BUCKET", _BUCKET_DEFAULT) == "1")
 #: 1 lets an idle lane take a later unit of a section whose unit 0 is done.
 WORK_STEAL = os.environ.get("S2B_WORK_STEAL", "1" if NEW_ENGINE else "0") == "1"
 #: Decode steps between host synchronisations. A finished row idles at most
@@ -680,32 +680,7 @@ class _BatchEngine:
         else:
             decoder_tuning["masks_cached"] = 0
 
-        # **Every Python `float` read inside the step must become a constant.**
-        #
-        # Under `dynamic=True` Dynamo wraps a float attribute it cannot
-        # specialize as a `pass_arg_as_tensor=True` **0-D CPU float64 placeholder**
-        # — and Inductor then logs `skipping cudagraphs due to cpu device
-        # (arg10_1)` for the whole graph. The attributes that did it here are
-        # `self.codebook_inv_scale` and every `RMSNorm.eps` in the model.
-        # `specialize_float=True` constant-folds them, which is also exactly what
-        # they are: values fixed at load time, not per-call tensors.
-        #
-        # Set for every engine, not just v10: the v9 path reads the same
-        # `RMSNorm.eps`, and a compile-time config must not depend on which
-        # branch a later call takes.
-        try:
-            torch._dynamo.config.specialize_float = True
-        except Exception as err:  # a torch without the flag keeps the default
-            print(f"[S2B] specialize_float unavailable: {type(err).__name__}: {err}")
-
-        if CUDAGRAPHS:
-            # At most `len(KV_BUCKETS)` shapes, each recorded once.
-            torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit = None
-        self.step = torch.compile(
-            self._decode_step, backend="inductor",
-            mode="reduce-overhead" if CUDAGRAPHS else "default",
-            fullgraph=True, dynamic=True,
-        )
+        self.step = self._compile_step()
 
         from faster_whisper import WhisperModel
 
@@ -713,6 +688,63 @@ class _BatchEngine:
         self._last_audio: dict = {}
         self.decoder_tuning = decoder_tuning
         self.selftest_stats: dict = {}
+
+    def _compile_step(self):
+        """Wrap `_decode_step` with `torch.compile`, specializing float attrs.
+
+        **Every Python `float` read inside the step must become a constant.**
+        Under `dynamic=True` Dynamo wraps a float attribute it cannot
+        specialize as a `pass_arg_as_tensor=True` **0-D CPU float64 placeholder**
+        — and Inductor then logs `skipping cudagraphs due to cpu device
+        (arg10_1)` for the whole graph. The attributes that did it here are
+        `self.codebook_inv_scale` and every `RMSNorm.eps` in the model.
+        `specialize_float=True` constant-folds them, which is also exactly what
+        they are: values fixed at load time, not per-call tensors.
+        """
+        import torch
+
+        try:
+            torch._dynamo.config.specialize_float = True
+        except Exception as err:  # a torch without the flag keeps the default
+            print(f"[S2B] specialize_float unavailable: {type(err).__name__}: {err}")
+        if hasattr(torch._inductor.config, "fx_graph_cache"):
+            torch._inductor.config.fx_graph_cache = True
+        if CUDAGRAPHS:
+            # At most `len(KV_BUCKETS)` shapes, each recorded once.
+            torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit = None
+        return torch.compile(
+            self._decode_step,
+            backend="inductor",
+            mode="reduce-overhead" if CUDAGRAPHS else "default",
+            fullgraph=True,
+            dynamic=True,
+        )
+
+    def recompile_step(self) -> None:
+        """Reset invalidated CUDA-graph trees and attach a fresh compiled step.
+
+        `torch.compile(..., mode="reduce-overhead")` wraps the compiled graph in
+        `cudagraphify_impl`'s `deferred_cudagraphify` closure, whose `fn_cache`
+        retains `functools.partial(old_manager.run, ...)`. Calling
+        `reset_cudagraph_trees()` alone sets `old_manager.roots = None` without
+        clearing `fn_cache`, so the next `self.step(...)` raises `TypeError`.
+        Resetting Dynamo and re-wrapping `_decode_step` attaches a fresh
+        `CUDAGraphTreeManager` while Inductor's warm disk cache
+        (`/opt/torchinductor`) reuses the compiled Triton kernels.
+        """
+        import torch
+
+        try:
+            from torch._inductor.cudagraph_trees import reset_cudagraph_trees
+
+            reset_cudagraph_trees()
+        except Exception as err:
+            print(f"[S2B] reset_cudagraph_trees unavailable: {type(err).__name__}: {err}")
+        try:
+            torch._dynamo.reset()
+        except Exception as err:
+            print(f"[S2B] dynamo reset unavailable: {type(err).__name__}: {err}")
+        self.step = self._compile_step()
 
     # ── model math ──────────────────────────────────────────────────────────
 
@@ -2078,8 +2110,12 @@ class _BatchEngine:
             )
             return recorded
         except Exception as err:  # a warm-up miss is reported, not fatal
-            print(f"[S2B] warm decode shapes skipped: {type(err).__name__}: {err}")
-            return int(self.selftest_stats.get("decode_graphs") or 0)
+            self.selftest_stats["decode_graphs"] = recorded
+            print(
+                f"[S2B] warm decode shapes failed after {recorded}: "
+                f"{type(err).__name__}: {err}"
+            )
+            return recorded
 
     def _warm_widths(self) -> tuple[int, ...]:
         """Every active width a call in this engine can choose."""
@@ -2190,11 +2226,13 @@ class _BatchEngine:
             "codec_tuning": dict(getattr(self, "decoder_tuning", {}) or {}),
         }
         skips = int(stats.get("cudagraph_skips") or 0)
-        if CUDAGRAPHS and skips:
-            # A skip means the step runs uncompiled, about twice as slowly, and
-            # every call still succeeds — which is why it has to be an error here
-            # rather than a note. This fires at boot, before a snapshot is
-            # published, instead of after a paid staging compile.
+        if NEW_ENGINE and FAST_DECODE and CUDAGRAPHS and skips:
+            # A skip on v10 means the step runs uncompiled, about twice as
+            # slowly, and every call still succeeds — which is why it has to be
+            # an error here rather than a note. Gated on `NEW_ENGINE` and
+            # `FAST_DECODE` because the v9 rollback and `S2B_FAST_DECODE=0`
+            # intentionally run upstream's scalar `torch.where` ops, which skip
+            # CUDA graphs by design and must still be able to boot.
             stats["ok"] = False
             print(
                 f"[S2B] selftest: {stats}\n"

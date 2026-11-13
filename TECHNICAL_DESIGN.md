@@ -1434,13 +1434,15 @@ so two production boot bugs lived in that gap:
   Inductor reports as `skipping cudagraphs due to cpu device (arg10_1)`.
 
 `modal/test_s2_compile.py` now traces the **real** `_decode_step` through
-`torch.compile(fullgraph=True, dynamic=True)` for both engines, at two widths, and
-compares the result with eager. Both sampler names are bound inside
-`gpu_image.imports()` and called directly; `torch._dynamo.config.specialize_float`
-is set before compiling so every float attribute becomes a constant;
-`selftest()` reads `torch._dynamo.utils.counters["inductor"]["cudagraph_skips"]`
-and **raises** on a non-zero count, so a skip fails the boot instead of quietly
-halving throughput on every call.
+`torch.compile(fullgraph=True, dynamic=True)` for both engines (at two widths,
+against eager) **and** through `aot_autograd` + Inductor decompositions on a
+`meta` model to assert zero surviving CPU tensor placeholders (`arg10_1`). Both
+sampler names are bound inside `gpu_image.imports()` and called directly;
+`torch._dynamo.config.specialize_float` is set before compiling so every float
+attribute becomes a constant; `selftest()` reads
+`torch._dynamo.utils.counters["inductor"]["cudagraph_skips"]` and **raises** on a
+non-zero count under `v10` (`FAST_DECODE=1`), so a skip fails the boot instead of
+quietly halving throughput on every call while keeping the `v9` rollback bootable.
 
 **A CUDA graph needs three calls, not one.** Inductor's `CUDAGraphTreeManager`
 warms up on call 1 for a new `(width, kv_len)` key, records on call 2 and replays
@@ -1453,9 +1455,11 @@ narrower active batch cannot broadcast into.
 **A restore that invalidates the graphs recaptures once.** `cudaGraphExec_t`
 handles are captured before the snapshot, and `cuda-checkpoint` restoring onto a
 different Modal worker variant may invalidate them. `_verify_graphs()` therefore
-resets `cudagraph_trees` and re-runs the warm-up (a capture pass over the already
-compiled Triton kernels, about a second), logs `graphs=recaptured(24)` and only
-fails on a second failure. `check-cudagraphs.py` accepts both `ok(N)` and
+calls `engine.recompile_step()` (resetting `cudagraph_trees` and Dynamo and
+re-wrapping `_decode_step` onto a fresh `CUDAGraphTreeManager` backed by
+Inductor's warm disk cache in `/opt/torchinductor`) and re-runs `_warm_kv_buckets()`,
+logs `graphs=recaptured(24)` and only fails on a second failure.
+`check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
 `recaptured(N)`, with `N` equal to `--expect-shapes`.
 
 **The codec's host copy is pinned, and its event is recorded after it.** A D2H

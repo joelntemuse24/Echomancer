@@ -325,24 +325,6 @@ _BUILD_ENV = {
 }
 
 
-def _reset_cudagraph_trees() -> None:
-    """Drop captured CUDA-graph handles so they can be recorded again.
-
-    Only the graph handles are released: the compiled Triton kernels and the
-    Inductor artifacts stay resident, so a recapture costs a capture pass rather
-    than a compile. A torch without the tree manager (a CPU build, an older
-    version) has nothing to reset.
-    """
-    try:
-        from torch._inductor.cudagraph_trees import reset_cudagraph_trees
-    except Exception:
-        return
-    try:
-        reset_cudagraph_trees()
-    except Exception as err:
-        print(f"[S2C] reset_cudagraph_trees failed: {type(err).__name__}: {err}")
-
-
 def _max_containers() -> int:
     """Independent one-GPU containers.
 
@@ -736,10 +718,12 @@ class S2CloneWorker:
                 f"({type(first).__name__}: {first}); recapturing over the "
                 "compiled kernels"
             )
-        # One recapture. `reset_cudagraph_trees` drops the invalid handles; the
-        # Triton kernels and the Inductor artifacts stay in memory, so this is a
-        # capture pass, not a compile.
-        _reset_cudagraph_trees()
+        # One recapture. `recompile_step()` resets the dead `CUDAGraphTreeManager`
+        # AND re-wraps `self.engine.step` so `deferred_cudagraphify` does not
+        # keep calling a shut-down manager whose `roots` is `None`. Inductor's
+        # warm disk cache (`/opt/torchinductor`) reuses the compiled Triton
+        # kernels without recompiling them.
+        self.engine.recompile_step()
         refreshed = self.engine._warm_kv_buckets()
         if refreshed != expected:
             raise RuntimeError(

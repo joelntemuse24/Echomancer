@@ -223,15 +223,16 @@ def test_the_engine_turns_on_specialize_float_before_compiling():
     Inductor reports exactly that as `skipping cudagraphs due to cpu device
     (arg10_1)`, which is a silent 2x slowdown on every call.
 
-    Asserted on the constructor's source rather than on the global: the flag is
-    set in `_BatchEngine.__init__`, which needs a GPU here, so a test that only
-    imports the module would check nothing. The ordering ("set it *before*
-    `torch.compile`") is what has to hold.
+    `_BatchEngine.__init__` and `recompile_step()` both delegate to
+    `_compile_step()`, where `specialize_float = True` must precede
+    `torch.compile(...)`.
     """
     module = _load("v10")
     import inspect
 
-    source = inspect.getsource(module._BatchEngine.__init__)
+    init_src = inspect.getsource(module._BatchEngine.__init__)
+    assert "self.step = self._compile_step()" in init_src
+    source = inspect.getsource(module._BatchEngine._compile_step)
     assert "specialize_float" in source, (
         "_decode_step reads self.codebook_inv_scale and RMSNorm.eps; without "
         "specialize_float they become CPU placeholders and inductor refuses to "
@@ -356,6 +357,266 @@ def test_selftest_reports_and_rejects_cudagraph_skips():
 
     source = inspect.getsource(module._BatchEngine.selftest)
     assert "cudagraph_skips" in source
+    assert "NEW_ENGINE and FAST_DECODE and CUDAGRAPHS and skips" in source
     assert "raise RuntimeError" in source, (
         "a skipped graph must fail the boot, not be a note in a log"
     )
+
+
+def test_bucketing_stays_off_even_when_explicitly_set_with_fast_decode_off():
+    """`S2B_FAST_DECODE=0 S2B_BUCKET=1` must still disable bucketing."""
+    os.environ["S2B_FAST_DECODE"] = "0"
+    os.environ["S2B_BUCKET"] = "1"
+    _KEEP_ON_LOAD.update({"S2B_FAST_DECODE", "S2B_BUCKET"})
+    try:
+        module = _load("v10")
+        assert module.FAST_DECODE is False
+        assert module.BUCKET_BATCH is False
+    finally:
+        _KEEP_ON_LOAD.difference_update({"S2B_FAST_DECODE", "S2B_BUCKET"})
+        os.environ.pop("S2B_FAST_DECODE", None)
+        os.environ.pop("S2B_BUCKET", None)
+        os.environ.pop("S2C_ENGINE", None)
+
+
+@pytest.mark.parametrize(
+    "sdpa,topk",
+    [("0", "0"), ("1", "0"), ("0", "1"), ("1", "1")],
+)
+def test_v10_aot_autograd_graph_has_zero_cpu_placeholders_or_ops(sdpa, topk):
+    """Run Dynamo + AOTAutograd + Inductor decompositions on a `meta` model.
+
+    `backend="eager"` runs on CPU where every tensor is already on CPU, so it
+    cannot distinguish an accidental 0-D CPU scalar placeholder (`arg10_1`)
+    from a weight tensor. Placing the model and inputs on `torch.device("meta")`
+    makes every real model tensor `meta` while any unspecialized Python float
+    wrapped by Dynamo arrives in AOTAutograd as `device(type="cpu")`.
+    """
+    from fish_speech.models.text2semantic.llama import (
+        DualARModelArgs,
+        DualARTransformer,
+    )
+    from functorch.compile import make_boxed_func
+    from torch._dynamo.backends.common import aot_autograd
+    from torch._inductor.compile_fx import select_decomp_table
+
+    os.environ["S2B_SDPA_DECODE"] = sdpa
+    os.environ["S2B_TOPK_FAST_SAMPLE"] = topk
+    _KEEP_ON_LOAD.update({"S2B_SDPA_DECODE", "S2B_TOPK_FAST_SAMPLE"})
+    prev_spec = torch._dynamo.config.specialize_float
+    try:
+        module = _load("v10")
+        torch._dynamo.config.specialize_float = True
+        args = DualARModelArgs(
+            vocab_size=256,
+            n_layer=1,
+            n_head=4,
+            dim=32,
+            intermediate_size=64,
+            n_local_heads=2,
+            head_dim=8,
+            num_codebooks=2,
+            codebook_size=32,
+            semantic_begin_id=100,
+            semantic_end_id=131,
+            n_fast_layer=1,
+            fast_dim=32,
+            fast_n_head=4,
+            fast_n_local_heads=2,
+            fast_head_dim=8,
+            fast_intermediate_size=64,
+            scale_codebook_embeddings=True,
+            norm_fastlayer_input=True,
+            attention_qk_norm=True,
+            rope_base=10_000,
+        )
+        with torch.device("meta"):
+            model = DualARTransformer(args).eval().to(dtype=torch.bfloat16)
+            model.setup_caches(
+                max_batch_size=module.BATCH, max_seq_len=512, dtype=torch.bfloat16
+            )
+            engine = object.__new__(module._BatchEngine)
+            engine.model = model
+            engine.cfg = model.config
+            engine.device = torch.device("meta")
+            engine.dtype = torch.bfloat16
+            engine.im_end_id = 255
+            engine.top_k = 5
+            engine.fast_pos = torch.arange(args.num_codebooks, dtype=torch.long)
+            engine.high_temperature = torch.tensor(1.0, dtype=torch.bfloat16)
+            engine.high_top_p = torch.tensor(0.9, dtype=torch.bfloat16)
+            engine.codebook_offsets = (
+                torch.arange(args.num_codebooks, dtype=torch.long) * args.codebook_size
+            )[None, :, None]
+            engine.scale_codebook_embeddings = True
+            engine.codebook_inv_scale = 1.0 / math.sqrt(args.num_codebooks + 1)
+            allowed = list(range(args.semantic_begin_id, args.semantic_end_id + 1)) + [255]
+            engine.allowed_ids = torch.tensor(allowed, dtype=torch.long)
+            engine.out_weight = model.embeddings.weight[engine.allowed_ids].contiguous()
+
+            call_sets = []
+            for w in (1, 4, module.BATCH):
+                x = torch.zeros((w, args.num_codebooks + 1, 1), dtype=torch.long)
+                pos = torch.full((w,), 127, dtype=torch.long)
+                prev = torch.zeros(
+                    (w, args.num_codebooks + 1, module.RAS_WIN_SIZE), dtype=torch.long
+                )
+                temp = torch.tensor([0.7], dtype=torch.bfloat16)
+                topp = torch.tensor([0.7], dtype=torch.bfloat16)
+                call_sets.append((w, x, pos, 512, prev, temp, topp))
+
+        seen_cpu_placeholders: list[tuple] = []
+        seen_cpu_ops: list[tuple] = []
+
+        def fw_compiler(fw_gm, fw_inps):
+            placeholders = [n for n in fw_gm.graph.nodes if n.op == "placeholder"]
+            for node, val in zip(placeholders, fw_inps):
+                if isinstance(val, torch.Tensor) and val.device.type == "cpu" and node.users:
+                    seen_cpu_placeholders.append((node.name, val.shape, val.dtype))
+            for node in fw_gm.graph.nodes:
+                val = node.meta.get("val")
+                if isinstance(val, torch.Tensor) and val.device.type == "cpu":
+                    seen_cpu_ops.append((node.name, str(node.target)))
+            return make_boxed_func(fw_gm.forward)
+
+        torch._dynamo.reset()
+        step = torch.compile(
+            engine._decode_step,
+            backend=aot_autograd(
+                fw_compiler=fw_compiler, decompositions=select_decomp_table()
+            ),
+            fullgraph=True,
+            dynamic=True,
+        )
+        with torch.inference_mode():
+            for w, *c_args in call_sets:
+                out = step(*c_args)
+                assert out.shape == (w, args.num_codebooks + 1)
+
+        assert seen_cpu_placeholders == [], (
+            f"surviving CPU placeholders in AOT forward graph: {seen_cpu_placeholders}"
+        )
+        assert seen_cpu_ops == [], (
+            f"surviving CPU ops in AOT forward graph: {seen_cpu_ops}"
+        )
+    finally:
+        torch._dynamo.config.specialize_float = prev_spec
+        _KEEP_ON_LOAD.difference_update({"S2B_SDPA_DECODE", "S2B_TOPK_FAST_SAMPLE"})
+        os.environ.pop("S2B_SDPA_DECODE", None)
+        os.environ.pop("S2B_TOPK_FAST_SAMPLE", None)
+        os.environ.pop("S2C_ENGINE", None)
+
+
+def test_disabling_specialize_float_exposes_the_arg10_1_cpu_placeholders():
+    """Negative proof: with `specialize_float=False`, AOT sees CPU placeholders."""
+    from fish_speech.models.text2semantic.llama import (
+        DualARModelArgs,
+        DualARTransformer,
+    )
+    from functorch.compile import make_boxed_func
+    from torch._dynamo.backends.common import aot_autograd
+    from torch._inductor.compile_fx import select_decomp_table
+
+    prev_spec = torch._dynamo.config.specialize_float
+    try:
+        module = _load("v10")
+        torch._dynamo.config.specialize_float = False
+        args = DualARModelArgs(
+            vocab_size=256,
+            n_layer=1,
+            n_head=4,
+            dim=32,
+            intermediate_size=64,
+            n_local_heads=2,
+            head_dim=8,
+            num_codebooks=2,
+            codebook_size=32,
+            semantic_begin_id=100,
+            semantic_end_id=131,
+            n_fast_layer=1,
+            fast_dim=32,
+            fast_n_head=4,
+            fast_n_local_heads=2,
+            fast_head_dim=8,
+            fast_intermediate_size=64,
+            scale_codebook_embeddings=True,
+            norm_fastlayer_input=True,
+            attention_qk_norm=True,
+            rope_base=10_000,
+        )
+        with torch.device("meta"):
+            model = DualARTransformer(args).eval().to(dtype=torch.bfloat16)
+            model.setup_caches(
+                max_batch_size=module.BATCH, max_seq_len=512, dtype=torch.bfloat16
+            )
+            engine = object.__new__(module._BatchEngine)
+            engine.model = model
+            engine.cfg = model.config
+            engine.device = torch.device("meta")
+            engine.dtype = torch.bfloat16
+            engine.im_end_id = 255
+            engine.top_k = 5
+            engine.fast_pos = torch.arange(args.num_codebooks, dtype=torch.long)
+            engine.high_temperature = torch.tensor(1.0, dtype=torch.bfloat16)
+            engine.high_top_p = torch.tensor(0.9, dtype=torch.bfloat16)
+            engine.codebook_offsets = (
+                torch.arange(args.num_codebooks, dtype=torch.long) * args.codebook_size
+            )[None, :, None]
+            engine.scale_codebook_embeddings = True
+            engine.codebook_inv_scale = 1.0 / math.sqrt(args.num_codebooks + 1)
+            allowed = list(range(args.semantic_begin_id, args.semantic_end_id + 1)) + [255]
+            engine.allowed_ids = torch.tensor(allowed, dtype=torch.long)
+            engine.out_weight = model.embeddings.weight[engine.allowed_ids].contiguous()
+
+            x = torch.zeros((4, args.num_codebooks + 1, 1), dtype=torch.long)
+            pos = torch.full((4,), 127, dtype=torch.long)
+            prev = torch.zeros(
+                (4, args.num_codebooks + 1, module.RAS_WIN_SIZE), dtype=torch.long
+            )
+            temp = torch.tensor([0.7], dtype=torch.bfloat16)
+            topp = torch.tensor([0.7], dtype=torch.bfloat16)
+
+        cpu_names: list[str] = []
+
+        def fw_compiler(fw_gm, fw_inps):
+            placeholders = [n for n in fw_gm.graph.nodes if n.op == "placeholder"]
+            for node, val in zip(placeholders, fw_inps):
+                if isinstance(val, torch.Tensor) and val.device.type == "cpu" and node.users:
+                    cpu_names.append(node.name)
+            return make_boxed_func(fw_gm.forward)
+
+        torch._dynamo.reset()
+        step = torch.compile(
+            engine._decode_step,
+            backend=aot_autograd(
+                fw_compiler=fw_compiler, decompositions=select_decomp_table()
+            ),
+            fullgraph=True,
+            dynamic=True,
+        )
+        with torch.inference_mode():
+            step(x, pos, 512, prev, temp, topp)
+
+        assert len(cpu_names) > 0, (
+            "expected specialize_float=False to surface CPU float64 placeholders"
+        )
+    finally:
+        torch._dynamo.config.specialize_float = prev_spec
+        os.environ.pop("S2C_ENGINE", None)
+
+
+def test_recompile_step_replaces_the_compiled_wrapper():
+    """Post-restore recapture must replace `engine.step`, not keep a dead closure."""
+    module = _load("v10")
+    model = _tiny_model(module)
+    engine = _engine(module, model)
+    sentinel = lambda *a, **k: None
+    engine.step = sentinel
+    engine._compile_step = lambda: torch.compile(
+        engine._decode_step, backend="eager", fullgraph=True, dynamic=True
+    )
+    engine.recompile_step()
+    assert engine.step is not sentinel
+    with torch.no_grad():
+        out = engine.step(*_args(module, 1, model.config.num_codebooks))
+    assert out.shape == (1, model.config.num_codebooks + 1)

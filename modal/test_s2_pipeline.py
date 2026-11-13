@@ -738,3 +738,109 @@ def test_the_fingerprint_covers_prefill_and_cpu(service):
     assert snapshot_fingerprint({**base, "cpu": 4}) != snapshot_fingerprint(
         {**base, "cpu": 8}
     )
+
+
+# ── post-restore graph verification & check-cudagraphs.py gate ────────────
+
+
+def test_verify_graphs_recaptures_via_recompile_step_on_restore_failure(service):
+    """If post-restore replay fails once, `_verify_graphs` must recompile_step()."""
+    calls: list[str] = []
+
+    class _FakeEngine:
+        def decode_shapes(self):
+            return [(w, k) for w in (1, 4, 8, 16, 24, 32) for k in (512, 1024, 2048, 4096)]
+
+        def selftest(self):
+            calls.append("selftest")
+            if len([c for c in calls if c == "selftest"]) == 1:
+                raise RuntimeError("cudaErrorGraphExecUpdateFailure")
+            assert "recompile_step" in calls, (
+                "selftest after a failed replay must run on a freshly re-wrapped step, "
+                "not a shut-down CUDAGraphTreeManager"
+            )
+            return {"ok": True, "decode_shapes": 24}
+
+        def recompile_step(self):
+            calls.append("recompile_step")
+
+        def _warm_kv_buckets(self):
+            assert calls[-1] == "recompile_step", (
+                "_warm_kv_buckets must follow recompile_step() so old_manager.roots=None "
+                "cannot raise TypeError"
+            )
+            calls.append("warm_kv_buckets")
+            return 24
+
+    worker = object.__new__(service.S2CloneWorker)
+    worker.engine = _FakeEngine()
+    verdict = worker._verify_graphs()
+    assert verdict == "recaptured(24)"
+    assert calls == ["selftest", "recompile_step", "warm_kv_buckets", "selftest"]
+
+
+def test_verify_graphs_raises_if_recapture_remains_incomplete(service):
+    """A failed recapture must refuse the boot rather than serving ungraphed."""
+    class _BrokenEngine:
+        def decode_shapes(self):
+            return [(1, 512), (4, 512)]
+
+        def selftest(self):
+            raise RuntimeError("graph invalid")
+
+        def recompile_step(self):
+            pass
+
+        def _warm_kv_buckets(self):
+            return 0
+
+    worker = object.__new__(service.S2CloneWorker)
+    worker.engine = _BrokenEngine()
+    with pytest.raises(RuntimeError, match="expected 2"):
+        worker._verify_graphs()
+
+
+def test_check_cudagraphs_accepts_zero_skips_and_recaptured_and_rejects_real_skips():
+    """Exercise `scripts/s2/check-cudagraphs.py` against exact v10 boot log lines."""
+    import importlib.util
+    import pathlib
+
+    script = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "s2" / "check-cudagraphs.py"
+    spec = importlib.util.spec_from_file_location("check_cudagraphs", script)
+    assert spec and spec.loader
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+
+    clean_ok = "\n".join([
+        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), cudagraph_skips=0 in 11.80s",
+        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'cudagraph_skips': 0, 'side_stream': 'ok', 'codec_tuning': {'weight_norm_removed': 48, 'skipped': ''}}",
+        "[S2C] container=c1 build=deadbeefcafe boot=restored snapshot_age=12.0s graphs=ok(24)",
+    ])
+    assert gate.inspect_log(clean_ok, expect_shapes=24) == []
+
+    clean_recaptured = "\n".join([
+        "[S2C] decode-graph replay failed after restore (RuntimeError: stale); recapturing over the compiled kernels",
+        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), cudagraph_skips=0 in 1.15s",
+        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'cudagraph_skips': 0, 'side_stream': 'ok'}",
+        "[S2C] container=c2 build=deadbeefcafe boot=restored snapshot_age=14.0s graphs=recaptured(24)",
+    ])
+    assert gate.inspect_log(clean_recaptured, expect_shapes=24) == []
+
+    # Non-zero skips, Inductor skip lines, recompiles, and short shape counts all fail.
+    nonzero_counter = clean_ok.replace("cudagraph_skips=0", "cudagraph_skips=2")
+    assert gate.inspect_log(nonzero_counter, expect_shapes=24) != []
+
+    nonzero_dict = clean_ok.replace("'cudagraph_skips': 0", "'cudagraph_skips': 1")
+    assert gate.inspect_log(nonzero_dict, expect_shapes=24) != []
+
+    arg10_skip = clean_ok + "\nskipping cudagraphs due to cpu device (arg10_1)"
+    assert gate.inspect_log(arg10_skip, expect_shapes=24) != []
+
+    singular_skip = clean_ok + "\nskipping cudagraph due to function 0 exceeding max re-recording limit"
+    assert gate.inspect_log(singular_skip, expect_shapes=24) != []
+
+    recompiled = clean_ok + "\n[0/1] Recompiling function _decode_step"
+    assert gate.inspect_log(recompiled, expect_shapes=24) != []
+
+    short_recapture = clean_recaptured.replace("graphs=recaptured(24)", "graphs=recaptured(6)")
+    assert gate.inspect_log(short_recapture, expect_shapes=24) != []

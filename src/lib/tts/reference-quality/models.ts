@@ -12,7 +12,7 @@
 
 import { createRequire } from "node:module";
 import path from "node:path";
-import { REF_RATE, keepSpeech, melFrames, normalizeVolumeUp } from "@/lib/tts/reference-quality/dsp";
+import { REF_RATE, keepSpeech, melFrames, normalizeVolumeUp, speechMask } from "@/lib/tts/reference-quality/dsp";
 
 type OrtTensor = { data: Float32Array; dims: readonly number[] };
 type OrtSession = {
@@ -172,7 +172,9 @@ export async function speakerEmbedding(pcm: Float32Array): Promise<Float64Array 
   const s = await session("speaker_encoder.onnx");
   const ort = loadOrt();
   if (!s || !ort || pcm.length < WINDOW_FRAMES * 160) return null;
-  const frames = melFrames(normalizeVolumeUp(pcm));
+  const voiced = keepSpeech(pcm, speechMask(pcm));
+  const active = voiced.length >= WINDOW_FRAMES * 160 ? voiced : pcm;
+  const frames = melFrames(normalizeVolumeUp(active));
   const windows = Math.floor(frames.length / WINDOW_FRAMES);
   if (windows < 1) return null;
   const starts: number[] = [];

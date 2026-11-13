@@ -32,14 +32,26 @@ import subprocess
 import sys
 
 #: Lines that mean the decode step is not running as a captured graph.
+#:
+#: Note: clean boots log ``cudagraph_skips=0`` and ``'cudagraph_skips': 0`` in
+#: ``_warm_kv_buckets`` and ``selftest``. Those zero counts must pass; any
+#: non-zero ``cudagraph_skips`` or any Inductor skip/disable message must fail.
 FORBIDDEN = (
     (
-        re.compile(r"skipping cudagraphs", re.I),
+        re.compile(r"(?:skipping|disabling)\s+cudagraphs?\b", re.I),
         "inductor skipped CUDA graphs - a CPU tensor argument (arg10_1) is back",
     ),
     (
-        re.compile(r"cudagraph.*(skip|disabl)", re.I),
+        re.compile(r"\bcudagraphs?\s+(?:were\s+)?(?:skipped|disabled)\b", re.I),
         "CUDA graphs were skipped or disabled",
+    ),
+    (
+        re.compile(r"hit cudagraph_dynamic_shape_rerecord_limit", re.I),
+        "CUDA graph dynamic-shape rerecord limit hit",
+    ),
+    (
+        re.compile(r"\bcudagraph_skips['\"]?\s*[:=]\s*(?!0\b)\d+", re.I),
+        "non-zero cudagraph_skips counter reported at boot",
     ),
     (
         re.compile(r"recompil", re.I),
@@ -47,13 +59,53 @@ FORBIDDEN = (
     ),
 )
 
+GRAPH_REPLAY_RE = re.compile(r"graphs=(?:ok|recaptured)\((\d+)\)")
+
 #: Lines that must be present: the boot proof that capture happened and that a
-#: restored container could replay what it captured.
+#: restored container could replay (or recapture) what it captured.
 REQUIRED = (
     (re.compile(r"\[S2B\] warm decode shapes: (\d+)"), "warm decode shapes"),
     (re.compile(r"\[S2B\] selftest: .*'ok': True"), "selftest ok"),
-    (re.compile(r"graphs=ok\((\d+)\)"), "post-restore graph replay"),
+    (GRAPH_REPLAY_RE, "post-restore graph replay"),
 )
+
+
+def inspect_log(log: str, *, expect_shapes: int = 0) -> list[str]:
+    """Return every CUDA-graph failure found in ``log`` (empty list = clean)."""
+    failures: list[str] = []
+    for pattern, why in FORBIDDEN:
+        for line in log.splitlines():
+            if pattern.search(line):
+                failures.append(f"{why}\n    {line.strip()[:200]}")
+
+    for pattern, label in REQUIRED:
+        found = [m for m in (pattern.search(line) for line in log.splitlines()) if m]
+        if not found:
+            failures.append(f"missing log line: {label}")
+            continue
+        if label == "warm decode shapes" and expect_shapes:
+            shapes = int(found[-1].group(1))
+            if shapes != expect_shapes:
+                failures.append(
+                    f"warm-up recorded {shapes} decode shape(s), expected exactly "
+                    f"{expect_shapes}: a call at a shape that was not warmed "
+                    "records its graph on the request path"
+                )
+
+    # The replayed count must *equal* the warmed count when the caller says what
+    # it expects: `graphs=ok(6)` against 24 warmed shapes means three quarters of
+    # the shapes were never proven, which is the shape of bug this gate exists
+    # for. Both `ok(N)` and `recaptured(N)` must match `--expect-shapes`.
+    if expect_shapes:
+        for match in GRAPH_REPLAY_RE.finditer(log):
+            replayed = int(match.group(1))
+            if replayed != expect_shapes:
+                failures.append(
+                    f"post-restore replay covered {replayed} shape(s), expected "
+                    f"exactly {expect_shapes}; the remaining shapes would "
+                    "record a graph on a customer's first section"
+                )
+    return failures
 
 
 def main() -> int:
@@ -98,39 +150,7 @@ def main() -> int:
         )
         return 2
 
-    failures: list[str] = []
-    for pattern, why in FORBIDDEN:
-        for line in log.splitlines():
-            if pattern.search(line):
-                failures.append(f"{why}\n    {line.strip()[:200]}")
-
-    for pattern, label in REQUIRED:
-        found = [m for m in (pattern.search(line) for line in log.splitlines()) if m]
-        if not found:
-            failures.append(f"missing log line: {label}")
-            continue
-        if label == "warm decode shapes" and args.expect_shapes:
-            shapes = int(found[-1].group(1))
-            if shapes != args.expect_shapes:
-                failures.append(
-                    f"warm-up recorded {shapes} decode shape(s), expected exactly "
-                    f"{args.expect_shapes}: a call at a shape that was not warmed "
-                    "records its graph on the request path"
-                )
-
-    # The replayed count must *equal* the warmed count when the caller says what
-    # it expects: `graphs=ok(6)` against 24 warmed shapes means three quarters of
-    # the shapes were never proven, which is the shape of bug this gate exists
-    # for. A ">=" test would pass on it.
-    if args.expect_shapes:
-        for match in re.finditer(r"graphs=ok\((\d+)\)", log):
-            replayed = int(match.group(1))
-            if replayed != args.expect_shapes:
-                failures.append(
-                    f"post-restore replay covered {replayed} shape(s), expected "
-                    f"exactly {args.expect_shapes}; the remaining shapes would "
-                    "record a graph on a customer's first section"
-                )
+    failures = inspect_log(log, expect_shapes=args.expect_shapes)
 
     if failures:
         print(f"{len(failures)} CUDA-graph problem(s) in {args.app} ({args.since}):\n")
