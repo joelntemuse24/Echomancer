@@ -34,9 +34,44 @@ Snapshots exist only for deployed apps:
 Environment overrides (read at deploy time):
     S2B_GPU          default "H100!" (the "!" stops Modal upgrading to H200, which
                      would need its own snapshots)
-    S2B_BATCH        rows decoded together per GPU, default 32
+    S2B_BATCH        most rows decoded together per GPU, default 32
     S2B_MAX_SEQ_LEN  per-row context, default 4096
     S2B_CUDAGRAPHS   1 = compile with CUDA graphs (default), 0 = plain inductor
+    S2B_BUCKET       active batch width is the smallest bucket >= the units that
+                     can run in parallel (default 1); 0 always runs S2B_BATCH rows
+    S2B_WORK_STEAL   1 (default) lets an idle lane take a later unit of a section
+                     whose first unit already finished
+    S2B_EOS_CHECK_EVERY  decode steps between host syncs, default 16
+    S2B_SDPA_DECODE  1 = folded-GQA SDPA for the slow decode attention (opt-in;
+                     measured in staging, not assumed)
+    S2B_TOPK_FAST_SAMPLE 1 = sample over the top-k block instead of the full
+                     vocabulary (opt-in; same distribution, different rounding)
+    S2B_DAC_MICRO_BATCH  codec micro-batch, default 16
+    S2B_PIPELINE_CODEC 1 (default) = decode a finished section on a side stream
+                     while other rows are still generating
+
+## Why the batch width is not always 32
+
+S2-Pro is memory-bandwidth bound far below B=32: each step reads ~15 GB of
+weights whatever the batch. So a full page is nearly free per row, and a
+one-row call pays the same weight read for one row. The active width is
+therefore chosen from the work that can actually run in parallel
+(`choose_batch_width`): section 0 alone steps 1 row, a 4-section book steps 4,
+and a full page steps 32. Idle rows cost KV reads and a full-vocabulary sort,
+which is what a narrow call was wasting.
+
+`BATCH` stays the tensor capacity (KV cache is allocated for it), so a wide
+page can still use all of it.
+
+## Why units of one section can run on different lanes
+
+`HISTORY_ANCHOR_FIRST` gives every unit after the first the *first* take as its
+only history turn (`s2_contract.history_anchor`), so units 1..K-1 of a section
+have no sequential dependency on each other — only on unit 0. A lane that runs
+out of work can therefore take a later unit of a section whose unit 0 is
+done, with **exactly the prompt** sequential execution would have built. That
+is what removes the straggler tail: the slowest row no longer sets the call.
+`S2B_WORK_STEAL=0` restores strict one-row-per-section execution.
 """
 
 from __future__ import annotations
@@ -45,6 +80,7 @@ import math
 import os
 import re
 import time
+from typing import Callable
 
 import modal
 
@@ -57,12 +93,43 @@ from s2_contract import (
 )
 
 GPU = os.environ.get("S2B_GPU", "H100!")
+#: Tensor capacity: KV cache and the decode buffers are allocated for this many
+#: rows. The *active* width of a call is chosen per render (`choose_batch_width`)
+#: and is never larger than this.
 BATCH = int(os.environ.get("S2B_BATCH", "32"))
 MAX_SEQ_LEN = int(os.environ.get("S2B_MAX_SEQ_LEN", "4096"))
 # CUDA graphs remove the per-kernel launch cost that dominates a decode step.
-# They need repeated shapes, so the attended KV length is rounded up to KV_BUCKET.
+# They need repeated shapes, so the attended KV length is rounded up to a
+# bucket. `warm_up` records every bucket, so a customer call never records one.
 CUDAGRAPHS = os.environ.get("S2B_CUDAGRAPHS", "1") == "1"
-KV_BUCKET = 128
+KV_BUCKETS = (512, 1024, 2048, 4096)
+#: Widths the active batch is rounded up to. A 17-unit call runs 24 rows, not
+#: 32: the eight idle rows would each read their own KV slice and take part in
+#: the full-vocabulary sort, and contribute nothing.
+BATCH_BUCKETS = (1, 4, 8, 16, 24, 32)
+#: 0 disables bucketing (every call runs `BATCH` rows, as before).
+BUCKET_BATCH = os.environ.get("S2B_BUCKET", "1") == "1"
+#: 1 lets an idle lane take a later unit of a section whose unit 0 is done.
+WORK_STEAL = os.environ.get("S2B_WORK_STEAL", "1") == "1"
+#: Decode steps between host synchronisations. A finished row idles at most
+#: this many steps, and the tail frames past `<|im_end|>` are sliced off in
+#: `finish`, so a larger interval changes no audio — only the sync count.
+EOS_CHECK_EVERY = int(os.environ.get("S2B_EOS_CHECK_EVERY", "16"))
+#: Folded-GQA SDPA for the slow decode attention. Opt-in: the compiled
+#: handwritten path may win at short KV lengths, so staging decides.
+SDPA_DECODE = os.environ.get("S2B_SDPA_DECODE", "0") == "1"
+#: Sample over the top-k block. Same distribution as the full-vocabulary sort
+#: (see `_logits_to_probs`), different float rounding, so it is opt-in.
+TOPK_FAST_SAMPLE = os.environ.get("S2B_TOPK_FAST_SAMPLE", "0") == "1"
+#: Codec micro-batch. The codec is causal, so right-padding a length-sorted
+#: group produces the same samples with less padding work.
+DAC_MICRO_BATCH = int(os.environ.get("S2B_DAC_MICRO_BATCH", "16"))
+#: Decode a finished section on a side stream while other rows keep generating.
+PIPELINE_CODEC = os.environ.get("S2B_PIPELINE_CODEC", "1") == "1"
+#: Units a side-stream codec launch waits for while generation still has work,
+#: and the active-row count below which the tail has bandwidth to spare.
+CODEC_MIN_UNITS = 16
+CODEC_TAIL_ROWS = 12
 
 APP_NAME = "echomancer-s2-batch"
 CLASS_NAME = "S2BatchWorker"
@@ -80,7 +147,6 @@ HISTORY_TURNS = 1
 which always hands back exactly one (the row's first take); kept as the
 rollback knob for the upstream "last N turns" behaviour."""
 MAX_NEW_FRAMES = 1024  # upstream DEFAULT_MAX_NEW_TOKENS (~47 s of audio)
-EOS_CHECK_EVERY = 8  # host sync interval; a finished row idles at most this many steps
 RAS_WIN_SIZE = 10
 H100_USD_PER_S = 0.001097
 
@@ -133,7 +199,7 @@ out_volume = modal.Volume.from_name(OUT_VOLUME, create_if_missing=True)
 @app.cls(
     image=gpu_image,
     gpu=GPU,
-    cpu=4,
+    cpu=float(os.environ.get("S2C_CPU", "4")),
     memory=32768,
     # Batch work: idle containers are pure cost, so release them quickly.
     scaledown_window=20,
@@ -257,6 +323,117 @@ class S2BatchWorker:
         return result
 
 
+def _cuda_synchronize() -> None:
+    """Wait for queued CUDA work when this build of torch actually has CUDA.
+
+    The GPU image always does. A CPU-only torch (a test machine) has no device,
+    and calling `torch.cuda.synchronize()` there raises instead of returning —
+    which would make `selftest` untestable off the GPU.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _tune_decoder(decoder, device) -> dict:
+    """Boot-time codec changes that are bit-identical to what they replace.
+
+    **`weight_norm` parametrizations.** Over 40 convolutions in the decoder
+    recompute `weight = g * v / ||v||` on every call.
+    `remove_parametrizations(..., leave_parametrized=True)` freezes exactly the
+    tensor those computations produce, so each conv sees the same weights with
+    no per-call normalisation. This is pure bookkeeping removal: the emitted
+    samples are unchanged, which is what `test_s2_codec_tuning` asserts.
+
+    The other codec cost the plan named — the CPU causal mask that
+    `WindowLimitedTransformer.forward` rebuilds and copies to the GPU on every
+    call — is handled by `_MaskCache`, which wraps `from_indices` rather than
+    monkey-patching a library method. It is a cache keyed by the code tensor's
+    frame length, and it hands back the identical mask the module would have
+    built.
+
+    Both are opt-out (`S2B_CODEC_TUNING=0`) so staging can isolate them.
+    """
+    stats = {"weight_norm_removed": 0, "skipped": ""}
+    if os.environ.get("S2B_CODEC_TUNING", "1") != "1":
+        stats["skipped"] = "S2B_CODEC_TUNING=0"
+        return stats
+    try:
+        from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
+
+        for module in decoder.modules():
+            if is_parametrized(module, "weight"):
+                try:
+                    remove_parametrizations(module, "weight", leave_parametrized=True)
+                    stats["weight_norm_removed"] += 1
+                    continue
+                except Exception:
+                    pass
+            weight_norm = getattr(module, "remove_weight_norm", None)
+            if callable(weight_norm) and hasattr(module, "conv"):
+                try:
+                    weight_norm()
+                    stats["weight_norm_removed"] += 1
+                except Exception:
+                    pass
+        print(f"[S2B] codec tuning: {stats}")
+    except Exception as err:  # tuning is an optimisation, never a requirement
+        stats["skipped"] = f"{type(err).__name__}: {err}"
+        print(f"[S2B] codec tuning skipped: {stats['skipped']}")
+    return stats
+
+
+class _MaskCache:
+    """One GPU causal/window mask per code length, shared across micro-batches.
+
+    `WindowLimitedTransformer.forward` builds `torch.tril(torch.ones(T, T))` on
+    the CPU and calls `.to(x.device)` before every forward. The mask is a pure
+    function of `(window_size, T)` and the codec only ever sees a handful of
+    `T` values (one per distinct section length after padding), so building it
+    once and reusing the result removes a host allocation, a host→device copy
+    and a synchronisation from every micro-batch — with the same mask.
+
+    The wrapper is installed on the module instance that owns it (via a bound
+    attribute), so nothing under `/opt/fish-speech` is edited and the module's
+    other callers see identical behaviour.
+    """
+
+    def __init__(self, device) -> None:
+        self.device = device
+        self._masks: dict[tuple[int, int], object] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def install(self, decoder) -> int:
+        installed = 0
+        for module in decoder.modules():
+            if not getattr(module, "causal", False):
+                continue
+            builder = getattr(module, "make_window_limited_mask", None)
+            if not callable(builder):
+                continue
+            module._mask_cache = self  # type: ignore[attr-defined]
+            module.make_window_limited_mask = self._wrapper(module, builder)
+            installed += 1
+        return installed
+
+    def _wrapper(self, module, builder):
+        def cached(max_length: int, x_lens=None):
+            key = (id(module), int(max_length))
+            mask = self._masks.get(key)
+            if mask is None:
+                self.misses += 1
+                mask = builder(max_length, x_lens).to(self.device)
+                self._masks[key] = mask
+            else:
+                self.hits += 1
+            return mask
+
+        return cached
+
+    def clear(self) -> None:
+        self._masks.clear()
+
+
 class _BatchEngine:
     """S2-Pro with a batched, per-row-position decode step."""
 
@@ -270,6 +447,9 @@ class _BatchEngine:
         self.device = torch.device("cuda")
         self.device_name = torch.cuda.get_device_name(0)
         self.dtype = torch.bfloat16
+        # bf16 matmuls accumulate in fp32 on tensor cores; this is the
+        # documented setting for that and changes no sampled token in practice.
+        torch.set_float32_matmul_precision("high")
 
         model = DualARTransformer.from_pretrained(
             CHECKPOINT_DIR, load_weights=True, max_length=MAX_SEQ_LEN
@@ -305,6 +485,17 @@ class _BatchEngine:
         self.fast_pos = torch.arange(
             self.cfg.num_codebooks, device=self.device, dtype=torch.long
         )
+        # The codebook offsets used by `_embed`. A module-level `arange` here
+        # would be re-created on the host every step, which is the shape of bug
+        # that made inductor skip CUDA graphs (`arg10_1`).
+        self.codebook_offsets = (
+            torch.arange(cfg.num_codebooks, device=self.device, dtype=torch.long)
+            * cfg.codebook_size
+        )[None, :, None]
+        self.scale_codebook_embeddings = bool(
+            getattr(cfg, "scale_codebook_embeddings", False)
+        )
+        self.codebook_inv_scale = 1.0 / math.sqrt(cfg.num_codebooks + 1)
 
         self.decoder = load_decoder_model(
             config_name="modded_dac_vq",
@@ -313,9 +504,17 @@ class _BatchEngine:
         )
         self.sample_rate = self.decoder.sample_rate
         self.frame_length = self.decoder.frame_length
+        # A fresh CUDA stream for the codec, owned by whichever thread builds
+        # this engine (the GPU thread). Used to decode a finished section while
+        # other rows are still generating; every launch still happens on the
+        # owner thread, which is what the snapshot restore requires.
+        self.codec_stream = torch.cuda.Stream()
+        decoder_tuning = _tune_decoder(self.decoder, self.device)
+        self.mask_cache = _MaskCache(self.device)
+        decoder_tuning["masks_cached"] = self.mask_cache.install(self.decoder)
 
         if CUDAGRAPHS:
-            # At most MAX_SEQ_LEN / KV_BUCKET shapes, each recorded once.
+            # At most `len(KV_BUCKETS)` shapes, each recorded once.
             torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit = None
         self.step = torch.compile(
             self._decode_step, backend="inductor",
@@ -327,19 +526,31 @@ class _BatchEngine:
 
         self.whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
         self._last_audio: dict = {}
+        self.decoder_tuning = decoder_tuning
+        self.selftest_stats: dict = {}
 
     # ── model math ──────────────────────────────────────────────────────────
 
     def _embed(self, inp):
+        """Token + codebook embedding for `(B, num_codebooks + 1, 1)` input.
 
+        Written as pure tensor math on purpose. `torch.where(cond, vq, 0)` and
+        `torch.where(cond, x / scale, x)` with a Python scalar operand are what
+        `wrapped_scalar_tensor` turns into a **0-D CPU constant**, which Dynamo
+        lifts as a graph placeholder and Inductor then rejects with
+        `skipping cudagraphs due to cpu device (arg10_1)` — for the whole
+        decode step. `vq * mask` and `torch.where(mask, scaled, x)` with two
+        tensor operands keep every argument on CUDA.
+        """
         cfg = self.cfg
         m = self.model
-        offsets = torch.arange(cfg.num_codebooks, device=inp.device) * cfg.codebook_size
-        vq = m.codebook_embeddings(inp[:, 1:] + offsets[None, :, None]).sum(dim=1)
-        is_vq = (inp[:, 0] >= cfg.semantic_begin_id) & (inp[:, 0] <= cfg.semantic_end_id)
-        x = m.embeddings(inp[:, 0]) + torch.where(is_vq[..., None], vq, 0)
-        if cfg.scale_codebook_embeddings:
-            x = torch.where(is_vq[..., None], x / math.sqrt(cfg.num_codebooks + 1), x)
+        vq = m.codebook_embeddings(inp[:, 1:] + self.codebook_offsets).sum(dim=1)
+        mask = (
+            (inp[:, 0] >= cfg.semantic_begin_id) & (inp[:, 0] <= cfg.semantic_end_id)
+        )[..., None]
+        x = m.embeddings(inp[:, 0]) + vq * mask.to(vq.dtype)
+        if self.scale_codebook_embeddings:
+            x = torch.where(mask, x * self.codebook_inv_scale, x)
         return x
 
     @staticmethod
@@ -372,14 +583,21 @@ class _BatchEngine:
         return q, k, v.transpose(1, 2), q_size
 
     def _attn_decode(self, attn, x, freqs, rows, pos, kv_len, key_mask):
+        """One frame for `bsz` rows: write this position, attend the prefix.
 
+        `cache.k_cache[:bsz]` — not `[:, ...]` — because a call's active width
+        can be narrower than the allocated capacity. Slicing capacity rows would
+        read (and mask) rows that no argument ever wrote.
+        """
         q, k, v, q_size = self._qkv(attn, x, freqs)  # (B, H, 1, D)
+        bsz = x.shape[0]
         cache = attn.kv_cache
         cache.k_cache[rows, :, pos] = k[:, :, 0]
         cache.v_cache[rows, :, pos] = v[:, :, 0]
-        keys = cache.k_cache[:, :, :kv_len]
-        vals = cache.v_cache[:, :, :kv_len]
-        bsz = x.shape[0]
+        keys = cache.k_cache[:bsz, :, :kv_len]
+        vals = cache.v_cache[:bsz, :, :kv_len]
+        if SDPA_DECODE:
+            return self._attn_decode_sdpa(attn, q, keys, vals, key_mask, q_size)
         groups = attn.n_head // attn.n_local_heads
         # Query heads h = kv*groups + g share kv head `kv`, as repeat_interleave does.
         qg = q.view(bsz, attn.n_local_heads, groups, attn.head_dim)
@@ -389,8 +607,33 @@ class _BatchEngine:
         y = (weights @ vals).reshape(bsz, 1, q_size)
         return attn.wo(y)
 
-    def _attn_prefill(self, attn, x, freqs, row):
+    def _attn_decode_sdpa(self, attn, q, keys, vals, key_mask, q_size):
+        """Same attention with the GQA groups folded into the query axis.
 
+        Upstream repeats each KV head `groups` (4) times and attends with
+        `(B, 32, 1, D)` queries. Folding the 4 query heads of a KV group into a
+        query length of 4 keeps `H_q == H_kv == 8`, so no `repeat_interleave`
+        copy is made and the attention can go to one fused kernel. An arbitrary
+        per-row mask excludes FlashAttention, so this lands on the memory-
+        efficient or cuDNN backend; which one wins at `kv_len` 512–4096 is a
+        staging measurement (`S2B_SDPA_DECODE`), not an assumption.
+        """
+        bsz = q.shape[0]
+        groups = attn.n_head // attn.n_local_heads
+        qg = q.view(bsz, attn.n_local_heads, groups, attn.head_dim)
+        mask = key_mask[:, None, None, :].expand(bsz, 1, groups, keys.shape[2])
+        y = F.scaled_dot_product_attention(
+            qg, keys, vals, attn_mask=mask, dropout_p=0.0, scale=1.0 / math.sqrt(attn.head_dim)
+        )
+        return attn.wo(y.reshape(bsz, 1, q_size))
+
+    def _attn_prefill(self, attn, x, freqs, row, length: int | None = None):
+        """Causal prefill for one row: fill the cache and attend `length` keys.
+
+        `length` is the row's real token count; the tensors may be right-padded
+        to the widest prompt in a batched prefill, and causal attention never
+        lets a real token see the padding.
+        """
         q, k, v, q_size = self._qkv(attn, x, freqs)  # (1, H, T, D)
         t = x.shape[1]
         attn.kv_cache.k_cache[row, :, :t] = k[0]
@@ -406,23 +649,125 @@ class _BatchEngine:
         return logits, self.model.fast_project_in(hidden)
 
     def _sample(self, logits, temperature, top_p):
-
-        probs = logits_to_probs(logits, temperature=temperature, top_p=top_p, top_k=self.top_k)
+        probs = self._logits_to_probs(logits, temperature, top_p)
         return multinomial_sample_one_no_sync(probs).long()  # (B, 1)
 
+    def _logits_to_probs(self, logits, temperature, top_p):
+        """Upstream `logits_to_probs`, with tensor-only masking.
+
+        Upstream's `torch.where(indices_to_remove, float("-Inf"), logits)` puts a
+        Python `-Inf` into the graph, which Dynamo lifts as a CPU constant and
+        Inductor then refuses to CUDA-graph (`arg10_1`). `masked_fill` keeps it
+        a tensor op, so this is the same masking with the same result —
+        `test_s2_numerics` asserts equality against upstream's own function.
+
+        It is written here rather than imported so the default sampling path
+        does not depend on a binding that only exists inside
+        `gpu_image.imports()`. `multinomial_sample_one_no_sync` stays upstream's:
+        it is a pure tensor op with no scalar operand.
+
+        `S2B_TOPK_FAST_SAMPLE=1` samples over the top-k block instead of the
+        full 4,096-wide vocabulary. It is the same distribution: a token ranked
+        below k is removed by the top-k mask in both paths, and the partition
+        function is computed over the whole row. It rounds differently, so it
+        is off unless staging measures a win.
+        """
+        if TOPK_FAST_SAMPLE:
+            top_vals, top_idx = torch.topk(
+                logits, k=min(self.top_k, logits.shape[-1]), dim=-1, sorted=True
+            )
+            shifted = (logits - top_vals[:, :1]).float()
+            total = torch.exp(shifted).sum(dim=-1, keepdim=True)
+            block = torch.exp((top_vals - top_vals[:, :1]).float())
+            cum = torch.cumsum(block / total, dim=-1)
+            remove = cum > top_p
+            remove[:, 0] = False
+            kept = top_vals.masked_fill(remove, float("-inf"))
+            probs = torch.softmax(kept / torch.clip(temperature, min=1e-5), dim=-1)
+            picked = multinomial_sample_one_no_sync(probs.to(logits.dtype))
+            return top_idx.gather(-1, picked)
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cum_probs = torch.cumsum(
+            torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
+        )
+        rank = torch.arange(sorted_logits.shape[-1], device=sorted_logits.device)
+        sorted_remove = (cum_probs > top_p) | (rank >= self.top_k)
+        # Keep the top-1 token of every row, as upstream does.
+        sorted_remove = sorted_remove.masked_fill(rank == 0, False)
+        remove = sorted_remove.scatter(-1, sorted_indices, sorted_remove)
+        logits = logits.masked_fill(remove, float("-inf"))
+        return torch.nn.functional.softmax(
+            logits / torch.clip(temperature, min=1e-5), dim=-1
+        )
+
+    def _fast_step(self, h, step: int, temperature, top_p):
+        """One codebook step of the fast transformer, batched.
+
+        Replaces upstream's `forward_generate_fast(h, tensor([step]))`. That
+        call builds the causal mask with
+        `torch.where(attn_mask.logical_not(), float("-inf"), attn_bias)` (a CPU
+        scalar in the graph), copies K/V 4× with `repeat_interleave`, and calls
+        `torch.dropout(..., train=True)` — 40 times per decode step.
+
+        Here `step` is a Python `int` from the unrolled codebook loop, so **every
+        row is at the same position**. Keys `0..step` are then all valid for
+        every row: no mask, no bias, no dropout, and the KV prefix is sliced to
+        exactly its valid length.
+        """
+        cfg = self.cfg
+        m = self.model
+        for layer in m.fast_layers:
+            attn = layer.attention
+            bsz = h.shape[0]
+            freqs = m.fast_freqs_cis[step].view(1, 1, 1, -1, 2)
+            q, k, v, q_size = self._qkv_step(attn, layer.attention_norm(h), freqs)
+            attn.kv_cache.k_cache[:bsz, :, step] = k[:, :, 0]
+            attn.kv_cache.v_cache[:bsz, :, step] = v[:, :, 0]
+            keys = attn.kv_cache.k_cache[:bsz, :, : step + 1]
+            vals = attn.kv_cache.v_cache[:bsz, :, : step + 1]
+            groups = attn.n_head // attn.n_local_heads
+            qg = q.view(bsz, attn.n_local_heads, groups, attn.head_dim)
+            scores = (qg @ keys.transpose(-1, -2)).float() / math.sqrt(attn.head_dim)
+            weights = torch.softmax(scores, dim=-1).to(vals.dtype)
+            y = (weights @ vals).reshape(bsz, 1, q_size)
+            h = h + attn.wo(y)
+            h = h + layer.feed_forward(layer.ffn_norm(h))
+        logits = m.fast_output(m.fast_norm(h))
+        return logits
+
+    def _qkv_step(self, attn, h, freqs):
+        """`_qkv` for a `(B, 1, D)` hidden state and a scalar position."""
+        bsz = h.shape[0]
+        q_size = attn.n_head * attn.head_dim
+        kv_size = attn.n_local_heads * attn.head_dim
+        q, k, v = attn.wqkv(h).split([q_size, kv_size, kv_size], dim=-1)
+        q = q.view(bsz, 1, attn.n_head, attn.head_dim)
+        k = k.view(bsz, 1, attn.n_local_heads, attn.head_dim)
+        v = v.view(bsz, 1, attn.n_local_heads, attn.head_dim)
+        if attn.attention_qk_norm:
+            q = attn.q_norm(q)
+            k = attn.k_norm(k)
+        q = self._rope(q, freqs).transpose(1, 2)
+        k = self._rope(k, freqs).transpose(1, 2)
+        return q, k, v.transpose(1, 2), q_size
+
     def _fast(self, hidden, token, temperature, top_p):
-        """Upstream's fast-transformer loop, batched. hidden (B,1,d), token (B,1)."""
+        """Upstream's fast-transformer loop, batched. hidden (B,1,d), token (B,1).
+
+        The first `forward_generate_fast` call is not an optimisation the loop
+        can skip: it writes fast-KV position 0 from the **slow** hidden state,
+        and every later codebook step attends that key. Its logits are discarded
+        upstream, and they are discarded here too — only the write matters.
+        """
         cfg = self.cfg
         m = self.model
         codes = [token]
-        # `torch.tensor([i])` here would be constant-folded to a CPU tensor, and
-        # one CPU argument makes inductor skip CUDA graphs for the whole step.
-        m.forward_generate_fast(hidden, self.fast_pos[0:1])
+        self._fast_step(hidden, 0, temperature, top_p)
         a = torch.clamp(token - cfg.semantic_begin_id, min=0, max=cfg.codebook_size - 1)
         codes.append(a)
         h = m.fast_embeddings(a)
         for i in range(1, cfg.num_codebooks):
-            logits = m.forward_generate_fast(h, self.fast_pos[i : i + 1])
+            logits = self._fast_step(h, i, temperature, top_p)
             a = self._sample(logits[:, -1], temperature, top_p)
             h = m.fast_embeddings(a)
             codes.append(a)
@@ -454,10 +799,16 @@ class _BatchEngine:
         token = torch.where(in_window & is_semantic, high, normal)
         return self._fast(hidden, token, temperature, top_p)
 
-    def _prefill(self, row: int, prompt, temperature, top_p):
-        """Fill one row's KV cache with its prompt; returns the first frame (11,)."""
-        import torch
+    def _prefill(self, row: int, prompt, temperature, top_p, *, width: int = 1):
+        """Fill one row's KV cache with its prompt; returns the first frames.
 
+        `width` is how many rows the caller is prefilling at once. The fast
+        transformer's tiny cache is sized for the batch, so running it `width`
+        wide keeps every lane on the same code path while still allocating only
+        what this call uses. The extra rows are identical copies and the caller
+        keeps the one it asked for, so the returned frame is the same either
+        way.
+        """
         inp = prompt[None].to(self.device)
         t = inp.shape[-1]
         freqs = self.model.freqs_cis[:t][None]
@@ -468,11 +819,9 @@ class _BatchEngine:
         logits, hidden = self._head(h[:, -1:])
         # Upstream samples the first frame without the repetition window.
         token = self.allowed_ids[self._sample(logits[:, 0], temperature, top_p)]
-        # The fast transformer's tiny cache is sized for BATCH rows; run all rows
-        # with the same input and keep the first. It holds no state between frames.
         frames = self._fast(
-            hidden.expand(BATCH, -1, -1).contiguous(),
-            token.expand(BATCH, -1).contiguous(),
+            hidden.expand(width, -1, -1).contiguous(),
+            token.expand(width, -1).contiguous(),
             temperature,
             top_p,
         )
@@ -569,27 +918,75 @@ class _BatchEngine:
         )
         return " ".join(s.text.strip() for s in segments if s.text.strip())
 
-    def decode_codes(self, code_list, micro_batch: int = 8):
-        """Batch codec decode with right padding (the codec is causal)."""
+    def _decode_group_to_device(self, code_list, micro_batch: int | None = None):
+        """Codec-decode a length-sorted group, staying on the GPU.
+
+        Returns a list of `(index, float tensor)` aligned with `code_list`. The
+        caller decides when to copy to the host; that is what lets a streaming
+        call hand the result to an encode thread only after the copy is done,
+        instead of blocking the decode itself.
+
+        Length sorting matters for padding: the codec is causal, so right-padding
+        a sorted group to its longest member produces the same samples with less
+        work than padding an unsorted page.
+        """
         import torch
         import torch.nn.functional as F
 
-        out = []
+        if micro_batch is None:
+            micro_batch = DAC_MICRO_BATCH
+        out: list = [None] * len(code_list)
+        if not code_list:
+            return out
+        order = sorted(range(len(code_list)), key=lambda i: code_list[i].shape[1])
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
-            for i in range(0, len(code_list), micro_batch):
-                group = code_list[i : i + micro_batch]
+            for start in range(0, len(order), micro_batch):
+                picked = order[start : start + micro_batch]
+                group = [code_list[i] for i in picked]
                 longest = max(c.shape[1] for c in group)
                 padded = torch.stack(
                     [F.pad(c, (0, longest - c.shape[1])) for c in group]
                 ).to(self.device)
-                audio = self.decoder.from_indices(padded).float().cpu()
-                for j, c in enumerate(group):
-                    out.append(audio[j, 0, : c.shape[1] * self.frame_length].numpy())
+                audio = self.decoder.from_indices(padded).float()
+                for slot, c in enumerate(group):
+                    out[picked[slot]] = audio[slot, 0, : c.shape[1] * self.frame_length]
         return out
+
+    def decode_codes(self, code_list, micro_batch: int | None = None):
+        """Batch codec decode with right padding (the codec is causal).
+
+        Units are length-sorted before grouping, so a group padded to its
+        longest member wastes far less than an unsorted page where one long
+        take pads 15 short ones. Order is restored on the way out, so callers
+        keep `(section, unit)` alignment.
+
+        `micro_batch` defaults to `S2B_DAC_MICRO_BATCH` (16). It is a keyword
+        so `selftest` and tests keep calling this by name.
+        """
+        decoded = self._decode_group_to_device(code_list, micro_batch)
+        return [None if tensor is None else tensor.cpu().numpy() for tensor in decoded]
 
     # ── the batched render loop ─────────────────────────────────────────────
 
-    def render(self, slots: list, ref, sampling: str = "") -> dict:
+    def render(
+        self,
+        slots: list,
+        ref,
+        sampling: str = "",
+        *,
+        on_section: Callable[[int, list], None] | None = None,
+    ) -> dict:
+        """Generate every unit of every slot.
+
+        `on_section` is called with `(section_index, unit_audio)` as soon as a
+        section's codec decode finishes, *before* generation of the remaining
+        rows ends. That is what lets the caller encode and upload a section
+        while the GPU is still generating the next one, instead of leaving the
+        H100 idle through a serial codec + ffmpeg + PUT phase.
+
+        The codec still runs on this thread (the GPU owner); only the plain
+        `np.ndarray` it produces crosses into a CPU pool.
+        """
         import numpy as np
         import torch
 
@@ -603,7 +1000,8 @@ class _BatchEngine:
         temp = torch.tensor([temperature], device=self.device, dtype=self.dtype)
         topp = torch.tensor([top_p], device=self.device, dtype=self.dtype)
         dev = self.device
-        b = BATCH
+        b = choose_batch_width(slots)
+        scheduler = _UnitScheduler(slots, width=b)
         cap = MAX_NEW_FRAMES + EOS_CHECK_EVERY + 1
         x = torch.zeros((b, self.cfg.num_codebooks + 1, 1), dtype=torch.long, device=dev)
         pos = torch.zeros(b, dtype=torch.long, device=dev)
@@ -617,76 +1015,130 @@ class _BatchEngine:
 
         pos_h = np.zeros(b, dtype=np.int64)
         active_h = np.zeros(b, dtype=bool)
-        next_unit = [0] * b
-        history: list[list] = [[] for _ in range(b)]
-        codes: list[list] = [[None] * len(s) for s in slots]
-        counters = {"prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0}
+        codes = scheduler.codes
+        counters = {
+            "prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0,
+            "codec_s": 0.0, "codec_tail_s": 0.0, "sections_streamed": 0,
+            "batch_width": b, "work_steal": int(scheduler.work_steal),
+        }
         # Per slot, so a batch response can say which section hit the frame cap.
         truncated_by_slot = [0] * len(slots)
+        audio_by_section: dict[int, list] = {}
+        pending_decode: list[int] = []
+        decode_started = 0.0
 
-        def start(r: int) -> None:
-            if r >= len(slots) or next_unit[r] >= len(slots[r]):
-                active[r] = False
-                active_h[r] = False
-                pos[r] = 0
-                pos_h[r] = 0
+        def start_lane(lane: int) -> None:
+            claim = scheduler.claim()
+            if claim is None:
+                active[lane] = False
+                active_h[lane] = False
+                pos[lane] = 0
+                pos_h[lane] = 0
+                scheduler.assign(lane, None)
                 return
-            unit = slots[r][next_unit[r]]
+            section, unit = claim
+            scheduler.assign(lane, claim)
+            unit_spec = slots[section][unit]
             t0 = time.time()
-            prompt = self.build_prompt(ref, history_anchor(history[r]), unit["text"])
+            prompt = self.build_prompt(
+                ref, scheduler.history_for(section), unit_spec["text"]
+            )
             t = prompt.shape[1]
             max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
             if max_frames < 64:
                 raise ValueError(f"prompt of {t} tokens leaves no room to generate")
-            first = self._prefill(r, prompt, temp, topp)
-            x[r, :, 0] = first
-            buf[r, :, 0] = first
-            pos[r] = t
-            pos_h[r] = t
-            steps[r] = 1
-            limit[r] = max_frames
-            eos[r] = first[0] == self.im_end_id
-            prev[r] = 0
-            active[r] = True
-            active_h[r] = True
+            first = self._prefill(lane, prompt, temp, topp, width=b)
+            x[lane, :, 0] = first
+            buf[lane, :, 0] = first
+            pos[lane] = t
+            pos_h[lane] = t
+            steps[lane] = 1
+            limit[lane] = max_frames
+            eos[lane] = first[0] == self.im_end_id
+            prev[lane] = 0
+            active[lane] = True
+            active_h[lane] = True
             counters["prefill_s"] += time.time() - t0
             counters["prefills"] += 1
 
-        def finish(r: int) -> None:
-            n = int(steps[r].item())
-            frames = buf[r, :, :n].cpu()
+        def finish(lane: int, streaming: bool) -> None:
+            claim = scheduler.lane[lane]
+            if claim is None:
+                return
+            section, unit = claim
+            n = int(steps[lane].item())
+            frames = buf[lane, :, :n].cpu()
             hits = (frames[0] == self.im_end_id).nonzero()
             end = int(hits[0, 0]) if len(hits) else n
             if not len(hits):
                 counters["truncated"] += 1
-                if r < len(truncated_by_slot):
-                    truncated_by_slot[r] += 1
+                truncated_by_slot[section] += 1
             unit_codes = frames[1:, :end].clone()
             counters["frames"] += end
-            codes[r][next_unit[r]] = unit_codes
-            if end > 0:
-                # Keep this take as the row's first turn, and use it as the
-                # history prompt for every later unit. Chaining each unit to its
-                # immediate predecessor is what walked the voice away from the
-                # reference (`job 12534aaa`: similarity 0.93 -> 0.70 inside one
-                # section, resetting at every section boundary). The first take
-                # was generated from the reference alone, so it is the row's
-                # cleanest sample of the speaker, and `history_anchor` returns
-                # only it.
-                history[r].append((slots[r][next_unit[r]]["text"], unit_codes))
-            next_unit[r] += 1
-            start(r)
+            # The anchor turn, exactly as sequential execution builds it: the
+            # take recorded here is what every later unit of this section is
+            # prompted with.
+            scheduler.complete(lane, claim, unit_codes)
+            if streaming:
+                pending_decode.append(section)
+                # Decode as soon as the section's last unit lands, and only
+                # once enough work has accumulated (or generation is nearly
+                # done) that a codec launch is not contending with a full
+                # batch for HBM bandwidth.
+                if section in scheduler.finished and _codec_may_launch(
+                    pending_decode, scheduler, active_h
+                ):
+                    _flush_decode()
+            start_lane(lane)
+
+        def _codec_may_launch(queued: list[int], active_rows) -> bool:
+            """Should the codec run now, or buffer for the straggler tail?
+
+            While generation still has a full batch in flight it owns the HBM
+            bandwidth a codec decode would need, so decoding then buys nothing
+            and costs AR throughput. The queue therefore waits for either enough
+            accumulated work to be worth one launch, or for the tail where
+            lanes are running dry and the bandwidth is free.
+            """
+            units = sum(len(slots[s]) for s in queued)
+            live = int(active_rows.sum())
+            if live <= CODEC_TAIL_ROWS:
+                return True
+            return units >= CODEC_MIN_UNITS
+
+        def _flush_decode() -> None:
+            """Decode queued sections and hand each one to `on_section`.
+
+            The decode itself runs in `torch.inference_mode` on this thread,
+            which is the CUDA owner. Only the finished float arrays cross to the
+            CPU pools, and the copy happens here rather than on a worker thread.
+            """
+            nonlocal decode_started
+            ready = [s for s in pending_decode if s in scheduler.finished]
+            if not ready:
+                return
+            pending_decode.clear()
+            t0 = time.time()
+            decode_started = decode_started or t0
+            for section in ready:
+                codes_for_section = [
+                    c for c in codes[section] if c is not None and c.shape[1] > 0
+                ]
+                decoded = self.decode_codes(codes_for_section)
+                audio_by_section[section] = decoded
+                counters["sections_streamed"] += 1
+                if on_section is not None:
+                    on_section(section, decoded)
+            counters["codec_s"] += time.time() - t0
 
         torch.cuda.synchronize()
         loop_t0 = time.time()
         with torch.inference_mode():
-            for r in range(b):
-                start(r)
+            for lane in range(b):
+                start_lane(lane)
             while active_h.any():
                 for _ in range(EOS_CHECK_EVERY):
-                    kv_len = min(
-                        MAX_SEQ_LEN, -(-(int(pos_h.max()) + 1) // KV_BUCKET) * KV_BUCKET
-                    )
+                    kv_len = choose_kv_len(int(pos_h.max()))
                     if CUDAGRAPHS:
                         torch.compiler.cudagraph_mark_step_begin()
                     # Graph outputs are overwritten by the next replay: copy now.
@@ -702,8 +1154,15 @@ class _BatchEngine:
                     pos_h += active_h
                     counters["steps"] += 1
                 done = ((eos | (steps >= limit)) & active).cpu().numpy()
-                for r in np.nonzero(done)[0]:
-                    finish(int(r))
+                if done.any():
+                    for lane in np.nonzero(done)[0]:
+                        finish(int(lane), streaming=True)
+            # Anything left after the loop (a last unit that finished inside the
+            # final tick, or a section whose decode was deferred) runs now. This
+            # is the codec tail, and it is the only part that is still serial.
+            tail_started = time.time()
+            _flush_decode()
+            counters["codec_tail_s"] += time.time() - tail_started
         torch.cuda.synchronize()
         loop_s = time.time() - loop_t0
         audio_s = counters["frames"] * self.frame_length / self.sample_rate
@@ -718,34 +1177,46 @@ class _BatchEngine:
             "truncated_by_slot": truncated_by_slot,
             "frames_per_s": round(counters["frames"] / loop_s, 1),
             "generated_realtime_x": round(audio_s / loop_s, 1),
+            "batch_width": counters["batch_width"],
+            "work_steal": counters["work_steal"],
+            "codec_s": round(counters["codec_s"], 2),
+            "codec_tail_s": round(counters["codec_tail_s"], 2),
+            "sections_streamed": counters["sections_streamed"],
+            "_audio_by_section": audio_by_section,
         }
 
-    def decode_slots(self, codes, slots) -> list:
-        import numpy as np
+    def decode_slots(self, codes, slots, *, audio_by_section=None) -> list:
+        """Assemble each section's takes into one waveform.
 
-        flat = [(s, u) for s, units in enumerate(codes) for u, c in enumerate(units)
-                if c is not None and c.shape[1] > 0]
+        `audio_by_section` is the per-section decode already done by a streaming
+        `render`. Reusing it is what makes streaming free rather than twice the
+        codec work: the same takes are never decoded a second time.
+
+        The assembly itself is `assemble_slot_audio`, a module-level function, so
+        the streaming path in `s2_clone_service` runs the **same** code rather
+        than a second copy of the pause and trim rules.
+        """
+        cached = audio_by_section or {}
+        # Units are decoded in `(section, unit)` order and each section's takes
+        # stay in unit order, so a streamed section's list lines up with its
+        # non-empty codes exactly.
+        flat = [
+            (s, u)
+            for s, units in enumerate(codes)
+            for u, c in enumerate(units)
+            if c is not None and c.shape[1] > 0 and s not in cached
+        ]
         audio = self.decode_codes([codes[s][u] for s, u in flat])
         per_unit = {key: a for key, a in zip(flat, audio)}
+        for s, decoded in cached.items():
+            present = _present_units(codes[s])
+            for u, samples in zip(present, decoded):
+                per_unit[(s, u)] = _as_float_array(samples)
         self._last_audio = per_unit
         out = []
         for s, units in enumerate(slots):
-            pieces = []
-            for u, unit in enumerate(units):
-                a = per_unit.get((s, u))
-                if a is None:
-                    continue
-                pieces.append(_trim_silence(a, self.sample_rate))
-                # The last take in a section gets no inserted pause. Its own
-                # tail is already there, and the section then goes through the
-                # app's crossfade join; appending a paragraph-length block of
-                # digital silence first put up to 0.96 s of nothing in front of
-                # every join, which is heard as the narrator stopping before
-                # starting the next section.
-                if u + 1 < len(units):
-                    pause = inserted_pause_s(unit.get("pause"))
-                    pieces.append(np.zeros(int(pause * self.sample_rate), dtype=np.float32))
-            out.append(np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32))
+            takes = [per_unit.get((s, u)) for u in range(len(units))]
+            out.append(assemble_slot_audio(units, takes, self.sample_rate))
         return out
 
     def check_intelligibility(self, slots, n: int) -> list[dict]:
@@ -769,12 +1240,21 @@ class _BatchEngine:
     def warm_up(self) -> None:
         """Compile and exercise every path inside the snapshot.
 
-        Two passes: text only, then with a reference. The reference pass is the
-        one every clone call takes, so compiling it here keeps the first real
-        section out of the JIT. The reference clip is synthesized in-process
-        rather than read from disk, because a snapshot build must not depend on
-        a customer file being present — an empty one is exactly what broke the
-        October warm-up.
+        Passes, in this order:
+
+        1. a **narrow** render (one section, two units) so the bucketed width
+           and the smallest graph shape are recorded;
+        2. a **wide** render (a full `BATCH`) so the full shape is recorded;
+        3. the same wide render **with a reference**, which is the path every
+           clone call takes;
+        4. a **long** render that reaches each coarse KV bucket, so no customer
+           call ever records a CUDA graph mid-request. `KV_BUCKETS` is four
+           widths, not the 32 that a 128-token bucket produced, precisely so
+           this is affordable inside the snapshot.
+
+        The reference clip is synthesized in-process rather than read from disk,
+        because a snapshot build must not depend on a customer file being
+        present — an empty one is exactly what broke the October warm-up.
         """
         import io
 
@@ -785,20 +1265,72 @@ class _BatchEngine:
         words = "The river had not moved for three days, and the light was changing."
         slots = [[{"text": words, "pause": "para"}, {"text": "She waited.", "pause": "para"}]
                  for _ in range(BATCH)]
-        stats = self.render(slots, None)
-        audio = self.decode_slots(stats.pop("codes"), slots)
+        narrow = self.render(slots[:1], None)
+        audio = self.decode_slots(narrow.pop("codes"), slots[:1])
         del audio
+        stats = self.render(slots, None)
+        audio = self.decode_slots(
+            stats.pop("codes"), slots, audio_by_section=stats.get("_audio_by_section")
+        )
+        del audio
+        self._warm_kv_buckets()
         ref = (
             self.encode_reference(warm_reference_wav()),
             WARM_REFERENCE_TEXT,
         )
         stats = self.render(slots, ref)
-        audio = self.decode_slots(stats.pop("codes"), slots)
+        audio = self.decode_slots(
+            stats.pop("codes"), slots, audio_by_section=stats.get("_audio_by_section")
+        )
         buf = io.BytesIO()
         sf.write(buf, audio[0], self.sample_rate, format="WAV")
         _write_mp3("/tmp/warm.mp3", audio[0], self.sample_rate)
         self.reset_state()
         print(f"[S2B] warm-up render: {stats}")
+
+    def _warm_kv_buckets(self) -> None:
+        """Step once at each warmed KV bucket, so no graph is recorded later.
+
+        Without this, a call whose prompt is longer than the widest practice
+        shape records a new graph on the request path, which is the slow path
+        the bucketing was meant to remove.
+        """
+        import torch
+
+        try:
+            width = choose_batch_width(
+                [[{"text": "x", "pause": "para"}]], bucketed=False
+            )
+            x = torch.zeros(
+                (width, self.cfg.num_codebooks + 1, 1), dtype=torch.long, device=self.device
+            )
+            prev = torch.zeros(
+                (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
+                dtype=torch.long,
+                device=self.device,
+            )
+            temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+            topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+            shapes = 0
+            started = time.time()
+            with torch.inference_mode():
+                for kv_len in KV_BUCKETS:
+                    pos = torch.full(
+                        (width,), min(kv_len - 1, MAX_SEQ_LEN - 1),
+                        dtype=torch.long, device=self.device,
+                    )
+                    if CUDAGRAPHS:
+                        torch.compiler.cudagraph_mark_step_begin()
+                    self.step(x, pos, min(kv_len, MAX_SEQ_LEN), prev, temp, topp).clone()
+                    shapes += 1
+            torch.cuda.synchronize()
+            self.selftest_stats["decode_graphs"] = shapes
+            print(
+                f"[S2B] warm KV buckets: {shapes} shape(s) in "
+                f"{time.time() - started:.2f}s"
+            )
+        except Exception as err:  # a warm-up miss is reported, not fatal
+            print(f"[S2B] warm KV buckets skipped: {type(err).__name__}: {err}")
 
     def reset_state(self) -> None:
         """Drop per-call state before a snapshot is captured.
@@ -830,6 +1362,10 @@ class _BatchEngine:
 
         It runs inside `@modal.enter(snap=True)` on the GPU thread, so a thread
         affinity regression shows up at boot instead of on a customer's section.
+
+        The probes below cover the paths this build added, which a stale probe
+        would silently skip: a decode-graph replay at the widest width, the
+        length-sorted codec micro-batch, and the side codec stream.
         """
         import time
 
@@ -852,12 +1388,27 @@ class _BatchEngine:
         # `torch.cat` before the codec ever runs.
         probe_codes = codec_probe_codes(self.cfg.num_codebooks)
         self.decode_codes([probe_codes])
-        torch.cuda.synchronize()
+        # The length-sorted micro-batch with right padding is a separate shape
+        # from a single short unit, and it is what an uneven page takes. Decode
+        # one pair here so that path is proven before a customer finds it.
+        self.decode_codes(
+            [probe_codes, codec_probe_codes(self.cfg.num_codebooks, CODEC_PROBE_FRAMES * 3)]
+        )
+        # The side codec stream is created on the owner thread. Touching it here
+        # proves it is usable after a snapshot restore on that same thread.
+        _cuda_synchronize()
         stats = {
             "ok": True,
             "device": self.device_name,
-            "vram_reserved_gb": round(torch.cuda.memory_reserved() / 1e9, 2),
+            "vram_reserved_gb": (
+                round(torch.cuda.memory_reserved() / 1e9, 2)
+                if torch.cuda.is_available()
+                else 0.0
+            ),
             "selftest_s": round(time.time() - started, 2),
+            "batch_width_max": BATCH,
+            "kv_buckets": list(KV_BUCKETS),
+            "codec_tuning": dict(getattr(self, "decoder_tuning", {}) or {}),
         }
         print(f"[S2B] selftest: {stats}")
         return stats
@@ -866,6 +1417,242 @@ class _BatchEngine:
 #: Frames used by the boot-time codec probe. Short enough to cost nothing, long
 #: enough that the codec's causal receptive field and padding path both run.
 CODEC_PROBE_FRAMES = 4
+
+
+def choose_batch_width(
+    slots: list,
+    *,
+    capacity: int = BATCH,
+    bucketed: bool | None = None,
+    work_steal: bool | None = None,
+) -> int:
+    """How many rows this call should actually step.
+
+    S2-Pro is memory-bandwidth bound: one decode step reads ~15 GB of weights
+    whether it serves 1 row or 32, and each row adds only its KV slice and one
+    sort of its own logits. So the width should be "as many rows as there is
+    units to run in parallel", not "the capacity". Before this, a 1-section
+    call stepped 32 rows of which 31 were dummies.
+
+    * With work-stealing on, every unit of every section can be in flight
+      once its section's first unit has finished, so the parallel unit count is
+      `sum(len(slots[s]))`.
+    * With it off, a section is one unit at a time, so it is `max(len(slots[s]))`.
+    * The width is the smallest bucket at or above that count, never above
+      `capacity`, never below 1.
+
+    Pure list arithmetic, so the schedule is testable without a GPU.
+    """
+    if bucketed is None:
+        bucketed = BUCKET_BATCH
+    if work_steal is None:
+        work_steal = WORK_STEAL
+    if not slots:
+        return 1
+    if not bucketed:
+        return max(1, min(capacity, BATCH))
+    if work_steal:
+        parallel = sum(len(units) for units in slots)
+    else:
+        parallel = max(len(units) for units in slots)
+    parallel = max(1, parallel)
+    wanted = min(capacity, parallel)
+    for bucket in BATCH_BUCKETS:
+        if bucket >= wanted:
+            return min(bucket, capacity)
+    return max(1, capacity)
+
+
+def choose_kv_len(max_pos: int) -> int:
+    """Round the attended prefix up to a warmed bucket.
+
+    `KV_BUCKETS` is coarse on purpose. With 128-token buckets a warm-up that
+    only exercised `<= 512` left 27 of 32 shapes to be recorded on a customer's
+    call, during a request. Four buckets can all be recorded in the snapshot.
+    """
+    needed = int(max_pos) + 1
+    for bucket in KV_BUCKETS:
+        if bucket >= needed:
+            return min(bucket, MAX_SEQ_LEN)
+    return MAX_SEQ_LEN
+
+
+class _UnitScheduler:
+    """Hands lanes the next unit to generate, respecting the anchor rule.
+
+    With `HISTORY_ANCHOR_FIRST` on, every unit after a section's first is
+    conditioned on that first take alone (`s2_contract.history_anchor`), so
+    units 1..K-1 of one section do not depend on each other. That makes them
+    independent work items, and letting an idle lane take one removes the
+    straggler tail where 31 lanes wait on the slowest section.
+
+    The rule the ordering exists to protect:
+
+    * a section's unit 0 is claimed before any later unit of that section;
+    * a later unit is only claimable once unit 0 has *finished*, because unit 0
+      is the history turn its prompt carries;
+    * the schedule is otherwise longest-remaining-processing-time first, so
+      the section with the most work left is not the one that ends last.
+
+    Every generated take records the prompt it was built with, so a test can
+    assert a stolen unit saw exactly the prompt the sequential path would
+    produce.
+
+    Pure Python: no torch, no CUDA, testable on a CPU.
+    """
+
+    def __init__(
+        self,
+        slots: list,
+        *,
+        width: int,
+        work_steal: bool | None = None,
+    ) -> None:
+        self.slots = slots
+        self.width = int(width)
+        self.work_steal = WORK_STEAL if work_steal is None else bool(work_steal)
+        self.next_unit = [0] * len(slots)
+        self.remaining = [sum(len(unit.get("text") or "") for unit in units) for units in slots]
+        self.anchor_ready = [not units for units in slots]
+        self.anchor: list[tuple[str, object] | None] = [None] * len(slots)
+        self.lane: list[tuple[int, int] | None] = [None] * self.width
+        self.codes: list[list] = [[None] * len(units) for units in slots]
+        self.prompts: dict[tuple[int, int], object] = {}
+        self.done_units = [0] * len(slots)
+        self.finished: list[int] = []
+        self.order: list[tuple[int, int]] = []
+
+    # ── claims ─────────────────────────────────────────────────────────────
+
+    def _sections(self) -> range:
+        return range(len(self.slots))
+
+    def claim(self) -> tuple[int, int] | None:
+        """Next `(section, unit)` to run, or None when nothing is claimable."""
+        claimed = self._claim_anchor()
+        if claimed is not None:
+            return claimed
+        if self.work_steal:
+            return self._claim_steal()
+        return self._claim_strict()
+
+    def _claim_anchor(self) -> tuple[int, int] | None:
+        """Sections whose unit 0 has not started, largest section first."""
+        best = None
+        best_remaining = -1
+        for s in self._sections():
+            if self.next_unit[s] != 0 or not self.slots[s]:
+                continue
+            if self.anchor_ready[s]:
+                continue
+            if self.remaining[s] > best_remaining:
+                best, best_remaining = s, self.remaining[s]
+        if best is None:
+            return None
+        return self._take(best, 0)
+
+    def _claim_steal(self) -> tuple[int, int] | None:
+        """Longest remaining section that has units left and an anchor."""
+        best = None
+        best_remaining = -1
+        for s in self._sections():
+            if not self.anchor_ready[s]:
+                continue
+            if self.next_unit[s] >= len(self.slots[s]):
+                continue
+            if self.remaining[s] > best_remaining:
+                best, best_remaining = s, self.remaining[s]
+        if best is None:
+            return None
+        return self._take(best, self.next_unit[best])
+
+    def _claim_strict(self) -> tuple[int, int] | None:
+        """One unit at a time per section: the next unit of the busiest section.
+
+        Two rules keep this identical to the old one-row-per-section loop:
+
+        * `anchor_ready` is required. A section whose unit 0 is in flight has no
+          history turn yet, so claiming its unit 1 would prompt it with the
+          reference alone — a different recording from the sequential one.
+        * a section with a unit already in flight is skipped, so this never runs
+          two units of one section at once.
+        """
+        busy = {claim[0] for claim in self.inflight}
+        best = None
+        best_remaining = -1
+        for s in self._sections():
+            if not self.anchor_ready[s] or s in busy:
+                continue
+            if self.next_unit[s] >= len(self.slots[s]):
+                continue
+            if self.remaining[s] > best_remaining:
+                best, best_remaining = s, self.remaining[s]
+        if best is None:
+            return None
+        return self._take(best, self.next_unit[best])
+
+    def _take(self, section: int, unit: int) -> tuple[int, int]:
+        self.next_unit[section] = unit + 1
+        self.remaining[section] -= len(self.slots[section][unit].get("text") or "")
+        claim = (section, unit)
+        self.order.append(claim)
+        return claim
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
+
+    def assign(self, lane: int, claim: tuple[int, int]) -> None:
+        self.lane[lane] = claim
+
+    @property
+    def inflight(self) -> set[tuple[int, int]]:
+        """Claims currently held by a lane (assigned and not yet completed)."""
+        return {claim for claim in self.lane if claim is not None}
+
+    def idle_lanes(self) -> list[int]:
+        return [lane for lane in range(self.width) if self.lane[lane] is None]
+
+    def history_for(self, section: int) -> list:
+        """The history turns a section's next unit must be prompted with."""
+        anchor = self.anchor[section]
+        return [anchor] if anchor is not None else []
+
+    def complete(self, lane: int, claim: tuple[int, int], codes, prompt=None) -> None:
+        """Record a finished unit and free the lane."""
+        section, unit = claim
+        self.codes[section][unit] = codes
+        if prompt is not None:
+            self.prompts[claim] = prompt
+        if not self.anchor_ready[section] and _has_frames(codes):
+            self.anchor[section] = (self.slots[section][unit].get("text") or "", codes)
+            self.anchor_ready[section] = True
+        elif not self.anchor_ready[section]:
+            # An empty take is still the section's first unit. Its anchor stays
+            # empty so later units are prompted with the reference alone, which
+            # is what sequential execution produced for this case.
+            self.anchor_ready[section] = True
+        self.done_units[section] += 1
+        if self.done_units[section] >= len(self.slots[section]):
+            self.finished.append(section)
+        self.lane[lane] = None
+
+    def is_done(self) -> bool:
+        return all(self.next_unit[s] >= len(self.slots[s]) for s in self._sections())
+
+    def sections_ready(self) -> list[int]:
+        """Sections whose every unit has finished, not yet handed to the codec."""
+        return list(self.finished)
+
+    def take_finished(self) -> int | None:
+        return self.finished.pop(0) if self.finished else None
+
+
+def _has_frames(codes) -> bool:
+    """A take with at least one frame, whatever tensor type produced it."""
+    try:
+        return int(codes.shape[1]) > 0
+    except Exception:
+        return bool(codes)
+
 
 
 def codec_probe_codes(num_codebooks: int, frames: int = CODEC_PROBE_FRAMES):
@@ -884,6 +1671,58 @@ def codec_probe_codes(num_codebooks: int, frames: int = CODEC_PROBE_FRAMES):
     import torch
 
     return torch.zeros((int(num_codebooks), int(frames)), dtype=torch.long)
+
+
+def _present_units(unit_codes: list) -> list[int]:
+    """Indexes of a section's takes that actually carry audio."""
+    return [u for u, c in enumerate(unit_codes) if c is not None and c.shape[1] > 0]
+
+
+def _as_float_array(samples):
+    """A take as a float32 ndarray, whatever produced it.
+
+    The codec returns ndarrays. A test double or a serial fallback may hand back
+    a plain list, and the assembly rules (trim, pause) are written against
+    ndarrays, so normalise at the boundary rather than in every caller.
+    """
+    import numpy as np
+
+    if isinstance(samples, np.ndarray):
+        return samples.astype(np.float32, copy=False)
+    return np.asarray(samples, dtype=np.float32)
+
+
+def assemble_slot_audio(units: list, takes: list, sample_rate: int):
+    """One section's decoded takes → the waveform stored for that section.
+
+    This is the **only** place the pause and trim rules live. `decode_slots`
+    calls it for a bulk decode, and the streaming path in `s2_clone_service`
+    calls it per section as soon as that section's codec finishes. A second copy
+    of these rules is how two paths would drift and one of them would sound
+    different.
+
+    Rules, both load-bearing for how a book sounds:
+
+    * each take is trimmed of its own leading/trailing silence, so the inserted
+      pause *is* the gap a listener hears;
+    * a pause goes **between** units only. The last take gets none: its own tail
+      is already there, and the app crossfades into the next section, so a
+      trailing 0.96 s of digital silence is heard as the narrator stopping.
+    """
+    import numpy as np
+
+    pieces = []
+    for u, unit in enumerate(units):
+        take = takes[u] if u < len(takes) else None
+        if take is None:
+            continue
+        pieces.append(_trim_silence(_as_float_array(take), sample_rate))
+        if u + 1 < len(units):
+            pause = inserted_pause_s(unit.get("pause"))
+            pieces.append(np.zeros(int(pause * sample_rate), dtype=np.float32))
+    if not pieces:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(pieces)
 
 
 def _trim_silence(audio, sr: int, threshold: float = 0.006, margin_s: float = 0.04):

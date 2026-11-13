@@ -77,10 +77,19 @@ from fastapi import Request
 
 from s2_batch import (
     BATCH,
+    BUCKET_BATCH,
+    DAC_MICRO_BATCH,
+    EOS_CHECK_EVERY,
     GPU,
+    KV_BUCKETS,
     MAX_NEW_FRAMES,
     MAX_SEQ_LEN,
+    PIPELINE_CODEC,
+    SDPA_DECODE,
+    TOPK_FAST_SAMPLE,
+    WORK_STEAL,
     _BatchEngine,
+    assemble_slot_audio,
     gpu_image,
     make_units,
 )
@@ -113,7 +122,7 @@ from s2_contract import (
     validate_reference_text,
     warm_reference_wav,
 )
-from s2_audio_store import audio_fields, transport_name
+from s2_audio_store import UploadPool, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
 APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
@@ -124,7 +133,13 @@ DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 #: (target 480 / ceiling 600 chars instead of 300 / 400), a whole short
 #: paragraph is one generation, and a stub tail folds into its predecessor.
 #: This is the "it stops and starts every time" fix, so it needs its own build.
-S2C_VERSION = os.environ.get("S2C_VERSION", "9")
+#:
+#: Bumped to 10: the decode path changed shape. Bucketed active batch width,
+#: coarse pre-warmed CUDA-graph KV buckets, a rewritten fast-transformer step
+#: that no longer hands inductor a CPU constant, and a streaming
+#: codec/encode/R2 pipeline all live in the restored object graph, so a
+#: snapshot built from 9 must not serve this code.
+S2C_VERSION = os.environ.get("S2C_VERSION", "10")
 
 #: A heartbeat older than this means the container is gone. Kept small because
 #: live containers refresh on a timer (see `publish`), not only when they serve
@@ -183,6 +198,19 @@ _BUILD_ENV = {
             "merge_para": f"{MERGE_PARA_MAX_CHARS}",
             "mastering": S2_SPECTRAL_CHAIN,
             "sampling": DEFAULT_SAMPLING,
+            # How the decode runs. These change which kernels, CUDA-graph
+            # shapes and streams a container owns, so a snapshot built with
+            # different values is a different engine.
+            "batch_max": BATCH,
+            "kv_buckets": "-".join(str(v) for v in KV_BUCKETS),
+            "bucket_batch": int(BUCKET_BATCH),
+            "work_steal": int(WORK_STEAL),
+            "eos_every": EOS_CHECK_EVERY,
+            "sdpa_decode": int(SDPA_DECODE),
+            "topk_fast": int(TOPK_FAST_SAMPLE),
+            "dac_micro": DAC_MICRO_BATCH,
+            "pipeline_codec": int(PIPELINE_CODEC),
+            "audio_transport": transport_name(os.environ),
         }
     ),
     "S2C_VERSION": S2C_VERSION,
@@ -205,6 +233,26 @@ def _max_containers() -> int:
     on this one; that decorator is in effect only after a redeploy.
     """
     return int(_LIMITS["max_containers"])
+
+
+def max_batch_items(env=None) -> int:
+    """Rows one `synthesize_batch` call may carry.
+
+    Reported by `GET /ready` as `max_batch_items`. The worker only plans a page
+    wider than its safe inline width when `/ready` reports both
+    `audio_transport: "r2"` and this number at 32, so a worker deployed against
+    the live 24-row container keeps sending at most 24 rows and never sees a 422
+    `batch_too_large`.
+
+    Never above `BATCH`: the KV cache is allocated for that many rows, and a
+    row past it would index out of the cache.
+    """
+    env = os.environ if env is None else env
+    try:
+        value = int(str(env.get("S2C_MAX_BATCH_ITEMS", "")).strip() or BATCH)
+    except (TypeError, ValueError):
+        value = BATCH
+    return max(1, min(BATCH, value))
 
 
 def _token_ok(request: Request) -> bool:
@@ -304,6 +352,79 @@ def _master(samples, sample_rate: int, out_path: str) -> None:
         input=pcm,
         check=True,
     )
+
+
+def _master_args(sample_rate: int, source: str) -> list[str]:
+    """The ffmpeg arguments both mastering entry points share.
+
+    Kept in one place so the pipe and file forms cannot drift: a changed filter
+    or bitrate applied to one of them would make a section's bytes depend on
+    which code path rendered it. `source` is the input spec — `pipe:0` for the
+    piped path, a path for the file path.
+    """
+    return [
+        "-hide_banner", "-nostdin", "-v", "error",
+        "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", source,
+        "-af", S2_SPECTRAL_CHAIN,
+        "-ar", str(SECTION_SAMPLE_RATE), "-ac", "1",
+        "-c:a", "libmp3lame", "-b:a", SECTION_MP3_BITRATE,
+        "-write_xing", "0",  # sections are copy-joined; no per-section TOC
+    ]
+
+
+def _master_pcm(pcm: bytes, sample_rate: int) -> bytes:
+    """Master raw 16-bit PCM to MP3 bytes through a pipe."""
+    result = subprocess.run(
+        ["ffmpeg", *_master_args(sample_rate, "pipe:0"), "-f", "mp3", "pipe:1"],
+        input=pcm,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return result.stdout
+
+
+def _master_bytes(samples, sample_rate: int) -> bytes:
+    """Master one section and return the MP3 bytes, with no temporary file.
+
+    The file version writes a `NamedTemporaryFile`, reopens it, reads it and
+    unlinks it — per section, on the critical path. This pipes PCM in on
+    stdin and reads MP3 out of stdout, so the same ffmpeg graph produces the
+    same bytes with no disk round-trip. `test_s2_pipeline` asserts the two forms
+    are byte-identical rather than trusting that claim.
+    """
+    return _master_pcm(_to_pcm16(samples), sample_rate)
+
+def _to_pcm16(samples) -> bytes:
+    """Float samples in [-1, 1] → little-endian 16-bit PCM.
+
+    Exactly the conversion both mastering paths used inline, extracted so the
+    pipeline converts once per section instead of once per encode attempt.
+    """
+    import numpy as np
+
+    return (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+class _PipelinedSection:
+    """One section in flight through the encode/upload pipeline.
+
+    A plain record rather than tuple indexes: the stages run on three different
+    threads and a named hand-off is the difference between a readable pipeline
+    and a scavenger hunt.
+    """
+
+    __slots__ = ("item_key", "units", "samples", "pcm", "encode", "upload", "mp3", "fields")
+
+    def __init__(self, *, item_key: str, units: list) -> None:
+        self.item_key = item_key
+        self.units = units
+        self.samples = 0
+        self.pcm = b""
+        self.encode = None
+        self.upload = None
+        self.mp3 = b""
+        self.fields: dict = {}
 
 
 def _prepare_reference(audio: bytes, ref_text: str) -> str:
@@ -532,6 +653,9 @@ class S2CloneWorker:
             # reading the container's image.
             "recipe": _RECIPE,
             "audio_transport": transport_name(os.environ),
+            # How many rows one call may carry. The worker reads this to decide
+            # whether a 32-row page is safe; a build without the field is 24.
+            "max_batch_items": max_batch_items(),
         }
 
     def _resolve_reference(
@@ -669,7 +793,6 @@ class S2CloneWorker:
         A wide page uses the key. Inline base64 stays for a container
         with no R2 env, which is what an older build always returns.
         """
-        import tempfile
         from concurrent.futures import ThreadPoolExecutor
 
         from fastapi import HTTPException
@@ -687,7 +810,7 @@ class S2CloneWorker:
             )
             raise HTTPException(status_code=status, detail=body)
 
-        max_items = int(os.environ.get("S2C_MAX_BATCH_ITEMS", "24"))
+        max_items = max_batch_items()
         if len(items) > max_items:
             body, status = _error(
                 "batch_too_large",
@@ -739,43 +862,127 @@ class S2CloneWorker:
         sampling_text = f"{sampling[0]},{sampling[1]}"
         self.calls += 1
 
+        # ── the pipeline ───────────────────────────────────────────────────
+        #
+        # Stages used to run strictly one after another: every row generated,
+        # then every row decoded, then every row encoded, then every MP3
+        # uploaded. Each stage left the H100 idle. Here a finished section
+        # leaves the GPU as soon as its codec decode is done:
+        #
+        #   s2-gpu thread      render (AR)  →  codec decode per section
+        #   encode pool (CPU)              →  ffmpeg pipe:1 → MP3 bytes
+        #   upload pool (CPU)              →  R2 PUT (pooled keep-alive)
+        #
+        # `on_section` is called with plain `np.ndarray`s on the GPU thread, so
+        # nothing outside that thread ever touches a CUDA handle — the rule the
+        # restored snapshot requires. `S2C_PIPELINE_CODEC=0` restores the serial
+        # order exactly, for an A/B on staging.
+        call_id = uuid.uuid4().hex
+        job_id = str(payload.get("job_id") or "")
+        sample_rate = self.engine.sample_rate
+        encode_pool = ThreadPoolExecutor(
+            max_workers=int(os.environ.get("S2C_ENCODE_WORKERS", "8")),
+            thread_name_prefix="s2-mp3",
+        )
+        upload_pool = UploadPool(os.environ)
+        #: One `_PipelinedSection` per section, indexed by section id, so the
+        #: response can be built in item order however the sections finished.
+        sections = [
+            _PipelinedSection(item_key=key, units=units) for key, units in units_by_item
+        ]
+        pipeline = {"first_section_s": None, "encode_s": 0.0}
+
+        def encode_section(section: int, unit_audio: list) -> None:
+            """Runs on the GPU thread; only hands bytes to the CPU pools.
+
+            Assembly and the 16-bit conversion touch no CUDA state, but they are
+            cheap and they keep everything that reads a take on the thread that
+            produced it. The moment the samples exist the encode is submitted,
+            and the encode submits its own upload when ffmpeg returns — so a
+            section's MP3 starts uploading without waiting for any other
+            section.
+            """
+            record = sections[section]
+            samples = assemble_slot_audio(record.units, unit_audio, sample_rate)
+            record.samples = int(len(samples))
+            record.pcm = _to_pcm16(samples)
+            del samples
+            if pipeline["first_section_s"] is None:
+                pipeline["first_section_s"] = time.time() - t0
+            started = time.time()
+
+            def encode_and_upload() -> bytes:
+                mp3 = _master_pcm(record.pcm, sample_rate)
+                record.upload = upload_pool.submit(
+                    record.item_key, mp3, job_id, call_id
+                )
+                return mp3
+
+            record.encode = encode_pool.submit(encode_and_upload)
+            pipeline["encode_s"] += time.time() - started
+
         def gpu_work() -> dict:
             """Everything that touches CUDA or the codec, on the GPU thread.
 
-            Reference encoding, every decode batch, codec decode and the
-            per-section ffmpeg gain/mix all stay on this one thread, so no
-            FastAPI worker thread ever opens a CUDA handle.
+            Reference encoding and every decode batch stay on this one thread,
+            so no FastAPI worker thread ever opens a CUDA handle. The codec
+            decode also happens here — it is CUDA — but it runs *during*
+            generation for a section that has already finished, which is the
+            overlap that removes the ~10 s codec phase from the call's wall.
             """
             ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
             calls_seed = _apply_seed(seed_value)
             stats_all = {"frames": 0, "steps": 0, "truncated_units": 0}
             codes: list = []
+            audio_by_section: dict[int, list] = {}
             truncated_by_slot: list[int] = []
             prepared_at = time.time()
             for start in range(0, len(slots), BATCH):
+                chunk = slots[start : start + BATCH]
+
+                def on_section(local: int, unit_audio: list, offset=start) -> None:
+                    section = offset + local
+                    audio_by_section[section] = unit_audio
+                    encode_section(section, unit_audio)
+
                 stats = self.engine.render(
-                    slots[start : start + BATCH],
+                    chunk,
                     ref,
                     sampling_text,
+                    on_section=on_section if PIPELINE_CODEC else None,
                 )
                 codes.extend(stats.pop("codes"))
                 truncated_by_slot.extend(stats.pop("truncated_by_slot", []))
                 for k in ("frames", "steps"):
                     stats_all[k] += stats.get(k, 0)
+                for k in ("batch_width", "work_steal", "codec_s", "codec_tail_s",
+                          "sections_streamed"):
+                    if k in stats:
+                        stats_all[k] = stats_all.get(k, 0) + stats[k]
                 stats_all["truncated_units"] += int(
                     stats.get("truncated_units") or 0
                 )
             generated_at = time.time()
-            rendered = self.engine.decode_slots(codes, slots) if codes else []
+            missing = [s for s in range(len(slots)) if s not in audio_by_section]
+            if missing:
+                # Safety net, not the normal path: an engine that returned
+                # codes but did not stream a section for them (the serial
+                # rollback, or a provider stub in a test). Decoding here keeps
+                # a section from silently vanishing from the book, which is the
+                # failure mode that matters most.
+                subset = [codes[s] for s in missing]
+                if any(c is not None for unit in subset for c in unit):
+                    decoded = self.engine.decode_slots(subset, [slots[s] for s in missing])
+                    for section, samples in zip(missing, decoded):
+                        audio_by_section[section] = [samples]
+                        encode_section(section, [samples])
             decoded_at = time.time()
-            sample_rate = self.engine.sample_rate
             return {
                 "ref_key": ref_key,
                 "ref_stats": ref_stats,
                 "seed": calls_seed,
                 "stats": stats_all,
                 "truncated_by_slot": truncated_by_slot,
-                "rendered": rendered,
                 "sample_rate": sample_rate,
                 "t_prepare": prepared_at,
                 "t_gen": generated_at,
@@ -785,44 +992,51 @@ class S2CloneWorker:
         try:
             done = self._run_on_gpu(gpu_work)
         except GpuThreadBusy as err:
+            encode_pool.shutdown(wait=False, cancel_futures=True)
+            upload_pool.close()
             body, status = _error("lane_busy", str(err), 429)
             raise HTTPException(status_code=status, detail=body) from err
         except TimeoutError as err:
+            encode_pool.shutdown(wait=False, cancel_futures=True)
+            upload_pool.close()
             body, status = _error("boot_warming", str(err), 503)
             raise HTTPException(status_code=status, detail=body) from err
         except GpuThreadError as err:
+            encode_pool.shutdown(wait=False, cancel_futures=True)
+            upload_pool.close()
             body, status = _error("gpu_thread_unavailable", str(err), 503)
             raise HTTPException(status_code=status, detail=body) from err
         except (ReferenceClipError, ReferenceTextError) as err:
+            encode_pool.shutdown(wait=False, cancel_futures=True)
+            upload_pool.close()
             body, status = _error("reference_invalid", str(err), 422)
             raise HTTPException(status_code=status, detail=body) from err
+        finally:
+            pass
 
-        rendered = done["rendered"]
-        sample_rate = done["sample_rate"]
-        # ffmpeg is one process per section; running them in parallel turns
-        # ~7 s of per-call encode into ~2 s on a 4-CPU container. These touch
-        # no CUDA state, so they stay off the GPU thread.
-        def encode(samples) -> bytes:
-            with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
-                _master(samples, sample_rate, f.name)
-                with open(f.name, "rb") as fh:
-                    return fh.read()
+        # The GPU is done; only encode and upload remain. Both started while it
+        # was still generating, so this wait is the short tail.
+        try:
+            for record in sections:
+                record.mp3 = record.encode.result() if record.encode is not None else b""
+            for record in sections:
+                record.fields = (
+                    record.upload.result()
+                    if record.upload is not None
+                    else {"key": record.item_key, "error_code": "encode_missing"}
+                )
+        finally:
+            encode_pool.shutdown(wait=True)
+            upload_pool.close()
+        t_encode = time.time()
 
-        with ThreadPoolExecutor(4) as pool:
-            mp3s = list(pool.map(encode, rendered)) if rendered else []
-
-        call_id = uuid.uuid4().hex
-        job_id = str(payload.get("job_id") or "")
         rows = []
-        for i, ((item_key, units), samples, mp3) in enumerate(
-            zip(units_by_item, rendered, mp3s)
-        ):
-            fields = audio_fields(os.environ, item_key, mp3, job_id, call_id)
+        for i, record in enumerate(sections):
             rows.append({
-                **fields,
-                "duration_s": round(len(samples) / sample_rate, 2),
-                "units": len(units),
-                "unit_shape": units_summary(units),
+                **record.fields,
+                "duration_s": round(record.samples / sample_rate, 2),
+                "units": len(record.units),
+                "unit_shape": units_summary(record.units),
                 "truncated_units": (
                     int(done["truncated_by_slot"][i])
                     if i < len(done["truncated_by_slot"])
@@ -855,6 +1069,18 @@ class S2CloneWorker:
                 "codec_s": round(done["t_codec"] - done["t_gen"], 2),
                 "encode_s": round(t_done - done["t_codec"], 2),
                 "call_s": round(t_done - t0, 2),
+                "pipeline": int(PIPELINE_CODEC),
+                "first_section_s": (
+                    round(pipeline["first_section_s"], 2)
+                    if pipeline["first_section_s"] is not None
+                    else None
+                ),
+                "codec_inline_s": round(float(done["stats"].get("codec_s") or 0), 2),
+                "codec_tail_s": round(float(done["stats"].get("codec_tail_s") or 0), 2),
+                "sections_streamed": int(done["stats"].get("sections_streamed") or 0),
+                "batch_width": int(done["stats"].get("batch_width") or 0),
+                "upload_transport": transport_name(os.environ),
+                "upload_handshakes": upload_pool.handshakes,
                 "truncated_units": done["stats"]["truncated_units"],
                 "snapshot_age_s": getattr(self, "snapshot_age_s", None),
                 **{
@@ -892,8 +1118,6 @@ class S2CloneWorker:
         job_id: str | None = None,
         seed_epoch=None,
     ) -> dict:
-        import tempfile
-
         t0 = time.time()
         units = _section_units(text)
         if not units:
@@ -942,10 +1166,7 @@ class S2CloneWorker:
         done = gpu_work() if self.gpu.owns_gpu() else self._run_on_gpu(gpu_work)
 
         samples = done["samples"]
-        with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
-            _master(samples, done["sample_rate"], f.name)
-            with open(f.name, "rb") as fh:
-                mp3 = fh.read()
+        mp3 = _master_bytes(samples, done["sample_rate"])
         t_master = time.time()
         self._heartbeat()
 

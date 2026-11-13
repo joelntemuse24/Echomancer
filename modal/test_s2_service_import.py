@@ -434,7 +434,7 @@ class _RecordingEngine:
         self._note("transcribe_reference")
         return "transcribed words"
 
-    def render(self, slots, ref, sampling):
+    def render(self, slots, ref, sampling, on_section=None):
         self._note("render")
         return {
             "codes": [[object() for _ in units] for units in slots],
@@ -497,11 +497,17 @@ def stub_master(monkeypatch):
     """Replace the ffmpeg mastering pass with bytes; it is not what we assert."""
     import s2_clone_service as service_module
 
+    mp3 = b"\xff\xfb" + b"\x01" * 2000
+
     def fake_master(samples, sample_rate, out_path):
         with open(out_path, "wb") as fh:
-            fh.write(b"\xff\xfb" + b"\x01" * 2000)
+            fh.write(mp3)
 
     monkeypatch.setattr(service_module, "_master", fake_master)
+    # The pipelined path calls `_master_pcm` with 16-bit PCM on stdin, so it
+    # needs the same stub or the test would shell out to ffmpeg.
+    monkeypatch.setattr(service_module, "_master_pcm", lambda pcm, rate: mp3)
+    monkeypatch.setattr(service_module, "_master_bytes", lambda samples, rate: mp3)
 
 
 def test_batch_handler_runs_every_gpu_call_on_the_owner_thread(
