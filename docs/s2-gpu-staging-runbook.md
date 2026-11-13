@@ -1327,10 +1327,12 @@ restore onto a different worker variant can do that), so `publish()` reset the
 graph trees and recaptured over the already-compiled Triton kernels. A second
 failure after the recapture is fatal, and the container does not join the pool.
 
-The warm-up line now reads `warm decode shapes: 24 shapes x 3 steps`. Three
+The warm-up line now reads `warm decode shapes: 24 shapes x 3 steps ... compiled_graphs=2, cudagraph_skips=0`. Three
 steps per shape is required: Inductor warms up on the first call to a shape,
 records on the second and replays on the third, so a one-step warm-up recorded
-nothing.
+nothing. `compiled_graphs` is the count of distinct Dynamo specializations of
+`_decode_step` (`2` on v10: `width==1` and `width>=2`), and `selftest()` refuses
+the boot if it ever exceeds the 24 declared shapes.
 
 Then read the rest of the log for the qualitative facts:
 

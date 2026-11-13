@@ -1444,13 +1444,22 @@ attribute becomes a constant; `selftest()` reads
 non-zero count under `v10` (`FAST_DECODE=1`), so a skip fails the boot instead of
 quietly halving throughput on every call while keeping the `v9` rollback bootable.
 
-**A CUDA graph needs three calls, not one.** Inductor's `CUDAGraphTreeManager`
+**A CUDA graph needs three calls, not one — and consistent `inference_mode` across all 24 shapes.** Inductor's `CUDAGraphTreeManager`
 warms up on call 1 for a new `(width, kv_len)` key, records on call 2 and replays
 on call 3. `_warm_kv_buckets()` runs `WARM_STEPS_PER_SHAPE` (3) steps per shape,
 feeding the output back into the next step as `render` does, so all 24 shapes are
-recorded inside the snapshot. Bucketing is forced off when `S2B_FAST_DECODE=0`,
-because upstream's `forward_generate_fast` writes a `BATCH`-row KVCache that a
-narrower active batch cannot broadcast into.
+recorded inside the snapshot. Every caller of `self.step` on v10
+(`_render_pipelined`, `_warm_kv_buckets`, `_replay_decode_shapes`, `selftest`)
+allocates its step tensors (`x, pos, prev, temp, topp`) inside
+`torch.inference_mode()` so `ADInplaceOrView` never toggles between step 0 and
+step 1; `setup_caches` pads `KVCache` by 8 columns (`4104` vs `MAX_SEQ_LEN=4096`)
+so `kv_len=4096` stays strided like `512/1024/2048` instead of triggering a
+`524288 != 128*kv_len` recompile; `_configure_dynamo_for_step()` raises
+`recompile_limit` / `cache_size_limit` (`>= shapes*2 + 16`, min 64) and
+`accumulated_recompile_limit` (min 512); and `selftest()` asserts
+`compiled_graphs <= len(decode_shapes())`. Bucketing is forced off when
+`S2B_FAST_DECODE=0`, because upstream's `forward_generate_fast` writes a
+`BATCH`-row KVCache that a narrower active batch cannot broadcast into.
 
 **A restore that invalidates the graphs recaptures once.** `cudaGraphExec_t`
 handles are captured before the snapshot, and `cuda-checkpoint` restoring onto a

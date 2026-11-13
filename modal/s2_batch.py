@@ -460,6 +460,39 @@ def _cudagraph_skips() -> int:
         return 0
 
 
+def dynamo_compile_limits(shape_count: int) -> tuple[int, int]:
+    """`(per_function_limit, accumulated_limit)` sized for `shape_count` buckets.
+
+    TorchDynamo's default `recompile_limit = 8` (`cache_size_limit = 8`) is a
+    generic guard against accidental per-call specialization. With 24 declared
+    `(width, kv_len)` buckets, even legitimate width/KV specializations or an
+    isolation switch can need more than 8 entries across a container's life, and
+    hitting the cap under `fullgraph=True` raises `FailOnRecompileLimitHit`.
+    """
+    n = max(1, int(shape_count))
+    per_fn = max(64, n * 2 + 16)
+    accumulated = max(512, per_fn * 8)
+    return per_fn, accumulated
+
+
+def _decode_step_compiles(method) -> int:
+    """Distinct Dynamo guard/graph entries compiled for `method`'s code object.
+
+    Named `compiled_graphs` in logs rather than `recompiles` so
+    `scripts/s2/check-cudagraphs.py` (which rejects `recompil` lines from live
+    requests) never false-matches a healthy boot summary.
+    """
+    try:
+        fn = getattr(method, "__func__", method)
+        code = getattr(fn, "__code__", None)
+        if code is None:
+            return 0
+        entries = torch._C._dynamo.eval_frame._debug_get_cache_entry_list(code)
+        return len(entries)
+    except Exception:  # stubbed torch or non-CPython frame evaluator
+        return 0
+
+
 def _sync_ar_stream() -> None:
     """Wait for the **AR stream only**, not the whole device.
 
@@ -618,9 +651,16 @@ class _BatchEngine:
             CHECKPOINT_DIR, load_weights=True, max_length=MAX_SEQ_LEN
         )
         model = model.to(device=self.device, dtype=self.dtype).eval()
+        # Under v10, allocate 8 extra KV columns beyond `MAX_SEQ_LEN` (4104 vs
+        # 4096). Slicing `v_cache[:bsz, :, :kv_len]` at `kv_len == v_cache.size(2)`
+        # flips `vals` from strided to 4D-contiguous (`524288 == 128 * kv_len`),
+        # making Dynamo recompile the whole 36-layer step for the `4096` bucket
+        # alone. Keeping `v_cache.size(2) > MAX_SEQ_LEN` keeps every legal
+        # `kv_len <= MAX_SEQ_LEN` uniformly strided (~37 MB on H100).
+        cache_seq_len = MAX_SEQ_LEN + (8 if NEW_ENGINE else 0)
         with torch.device(self.device):
             model.setup_caches(
-                max_batch_size=BATCH, max_seq_len=MAX_SEQ_LEN, dtype=self.dtype
+                max_batch_size=BATCH, max_seq_len=cache_seq_len, dtype=self.dtype
             )
         self.model = model
         cfg = model.config
@@ -689,29 +729,53 @@ class _BatchEngine:
         self.decoder_tuning = decoder_tuning
         self.selftest_stats: dict = {}
 
-    def _compile_step(self):
-        """Wrap `_decode_step` with `torch.compile`, specializing float attrs.
+    def _configure_dynamo_for_step(self) -> tuple[int, int]:
+        """Set Dynamo/Inductor flags before tracing `_decode_step`.
 
-        **Every Python `float` read inside the step must become a constant.**
-        Under `dynamic=True` Dynamo wraps a float attribute it cannot
-        specialize as a `pass_arg_as_tensor=True` **0-D CPU float64 placeholder**
-        — and Inductor then logs `skipping cudagraphs due to cpu device
-        (arg10_1)` for the whole graph. The attributes that did it here are
-        `self.codebook_inv_scale` and every `RMSNorm.eps` in the model.
-        `specialize_float=True` constant-folds them, which is also exactly what
-        they are: values fixed at load time, not per-call tensors.
+        1. `specialize_float=True`: under `dynamic=True`, Dynamo otherwise wraps
+           Python `float` attributes (`self.codebook_inv_scale`, `RMSNorm.eps`)
+           as 0-D CPU `float64` placeholders (`arg10_1`), making Inductor skip
+           CUDA graphs.
+        2. `recompile_limit` / `cache_size_limit` / `accumulated_*`: default `8`
+           is smaller than the 24-shape `(width × kv_len)` product and raises
+           `FailOnRecompileLimitHit` under `fullgraph=True` if specialization
+           ever exceeds 8 entries.
         """
         import torch
 
+        per_fn, accumulated = dynamo_compile_limits(len(self.decode_shapes()))
         try:
-            torch._dynamo.config.specialize_float = True
-        except Exception as err:  # a torch without the flag keeps the default
-            print(f"[S2B] specialize_float unavailable: {type(err).__name__}: {err}")
-        if hasattr(torch._inductor.config, "fx_graph_cache"):
-            torch._inductor.config.fx_graph_cache = True
-        if CUDAGRAPHS:
-            # At most `len(KV_BUCKETS)` shapes, each recorded once.
-            torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit = None
+            cfg = torch._dynamo.config
+            cfg.specialize_float = True
+            for attr, target in (
+                ("recompile_limit", per_fn),
+                ("cache_size_limit", per_fn),
+                ("accumulated_recompile_limit", accumulated),
+                ("accumulated_cache_size_limit", accumulated),
+            ):
+                if hasattr(cfg, attr):
+                    setattr(cfg, attr, max(int(getattr(cfg, attr)), target))
+        except Exception as err:  # a stubbed torch keeps defaults
+            print(f"[S2B] dynamo config unavailable: {type(err).__name__}: {err}")
+        try:
+            if hasattr(torch._inductor.config, "fx_graph_cache"):
+                torch._inductor.config.fx_graph_cache = True
+            if CUDAGRAPHS:
+                torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit = None
+                if hasattr(
+                    torch._inductor.config.triton,
+                    "cudagraph_dynamic_shape_rerecord_limit",
+                ):
+                    torch._inductor.config.triton.cudagraph_dynamic_shape_rerecord_limit = None
+        except Exception as err:
+            print(f"[S2B] inductor config unavailable: {type(err).__name__}: {err}")
+        return per_fn, accumulated
+
+    def _compile_step(self):
+        """Wrap `_decode_step` with `torch.compile` and configured guard limits."""
+        import torch
+
+        self._configure_dynamo_for_step()
         return torch.compile(
             self._decode_step,
             backend="inductor",
@@ -917,7 +981,15 @@ class _BatchEngine:
         if not prompts:
             return []
         if len(prompts) == 1:
-            return [self._prefill(rows[0], prompts[0], temperature, top_p, width=1)]
+            return [
+                self._prefill(
+                    rows[0],
+                    prompts[0],
+                    temperature,
+                    top_p,
+                    width=1 if FAST_DECODE else BATCH,
+                )
+            ]
         widths = [int(p.shape[1]) for p in prompts]
         t_max = max(widths)
         padded = torch.zeros(
@@ -940,6 +1012,10 @@ class _BatchEngine:
         picked = h[torch.arange(len(prompts), device=self.device), last]
         logits, hidden = self._head(picked[:, None])
         token = self.allowed_ids[self._sample(logits[:, 0], temperature, top_p)]
+        if not FAST_DECODE and len(prompts) < BATCH:
+            pad_rows = BATCH - len(prompts)
+            hidden = F.pad(hidden, (0, 0, 0, 0, 0, pad_rows))
+            token = F.pad(token, (0, 0, 0, pad_rows))
         frames = self._fast(hidden, token, temperature, top_p)
         return [frames[slot] for slot in range(len(prompts))]
 
@@ -1127,14 +1203,18 @@ class _BatchEngine:
         return torch.cat(codes, dim=1)  # (B, num_codebooks + 1)
 
     def _kv_cache_len(self) -> int:
-        """The allocated KV length, so a bucket can never exceed it.
+        """Usable sequence limit, bounded by both `MAX_SEQ_LEN` and `freqs_cis`.
 
-        `MAX_SEQ_LEN` and the cache are equal in production (`setup_caches` is
-        called with it). Reading the cache instead of the constant means a
-        smaller model — a unit test's, or a future sequence limit — cannot be
-        handed a bucket that indexes past its own buffers.
+        Under v10 `setup_caches` allocates 8 extra KV columns (`4104`) so the
+        `4096` bucket stays strided like the shorter buckets. Clamping to
+        `MAX_SEQ_LEN` and `freqs_cis` keeps `decode_shapes()` and `choose_kv_len`
+        inside `[1, 4096]` (and inside any smaller unit-test model's RoPE table).
         """
-        return int(getattr(self.model, "max_seq_len", 0) or MAX_SEQ_LEN)
+        limit = int(getattr(self.model, "max_seq_len", 0) or MAX_SEQ_LEN)
+        freqs = getattr(self.model, "freqs_cis", None)
+        if freqs is not None and hasattr(freqs, "shape") and len(freqs.shape) >= 1:
+            limit = min(limit, int(freqs.shape[0]))
+        return min(MAX_SEQ_LEN, limit)
 
     def _decode_step(self, x, pos, kv_len: int, prev, temperature, top_p):
         """One frame for every row. x (B,11,1), pos (B,), prev (B,11,RAS_WIN)."""
@@ -1603,266 +1683,282 @@ class _BatchEngine:
         temperature, top_p = (
             (float(v) for v in sampling.split(",")) if sampling else (0.7, 0.7)
         )
-        temp = torch.tensor([temperature], device=self.device, dtype=self.dtype)
-        topp = torch.tensor([top_p], device=self.device, dtype=self.dtype)
         dev = self.device
         b = choose_batch_width(slots)
         scheduler = _UnitScheduler(slots, width=b)
         cap = MAX_NEW_FRAMES + EOS_CHECK_EVERY + 1
-        x = torch.zeros((b, self.cfg.num_codebooks + 1, 1), dtype=torch.long, device=dev)
-        pos = torch.zeros(b, dtype=torch.long, device=dev)
-        steps = torch.zeros(b, dtype=torch.long, device=dev)
-        active = torch.zeros(b, dtype=torch.bool, device=dev)
-        eos = torch.zeros(b, dtype=torch.bool, device=dev)
-        limit = torch.zeros(b, dtype=torch.long, device=dev)
-        prev = torch.zeros((b, self.cfg.num_codebooks + 1, RAS_WIN_SIZE), dtype=torch.long, device=dev)
-        buf = torch.zeros((b, self.cfg.num_codebooks + 1, cap), dtype=torch.long, device=dev)
-        rows = torch.arange(b, device=dev)
 
-        pos_h = np.zeros(b, dtype=np.int64)
-        active_h = np.zeros(b, dtype=bool)
-        codes = scheduler.codes
-        counters = {
-            "prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0,
-            "codec_s": 0.0, "codec_tail_s": 0.0, "codec_wait_s": 0.0,
-            "sections_streamed": 0,
-            "batch_width": b, "work_steal": int(scheduler.work_steal),
-        }
-        # Per slot, so a batch response can say which section hit the frame cap.
-        truncated_by_slot = [0] * len(slots)
-        audio_by_section: dict[int, list] = {}
-        #: lane -> (prompt, prompt tokens, max frames), claimed but not prefilled.
-        pending_prompts: dict[int, tuple] = {}
-        pending_decode: list[int] = []
+        # **Allocate every step input inside `torch.inference_mode()`.**
+        # A tensor created outside `inference_mode()` carries `ADInplaceOrView`
+        # in its `DispatchKeySet`, whereas `x = nxt[:, :, None].contiguous()`
+        # and `prev = torch.roll(...)` inside `inference_mode()` do not — which
+        # caused Dynamo to recompile `_decode_step` between step 0 and step 1
+        # (`tensor 'x' dispatch key set mismatch`). Keeping allocation, prefill,
+        # stepping and tail codec under one `inference_mode()` keeps the
+        # dispatch keys invariant across warm-up, capture, replay and serving.
+        with torch.inference_mode():
+            temp = torch.tensor([temperature], device=dev, dtype=self.dtype)
+            topp = torch.tensor([top_p], device=dev, dtype=self.dtype)
+            x = torch.zeros(
+                (b, self.cfg.num_codebooks + 1, 1), dtype=torch.long, device=dev
+            )
+            pos = torch.zeros(b, dtype=torch.long, device=dev)
+            steps = torch.zeros(b, dtype=torch.long, device=dev)
+            active = torch.zeros(b, dtype=torch.bool, device=dev)
+            eos = torch.zeros(b, dtype=torch.bool, device=dev)
+            limit = torch.zeros(b, dtype=torch.long, device=dev)
+            prev = torch.zeros(
+                (b, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
+                dtype=torch.long,
+                device=dev,
+            )
+            buf = torch.zeros(
+                (b, self.cfg.num_codebooks + 1, cap), dtype=torch.long, device=dev
+            )
+            rows = torch.arange(b, device=dev)
 
-        def start_lane(lane: int, *, prefill: bool = True) -> None:
-            """Claim the next unit for `lane` and prefill it.
+            pos_h = np.zeros(b, dtype=np.int64)
+            active_h = np.zeros(b, dtype=bool)
+            codes = scheduler.codes
+            counters = {
+                "prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0,
+                "codec_s": 0.0, "codec_tail_s": 0.0, "codec_wait_s": 0.0,
+                "sections_streamed": 0,
+                "batch_width": b, "work_steal": int(scheduler.work_steal),
+            }
+            # Per slot, so a batch response can say which section hit the frame cap.
+            truncated_by_slot = [0] * len(slots)
+            audio_by_section: dict[int, list] = {}
+            #: lane -> (prompt, prompt tokens, max frames), claimed but not prefilled.
+            pending_prompts: dict[int, tuple] = {}
+            pending_decode: list[int] = []
 
-            With `prefill=False` the prompt is built and recorded but not run:
-            `start_lanes_batch` collects a whole tick's claims first, then
-            prefills them in one pass (`_prefill_many`). Building the prompt is
-            host work and prefill is GPU work, so batching only the GPU half
-            keeps the two separable.
-            """
-            claim = scheduler.claim()
-            if claim is None:
+            def start_lane(lane: int, *, prefill: bool = True) -> None:
+                """Claim the next unit for `lane` and prefill it.
+
+                With `prefill=False` the prompt is built and recorded but not run:
+                `start_lanes_batch` collects a whole tick's claims first, then
+                prefills them in one pass (`_prefill_many`). Building the prompt is
+                host work and prefill is GPU work, so batching only the GPU half
+                keeps the two separable.
+                """
+                claim = scheduler.claim()
+                if claim is None:
+                    active[lane] = False
+                    active_h[lane] = False
+                    pos[lane] = 0
+                    pos_h[lane] = 0
+                    scheduler.assign(lane, None)
+                    return
+                section, unit = claim
+                scheduler.assign(lane, claim)
+                unit_spec = slots[section][unit]
+                prompt = self.build_prompt(
+                    ref, scheduler.history_for(section), unit_spec["text"]
+                )
+                t = prompt.shape[1]
+                max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
+                if max_frames < 64:
+                    raise ValueError(f"prompt of {t} tokens leaves no room to generate")
+                pending_prompts[lane] = (prompt, t, max_frames)
+                if not prefill:
+                    return
+                _run_prefills([lane])
+
+            def _run_prefills(lanes: list[int]) -> None:
+                """Prefill these lanes, in one pass when the engine supports it."""
+                lanes = [lane for lane in lanes if lane in pending_prompts]
+                if not lanes:
+                    return
+                t0 = time.time()
+                prompts = [pending_prompts[lane][0] for lane in lanes]
+                if BATCHED_PREFILL and len(lanes) > 1:
+                    frames = self._prefill_many(lanes, prompts, temp, topp)
+                else:
+                    frames = [
+                        self._prefill(lane, prompt, temp, topp, width=b)
+                        for lane, prompt in zip(lanes, prompts)
+                    ]
+                for lane, first in zip(lanes, frames):
+                    _prompt, t, max_frames = pending_prompts.pop(lane)
+                    x[lane, :, 0] = first
+                    buf[lane, :, 0] = first
+                    pos[lane] = t
+                    pos_h[lane] = t
+                    steps[lane] = 1
+                    limit[lane] = max_frames
+                    eos[lane] = first[0] == self.im_end_id
+                    prev[lane] = 0
+                    active[lane] = True
+                    active_h[lane] = True
+                    counters["prefills"] += 1
+                counters["prefill_s"] += time.time() - t0
+
+            def start_lanes_batch() -> None:
+                """Claim for every idle lane, then prefill them all together."""
+                claimed: list[int] = []
+                for lane in range(b):
+                    if scheduler.lane[lane] is not None or active_h[lane]:
+                        continue
+                    start_lane(lane, prefill=False)
+                    if lane in pending_prompts:
+                        claimed.append(lane)
+                _run_prefills(claimed)
+
+            def refill_idle_lanes() -> None:
+                """Give every idle lane a unit: the opening wave, and every tick after.
+
+                A lane that finished is idle by now (its `finish` freed it), and so
+                are the lanes that never had work. Both are refilled here, in one
+                batched prefill. Without this the schedule degenerates to one section
+                per step: a 3-section call claims 3 anchors and leaves the other 21
+                lanes parked for the whole book.
+                """
+                idle = [
+                    lane
+                    for lane in range(b)
+                    if scheduler.lane[lane] is None and not active_h[lane]
+                ]
+                if not idle:
+                    return
+                claimed: list[int] = []
+                for lane in idle:
+                    start_lane(lane, prefill=False)
+                    if lane in pending_prompts:
+                        claimed.append(lane)
+                _run_prefills(claimed)
+
+            def finish(lane: int, streaming: bool) -> None:
+                claim = scheduler.lane[lane]
+                if claim is None:
+                    return
+                section, unit = claim
+                n = int(steps[lane].item())
+                frames = buf[lane, :, :n].cpu()
+                hits = (frames[0] == self.im_end_id).nonzero()
+                end = int(hits[0, 0]) if len(hits) else n
+                if not len(hits):
+                    counters["truncated"] += 1
+                    truncated_by_slot[section] += 1
+                unit_codes = frames[1:, :end].clone()
+                counters["frames"] += end
+                # The anchor turn, exactly as sequential execution builds it: the
+                # take recorded here is what every later unit of this section is
+                # prompted with.
+                scheduler.complete(lane, claim, unit_codes)
+                # Mark the lane idle *before* anything else looks at it: `active_h`
+                # is what `refill_idle_lanes` and `_maybe_launch_codec` read, and a lane
+                # that still looks active is a lane that stays parked for the rest of
+                # the call.
                 active[lane] = False
                 active_h[lane] = False
                 pos[lane] = 0
                 pos_h[lane] = 0
-                scheduler.assign(lane, None)
-                return
-            section, unit = claim
-            scheduler.assign(lane, claim)
-            unit_spec = slots[section][unit]
-            prompt = self.build_prompt(
-                ref, scheduler.history_for(section), unit_spec["text"]
-            )
-            t = prompt.shape[1]
-            max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
-            if max_frames < 64:
-                raise ValueError(f"prompt of {t} tokens leaves no room to generate")
-            pending_prompts[lane] = (prompt, t, max_frames)
-            if not prefill:
-                return
-            _run_prefills([lane])
+                if streaming and section in scheduler.finished:
+                    # This section has no units left, so its codec decode can run
+                    # while other rows keep generating. It is queued either way; the
+                    # gate below only decides *when* the launch happens.
+                    pending_decode.append(section)
+                if streaming:
+                    _maybe_launch_codec()
 
-        def _run_prefills(lanes: list[int]) -> None:
-            """Prefill these lanes, in one pass when the engine supports it."""
-            lanes = [lane for lane in lanes if lane in pending_prompts]
-            if not lanes:
-                return
-            t0 = time.time()
-            prompts = [pending_prompts[lane][0] for lane in lanes]
-            if BATCHED_PREFILL and len(lanes) > 1:
-                frames = self._prefill_many(lanes, prompts, temp, topp)
-            else:
-                frames = [
-                    self._prefill(lane, prompt, temp, topp, width=b)
-                    for lane, prompt in zip(lanes, prompts)
+            def _maybe_launch_codec() -> None:
+                """Queue ready sections on the side stream. **Never waits.**
+
+                This is the whole overlap. While generation still has rows in flight
+                it owns the HBM bandwidth a codec decode would need, so a launch then
+                buys little and costs AR throughput; the queue therefore waits for
+                enough accumulated work to be worth one launch, or for the tail where
+                lanes are running dry. Once launched, the decode stays queued across
+                every later AR step and is picked up by `_collect_decode` when its
+                event fires. Nothing here synchronises.
+                """
+                if not pending_decode:
+                    return
+                units = sum(len(slots[s]) for s in pending_decode)
+                live = int(active_h.sum())
+                if live > CODEC_TAIL_ROWS and units < CODEC_MIN_UNITS:
+                    return
+                launched = time.time()
+                for section in list(dict.fromkeys(pending_decode)):
+                    _start_decode(section)
+                pending_decode.clear()
+                counters["codec_s"] += time.time() - launched
+
+            #: Section ids waiting on a side-stream decode: `(section, handle, present)`.
+            inflight_decode: list[tuple[int, dict, list[int]]] = []
+
+            def _start_decode(section: int) -> None:
+                """Queue one section's codec decode on the side stream.
+
+                Nothing waits here. The AR loop keeps stepping on the default stream
+                while the codec runs on `self.codec_stream`, which is the overlap the
+                serial version never had. The host copy is enqueued as a
+                non-blocking copy on the same stream, so it happens when the decode
+                finishes rather than after a device synchronise.
+                """
+                # Decode only the takes that carry frames, and remember where they
+                # came from, because the results are scattered back into a list the
+                # length of `units` (see `_collect_decode`).
+                present = [
+                    u for u, c in enumerate(codes[section])
+                    if c is not None and c.shape[1] > 0
                 ]
-            for lane, first in zip(lanes, frames):
-                _prompt, t, max_frames = pending_prompts.pop(lane)
-                x[lane, :, 0] = first
-                buf[lane, :, 0] = first
-                pos[lane] = t
-                pos_h[lane] = t
-                steps[lane] = 1
-                limit[lane] = max_frames
-                eos[lane] = first[0] == self.im_end_id
-                prev[lane] = 0
-                active[lane] = True
-                active_h[lane] = True
-                counters["prefills"] += 1
-            counters["prefill_s"] += time.time() - t0
+                handle = self.submit_decode([codes[section][u] for u in present])
+                inflight_decode.append((section, handle, present))
 
-        def start_lanes_batch() -> None:
-            """Claim for every idle lane, then prefill them all together."""
-            claimed: list[int] = []
-            for lane in range(b):
-                if scheduler.lane[lane] is not None or active_h[lane]:
-                    continue
-                start_lane(lane, prefill=False)
-                if lane in pending_prompts:
-                    claimed.append(lane)
-            _run_prefills(claimed)
+            def _collect_decode(ready_only: bool = False) -> None:
+                """Take finished side-stream decodes and hand them to `on_section`.
 
-        def refill_idle_lanes() -> None:
-            """Give every idle lane a unit: the opening wave, and every tick after.
+                `ready_only` lets a tick drain whatever has completed without
+                blocking; the tail call passes False so the last section is always
+                waited for.
+                """
+                if not inflight_decode:
+                    return
+                still: list[tuple[int, dict, list[int]]] = []
+                for section, handle, present in inflight_decode:
+                    if ready_only and handle.get("events") is not None and not handle["events"].query():
+                        still.append((section, handle, present))
+                        continue
+                    wait_started = time.time()
+                    decoded = self.collect_decode(handle)
+                    counters["codec_wait_s"] += time.time() - wait_started
+                    # Scatter back to unit indexes. `assemble_slot_audio` indexes
+                    # takes by unit number, so a compacted list would shift every
+                    # later take onto the previous unit's pause and drop the last —
+                    # one immediate `<|im_end|>` is enough to do it. An empty take is
+                    # a real outcome (`truncated_units`, a short paragraph the model
+                    # ended at once), not an error.
+                    takes: list = [None] * len(codes[section])
+                    for u, samples in zip(present, decoded):
+                        takes[u] = samples
+                    audio_by_section[section] = takes
+                    counters["sections_streamed"] += 1
+                    if on_section is not None:
+                        on_section(section, takes)
+                inflight_decode[:] = still
 
-            A lane that finished is idle by now (its `finish` freed it), and so
-            are the lanes that never had work. Both are refilled here, in one
-            batched prefill. Without this the schedule degenerates to one section
-            per step: a 3-section call claims 3 anchors and leaves the other 21
-            lanes parked for the whole book.
-            """
-            idle = [
-                lane
-                for lane in range(b)
-                if scheduler.lane[lane] is None and not active_h[lane]
-            ]
-            if not idle:
-                return
-            claimed: list[int] = []
-            for lane in idle:
-                start_lane(lane, prefill=False)
-                if lane in pending_prompts:
-                    claimed.append(lane)
-            _run_prefills(claimed)
+            def _flush_decode() -> None:
+                """Queue anything left and wait for every decode. Tail only.
 
-        def finish(lane: int, streaming: bool) -> None:
-            claim = scheduler.lane[lane]
-            if claim is None:
-                return
-            section, unit = claim
-            n = int(steps[lane].item())
-            frames = buf[lane, :, :n].cpu()
-            hits = (frames[0] == self.im_end_id).nonzero()
-            end = int(hits[0, 0]) if len(hits) else n
-            if not len(hits):
-                counters["truncated"] += 1
-                truncated_by_slot[section] += 1
-            unit_codes = frames[1:, :end].clone()
-            counters["frames"] += end
-            # The anchor turn, exactly as sequential execution builds it: the
-            # take recorded here is what every later unit of this section is
-            # prompted with.
-            scheduler.complete(lane, claim, unit_codes)
-            # Mark the lane idle *before* anything else looks at it: `active_h`
-            # is what `refill_idle_lanes` and `_maybe_launch_codec` read, and a lane
-            # that still looks active is a lane that stays parked for the rest of
-            # the call.
-            active[lane] = False
-            active_h[lane] = False
-            pos[lane] = 0
-            pos_h[lane] = 0
-            if streaming and section in scheduler.finished:
-                # This section has no units left, so its codec decode can run
-                # while other rows keep generating. It is queued either way; the
-                # gate below only decides *when* the launch happens.
-                pending_decode.append(section)
-            if streaming:
-                _maybe_launch_codec()
+                Called exactly once, after the AR loop has ended, so its wait is the
+                call's codec tail rather than something generation sat behind.
+                """
+                # Queueing is timed too: with no side stream the engine decodes
+                # inline, so `_start_decode` is where that cost lands. The whole
+                # span is the tail, and it is recorded **once** — launch time is a
+                # part of it, not a second counter that also gets added to
+                # `codec_tail_s` by the caller.
+                started = time.time()
+                for section in list(dict.fromkeys(pending_decode)):
+                    _start_decode(section)
+                pending_decode.clear()
+                _collect_decode(ready_only=False)
+                counters["codec_tail_s"] += time.time() - started
 
-        def _maybe_launch_codec() -> None:
-            """Queue ready sections on the side stream. **Never waits.**
-
-            This is the whole overlap. While generation still has rows in flight
-            it owns the HBM bandwidth a codec decode would need, so a launch then
-            buys little and costs AR throughput; the queue therefore waits for
-            enough accumulated work to be worth one launch, or for the tail where
-            lanes are running dry. Once launched, the decode stays queued across
-            every later AR step and is picked up by `_collect_decode` when its
-            event fires. Nothing here synchronises.
-            """
-            if not pending_decode:
-                return
-            units = sum(len(slots[s]) for s in pending_decode)
-            live = int(active_h.sum())
-            if live > CODEC_TAIL_ROWS and units < CODEC_MIN_UNITS:
-                return
-            launched = time.time()
-            for section in list(dict.fromkeys(pending_decode)):
-                _start_decode(section)
-            pending_decode.clear()
-            counters["codec_s"] += time.time() - launched
-
-        #: Section ids waiting on a side-stream decode: `(section, handle, present)`.
-        inflight_decode: list[tuple[int, dict, list[int]]] = []
-
-        def _start_decode(section: int) -> None:
-            """Queue one section's codec decode on the side stream.
-
-            Nothing waits here. The AR loop keeps stepping on the default stream
-            while the codec runs on `self.codec_stream`, which is the overlap the
-            serial version never had. The host copy is enqueued as a
-            non-blocking copy on the same stream, so it happens when the decode
-            finishes rather than after a device synchronise.
-            """
-            # Decode only the takes that carry frames, and remember where they
-            # came from, because the results are scattered back into a list the
-            # length of `units` (see `_collect_decode`).
-            present = [
-                u for u, c in enumerate(codes[section])
-                if c is not None and c.shape[1] > 0
-            ]
-            handle = self.submit_decode([codes[section][u] for u in present])
-            inflight_decode.append((section, handle, present))
-
-        def _collect_decode(ready_only: bool = False) -> None:
-            """Take finished side-stream decodes and hand them to `on_section`.
-
-            `ready_only` lets a tick drain whatever has completed without
-            blocking; the tail call passes False so the last section is always
-            waited for.
-            """
-            if not inflight_decode:
-                return
-            still: list[tuple[int, dict, list[int]]] = []
-            for section, handle, present in inflight_decode:
-                if ready_only and handle.get("events") is not None and not handle["events"].query():
-                    still.append((section, handle, present))
-                    continue
-                wait_started = time.time()
-                decoded = self.collect_decode(handle)
-                counters["codec_wait_s"] += time.time() - wait_started
-                # Scatter back to unit indexes. `assemble_slot_audio` indexes
-                # takes by unit number, so a compacted list would shift every
-                # later take onto the previous unit's pause and drop the last —
-                # one immediate `<|im_end|>` is enough to do it. An empty take is
-                # a real outcome (`truncated_units`, a short paragraph the model
-                # ended at once), not an error.
-                takes: list = [None] * len(codes[section])
-                for u, samples in zip(present, decoded):
-                    takes[u] = samples
-                audio_by_section[section] = takes
-                counters["sections_streamed"] += 1
-                if on_section is not None:
-                    on_section(section, takes)
-            inflight_decode[:] = still
-
-        def _flush_decode() -> None:
-            """Queue anything left and wait for every decode. Tail only.
-
-            Called exactly once, after the AR loop has ended, so its wait is the
-            call's codec tail rather than something generation sat behind.
-            """
-            # Queueing is timed too: with no side stream the engine decodes
-            # inline, so `_start_decode` is where that cost lands. The whole
-            # span is the tail, and it is recorded **once** — launch time is a
-            # part of it, not a second counter that also gets added to
-            # `codec_tail_s` by the caller.
-            started = time.time()
-            for section in list(dict.fromkeys(pending_decode)):
-                _start_decode(section)
-            pending_decode.clear()
-            _collect_decode(ready_only=False)
-            counters["codec_tail_s"] += time.time() - started
-
-
-        _cuda_synchronize()
-        loop_t0 = time.time()
-        with torch.inference_mode():
+            _cuda_synchronize()
+            loop_t0 = time.time()
             start_lanes_batch()
             while active_h.any():
                 for _ in range(EOS_CHECK_EVERY):
@@ -1900,19 +1996,18 @@ class _BatchEngine:
                     # never blocks: a codec still running keeps the AR loop free,
                     # and `_flush_decode` at the tail waits for the rest.
                     _collect_decode(ready_only=True)
-        # The AR loop is over. Stop its clock by waiting on the **AR stream
-        # only**: a device-wide `torch.cuda.synchronize()` would also wait for an
-        # in-flight codec decode on the side stream, so `loop_s` would include
-        # work the AR loop had already handed off. An event recorded on the
-        # current (AR) stream orders after every kernel this loop enqueued and
-        # before anything the side stream is still doing.
-        _sync_ar_stream()
-        loop_s = time.time() - loop_t0
-        # Anything left (a unit that finished inside the final tick, or a section
-        # whose decode was deferred) runs now. This is the codec tail, and the
-        # only part of the call that is still serial. `_flush_decode` records its
-        # own cost into `codec_tail_s`, so the caller does not add it again.
-        with torch.inference_mode():
+            # The AR loop is over. Stop its clock by waiting on the **AR stream
+            # only**: a device-wide `torch.cuda.synchronize()` would also wait for an
+            # in-flight codec decode on the side stream, so `loop_s` would include
+            # work the AR loop had already handed off. An event recorded on the
+            # current (AR) stream orders after every kernel this loop enqueued and
+            # before anything the side stream is still doing.
+            _sync_ar_stream()
+            loop_s = time.time() - loop_t0
+            # Anything left (a unit that finished inside the final tick, or a section
+            # whose decode was deferred) runs now. This is the codec tail, and the
+            # only part of the call that is still serial. `_flush_decode` records its
+            # own cost into `codec_tail_s`, so the caller does not add it again.
             _flush_decode()
         audio_s = counters["frames"] * self.frame_length / self.sample_rate
         return {
@@ -2057,69 +2152,72 @@ class _BatchEngine:
 
         try:
             shapes = self.decode_shapes()
-            temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
-            topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
             started = time.time()
             recorded = 0
-            for width, kv_len in shapes:
-                x = torch.zeros(
-                    (width, self.cfg.num_codebooks + 1, 1),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                prev = torch.zeros(
-                    (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                pos = torch.full(
-                    (width,),
-                    min(kv_len - 1, MAX_SEQ_LEN - 1),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                # **Three** steps per shape, not one. Inductor's
-                # `CUDAGraphTreeManager` uses the first call at a new
-                # `(width, kv_len)` key to WARM UP (eager, no graph), the second
-                # to RECORD, and only the third REPLAYS. With one step per shape
-                # nothing was recorded: 22 of 24 shapes were left for the first
-                # customer call, and `selftest()` became someone else's
-                # recording call.
-                for _ in range(WARM_STEPS_PER_SHAPE):
-                    with torch.inference_mode():
+            # Allocate `temp`, `topp`, `x`, `prev` and `pos` **inside**
+            # `torch.inference_mode()` so their `DispatchKeySet` matches every
+            # step of `_render_pipelined` and `_replay_decode_shapes` (no
+            # `ADInplaceOrView` mismatch between step 0 and step 1).
+            with torch.inference_mode():
+                temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+                topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+                for width, kv_len in shapes:
+                    x = torch.zeros(
+                        (width, self.cfg.num_codebooks + 1, 1),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    prev = torch.zeros(
+                        (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    pos = torch.full(
+                        (width,),
+                        min(kv_len - 1, self._kv_cache_len() - 1),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    # **Three** steps per shape, not one. Inductor's
+                    # `CUDAGraphTreeManager` uses call 1 to WARM UP (eager, no
+                    # graph), call 2 to RECORD, and call 3 to REPLAY.
+                    for _ in range(WARM_STEPS_PER_SHAPE):
                         if CUDAGRAPHS:
                             torch.compiler.cudagraph_mark_step_begin()
-                        # Feed the output back as the next input, exactly as
-                        # `render` does, so the storage liveness the tree
-                        # manager sees matches the real loop.
-                        x = self.step(x, pos, kv_len, prev, temp, topp).clone()[
-                            :, :, None
-                        ].contiguous()
-                recorded += 1
+                        nxt = self.step(x, pos, kv_len, prev, temp, topp).clone()
+                        prev = torch.roll(prev, -1, dims=2)
+                        prev[:, :, -1] = nxt
+                        x = nxt[:, :, None].contiguous()
+                    recorded += 1
             _cuda_synchronize()
+            compiled = _decode_step_compiles(self._decode_step)
             self.selftest_stats["decode_graphs"] = recorded
             self.selftest_stats["decode_shapes"] = [list(s) for s in shapes]
             self.selftest_stats["cudagraph_skips"] = _cudagraph_skips()
+            self.selftest_stats["compiled_graphs"] = compiled
             print(
                 f"[S2B] warm decode shapes: {recorded} shapes x "
                 f"{WARM_STEPS_PER_SHAPE} steps "
                 f"(widths {sorted({w for w, _ in shapes})}, "
                 f"kv {sorted({k for _, k in shapes})}), "
+                f"compiled_graphs={compiled}, "
                 f"cudagraph_skips={_cudagraph_skips()} in "
                 f"{time.time() - started:.2f}s"
             )
             return recorded
-        except Exception as err:  # a warm-up miss is reported, not fatal
+        except Exception as err:
             self.selftest_stats["decode_graphs"] = recorded
             print(
                 f"[S2B] warm decode shapes failed after {recorded}: "
                 f"{type(err).__name__}: {err}"
             )
+            if NEW_ENGINE:
+                raise
             return recorded
 
     def _warm_widths(self) -> tuple[int, ...]:
         """Every active width a call in this engine can choose."""
-        if LEGACY_RENDER:
+        if LEGACY_RENDER or not BUCKET_BATCH:
             return (BATCH,)
         return tuple(
             dict.fromkeys(
@@ -2171,21 +2269,22 @@ class _BatchEngine:
         import torch
 
         started = time.time()
-        # A cuBLAS handle is created lazily per thread and per device. Touching
-        # a matmul here is what makes a wrong thread fail loudly.
-        a = torch.zeros((2, 8), device=self.device, dtype=self.dtype)
-        b = torch.zeros((8, 8), device=self.device, dtype=self.dtype)
-        torch.mm(a, b)
-        # The exact projection the failure came from: one decode row's wqkv.
-        attn = self.model.layers[0].attention
-        probe = torch.zeros((1, 1, attn.wqkv.in_features), device=self.device, dtype=self.dtype)
-        attn.wqkv(probe)
-        # Replay the compiled step at every warmed shape. A graph that captured
-        # inside the snapshot but did not survive the restore fails here — on
-        # this thread, at boot — instead of on the first customer call. The
-        # decode itself is what would replay it, so this is the real path, not a
-        # proxy for it.
-        replayed = self._replay_decode_shapes()
+        with torch.inference_mode():
+            # A cuBLAS handle is created lazily per thread and per device. Touching
+            # a matmul here is what makes a wrong thread fail loudly.
+            a = torch.zeros((2, 8), device=self.device, dtype=self.dtype)
+            b = torch.zeros((8, 8), device=self.device, dtype=self.dtype)
+            torch.mm(a, b)
+            # The exact projection the failure came from: one decode row's wqkv.
+            attn = self.model.layers[0].attention
+            probe = torch.zeros(
+                (1, 1, attn.wqkv.in_features), device=self.device, dtype=self.dtype
+            )
+            attn.wqkv(probe)
+            # Replay the compiled step at every warmed shape. A graph that captured
+            # inside the snapshot but did not survive the restore fails here — on
+            # this thread, at boot — instead of on the first customer call.
+            replayed = self._replay_decode_shapes()
         # The codec shares the context and has its own kernels. The shape must
         # match what `render` hands over: one `(num_codebooks, T)` code tensor
         # per unit (it slices `frames[1:, :end]`). A `(1, num_codebooks)` dummy
@@ -2208,6 +2307,9 @@ class _BatchEngine:
             self.collect_decode(handle)
             side_stream = "ok"
         _cuda_synchronize()
+        decode_shapes_fn = getattr(self, "decode_shapes", None)
+        expected_shapes = len(decode_shapes_fn()) if callable(decode_shapes_fn) else 0
+        compiled_graphs = _decode_step_compiles(getattr(self, "_decode_step", None))
         stats = {
             "ok": True,
             "device": self.device_name,
@@ -2220,6 +2322,7 @@ class _BatchEngine:
             "batch_width_max": BATCH,
             "kv_buckets": list(KV_BUCKETS),
             "decode_shapes": replayed,
+            "compiled_graphs": compiled_graphs,
             "cudagraph_skips": _cudagraph_skips(),
             "side_stream": side_stream,
             "engine": ENGINE,
@@ -2241,6 +2344,17 @@ class _BatchEngine:
             )
             raise RuntimeError(
                 f"inductor skipped CUDA graphs {skips} time(s); refusing to serve"
+            )
+        if NEW_ENGINE and expected_shapes > 0 and compiled_graphs > expected_shapes:
+            stats["ok"] = False
+            print(
+                f"[S2B] selftest: {stats}\n"
+                f"[S2B] ERROR: _decode_step compiled {compiled_graphs} distinct "
+                f"graph(s) > {expected_shapes} declared shapes"
+            )
+            raise RuntimeError(
+                f"_decode_step compiled {compiled_graphs} distinct graph(s), "
+                f"exceeding the {expected_shapes} declared decode shapes"
             )
         print(f"[S2B] selftest: {stats}")
         return stats
@@ -2277,29 +2391,29 @@ class _BatchEngine:
 
         if self.codec_stream is None:  # a CPU-only build (tests)
             return 0
-        temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
-        topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
         replayed = 0
-        for width, kv_len in self.decode_shapes():
-            x = torch.zeros(
-                (width, self.cfg.num_codebooks + 1, 1),
-                dtype=torch.long,
-                device=self.device,
-            )
-            prev = torch.zeros(
-                (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
-                dtype=torch.long,
-                device=self.device,
-            )
-            pos = torch.full(
-                (width,), min(kv_len - 1, self._kv_cache_len() - 1),
-                dtype=torch.long, device=self.device,
-            )
-            with torch.inference_mode():
+        with torch.inference_mode():
+            temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+            topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
+            for width, kv_len in self.decode_shapes():
+                x = torch.zeros(
+                    (width, self.cfg.num_codebooks + 1, 1),
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                prev = torch.zeros(
+                    (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                pos = torch.full(
+                    (width,), min(kv_len - 1, self._kv_cache_len() - 1),
+                    dtype=torch.long, device=self.device,
+                )
                 if CUDAGRAPHS:
                     torch.compiler.cudagraph_mark_step_begin()
                 self.step(x, pos, kv_len, prev, temp, topp).clone()
-            replayed += 1
+                replayed += 1
         return replayed
 
 

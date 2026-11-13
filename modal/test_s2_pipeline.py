@@ -812,16 +812,16 @@ def test_check_cudagraphs_accepts_zero_skips_and_recaptured_and_rejects_real_ski
     spec.loader.exec_module(gate)
 
     clean_ok = "\n".join([
-        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), cudagraph_skips=0 in 11.80s",
-        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'cudagraph_skips': 0, 'side_stream': 'ok', 'codec_tuning': {'weight_norm_removed': 48, 'skipped': ''}}",
+        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), compiled_graphs=2, cudagraph_skips=0 in 11.80s",
+        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'compiled_graphs': 2, 'cudagraph_skips': 0, 'side_stream': 'ok', 'codec_tuning': {'weight_norm_removed': 48, 'skipped': ''}}",
         "[S2C] container=c1 build=deadbeefcafe boot=restored snapshot_age=12.0s graphs=ok(24)",
     ])
     assert gate.inspect_log(clean_ok, expect_shapes=24) == []
 
     clean_recaptured = "\n".join([
         "[S2C] decode-graph replay failed after restore (RuntimeError: stale); recapturing over the compiled kernels",
-        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), cudagraph_skips=0 in 1.15s",
-        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'cudagraph_skips': 0, 'side_stream': 'ok'}",
+        "[S2B] warm decode shapes: 24 shapes x 3 steps (widths [1, 4, 8, 16, 24, 32], kv [512, 1024, 2048, 4096]), compiled_graphs=2, cudagraph_skips=0 in 1.15s",
+        "[S2B] selftest: {'ok': True, 'decode_shapes': 24, 'compiled_graphs': 2, 'cudagraph_skips': 0, 'side_stream': 'ok'}",
         "[S2C] container=c2 build=deadbeefcafe boot=restored snapshot_age=14.0s graphs=recaptured(24)",
     ])
     assert gate.inspect_log(clean_recaptured, expect_shapes=24) == []
