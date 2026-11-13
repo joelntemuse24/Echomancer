@@ -1146,3 +1146,71 @@ def test_codec_time_is_reported_separately_from_the_ar_clock(
         "the AR clock must be stopped before the codec tail runs, or "
         "`generate_s` includes the codec"
     )
+
+
+# ── the clocks: AR-only, and counted once ─────────────────────────────────
+
+
+def test_the_ar_clock_waits_for_the_ar_stream_only(batch_module):
+    """A device-wide synchronise would also wait for the side-stream codec.
+
+    `torch.cuda.synchronize()` blocks until **every** stream is idle, so timing
+    generation with it folds an in-flight codec decode back into `generate_s` —
+    the column the A/B reads to judge the decode change. The clock must wait on
+    an event recorded on the current (AR) stream instead.
+    """
+    import inspect
+
+    # Check the code, not the docstring: the explanation names the call it
+    # replaced, so a substring test over the whole source would match prose.
+    source = _code_only(batch_module._sync_ar_stream)
+    assert "current_stream" in source, "record on the AR stream, not the device"
+    assert "Event" in source
+    assert "torch.cuda.synchronize(" not in source, (
+        "a device synchronise waits for the codec's side stream too"
+    )
+
+    loop = inspect.getsource(batch_module._BatchEngine._render_pipelined)
+    loop_at = loop.index("loop_s = time.time() - loop_t0")
+    before = loop[:loop_at]
+    assert "_sync_ar_stream()" in before, "the AR clock must be joined on its own stream"
+
+
+def test_the_codec_tail_is_recorded_once(batch_module):
+    """`codec_tail_s` must not be added by both `_flush_decode` and its caller.
+
+    It was counted twice: once inside the helper for the span, and again by the
+    loop around the same call. That overstated the tail by whatever the queue and
+    wait cost — precisely the number a reader would use to judge whether the
+    overlap worked.
+
+    Boundaries come from the AST. Searching the text for the next nested `def`
+    looks right and measures the wrong region.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(
+        inspect.getsource(batch_module._BatchEngine._render_pipelined)
+    )
+    tree = ast.parse(source)
+    fn = tree.body[0]
+    lines = source.splitlines()
+    marker = 'counters["codec_tail_s"] +='
+
+    helpers = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.FunctionDef) and node.name == "_flush_decode"
+    ]
+    assert len(helpers) == 1, "expected one nested `_flush_decode`"
+    helper = helpers[0]
+    inside = "\n".join(lines[helper.lineno - 1 : helper.end_lineno])
+    assert inside.count(marker) == 1, "`_flush_decode` records the tail span once"
+
+    outside = "\n".join(lines[: helper.lineno - 1] + lines[helper.end_lineno :])
+    assert outside.count(marker) == 0, (
+        "the caller must not add `codec_tail_s` again around `_flush_decode`; "
+        f"found {outside.count(marker)} extra increment(s)"
+    )

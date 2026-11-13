@@ -416,6 +416,34 @@ def _cuda_synchronize() -> None:
         torch.cuda.synchronize()
 
 
+def _sync_ar_stream() -> None:
+    """Wait for the **AR stream only**, not the whole device.
+
+    `torch.cuda.synchronize()` blocks until every stream is idle, including a
+    codec decode the AR loop deliberately handed to a side stream. Timing
+    generation with it would fold that overlap back into `generate_s` and make
+    the decode change look like an AR regression — precisely the column the A/B
+    reads. An event on the current stream orders after the AR kernels and before
+    the side stream's pending work, which is what "generation is done" means.
+    """
+    if not torch.cuda.is_available():
+        return
+    if _current_stream_is_capturing():
+        # Recording an event inside CUDA-graph capture is not allowed; the graph
+        # boundary already orders the work.
+        return
+    done = torch.cuda.Event()
+    done.record(torch.cuda.current_stream())
+    done.synchronize()
+
+
+def _current_stream_is_capturing() -> bool:
+    try:
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # older torch, or no CUDA
+        return False
+
+
 def _tune_decoder(decoder, device) -> dict:
     """Boot-time codec changes that are bit-identical to what they replace.
 
@@ -1698,13 +1726,14 @@ class _BatchEngine:
             call's codec tail rather than something generation sat behind.
             """
             # Queueing is timed too: with no side stream the engine decodes
-            # inline, so `_start_decode` is where that cost lands.
+            # inline, so `_start_decode` is where that cost lands. The whole
+            # span is the tail, and it is recorded **once** — launch time is a
+            # part of it, not a second counter that also gets added to
+            # `codec_tail_s` by the caller.
             started = time.time()
-            launched = time.time()
             for section in list(dict.fromkeys(pending_decode)):
                 _start_decode(section)
             pending_decode.clear()
-            counters["codec_s"] += time.time() - launched
             _collect_decode(ready_only=False)
             counters["codec_tail_s"] += time.time() - started
 
@@ -1749,19 +1778,20 @@ class _BatchEngine:
                     # never blocks: a codec still running keeps the AR loop free,
                     # and `_flush_decode` at the tail waits for the rest.
                     _collect_decode(ready_only=True)
-        # The AR loop is over: stop its clock **before** waiting on any codec
-        # work, so `loop_s` is generation and nothing else. The service reports
-        # it as `generate_s`; folding a codec wait in would make the decode
-        # change look like an AR regression the first time a tail ran long.
-        _cuda_synchronize()
+        # The AR loop is over. Stop its clock by waiting on the **AR stream
+        # only**: a device-wide `torch.cuda.synchronize()` would also wait for an
+        # in-flight codec decode on the side stream, so `loop_s` would include
+        # work the AR loop had already handed off. An event recorded on the
+        # current (AR) stream orders after every kernel this loop enqueued and
+        # before anything the side stream is still doing.
+        _sync_ar_stream()
         loop_s = time.time() - loop_t0
         # Anything left (a unit that finished inside the final tick, or a section
         # whose decode was deferred) runs now. This is the codec tail, and the
-        # only part of the call that is still serial.
+        # only part of the call that is still serial. `_flush_decode` records its
+        # own cost into `codec_tail_s`, so the caller does not add it again.
         with torch.inference_mode():
-            tail_started = time.time()
             _flush_decode()
-            counters["codec_tail_s"] += time.time() - tail_started
         audio_s = counters["frames"] * self.frame_length / self.sample_rate
         return {
             "codes": codes,

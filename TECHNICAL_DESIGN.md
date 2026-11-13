@@ -1378,13 +1378,32 @@ arithmetic and not bitwise in bfloat16.
 `modal/test_s2_legacy_identity.py` imports the base branch's module out of git and
 compares embeddings, sampling and the loop's statements directly.
 
-**A bare `modal deploy` now targets staging.** A deploy invalidates every GPU
-snapshot for its app, so a branch under review must not be able to evict
-production's: the production name requires `S2C_ALLOW_PRODUCTION=1` (or an
-explicit `S2C_APP_NAME`).
 | `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
 | Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
 | Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
+
+**A bare `modal deploy` targets staging, and the production name is not enough.**
+A deploy invalidates every GPU snapshot for its app, so a branch under review
+must not be able to evict production's. One resolver decides the target for the
+service, `modal/s2_clone_warm.py` and `scripts/s2/check-input-queue.py`
+(`s2_contract.resolve_app_name`), with `s2_contract.heartbeat_dict_name` following
+the same name:
+
+| `S2C_APP_NAME` (or legacy `MODAL_S2_APP_NAME`) | `S2C_ALLOW_PRODUCTION` | target |
+|---|---|---|
+| `echomancer-s2-clone` | `1` | production |
+| `echomancer-s2-clone` | unset | **staging** |
+| any other name | either | that app |
+| unset | `1` | production |
+| unset | unset | staging |
+
+Spelling the production name out is **not** an opt-in: typing a name is not a
+decision about snapshots, and deploy commands get copy-pasted from docs. The
+worker's prewarm (`src/lib/tts/providers/modal-clone-warm.ts`) therefore exports
+`S2C_ALLOW_PRODUCTION=1` for its own `modal run …::cover` child, because that
+cover is the production path. `scripts/s2/cancel-unstarted-pending.py` keeps a
+production default on purpose — it cancels a pending input, and an unnamed
+invocation there means the live app.
 
 Why `v9` is the default: the worker and the Modal app ship separately, and the
 app is a ~15-minute snapshot rebuild, so there is always a window where one has

@@ -1274,8 +1274,17 @@ class S2CloneWorker:
             prepared_at = time.time()
             stats = self.engine.render([units], ref, sampling_text)
             truncated_by_slot = stats.pop("truncated_by_slot", [])
-            generated_at = time.time()
-            samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
+            # `generate_s` means the **AR loop**, the same as on the batch path.
+            # The engine reports it as `loop_s`; stamping the clock around the
+            # whole `render()` call would include the codec tail and any
+            # in-flight side-stream decode, so this endpoint and `/synthesize_batch`
+            # would disagree about what one column means.
+            ar_s = float(stats.get("loop_s") or 0)
+            codec_inline_s = float(stats.get("codec_s") or 0)
+            codec_tail_s = float(stats.get("codec_tail_s") or 0)
+            samples = self.engine.decode_slots(
+                stats.pop("codes"), [units], audio_by_section=stats.get("_audio_by_section")
+            )[0]
             coded_at = time.time()
             return {
                 "ref_key": ref_key,
@@ -1285,7 +1294,11 @@ class S2CloneWorker:
                 "truncated": int(sum(truncated_by_slot)),
                 "sample_rate": self.engine.sample_rate,
                 "t_prepare": prepared_at,
-                "t_gen": generated_at,
+                # Stamped for `call_s`; `generate_s` below comes from the AR clock.
+                "t_gen": time.time(),
+                "ar_s": ar_s,
+                "codec_inline_s": codec_inline_s,
+                "codec_tail_s": codec_tail_s,
                 "t_codec": coded_at,
             }
 
@@ -1307,8 +1320,15 @@ class S2CloneWorker:
             "unit_shape": units_summary(units),
             "truncated_units": done["truncated"],
             "prepare_s": round(done["t_prepare"] - t0, 2),
-            "generate_s": round(done["t_gen"] - done["t_prepare"], 2),
-            "codec_s": round(done["t_codec"] - done["t_gen"], 2),
+            # AR only, matching `/synthesize_batch`. See the comment in
+            # `gpu_work`: the two endpoints must not disagree about this column.
+            "generate_s": round(float(done.get("ar_s") or 0), 2),
+            "codec_s": round(
+                float(done.get("codec_inline_s") or 0)
+                + float(done.get("codec_tail_s") or 0),
+                2,
+            ),
+            "codec_tail_s": round(float(done.get("codec_tail_s") or 0), 2),
             "master_s": round(t_master - done["t_codec"], 2),
             "call_s": round(t_master - t0, 2),
             "realtime_x": round(duration / max(t_master - t0, 1e-6), 1),

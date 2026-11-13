@@ -14,10 +14,14 @@
 # Shallow, single-commit, blobless: the tests import one module and never run the
 # model, so history and weights are not needed.
 #
-# Needs: python3 with `torch` (CPU build is fine), `einops` and `loguru`. The
-# last two are upstream's own dependencies and are **not** pulled in by installing
-# torch, which is how a clean runner failed this the first time. This script
-# names them rather than letting the import fail inside fish-speech.
+# Needs: python3 with torch (CPU build is fine) plus the pinned set in
+# `modal/requirements-test.txt` — `einops` and `loguru` are upstream's own
+# dependencies and are **not** pulled in by installing torch, which is how a clean
+# runner failed this the first time. This script names them rather than letting
+# the import fail inside fish-speech:
+#
+#   python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0
+#   python3 -m pip install -r modal/requirements-test.txt
 #
 # Nothing here touches Modal, the GPU, or a paid API.
 set -euo pipefail
@@ -77,8 +81,8 @@ if missing:
         "missing Python package(s): "
         + ", ".join(missing)
         + "\n  python3 -m pip install --index-url "
-        "https://download.pytorch.org/whl/cpu torch"
-        + "\n  python3 -m pip install numpy einops loguru"
+        "https://download.pytorch.org/whl/cpu torch==2.15.0"
+        + "\n  python3 -m pip install -r modal/requirements-test.txt"
     )
 
 try:

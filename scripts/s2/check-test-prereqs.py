@@ -36,9 +36,22 @@ FETCH_CMD = "bash scripts/s2/fetch-fish-source.sh"
 TORCH_CMD = (
     "python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch"
 )
-#: Upstream `llama.py`'s non-torch dependencies. Installing torch does not bring
-#: these, and a clean CI runner failed on exactly that.
-UPSTREAM_DEPS = ("numpy", "einops", "loguru")
+#: The pinned set, read from the file CI installs. One source means this report
+#: cannot drift from what the workflow actually installs — which is how a missing
+#: `einops` got past a manual check and failed CI before pytest even started.
+REQUIREMENTS = REPO / "modal" / "requirements-test.txt"
+
+
+def _requirements() -> list[tuple[str, str | None]]:
+    """`[(name, version)]` from the pinned file, ignoring comments and blanks."""
+    parsed: list[tuple[str, str | None]] = []
+    for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines():
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        name, _, version = text.partition("==")
+        parsed.append((name.strip(), version.strip() or None))
+    return parsed
 
 
 def _ok(message: str) -> bool:
@@ -74,15 +87,48 @@ def _present(name: str) -> bool:
         return False
 
 
-def check_upstream_deps() -> bool:
-    missing = [name for name in UPSTREAM_DEPS if not _present(name)]
+def check_pinned_deps() -> bool:
+    """Every pinned package must be present, and at the pinned version.
+
+    A version mismatch is a real failure, not a note: these tests compare
+    bf16 arithmetic bit for bit, so a floating minor on torch or numpy can turn
+    an identity assertion into a mystery.
+    """
+    if not REQUIREMENTS.is_file():
+        return _missing(
+            f"the pinned requirements file at {REQUIREMENTS.relative_to(REPO)}",
+            "restore modal/requirements-test.txt",
+        )
+    import importlib.metadata as md
+
+    missing: list[str] = []
+    wrong: list[str] = []
+    for name, want in _requirements():
+        if not _present(name):
+            missing.append(name)
+            continue
+        if want:
+            try:
+                got = md.version(name)
+            except Exception:
+                continue
+            if got != want:
+                wrong.append(f"{name} {got} != {want}")
     if missing:
         return _missing(
-            f"upstream dependency {', '.join(missing)} (needed to import "
+            f"pinned package(s) {', '.join(missing)} (needed to import "
             "fish_speech.models.text2semantic.llama)",
-            f"python3 -m pip install {' '.join(missing)}",
+            "python3 -m pip install -r modal/requirements-test.txt",
         )
-    return _ok(f"upstream deps: {', '.join(UPSTREAM_DEPS)}")
+    if wrong:
+        return _missing(
+            "pinned version mismatch: " + ", ".join(wrong),
+            "python3 -m pip install -r modal/requirements-test.txt",
+        )
+    return _ok(
+        "pinned test deps: "
+        + ", ".join(f"{name}=={version}" if version else name for name, version in _requirements())
+    )
 
 
 def check_fish_source() -> str | None:
@@ -123,7 +169,7 @@ def check_fish_importable(source: str | None) -> bool:
         tail = (out.stderr or out.stdout).strip().splitlines()[-1:] or ["unknown"]
         return _missing(
             f"fish-speech import failed: {tail[0]}",
-            "python3 -m pip install einops loguru  # see the message above",
+            "python3 -m pip install -r modal/requirements-test.txt",
         )
     return _ok("fish_speech.models.text2semantic.llama imports")
 
@@ -171,7 +217,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("Modal test prerequisites\n")
-    results = [check_torch(), check_upstream_deps()]
+    results = [check_torch(), check_pinned_deps()]
     source = check_fish_source()
     results.append(source is not None)
     results.append(check_fish_importable(source))

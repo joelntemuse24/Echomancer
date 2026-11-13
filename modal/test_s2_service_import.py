@@ -444,8 +444,12 @@ class _RecordingEngine:
             "truncated_units": 0,
         }
 
-    def decode_slots(self, codes, slots):
+    def decode_slots(self, codes, slots, *, audio_by_section=None):
         self._note("decode_slots")
+        # `audio_by_section` is what a streamed `render` already decoded; the
+        # single-section path passes it through so the codec is not run twice.
+        # This engine streams nothing, so it arrives empty.
+        assert audio_by_section in (None, {}), audio_by_section
         # `_master` and `duration_s` only need a sized sequence.
         return [[0.0] * 1000 for _ in slots]
 

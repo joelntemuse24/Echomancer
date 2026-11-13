@@ -599,3 +599,23 @@ def test_the_loop_collects_only_finished_decodes(batch_module):
         engine.collect_decode(handle)
     assert collected == [1], "only the finished decode was taken"
     assert [s for s, _, _ in still] == [0], "the running one stayed queued"
+
+
+def test_synthesize_and_batch_report_the_same_generate_s(service):
+    """`/synthesize` must not stamp `generate_s` around the whole render call.
+
+    The batch path reports the AR clock (`loop_s`). If this endpoint kept its own
+    wall clock around `render()`, the same column would mean two different things
+    depending on which route rendered a section — and the A/B reads that column.
+    """
+    import inspect
+
+    source = inspect.getsource(service.S2CloneWorker._synthesize_section)
+    assert '"generate_s": round(float(done.get("ar_s") or 0), 2)' in source, (
+        "generate_s must come from the engine's AR clock"
+    )
+    assert 'round(done["t_gen"] - done["t_prepare"], 2)' not in source, (
+        "the wall clock around render() includes the codec tail"
+    )
+    # And the codec cost is still reported, just in its own column.
+    assert "codec_tail_s" in source

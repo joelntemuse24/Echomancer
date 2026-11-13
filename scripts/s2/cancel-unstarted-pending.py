@@ -57,6 +57,12 @@ def cancel_call(function_call_id: str, *, dry_run: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    # Deliberately **not** `s2_contract.resolve_app_name`. That resolver sends an
+    # unnamed target to staging, which is right for a deploy (it must not evict
+    # production's snapshots) but wrong here: this tool cancels a PENDING input,
+    # and an operator running it bare means the live app. Cancelling on the wrong
+    # app would leave the real stale input in place *and* touch a pool nobody
+    # asked about. `--app` still overrides for a staging drain.
     parser.add_argument(
         "--app",
         default=os.environ.get("S2C_APP_NAME")
