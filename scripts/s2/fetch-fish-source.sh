@@ -11,8 +11,13 @@
 #   bash scripts/s2/fetch-fish-source.sh
 #   S2B_REQUIRE_FISH_SOURCE=1 python3 -m pytest modal -q
 #
-# Shallow, single-commit, blobless: the tests import two modules and never run
-# the model, so history and weights are not needed.
+# Shallow, single-commit, blobless: the tests import one module and never run the
+# model, so history and weights are not needed.
+#
+# Needs: python3 with `torch` (CPU build is fine), `einops` and `loguru`. The
+# last two are upstream's own dependencies and are **not** pulled in by installing
+# torch, which is how a clean runner failed this the first time. This script
+# names them rather than letting the import fail inside fish-speech.
 #
 # Nothing here touches Modal, the GPU, or a paid API.
 set -euo pipefail
@@ -39,6 +44,7 @@ fi
 
 FISH="$DEST" python3 - <<'PY'
 import importlib
+import importlib.util
 import os
 import pathlib
 import sys
@@ -48,18 +54,37 @@ if not (root / "fish_speech").is_dir():
     raise SystemExit(f"{root} does not contain fish_speech/")
 sys.path.insert(0, str(root))
 
-# `llama.py` is what the numeric tests import. `inference.py` pulls click and
-# hydra at module scope, so the tests extract its two functions by AST instead;
-# checking `llama.py` is therefore the honest readiness probe.
-try:
-    import torch  # noqa: F401
-except ImportError:
+# The import the numeric tests rely on. `llama.py` needs torch, numpy and
+# upstream's own einops and loguru; a bare `pip install torch` brings torch and
+# numpy but not the last two, which is how the first CI run failed. They are
+# checked here and reported by name.
+REQUIRED = ("torch", "numpy", "einops", "loguru")
+
+
+def _present(name: str) -> bool:
+    # `find_spec` can raise rather than answer when a package's own import is
+    # broken (a stray shadowing module on PYTHONPATH, say). Treat any failure as
+    # "not usable", because that is what an `import` would do.
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+missing = [name for name in REQUIRED if not _present(name)]
+if missing:
     raise SystemExit(
-        "torch is not installed. Install the CPU build first:\n"
-        "  python3 -m pip install --index-url "
+        "missing Python package(s): "
+        + ", ".join(missing)
+        + "\n  python3 -m pip install --index-url "
         "https://download.pytorch.org/whl/cpu torch"
+        + "\n  python3 -m pip install numpy einops loguru"
     )
+
 try:
+    # `inference.py` pulls click and hydra at module scope, so the tests extract
+    # its two functions by AST rather than importing it. `llama.py` is therefore
+    # the honest readiness probe.
     importlib.import_module("fish_speech.models.text2semantic.llama")
 except Exception as err:
     raise SystemExit(

@@ -36,6 +36,9 @@ FETCH_CMD = "bash scripts/s2/fetch-fish-source.sh"
 TORCH_CMD = (
     "python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch"
 )
+#: Upstream `llama.py`'s non-torch dependencies. Installing torch does not bring
+#: these, and a clean CI runner failed on exactly that.
+UPSTREAM_DEPS = ("numpy", "einops", "loguru")
 
 
 def _ok(message: str) -> bool:
@@ -50,8 +53,7 @@ def _missing(message: str, fix: str) -> bool:
 
 
 def check_torch() -> bool:
-    spec = importlib.util.find_spec("torch")
-    if spec is None:
+    if not _present("torch"):
         return _missing(
             "torch (CPU) is not installed; every numeric test would skip", TORCH_CMD
         )
@@ -62,6 +64,25 @@ def check_torch() -> bool:
         # A CUDA build with no device still works for CPU maths; only note it.
         return _ok(f"torch {version} (no CUDA device; CPU maths only)")
     return _ok(f"torch {version}")
+
+
+def _present(name: str) -> bool:
+    """Is this importable? `find_spec` can raise on a broken shadowing module."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def check_upstream_deps() -> bool:
+    missing = [name for name in UPSTREAM_DEPS if not _present(name)]
+    if missing:
+        return _missing(
+            f"upstream dependency {', '.join(missing)} (needed to import "
+            "fish_speech.models.text2semantic.llama)",
+            f"python3 -m pip install {' '.join(missing)}",
+        )
+    return _ok(f"upstream deps: {', '.join(UPSTREAM_DEPS)}")
 
 
 def check_fish_source() -> str | None:
@@ -100,7 +121,10 @@ def check_fish_importable(source: str | None) -> bool:
         return _missing(f"fish-speech could not be imported: {err}", FETCH_CMD)
     if out.returncode != 0:
         tail = (out.stderr or out.stdout).strip().splitlines()[-1:] or ["unknown"]
-        return _missing(f"fish-speech import failed: {tail[0]}", TORCH_CMD)
+        return _missing(
+            f"fish-speech import failed: {tail[0]}",
+            "python3 -m pip install einops loguru  # see the message above",
+        )
     return _ok("fish_speech.models.text2semantic.llama imports")
 
 
@@ -147,7 +171,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("Modal test prerequisites\n")
-    results = [check_torch()]
+    results = [check_torch(), check_upstream_deps()]
     source = check_fish_source()
     results.append(source is not None)
     results.append(check_fish_importable(source))

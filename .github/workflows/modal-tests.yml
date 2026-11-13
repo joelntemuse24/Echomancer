@@ -48,11 +48,16 @@ jobs:
       # CPU-only torch: the numeric tests do real tensor maths, but none of it
       # needs a GPU. Pinned to the CPU index so the download is ~200 MB rather
       # than ~2 GB of CUDA wheels.
-      - name: Install CPU torch
+      # `einops` and `loguru` are upstream fish-speech's own dependencies and are
+      # NOT brought in by installing torch. The numeric tests import
+      # `fish_speech.models.text2semantic.llama`, which needs them (plus numpy,
+      # which torch does pull in); a runner without them fails on the import
+      # rather than on a test.
+      - name: Install CPU torch and the upstream test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install pytest numpy
+          python -m pip install pytest numpy einops loguru
 
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg

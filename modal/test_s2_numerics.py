@@ -66,8 +66,10 @@ def _skip_or_fail(reason: str) -> None:
     """
     if _require_fish_source():
         pytest.fail(
-            f"{reason}. {REQUIRE_SOURCE_ENV}=1 requires this to run: "
-            "fetch the source with scripts/s2/fetch-fish-source.sh"
+            f"{reason}. {REQUIRE_SOURCE_ENV}=1 requires this to run.\n"
+            "Run `python3 scripts/s2/check-test-prereqs.py --strict` — it names "
+            "which prerequisite is missing (the source itself, CPU torch, or "
+            "upstream's einops/loguru) and prints the command that fixes it."
         )
     pytest.skip(reason)
 
