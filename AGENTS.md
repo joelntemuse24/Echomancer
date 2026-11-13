@@ -1283,8 +1283,10 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # S2B_SDPA_DECODE=1 # OPT-IN folded-GQA SDPA decode attention (measure it)
 # S2B_TOPK_FAST_SAMPLE=1 # OPT-IN top-k-block sampling (same distribution, different rounding)
 # S2C_CPU=8 # worker CPU threads for the encode/upload pools; 4 extra cores < 5% of the H100
-# S2C_APP_NAME=echomancer-s2-clone-staging # a SEPARATE app; never set for a production deploy
+# S2C_APP_NAME=echomancer-s2-clone-staging # a SEPARATE app; a bare deploy lands here now
+# S2C_ALLOW_PRODUCTION=1 # required to deploy the PRODUCTION app; a deploy wipes its snapshots
 # S2C_HEARTBEAT_DICT=echomancer-s2-clone-heartbeats-staging # its own registry
+# S2B_BATCHED_PREFILL= # 0 prefills one lane at a time
 
 # ── MiniMax Free API (optional slim test catalog) ───────
 # When both are set: catalog = Storyteller (default) + Gemini Kore only.

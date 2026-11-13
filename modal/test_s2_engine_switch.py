@@ -198,12 +198,99 @@ def test_the_recipe_reports_what_audio_settings_it_renders_with(service):
     assert service._RECIPE["unit_max_chars"] == service.UNIT_MAX_CHARS
 
 
-def test_the_production_app_name_is_unchanged_by_default(service):
-    """Staging must be opt-in; a plain deploy still targets production."""
-    import os
+def test_a_bare_deploy_cannot_target_production(service):
+    """A `modal deploy` from a branch must not invalidate production snapshots.
 
-    assert service.APP_NAME == os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
-    # And the heartbeat registry follows the app, so the two cannot disagree.
-    assert service.HEARTBEAT_DICT_NAME == os.environ.get(
-        "S2C_HEARTBEAT_DICT", f"{service.APP_NAME}-heartbeats"
+    A deploy invalidates every GPU snapshot for its app, so a branch under review
+    that silently defaulted to `echomancer-s2-clone` could evict the live pool's
+    snapshots and make the next customer book wait out a ~15-minute rebuild. The
+    production name is therefore opt-in.
+    """
+    # Nothing set: a staging app, so an unmerged branch lands somewhere harmless.
+    assert service._resolve_app_name({}) == "echomancer-s2-clone-staging"
+    # An explicit name always wins (staging passes its own).
+    assert (
+        service._resolve_app_name({"S2C_APP_NAME": "custom-app"}) == "custom-app"
     )
+    # Production needs to be named.
+    assert (
+        service._resolve_app_name({"S2C_ALLOW_PRODUCTION": "1"})
+        == "echomancer-s2-clone"
+    )
+    assert (
+        service._resolve_app_name({"S2C_APP_NAME": "echomancer-s2-clone"})
+        == "echomancer-s2-clone"
+    )
+    # A malformed opt-in does not open production.
+    assert service._resolve_app_name({"S2C_ALLOW_PRODUCTION": "yes please"}) == (
+        "echomancer-s2-clone-staging"
+    )
+
+
+# ── /ready must answer the worker's two questions on both statuses ────────
+
+
+def test_ready_reports_the_page_cap_and_transport_on_200_and_503(service):
+    """The worker reads `/ready` on the cold path, not only on a warm one.
+
+    It needs two facts to size its next page: how the MP3s come back, and how
+    many rows the build accepts. If either is missing from the 503 body, a book
+    that parks and resumes re-plans at 24 inline rows even against an r2 build —
+    which is exactly what happened when `max_batch_items` was only on `status()`.
+    """
+    import time
+    from types import SimpleNamespace
+
+    class _Req:
+        headers = {"x-echomancer-token": "t"}
+
+    ok = service._token_ok
+    service._token_ok = lambda request: True
+    try:
+        cold = service.ready(_Req())
+        assert cold.status_code == 503
+        # The stub `JSONResponse` keeps its payload on `.content`.
+        cold_body = cold.content
+        assert "max_batch_items" in cold_body, (
+            "the cold body must carry the row cap, or a parked book re-plans at "
+            "the inline width"
+        )
+        assert "audio_transport" in cold_body
+
+        # Now with a live container of this build.
+        build = service._BUILD_ENV["S2C_BUILD"]
+        service._live_containers = lambda b, registry=None: [
+            {
+                "at": time.time(),
+                "build": b,
+                "state": "ready",
+                "container_id": "c",
+                "age_s": 1.0,
+            }
+        ]
+        warm = service.ready(_Req())
+        warm_body = warm if isinstance(warm, dict) else warm.content
+        assert warm_body["ready"] is True
+        assert warm_body["max_batch_items"] == service.max_batch_items()
+        assert "audio_transport" in warm_body
+    finally:
+        service._token_ok = ok
+
+
+def test_the_row_cap_is_never_above_the_tensor_capacity(service):
+    """A caller that sets 999 must not get a page its KV cache cannot hold."""
+    assert service.max_batch_items({"S2C_MAX_BATCH_ITEMS": "999"}) <= service.BATCH
+    assert service.max_batch_items({"S2C_MAX_BATCH_ITEMS": "0"}) == service.BATCH
+    assert service.max_batch_items({"S2C_MAX_BATCH_ITEMS": "junk"}) == service.BATCH
+
+
+def test_the_container_cpu_is_configurable_and_reported(service):
+    """`S2C_CPU=8` in the staging env was inert while the decorator said `cpu=4`."""
+    import inspect
+
+    source = inspect.getsource(service)
+    assert 'os.environ.get("S2C_CPU"' in source, (
+        "the class decorator must read S2C_CPU, or the staging env file's value "
+        "has no effect"
+    )
+    assert service._BUILD_ENV["S2C_CPU"], "the CPU count must be reportable"

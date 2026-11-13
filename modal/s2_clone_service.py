@@ -129,7 +129,35 @@ from s2_contract import (
 from s2_audio_store import UploadPool, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
-APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
+def _resolve_app_name(env) -> str:
+    """The Modal app to deploy to, refusing production unless it is asked for.
+
+    A bare `modal deploy modal/s2_clone_service.py` from a feature branch used to
+    target `echomancer-s2-clone` — production — and a deploy **invalidates every
+    GPU snapshot** for that app, so a branch under review could evict the live
+    pool's snapshots and make the next customer book wait out a 15-minute
+    rebuild. That is too easy a mistake for one missing environment variable.
+
+    So the production name now has to be named:
+
+    * `S2C_APP_NAME` set to anything: used as given (staging passes its own);
+    * `S2C_APP_NAME` unset **and** `S2C_ALLOW_PRODUCTION=1`: production, which is
+      the documented production deploy;
+    * `S2C_APP_NAME` unset otherwise: a `-staging` app, so a bare deploy of an
+      unmerged branch lands somewhere harmless.
+
+    The production deploy process is unchanged apart from exporting one
+    variable, which `docs/s2-gpu-staging-runbook.md` §8 spells out.
+    """
+    explicit = (env.get("S2C_APP_NAME") or "").strip()
+    if explicit:
+        return explicit
+    if str(env.get("S2C_ALLOW_PRODUCTION", "")).strip() in ("1", "true", "yes"):
+        return "echomancer-s2-clone"
+    return "echomancer-s2-clone-staging"
+
+
+APP_NAME = _resolve_app_name(os.environ)
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
@@ -233,6 +261,9 @@ _BUILD_ENV = {
     # compiled. `_BUILD_ENV` is applied to both the GPU class and the CPU probe,
     # so `/ready` describes the engine the containers are actually running.
     "S2C_ENGINE": ENGINE,
+    # Reported so a staging A/B can prove the container really got more CPU;
+    # Modal's own dashboard shows the same number, but a log line beats clicking.
+    "S2C_CPU": str(os.environ.get("S2C_CPU", "4")),
 }
 
 
@@ -263,10 +294,14 @@ def max_batch_items(env=None) -> int:
     """
     env = os.environ if env is None else env
     try:
-        value = int(str(env.get("S2C_MAX_BATCH_ITEMS", "")).strip() or BATCH)
+        value = int(str(env.get("S2C_MAX_BATCH_ITEMS", "")).strip())
     except (TypeError, ValueError):
-        value = BATCH
-    return max(1, min(BATCH, value))
+        # Unset or malformed: the capacity, not a floor. A typo must not quietly
+        # shrink every page to one row.
+        return BATCH
+    if value < 1:
+        return BATCH
+    return min(BATCH, value)
 
 
 def _token_ok(request: Request) -> bool:
@@ -315,6 +350,12 @@ web_image = (
 )
 
 #: Shared boot registry: one entry per container, written after restore.
+print(
+    f"[S2C] app={APP_NAME} heartbeat_dict={HEARTBEAT_DICT_NAME} "
+    f"engine={ENGINE} version={S2C_VERSION} build={_BUILD_ENV['S2C_BUILD']}"
+    + ("" if APP_NAME != "echomancer-s2-clone" else "  (PRODUCTION)")
+)
+
 heartbeats = modal.Dict.from_name(HEARTBEAT_DICT_NAME, create_if_missing=True)
 
 
@@ -456,7 +497,12 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
 @app.cls(
     image=web_image,
     gpu=GPU,
-    cpu=4,
+    # CPU cores. The encode/upload pools are pure CPU work overlapped with the
+    # GPU, so extra cores shorten a call's tail without touching the H100's cost
+    # (four more cores are about $0.000052/s against $0.001097/s). Read at deploy
+    # time, like every other sizing knob, and reported by `/ready` so a staging
+    # A/B can prove it took effect.
+    cpu=float(os.environ.get("S2C_CPU", "4")),
     memory=32768,
     # The token lives in its own secret so rotating it never touches the other
     # Echomancer credentials.
@@ -567,16 +613,47 @@ class S2CloneWorker:
         self.gpu.submit(
             lambda: _apply_seed(seed_for_call(self.container_id, "boot", int(self.ready_at)))
         )
+        # Prove the captured decode graphs survived the restore, **on the GPU
+        # thread, before the first heartbeat**. A `cudaGraphExec_t` captured
+        # before the snapshot is the one thing in this engine that a restore
+        # could plausibly invalidate, and finding that out here costs a few
+        # hundred milliseconds at boot; finding it out on a customer's first
+        # section costs the section. The replay is the real compiled step, and a
+        # failure is loud rather than silent — `_verify_graphs` re-raises.
+        self.graph_check = "skipped"
+        try:
+            self.graph_check = self.gpu.submit(self._verify_graphs,
+                                               timeout=float(os.environ.get("S2C_GRAPH_CHECK_S", "180")))
+        except Exception as err:
+            # A container that cannot replay its graphs is not serving this book:
+            # refuse the boot so Modal replaces it instead of leaving a
+            # half-working container in the pool.
+            self.graph_check = "failed"
+            print(f"[S2C] decode-graph verification FAILED: {type(err).__name__}: {err}")
+            raise
         # Say plainly what is and is not known. A `boot=unknown` here is normal:
         # only a restore onto a younger host is provable from inside, and Modal's
         # own log line is the authoritative record either way.
         print(
             f"[S2C] container={self.container_id} build={_BUILD_ENV['S2C_BUILD']} "
             f"boot={kind} snapshot_age={self.snapshot_age_s}s "
+            f"graphs={self.graph_check} "
             f"(restore duration is only measurable client-side)"
         )
         self._heartbeat(force=True)
         self._start_heartbeat_timer()
+
+    def _verify_graphs(self) -> str:
+        """Replay every warmed decode shape on the GPU thread. Raises on failure."""
+        stats = self.engine.selftest()
+        replayed = int(stats.get("decode_shapes") or 0)
+        expected = len(self.engine._warm_widths())
+        if replayed < expected:
+            raise RuntimeError(
+                f"decode step replayed {replayed} shape(s), expected {expected}"
+            )
+        return f"ok({replayed})"
+
 
     # ── liveness ───────────────────────────────────────────────────────────
 
@@ -659,6 +736,7 @@ class S2CloneWorker:
             "since_ready_s": round(time.time() - self.ready_at, 1),
             "boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
             "snapshot_age_s": getattr(self, "snapshot_age_s", None),
+            "cpu": _BUILD_ENV["S2C_CPU"],
             "gpu_thread": self.gpu.thread_ident,
             "gpu_jobs": self.gpu.jobs_done,
             "calls": self.calls,
@@ -985,10 +1063,20 @@ class S2CloneWorker:
                 truncated_by_slot.extend(stats.pop("truncated_by_slot", []))
                 for k in ("frames", "steps"):
                     stats_all[k] += stats.get(k, 0)
-                for k in ("batch_width", "work_steal", "codec_s", "codec_tail_s",
-                          "sections_streamed"):
+                # `loop_s` is the AR loop alone; the codec's wall is tracked
+                # separately as `codec_s` / `codec_tail_s`. Keeping them apart is
+                # what lets `generate_s` be reported without the codec, so an A/B
+                # of the decode change shows up in the column it belongs to.
+                stats_all["generate_loop_s"] = float(
+                    stats_all.get("generate_loop_s") or 0
+                ) + float(stats.get("loop_s") or 0)
+                for k in ("codec_s", "codec_tail_s", "sections_streamed"):
                     if k in stats:
-                        stats_all[k] = stats_all.get(k, 0) + stats[k]
+                        stats_all[k] = float(stats_all.get(k) or 0) + float(stats[k])
+                # Per-call scalars, not sums: the widest page and the mode.
+                for k in ("batch_width", "work_steal"):
+                    if k in stats:
+                        stats_all[k] = max(int(stats_all.get(k) or 0), int(stats[k]))
                 stats_all["truncated_units"] += int(
                     stats.get("truncated_units") or 0
                 )
@@ -1103,7 +1191,15 @@ class S2CloneWorker:
                 "sections": len(slots),
                 "audio_s": round(sum(r.get("duration_s", 0) for r in rows), 1),
                 "prepare_s": round(done["t_prepare"] - t0, 2),
-                "generate_s": round(done["t_gen"] - done["t_prepare"], 2),
+                # AR only. The codec's wall is a separate column, and on a v10
+                # call it largely overlaps generation, so folding it in here
+                # would make the decode change look like a regression.
+                "generate_s": round(
+                    float(done["stats"].get("generate_loop_s") or 0), 2
+                ),
+                # Everything from the end of prepare to the end of the codec:
+                # AR plus codec, as a cross-check that the two columns add up.
+                "generate_and_codec_s": round(done["t_codec"] - done["t_prepare"], 2),
                 "codec_s": round(done["t_codec"] - done["t_gen"], 2),
                 "encode_s": round(t_done - done["t_codec"], 2),
                 "call_s": round(t_done - t0, 2),
@@ -1327,6 +1423,7 @@ def ready(request: Request):
         "warm_containers": len(live),
         "max_containers": _max_containers(),
         "lanes": _LIMITS["lanes"],
+        "cpu": _BUILD_ENV["S2C_CPU"],
         "build": build,
         "version": S2C_VERSION,
         "heartbeat_ttl_s": HEARTBEAT_TTL_SECONDS,
@@ -1338,6 +1435,12 @@ def ready(request: Request):
         # `r2` means a wide batch uploads each MP3 and returns storage_key.
         # A build from before this field is what the worker treats as inline.
         "audio_transport": transport_name(os.environ),
+        # How many rows one call may carry. The worker reads **this** endpoint to
+        # decide whether a 32-row page is safe, and it reads it on the 503 (cold)
+        # path as well as the 200: the page it plans next is chosen from what the
+        # build can accept, not from whether a container happens to be warm. A
+        # build without the field stays at the 24-row inline ceiling.
+        "max_batch_items": max_batch_items(),
         "containers": [
             {
                 "container_id": row.get("container_id") or "",

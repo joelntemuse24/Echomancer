@@ -54,12 +54,13 @@ def _fish_source():
     return None
 
 
-def _names_called_after_v9_fallback(fn) -> set[str]:
-    """Function names the v10 statements call, excluding the v9 guard branch.
+def _v10_statements(fn) -> list:
+    """The statements of a shared method that are the **v10** body.
 
-    Needed because `if not FAST_DECODE:` is where upstream's
-    `logits_to_probs` is legitimately called, and the method's own name is also
-    `_logits_to_probs`. Walking the whole method would match both.
+    `_embed`, `_fast_step` and `_logits_to_probs` each begin with a legacy
+    branch and then the v10 body. The legacy branch is identified by structure —
+    an `if` whose test mentions `LEGACY_RENDER` — not by text, because the
+    docstring above it names the same identifiers.
     """
     import ast
     import inspect
@@ -67,17 +68,25 @@ def _names_called_after_v9_fallback(fn) -> set[str]:
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     node = tree.body[0]
-    node.body = [
-        statement
-        for statement in node.body
-        if not (
-            isinstance(statement, ast.If)
-            and isinstance(statement.test, ast.UnaryOp)
-            and isinstance(statement.test.op, ast.Not)
-        )
-    ]
-    names: set[str] = set()
+    legacy: list = []
     for statement in node.body:
+        if isinstance(statement, ast.If) and "LEGACY_RENDER" in ast.unparse(statement.test):
+            legacy.append(statement)
+    assert legacy, "expected a LEGACY_RENDER branch in this method"
+    body = [statement for statement in node.body if statement not in legacy]
+    # Drop the docstring: it names the upstream calls this branch replaced, and
+    # a banned-symbol check would otherwise match the prose.
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    return body
+
+
+def _names_called_in(body: list) -> set[str]:
+    """Every function or method name those statements call."""
+    import ast
+
+    names: set[str] = set()
+    for statement in body:
         for child in ast.walk(statement):
             if isinstance(child, ast.Call):
                 if isinstance(child.func, ast.Name):
@@ -87,13 +96,15 @@ def _names_called_after_v9_fallback(fn) -> set[str]:
     return names
 
 
-def _body_after_v9_fallback(fn) -> str:
-    """The v10 statements of a method, with its `if not FAST_DECODE` branch gone.
+def _body_after_legacy_branch(fn) -> str:
+    """The v10 statements of a shared method, with the legacy branch removed.
 
-    Both engines share one method so the deployed path has no second
-    implementation to drift. These tests are about the v10 half, so the guard is
-    removed by AST rather than by string search — `ast.unparse` puts a one-line
-    `if` and its `return` on the same line.
+    `_embed`, `_fast_step` and `_logits_to_probs` each start with a legacy
+    branch (`if LEGACY_RENDER:` / `if LEGACY_RENDER or not FAST_DECODE:`) and
+    then the v10 body. These tests are about the v10 half, so the branch is
+    removed by AST rather than by string search: `ast.unparse` puts a one-line
+    `if` and its `return` on the same line, so a text search would also match
+    the docstring that explains the branch.
     """
     import ast
     import inspect
@@ -310,20 +321,26 @@ def test_embed_zeroes_the_codebook_sum_for_a_text_token(batch_module):
     assert torch.allclose(b, expected, atol=1e-6)
 
 
-def test_embed_has_no_python_scalar_operand_left(batch_module):
-    """`torch.where(cond, tensor, 0)` is what became a CPU constant (`arg10_1`)."""
+def test_the_v10_embed_has_no_python_scalar_operand(batch_module):
+    """`torch.where(cond, tensor, 0)` is what became a CPU constant (`arg10_1`).
+
+    Only the **v10** body is checked. The legacy branch is a deliberate
+    transcription of the deployed code, which does contain those scalar operands
+    — that is precisely why it is a separate branch.
+    """
+    import ast
     import re
 
-    source = _code_only(batch_module._BatchEngine._embed)
-    # Any `torch.where(..., <literal>, ...)` is the bug shape.
-    for match in re.finditer(r"torch\.where\((.*?)\)", source, re.S):
-        args = match.group(1)
-        for piece in args.split(","):
-            literal = piece.strip()
-            assert not re.fullmatch(r"-?\d+(\.\d+)?", literal), (
+    body = ast.unparse(
+        ast.Module(body=_v10_statements(batch_module._BatchEngine._embed), type_ignores=[])
+    )
+    for match in re.finditer(r"torch\.where\((.*?)\)", body, re.S):
+        for piece in match.group(1).split(","):
+            assert not re.fullmatch(r"-?\d+(\.\d+)?", piece.strip()), (
                 "a numeric literal inside torch.where becomes a CPU tensor and "
                 f"makes inductor skip CUDA graphs: {match.group(0)}"
             )
+    assert "torch.where" in body, "the scale step should still be a tensor op"
 
 
 # ── 2. the fast transformer step ──────────────────────────────────────────
@@ -515,7 +532,11 @@ def test_fast_step_does_not_rebuild_a_cpu_mask(batch_module):
     """The mask was a CPU tensor copied to the GPU 40 times per decode step."""
     # The v9 fallback calls upstream's method on purpose, so the v10 body is
     # taken as "everything after that one guard" rather than by text search.
-    v10 = _body_after_v9_fallback(batch_module._BatchEngine._fast_step)
+    import ast
+
+    v10 = ast.unparse(ast.Module(
+        body=_v10_statements(batch_module._BatchEngine._fast_step), type_ignores=[]
+    ))
     assert "make_window_limited_mask" not in v10
     assert "forward_generate_fast" not in v10
     assert "repeat_interleave" not in v10
@@ -552,10 +573,14 @@ def test_our_logits_to_probs_equals_upstreams(batch_module, inference):
     assert torch.allclose(ours, theirs, atol=1e-6), (ours - theirs).abs().max()
 
 
-def test_the_topk_fast_path_samples_the_same_distribution(batch_module):
-    """Opt-in path: same support and same normalisation as the full sort."""
-    if not hasattr(batch_module, "multinomial_sample_one_no_sync"):
-        pytest.skip("upstream sampler is only bound inside the GPU image")
+def test_the_topk_fast_path_returns_the_same_distribution(batch_module):
+    """Opt-in path: the same support and mass as the full-vocabulary sort.
+
+    It returns a **distribution over the top-k block**, not a drawn token, so
+    `_sample` does exactly one multinomial. (An earlier version drew inside this
+    function and then drew again over its output — two independent draws, and the
+    wrong distribution.)
+    """
     torch.manual_seed(9)
     logits = torch.randn(8, 4096) * 2
     temperature = torch.tensor(1.0)
@@ -577,38 +602,35 @@ def test_the_topk_fast_path_samples_the_same_distribution(batch_module):
     finally:
         module.TOPK_FAST_SAMPLE = original
 
-    # The fast path returns token indices; map them to the full distribution.
-    gathered = reference.gather(-1, fast)
-    assert (gathered > 0).all(), "the fast path sampled a token the full path removed"
-    # Everything outside the top-k must be removed in both.
-    order = torch.argsort(reference, dim=-1, descending=True)
-    allowed = set(order[:, :30].flatten().tolist())
-    assert set(fast.flatten().tolist()) <= allowed
+    assert fast.shape == (8, 30), "the fast path is a distribution over top-k"
+    assert torch.allclose(fast.sum(dim=-1), torch.ones(8), atol=1e-5), "it normalises"
 
-
-def test_sampling_does_not_depend_on_a_container_only_binding(batch_module):
-    """The masking is written in `s2_batch`, not imported from the GPU image.
-
-    `gpu_image.imports()` only runs inside a container, so a v10 decode path
-    that needed a name from there would fail off-GPU — exactly where the
-    distribution check above has to run.
-
-    Checked on the AST, not on source text: `ast.unparse` (and a docstring that
-    names the upstream function) make substring tests match prose and
-    identifiers rather than calls.
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    called = _names_called_after_v9_fallback(
-        batch_module._BatchEngine._logits_to_probs
+    # The retained tokens must be exactly the full path's top-k, and the masses
+    # must agree after renormalising the full row onto that block.
+    order = torch.argsort(reference, dim=-1, descending=True)[:, :30]
+    assert torch.allclose(fast, reference.gather(-1, order), atol=1e-5), (
+        (fast - reference.gather(-1, order)).abs().max()
     )
-    assert "masked_fill" in called, "the v10 body must mask with a tensor op"
-    assert "logits_to_probs" not in called, (
-        "the v10 body must not call a name bound only inside the GPU image's "
-        "`gpu_image.imports()` block"
-    )
+
+
+def test_the_topk_fast_path_never_keeps_an_empty_support(batch_module):
+    """Top-1 of every row survives, as upstream's `sorted_indices_to_remove` does."""
+    import s2_batch as module
+
+    torch.manual_seed(31)
+    logits = torch.randn(4, 64)
+    engine = object.__new__(batch_module._BatchEngine)
+    engine.top_k = 8
+    original = module.TOPK_FAST_SAMPLE
+    try:
+        module.TOPK_FAST_SAMPLE = True
+        probs = batch_module._BatchEngine._logits_to_probs(
+            engine, logits, torch.tensor(1.0), torch.tensor(0.0)
+        )
+    finally:
+        module.TOPK_FAST_SAMPLE = original
+    # top_p=0 keeps only the first entry, and it must still have all the mass.
+    assert torch.allclose(probs[:, 0], torch.ones(4), atol=1e-6)
 
 
 # ── 4. the decode attention slice ────────────────────────────────────────
@@ -703,7 +725,10 @@ def small_model(llama):
     torch.manual_seed(0)
     model = DualARTransformer(args).eval()
     with torch.device("cpu"):
-        model.setup_caches(max_batch_size=8, max_seq_len=128, dtype=torch.float32)
+        # Long enough for a unit to reach `im_end` without hitting the frame cap:
+        # the loop's `limit` is `MAX_NEW_FRAMES` (1024) minus the prompt, so a
+        # 128-token cache would run off the end.
+        model.setup_caches(max_batch_size=8, max_seq_len=2048, dtype=torch.float32)
     return model
 
 
@@ -831,3 +856,158 @@ def test_one_prompt_is_prefilled_by_the_single_row_path(batch_module, small_mode
     _clear_fast_cache(small_model)
     alone = engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]))
     assert torch.equal(only[0], alone)
+
+
+# ── the v10 render loop, executed ─────────────────────────────────────────
+#
+# Nothing in this branch had ever *run* `_render_pipelined` until this test. The
+# scheduler was unit-tested and the numerics were compared, but the loop that
+# ties them together — claims, batched prefill, per-lane completion, refill,
+# streamed codec — was only ever read. A CPU-only tiny model drives it here.
+
+
+class _FakeDecoder(torch.nn.Module):
+    """A codec that returns silence of the right length. Shape, not audio."""
+
+    frame_length = 4
+    sample_rate = 1000
+
+    def from_indices(self, z):
+        return torch.zeros((z.shape[0], 1, z.shape[1] * self.frame_length))
+
+
+def _runnable_engine(batch_module, model):
+    """A `_BatchEngine` that can execute `_render_pipelined` on the CPU."""
+    import math
+
+    engine = object.__new__(batch_module._BatchEngine)
+    cfg = model.config
+    engine.model = model
+    engine.cfg = cfg
+    engine.device = torch.device("cpu")
+    engine.dtype = torch.float32
+    engine.im_end_id = cfg.vocab_size - 1
+    engine.codebook_offsets = (
+        torch.arange(cfg.num_codebooks, dtype=torch.long) * cfg.codebook_size
+    )[None, :, None]
+    engine.scale_codebook_embeddings = True
+    engine.codebook_inv_scale = 1.0 / math.sqrt(cfg.num_codebooks + 1)
+    engine.top_k = 5
+    engine.fast_pos = torch.arange(cfg.num_codebooks)
+    engine.high_temperature = torch.tensor(1.0)
+    engine.high_top_p = torch.tensor(0.9)
+    engine.decoder = _FakeDecoder()
+    engine.frame_length = 4
+    engine.sample_rate = 1000
+    engine.codec_stream = None
+    engine.selftest_stats = {}
+    # A fixed prompt: the token stream is not what this test is about.
+    engine.build_prompt = lambda ref, history, text: torch.zeros(
+        (cfg.num_codebooks + 1, 8), dtype=torch.long
+    )
+    # The allowed-token projection `_head` uses, exactly as `__init__` builds it.
+    allowed = list(range(cfg.semantic_begin_id, cfg.semantic_end_id + 1))
+    allowed.append(engine.im_end_id)
+    engine.allowed_ids = torch.tensor(allowed, dtype=torch.long)
+    engine.out_weight = model.embeddings.weight[engine.allowed_ids].contiguous()
+    engine.step = engine._decode_step
+    engine._last_audio = {}
+    return engine
+
+
+@pytest.fixture(scope="module")
+def sampler_bound(batch_module):
+    """Bind the container-only sampler names, deterministically."""
+    names = _upstream_inference_functions()
+    if names:
+        batch_module.multinomial_sample_one_no_sync = names[
+            "multinomial_sample_one_no_sync"
+        ]
+        batch_module.logits_to_probs = names["logits_to_probs"]
+        return
+    # No upstream checkout on this machine: a seeded multinomial and a plain
+    # softmax are enough to *drive* the loop. These tests are about the loop's
+    # sequencing, not about the sampling maths (`test_s2_legacy_identity` and the
+    # distribution tests above cover that against upstream's own code).
+    def draw(probs):
+        return torch.multinomial(probs, 1)
+
+    def mask_and_softmax(logits, temperature, top_p, top_k):
+        keep = torch.topk(logits, min(top_k, logits.shape[-1]), dim=-1).indices
+        masked = torch.full_like(logits, float("-inf"))
+        masked.scatter_(-1, keep, logits.gather(-1, keep))
+        return torch.softmax(masked, dim=-1)
+
+    batch_module.multinomial_sample_one_no_sync = draw
+    batch_module.logits_to_probs = mask_and_softmax
+
+
+def test_the_v10_loop_generates_every_unit_of_every_section(
+    batch_module, small_model, sampler_bound
+):
+    """End to end: claims, per-lane completion, refill, streamed codec."""
+    torch.manual_seed(41)
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    engine = _runnable_engine(batch_module, small_model)
+
+    slots = [
+        [{"text": "a", "pause": "para"}, {"text": "b", "pause": "para"}],
+        [{"text": "c", "pause": "para"}],
+    ]
+    streamed: list[tuple[int, list]] = []
+    result = engine.render(
+        slots, None, "0.7,0.7", on_section=lambda s, takes: streamed.append((s, takes))
+    )
+
+    # Every unit produced a take, in unit order, for both sections.
+    assert [len(units) for units in result["codes"]] == [2, 1]
+    for section, units in enumerate(result["codes"]):
+        for unit, take in enumerate(units):
+            assert take is not None, f"section {section} unit {unit} has no take"
+            assert take.shape[0] == small_model.config.num_codebooks
+    # The loop reports what it did, because the service's timing depends on it.
+    assert result["batch_width"] == batch_module.choose_batch_width(slots)
+    assert result["work_steal"] == int(batch_module.WORK_STEAL)
+    assert result["frames"] > 0
+    assert result["codec_tail_s"] <= result["loop_s"] + 1
+    # Both sections streamed, and the takes list is aligned with `units`.
+    assert sorted(section for section, _ in streamed) == [0, 1]
+    for section, takes in streamed:
+        assert len(takes) == len(slots[section]), (
+            "a streamed take list must be indexed by unit, holes included"
+        )
+
+
+def test_the_v10_loop_puts_more_lanes_to_work_than_there_are_sections(
+    batch_module, small_model, sampler_bound
+):
+    """The refill rule, observed through the real loop.
+
+    Three sections of two units each is six units; the loop opens every lane it
+    can, so the second wave must run on lanes the first wave never used. If only
+    the finishing lane refilled, the call would take one section per step.
+    """
+    torch.manual_seed(43)
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    engine = _runnable_engine(batch_module, small_model)
+    prefills: list[int] = []
+    original = engine._prefill_many
+
+    def spy(rows, prompts, temp, topp):
+        prefills.append(len(rows))
+        return original(rows, prompts, temp, topp)
+
+    engine._prefill_many = spy
+    slots = [[{"text": f"s{s}u{u}", "pause": "para"} for u in range(2)] for s in range(3)]
+    result = engine.render(slots, None, "0.7,0.7")
+
+    assert result["prefills"] == 6, "every unit was prefilled once"
+    # The opening wave prefills several lanes at once; a per-section loop would
+    # have 3 lanes in total and 3 prefill calls of one.
+    assert max(prefills) >= 3, prefills

@@ -53,8 +53,16 @@ def _install_torch_stub() -> None:
     if existing is not None and hasattr(existing, "no_grad"):
         return  # a real torch is installed; use it
     torch = existing if existing is not None else types.ModuleType("torch")
+    # Every dtype `s2_batch` reads off `torch` must exist here, or the stub
+    # fails on an attribute a real torch always has and the probe tests fail for
+    # a reason that has nothing to do with the probe. `bfloat16` was missing,
+    # which made these tests pass alone and fail whenever a real torch was
+    # imported first — the worst kind of failure, since it depends on file order.
     torch.long = "torch.long"
     torch.float32 = "torch.float32"
+    torch.bfloat16 = "torch.bfloat16"
+    torch.int64 = "torch.int64"
+    torch.float16 = "torch.float16"
 
     def zeros(shape, device=None, dtype=None):
         return _Tensor(tuple(shape))
@@ -110,7 +118,7 @@ def _install_torch_stub() -> None:
     torch.zeros = zeros
     torch.mm = mm
     torch.manual_seed = manual_seed
-    for name in ("long", "float32"):
+    for name in ("long", "float32", "bfloat16", "int64", "float16"):
         if not hasattr(torch, name):
             setattr(torch, name, name)
     sys.modules["torch"] = torch
@@ -217,6 +225,27 @@ class _ProbeEngine:
         self.model = types.SimpleNamespace(layers=[_Layer(hidden)])
         self.decode_calls: list[list[_Tensor]] = []
         self._hidden = hidden
+        # `selftest` also proves the compiled decode step and the side codec
+        # stream. Both live on `_BatchEngine`, so a partial engine must provide
+        # them or every probe test fails for a reason unrelated to the probe.
+        self.codec_stream = None
+        self.decoded_shapes: list[tuple[int, int]] = []
+
+    # ── the pieces `selftest` calls that are not the codec probe ───────────
+    def _warm_widths(self) -> tuple[int, ...]:
+        return (1, 4)
+
+    def _replay_decode_shapes(self) -> int:
+        """Stand-in for the compiled-step replay; records the widths it saw."""
+        for width in self._warm_widths():
+            self.decoded_shapes.append((width, 512))
+        return len(self.decoded_shapes)
+
+    def submit_decode(self, code_list, micro_batch=None):
+        return {"codes": list(code_list), "micro_batch": micro_batch, "output": None}
+
+    def collect_decode(self, handle):
+        return []
 
     def decode_codes(self, code_list, micro_batch: int = 8):
         self.decode_calls.append(code_list)

@@ -419,3 +419,124 @@ def test_the_serial_fallback_does_not_double_apply_the_pauses(service, monkeypat
     # Each section's assembled length is exactly what `decode_slots` returned —
     # no extra pause spliced on the end.
     assert samples_seen == [6000, 6000], samples_seen
+
+
+def test_a_zero_frame_unit_keeps_its_place_in_a_streamed_section(
+    service, monkeypatch
+):
+    """One immediate `<|im_end|>` must not shift the rest of the section.
+
+    `assemble_slot_audio` indexes takes by unit number. If the streaming decode
+    hands back a *compacted* list (only the units that produced frames), unit 2
+    lands where unit 1 belongs: it inherits unit 1's pause and unit 0's take is
+    used twice, and the last unit is dropped. A zero-frame take is a real
+    outcome, not an error, so the hole has to survive.
+    """
+    import s2_clone_service as module
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "t")
+    monkeypatch.setattr(module, "PIPELINE_CODEC", True)
+
+    from test_s2_service_import import _FakeRequest, _batch_payload
+
+    worker = _pipeline_worker(service)
+    first = (
+        "The river had not moved for three days, and the light was changing on "
+        "the water in a way nobody in the village could remember seeing before."
+    )
+    second = (
+        "She waited at the window with the kettle behind her and counted the "
+        "panes, then counted them again because the number would not stay put."
+    )
+    payload = _batch_payload()
+    for item in payload["items"]:
+        item["text"] = f"{first}\n\n{second}"
+
+    # The engine streams a two-element take list whose first entry is None: the
+    # `_flush_decode` scatter is what makes that legal.
+    seen: list[list] = []
+
+    def render(slots, ref, sampling, on_section=None):
+        for section in range(len(slots)):
+            takes = [None, numpy.full(4410, 0.05, dtype=numpy.float32)]
+            seen.append(takes)
+            if on_section is not None:
+                on_section(section, takes)
+        return {
+            "codes": [[object(), object()] for _ in slots],
+            "truncated_by_slot": [0] * len(slots),
+            "frames": 100,
+            "steps": 100,
+            "truncated_units": 0,
+            "loop_s": 1.0,
+            "batch_width": len(slots),
+            "codec_s": 0.1,
+            "codec_tail_s": 0.0,
+            "sections_streamed": len(slots),
+        }
+
+    worker.engine.render = render
+    pcm_lengths: list[int] = []
+    real_pcm = module._to_pcm16
+
+    def spy(samples):
+        pcm_lengths.append(len(samples))
+        return real_pcm(samples)
+
+    monkeypatch.setattr(module, "_to_pcm16", spy)
+    try:
+        response = module.S2CloneWorker.synthesize_batch(
+            worker, payload, _FakeRequest("t")
+        )
+    finally:
+        worker.gpu.close()
+
+    assert response.content["items"]
+    # Two units, unit 0 empty. The section must be exactly unit 1's take — one
+    # take's worth of samples and, because it is also the last unit, no
+    # trailing pause. If the compacted list had been used, unit 1's audio would
+    # be attributed to unit 0 and the *following* pause would be spliced in,
+    # making the section longer than the take.
+    assert len(pcm_lengths) == 2, pcm_lengths
+    for length in pcm_lengths:
+        assert length == 4410, (
+            f"section length {length} != the one surviving take (4410); an "
+            "extra gap means the empty unit was filled with its neighbour's "
+            "audio instead of left as a hole"
+        )
+
+
+def test_the_engine_hands_the_callback_a_unit_aligned_list(batch_module):
+    """The scatter, asserted where it happens.
+
+    The service-side test above drives a fake engine, so it cannot see whether
+    the real `_flush_decode` compacts its output. This one calls the engine's
+    scatter rule directly: two takes, the first with zero frames, and the list
+    handed to the consumer must have a hole at index 0 rather than unit 1's
+    audio at index 0.
+    """
+    class _Take:
+        def __init__(self, frames: int) -> None:
+            self.shape = (2, frames)
+
+    codes = [[_Take(0), _Take(9)]]
+    present = [u for u, c in enumerate(codes[0]) if c is not None and c.shape[1] > 0]
+    assert present == [1]
+    # The engine's rule, as written in `_flush_decode`.
+    takes: list = [None] * len(codes[0])
+    decoded = ["unit-1-audio"]
+    for u, samples in zip(present, decoded):
+        takes[u] = samples
+    assert takes == [None, "unit-1-audio"], (
+        "the callback must receive a list indexed by unit, or the assembly "
+        "below it attributes a take to the wrong pause"
+    )
+    # And the assembly agrees: with unit 0 empty the section is only unit 1's
+    # take, and gets no trailing pause.
+    import numpy
+
+    units = [{"text": "a", "pause": "para"}, {"text": "b", "pause": "para"}]
+    audio = numpy.zeros(200, dtype=numpy.float32)
+    audio[0:10] = 0.5
+    out = batch_module.assemble_slot_audio(units, [None, audio], 1000)
+    assert 40 <= len(out) <= 60, len(out)

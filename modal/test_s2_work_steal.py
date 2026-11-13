@@ -359,3 +359,143 @@ def test_the_codec_runs_before_generation_finishes(batch_module):
     flush(active_rows=0)
     assert decoded == [0, 1]
     assert pending == []
+
+
+class TestTheRealLoopRefills:
+    """The GPU loop's own refill rule, not a harness's idea of it.
+
+    The earlier scheduler tests drove `claim()` directly and claimed for every
+    lane on every step, which a GPU loop only does if something asks it to. The
+    shipped loop asks in exactly two places — the opening `start_lanes_batch()`
+    and `refill_idle_lanes()` after each done-set — so those two are what this
+    models. A 3-section call that only refilled the lane that finished would take
+    one section per step, forever.
+    """
+
+    @staticmethod
+    def _loop(sched, width: int, *, refill_every_tick: bool) -> int:
+        """Run the loop's own shape: open, then tick until nothing is claimable.
+
+        A tick is not "one unit per lane". The engine steps a lane's *whole unit*
+        (which can be dozens of decode steps) and only then frees it, so a unit is
+        one tick here. That is what makes the refill rule visible: after the
+        opening wave, the lanes that were idle have no unit to finish, so only a
+        refill can give them one.
+        """
+        # Opening wave: every idle lane claims, as `start_lanes_batch` does.
+        for lane in range(width):
+            claim = sched.claim()
+            if claim is None:
+                break
+            sched.assign(lane, claim)
+        ticks = 0
+        while not sched.is_done():
+            ticks += 1
+            # Every lane holding a claim finishes its unit.
+            for lane in range(width):
+                held = sched.lane[lane]
+                if held is not None:
+                    sched.complete(lane, held, _Codes(held))
+            if refill_every_tick:
+                # `refill_idle_lanes`: every free lane claims again.
+                for lane in range(width):
+                    if sched.lane[lane] is not None:
+                        continue
+                    claim = sched.claim()
+                    if claim is None:
+                        continue
+                    sched.assign(lane, claim)
+            else:
+                # Only the lane that just finished would restart itself, and only
+                # for the section it already owned. With one section per lane and
+                # nothing else claiming, the rest of the book never runs.
+                for lane in range(width):
+                    if sched.lane[lane] is not None:
+                        continue
+                    if lane >= len(sched.slots):
+                        continue
+                    claim = sched.claim()
+                    if claim is None:
+                        continue
+                    sched.assign(lane, claim)
+        return ticks
+
+    def test_three_sections_of_six_units_take_two_steps(self, batch_module):
+        slots = [_units(6) for _ in range(3)]
+        sched = batch_module._UnitScheduler(slots, width=24, work_steal=True)
+        assert self._loop(sched, 24, refill_every_tick=True) == 2
+
+    def test_without_the_refill_the_call_creeps_one_section_per_step(self, batch_module):
+        """The regression this test exists for.
+
+        `finish` used to start only the lane that finished. With 3 sections and
+        24 lanes, 21 lanes never finish anything, so nothing ever asks them to
+        claim and the book advances one section's worth of units per step.
+        """
+        slots = [_units(6) for _ in range(3)]
+        sched = batch_module._UnitScheduler(slots, width=24, work_steal=True)
+        without = self._loop(sched, 24, refill_every_tick=False)
+        sched2 = batch_module._UnitScheduler(slots, width=24, work_steal=True)
+        with_refill = self._loop(sched2, 24, refill_every_tick=True)
+        assert without > with_refill, (without, with_refill)
+        assert with_refill == 2
+
+    def test_the_opening_wave_uses_every_lane_it_can(self, batch_module):
+        """A 12-section book must put 12 lanes to work on the first claim."""
+        slots = [_units(2) for _ in range(12)]
+        sched = batch_module._UnitScheduler(slots, width=24, work_steal=True)
+        used = 0
+        for lane in range(24):
+            claim = sched.claim()
+            if claim is None:
+                break
+            sched.assign(lane, claim)
+            used += 1
+        assert used >= 12, f"only {used} of 24 lanes got work"
+
+
+class TestEmptyTakesKeepTheirPlace:
+    """A zero-frame take must leave a hole, not shift its neighbours.
+
+    `assemble_slot_audio` indexes takes by **unit number**. Handing it a compacted
+    list — which is what "drop the zero-frame units" produces — moves every later
+    take onto the previous unit's pause and drops the last one, so one immediate
+    `<|im_end|>` changes the rest of the section.
+    """
+
+    def test_decoded_takes_are_scattered_back_to_unit_indexes(self, batch_module):
+        class _Take:
+            def __init__(self, frames: int) -> None:
+                self.shape = (2, frames)
+
+        codes = [[_Take(5), _Take(0), _Take(7)]]  # unit 1 is empty
+        present = [
+            u for u, c in enumerate(codes[0]) if c is not None and c.shape[1] > 0
+        ]
+        assert present == [0, 2]
+        # The engine scatters with `zip(present, decoded)`; model that here.
+        decoded = ["take-0", "take-2"]
+        takes: list = [None] * len(codes[0])
+        for u, samples in zip(present, decoded):
+            takes[u] = samples
+        assert takes == ["take-0", None, "take-2"], (
+            "a compacted list would be ['take-0', 'take-2'] and the third unit "
+            "would inherit unit 1's pause"
+        )
+
+    def test_assembly_with_a_hole_keeps_the_following_units_pauses(self, batch_module):
+        import numpy
+
+        rate = 1000
+        units = [
+            {"text": "a", "pause": "sentence"},
+            {"text": "b", "pause": "para"},
+            {"text": "c", "pause": "para"},
+        ]
+        take = numpy.zeros(200, dtype=numpy.float32)
+        take[0:10] = 0.5
+        # Unit 1 produced nothing; unit 2 must still get its own trim and no
+        # trailing pause.
+        out = batch_module.assemble_slot_audio(units, [take, None, take], rate)
+        # trim(~50) + sentence gap(400) + trim(~50), and nothing after the last.
+        assert 480 <= len(out) <= 520, len(out)

@@ -97,3 +97,35 @@ describe("clone batch rollout gating", () => {
     expect(modalCloneAudioTransport(process.env)).toBe("inline");
   });
 });
+
+describe("the cold /ready body", () => {
+  it("is read for the row cap too, so a parked book keeps its width", async () => {
+    // `/ready` answers 503 when nothing is warm. The two facts the planner needs
+    // — transport and row cap — describe the *build*, not the container, so they
+    // must be present on that body. A build that omitted them made a book that
+    // parked and resumed re-plan at 24 inline rows even against an r2 build.
+    vi.stubEnv("MODAL_S2_BATCH_SIZE", "");
+    const cold = new Response(
+      JSON.stringify({
+        ready: false,
+        warm_containers: 0,
+        audio_transport: "r2",
+        max_batch_items: 32,
+      }),
+      { status: 503 }
+    );
+    const body = (await cold.json()) as Record<string, unknown>;
+    noteModalCloneAudioTransport(body.audio_transport);
+    noteModalCloneMaxBatchItems(body.max_batch_items);
+    expect(modalCloneBatchRowsForTransport(process.env)).toBe(32);
+  });
+
+  it("a cold body with neither field keeps the deployed 24-row ceiling", () => {
+    vi.stubEnv("MODAL_S2_BATCH_SIZE", "");
+    resetModalCloneAudioTransportForTests();
+    // Exactly the live v9 shape: no transport, no cap.
+    noteModalCloneAudioTransport(undefined);
+    noteModalCloneMaxBatchItems(undefined);
+    expect(modalCloneBatchRowsForTransport(process.env)).toBe(24);
+  });
+});

@@ -286,6 +286,115 @@ async function embedSimilarity(clip: Float32Array, take: Float32Array): Promise<
   return speakerPairMin(combined, mask);
 }
 
+/**
+ * Audio measurements for one run's workload: the same numbers for baseline and
+ * candidate, so the gates can be deltas rather than absolute floors.
+ *
+ * Sections are chosen deterministically (evenly spaced plus the shortest and
+ * longest), so the two runs measure the same indexes and a delta means something.
+ */
+async function measureAudio(
+  dir: string,
+  workload: Workload,
+  referenceClip: Float32Array | null,
+  modelsReady: boolean,
+  opts: { dnsmosSections: number }
+): Promise<{
+  similarityMean: number;
+  similarityCount: number;
+  driftWorst: { key: string; drift: number } | null;
+  dnsmos: { sig: number; bak: number; ovrl: number; n: number };
+  silenceRatio: number | null;
+  spliceWorst: { key: string; ratio: number } | null;
+}> {
+  const empty = {
+    similarityMean: 0,
+    similarityCount: 0,
+    driftWorst: null,
+    dnsmos: { sig: 0, bak: 0, ovrl: 0, n: 0 },
+    silenceRatio: null,
+    spliceWorst: null,
+  };
+  const rows = (workload.sections ?? []).filter(
+    (row) => row.file && existsSync(join(dir, workload.name, row.file))
+  );
+  if (!rows.length) return empty as never;
+
+  const sample: SectionRow[] = [];
+  const step = Math.max(1, Math.floor(rows.length / opts.dnsmosSections));
+  for (let i = 0; i < rows.length; i += step) {
+    sample.push(rows[i]!);
+    if (sample.length >= opts.dnsmosSections) break;
+  }
+  // Always include the shortest and longest: a truncation or a padding problem
+  // shows up at one of the extremes.
+  const byDuration = [...rows].sort(
+    (a, b) => (Number(a.duration_s) || 0) - (Number(b.duration_s) || 0)
+  );
+  for (const edge of [byDuration[0], byDuration[byDuration.length - 1]]) {
+    if (edge && !sample.includes(edge)) sample.push(edge);
+  }
+
+  let similaritySum = 0;
+  let similarityCount = 0;
+  let driftWorst: { key: string; drift: number } | null = null;
+  const dnsmosSum = { sig: 0, bak: 0, ovrl: 0, n: 0 };
+  let silenceWorst: { key: string; ratio: number } | null = null;
+  let spliceWorst: { key: string; ratio: number } | null = null;
+
+  for (const row of sample) {
+    const take = decodeAudio(join(dir, workload.name, row.file!), REF_RATE);
+    if (referenceClip) {
+      const similarity = await embedSimilarity(referenceClip, take.pcm);
+      if (similarity != null) {
+        similaritySum += similarity;
+        similarityCount += 1;
+      }
+      // Drift inside the take: first 15 s vs last 15 s, each against the clip.
+      const fifteen = Math.min(15 * REF_RATE, Math.floor(take.pcm.length / 2));
+      if (fifteen > REF_RATE) {
+        const head = await embedSimilarity(referenceClip, take.pcm.subarray(0, fifteen));
+        const tail = await embedSimilarity(
+          referenceClip,
+          take.pcm.subarray(take.pcm.length - fifteen)
+        );
+        if (head != null && tail != null) {
+          const drift = tail - head;
+          if (!driftWorst || drift < driftWorst.drift) driftWorst = { key: row.key, drift };
+        }
+      }
+    }
+    if (modelsReady) {
+      const scored = await dnsmos(take.pcm);
+      if (scored) {
+        dnsmosSum.sig += scored.sig;
+        dnsmosSum.bak += scored.bak;
+        dnsmosSum.ovrl += scored.ovrl;
+        dnsmosSum.n += 1;
+      }
+    }
+    const ratio = silenceRatio(take.pcm);
+    if (!silenceWorst || Math.abs(ratio - 20) > Math.abs(silenceWorst.ratio - 20)) {
+      silenceWorst = { key: row.key, ratio };
+    }
+    const outlier = maxStepOutlier(take.pcm);
+    if (!spliceWorst || outlier > spliceWorst.ratio) {
+      spliceWorst = { key: row.key, ratio: outlier };
+    }
+  }
+
+  return {
+    similarityMean: similarityCount ? similaritySum / similarityCount : 0,
+    similarityCount,
+    driftWorst,
+    dnsmos: dnsmosSum,
+    // The section furthest from a typical 20% silence share, so one badly-paced
+    // take shows up rather than averaging away.
+    silenceRatio: silenceWorst ? silenceWorst.ratio : null,
+    spliceWorst,
+  };
+}
+
 // ── main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -438,78 +547,48 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Similarity, drift, DNSMOS, silence.
-    let similaritySum = 0;
-    let similarityCount = 0;
-    let driftWorst: { key: string; drift: number } | null = null;
-    let silenceWorst: { key: string; ratio: number } | null = null;
-    let spliceWorst: { key: string; ratio: number } | null = null;
-    const sample: SectionRow[] = [];
-    const step = Math.max(1, Math.floor(audioRows.length / DNSMOS_SECTIONS));
-    for (let i = 0; i < audioRows.length; i += step) {
-      sample.push(audioRows[i]!);
-      if (sample.length >= DNSMOS_SECTIONS) break;
-    }
-    // Always include the shortest and longest, which is where a truncation or a
-    // padding problem shows up.
-    const byDuration = [...audioRows].sort(
-      (a, b) => (Number(a.duration_s) || 0) - (Number(b.duration_s) || 0)
+    // Similarity, drift, DNSMOS, silence — measured on **both** runs so the
+    // gates can be deltas. An absolute floor alone would pass a candidate that
+    // is measurably worse than its own baseline but still above 3.0, which is
+    // exactly the regression this harness exists to catch.
+    const measured = await measureAudio(candidateDir, after, referenceClip, modelsReady, {
+      dnsmosSections: DNSMOS_SECTIONS,
+    });
+    const baselineMeasured = await measureAudio(
+      baselineDir,
+      before,
+      referenceClip,
+      modelsReady,
+      { dnsmosSections: DNSMOS_SECTIONS }
     );
-    for (const edge of [byDuration[0], byDuration[byDuration.length - 1]]) {
-      if (edge && !sample.includes(edge)) sample.push(edge);
-    }
 
-    const dnsmosSum = { sig: 0, bak: 0, ovrl: 0, n: 0 };
-    for (const row of sample) {
-      const path = join(candidateDir, after.name, row.file!);
-      const take = decodeAudio(path, REF_RATE);
-      if (referenceClip) {
-        const similarity = await embedSimilarity(referenceClip, take.pcm);
-        if (similarity != null) {
-          similaritySum += similarity;
-          similarityCount += 1;
-        }
-        // Drift inside the take: first 15 s vs last 15 s, each against the clip.
-        const fifteen = Math.min(15 * REF_RATE, Math.floor(take.pcm.length / 2));
-        if (fifteen > REF_RATE) {
-          const head = await embedSimilarity(referenceClip, take.pcm.subarray(0, fifteen));
-          const tail = await embedSimilarity(
-            referenceClip,
-            take.pcm.subarray(take.pcm.length - fifteen)
+    // ── speaker similarity: delta first, floor second ────────────────────
+    if (measured.similarityCount) {
+      const mean = measured.similarityMean;
+      if (baselineMeasured.similarityCount) {
+        const delta = mean - baselineMeasured.similarityMean;
+        // The plan's gate is `>= baseline_sim - 0.01`.
+        if (delta < -0.01) {
+          fail(
+            `speaker similarity fell ${delta.toFixed(3)} against the baseline ` +
+              `(${baselineMeasured.similarityMean.toFixed(3)} -> ${mean.toFixed(3)}); ` +
+              "the plan allows at most -0.01"
           );
-          if (head != null && tail != null) {
-            const drift = tail - head;
-            if (!driftWorst || drift < driftWorst.drift) driftWorst = { key: row.key, drift };
-          }
+        } else {
+          pass(
+            `speaker similarity ${mean.toFixed(3)} (baseline ` +
+              `${baselineMeasured.similarityMean.toFixed(3)}, delta ` +
+              `${delta >= 0 ? "+" : ""}${delta.toFixed(3)})`
+          );
         }
+      } else {
+        skip("baseline produced no similarity score; only the absolute floor applies");
       }
-      if (modelsReady) {
-        const scored = await dnsmos(take.pcm);
-        if (scored) {
-          dnsmosSum.sig += scored.sig;
-          dnsmosSum.bak += scored.bak;
-          dnsmosSum.ovrl += scored.ovrl;
-          dnsmosSum.n += 1;
-        }
-      }
-      const ratio = silenceRatio(take.pcm);
-      if (!silenceWorst || Math.abs(ratio - 20) > Math.abs(silenceWorst.ratio - 20)) {
-        silenceWorst = { key: row.key, ratio };
-      }
-      const outlier = maxStepOutlier(take.pcm);
-      if (!spliceWorst || outlier > spliceWorst.ratio) {
-        spliceWorst = { key: row.key, ratio: outlier };
-      }
+      // Absolute floor: 0.70 is where `job 12534aaa`'s drifted section sat, so
+      // 0.80 is "recognisably this voice" regardless of what the baseline did.
+      if (mean < 0.8) fail(`mean speaker similarity ${mean.toFixed(3)} < 0.80 absolute floor`);
     }
-
-    if (similarityCount) {
-      const mean = similaritySum / similarityCount;
-      // 0.70 is where `job 12534aaa`'s drifted section sat; a take at or above
-      // 0.80 is recognisably the reference voice.
-      if (mean < 0.8) fail(`mean speaker similarity ${mean.toFixed(3)} < 0.80`);
-      else pass(`mean speaker similarity ${mean.toFixed(3)} over ${similarityCount} takes`);
-    }
-    if (referenceClip && !similarityCount) {
+    if (referenceClip && !measured.similarityCount) {
       // The model returned null, which means it could not see two speech windows
       // in the pair. Saying nothing here would let a run that measured no
       // speaker likeness report "all gates passed".
@@ -518,48 +597,93 @@ async function main(): Promise<void> {
           "speech windows); check the reference clip and the take lengths"
       );
     }
-    if (driftWorst) {
-      if (driftWorst.drift < -0.05) {
+
+    // ── intra-section drift ──────────────────────────────────────────────
+    if (measured.driftWorst) {
+      const drift = measured.driftWorst.drift;
+      if (drift < -0.05) {
         fail(
-          `intra-section drift ${driftWorst.drift.toFixed(3)} on section ` +
-            `${driftWorst.key} (tail is measurably less like the reference)`
+          `intra-section drift ${drift.toFixed(3)} on section ` +
+            `${measured.driftWorst.key} (tail is measurably less like the reference)`
         );
       } else {
-        pass(`worst intra-section drift ${driftWorst.drift.toFixed(3)}`);
-      }
-    }
-    if (dnsmosSum.n) {
-      const n = dnsmosSum.n;
-      const sig = dnsmosSum.sig / n;
-      const bak = dnsmosSum.bak / n;
-      const ovrl = dnsmosSum.ovrl / n;
-      // P.835 is a 1–5 scale; 3.0 is the usual "acceptable" line for synthetic
-      // speech, and OVRL is what a listener would rate.
-      if (ovrl < 3.0) fail(`DNSMOS OVRL ${ovrl.toFixed(2)} < 3.0`);
-      else
-        pass(
-          `DNSMOS SIG ${sig.toFixed(2)} BAK ${bak.toFixed(2)} OVRL ${ovrl.toFixed(2)} ` +
-            `over ${n} takes`
-        );
-    }
-    if (silenceWorst) {
-      // A large deviation either way is a pacing change: too little silence reads
-      // as run-together words, too much as the narrator stopping.
-      console.log(`  info  silence ratio ${silenceWorst.ratio.toFixed(1)}% (${silenceWorst.key})`);
-    }
-    if (spliceWorst) {
-      if (spliceWorst.ratio > 40) {
-        fail(
-          `sample step ${spliceWorst.ratio.toFixed(0)}x the take's own p99.9 on ` +
-            `${spliceWorst.key} — a splice click`
-        );
-      } else {
-        pass(`no splice click (worst step ${spliceWorst.ratio.toFixed(0)}x p99.9)`);
+        pass(`worst intra-section drift ${drift.toFixed(3)}`);
       }
     }
 
-    // ASR. Needs both the text and a working sidecar.
-    const werRows = sample.slice(0, WER_SECTIONS);
+    // ── DNSMOS: delta first, floor second ────────────────────────────────
+    if (measured.dnsmos.n) {
+      const n = measured.dnsmos.n;
+      const sig = measured.dnsmos.sig / n;
+      const bak = measured.dnsmos.bak / n;
+      const ovrl = measured.dnsmos.ovrl / n;
+      const label =
+        `DNSMOS SIG ${sig.toFixed(2)} BAK ${bak.toFixed(2)} OVRL ${ovrl.toFixed(2)} ` +
+        `over ${n} takes`;
+      if (baselineMeasured.dnsmos.n) {
+        const bn = baselineMeasured.dnsmos.n;
+        const deltas = {
+          sig: sig - baselineMeasured.dnsmos.sig / bn,
+          bak: bak - baselineMeasured.dnsmos.bak / bn,
+          ovrl: ovrl - baselineMeasured.dnsmos.ovrl / bn,
+        };
+        // The plan allows -0.05 on each of SIG, BAK, OVRL.
+        const worst = Object.entries(deltas).sort((a, b) => a[1] - b[1])[0]!;
+        if (worst[1] < -0.05) {
+          fail(
+            `${label}: ${worst[0].toUpperCase()} fell ${worst[1].toFixed(3)} ` +
+              "against the baseline (the plan allows -0.05)"
+          );
+        } else {
+          pass(`${label}; worst delta ${worst[0].toUpperCase()} ${worst[1].toFixed(3)}`);
+        }
+      } else {
+        pass(label);
+        skip("baseline produced no DNSMOS score; only the absolute floor applies");
+      }
+      // Absolute floor: P.835 is 1-5, and 3.0 is the usual "acceptable" line.
+      if (ovrl < 3.0) fail(`DNSMOS OVRL ${ovrl.toFixed(2)} < 3.0 absolute floor`);
+    }
+
+    // ── pacing: silence ratio within ±2% of the baseline ─────────────────
+    if (measured.silenceRatio != null && baselineMeasured.silenceRatio != null) {
+      const delta = measured.silenceRatio - baselineMeasured.silenceRatio;
+      if (Math.abs(delta) > 2) {
+        fail(
+          `silence ratio moved ${delta.toFixed(1)} points against the baseline ` +
+            `(${baselineMeasured.silenceRatio.toFixed(1)}% -> ` +
+            `${measured.silenceRatio.toFixed(1)}%; the plan allows 2)`
+        );
+      } else {
+        pass(
+          `silence ratio ${measured.silenceRatio.toFixed(1)}% ` +
+            `(baseline ${baselineMeasured.silenceRatio.toFixed(1)}%)`
+        );
+      }
+    } else if (measured.silenceRatio != null) {
+      console.log(
+        `  info  silence ratio ${measured.silenceRatio.toFixed(1)}% (no baseline to compare)`
+      );
+    }
+
+    // ── splice clicks ────────────────────────────────────────────────────
+    if (measured.spliceWorst) {
+      if (measured.spliceWorst.ratio > 40) {
+        fail(
+          `sample step ${measured.spliceWorst.ratio.toFixed(0)}x the take's own p99.9 on ` +
+            `${measured.spliceWorst.key} — a splice click`
+        );
+      } else {
+        pass(`no splice click (worst step ${measured.spliceWorst.ratio.toFixed(0)}x p99.9)`);
+      }
+    }
+
+    // ASR. Needs both the text and a working sidecar. Every section with audio
+    // on disk is eligible: the text that was sent travels in the manifest, so
+    // WER is measured against the narration itself, not against the other run.
+    const werRows = (after.sections ?? [])
+      .filter((row) => row.file && existsSync(join(candidateDir, after.name, row.file)))
+      .slice(0, WER_SECTIONS);
     let werSum = 0;
     let werCount = 0;
     let repeatProblem: string | null = null;
@@ -582,17 +706,51 @@ async function main(): Promise<void> {
       const repeat = longRepeatOrDrop(source, result.text ?? "");
       if (repeat && !repeatProblem) repeatProblem = `${row.key}: ${repeat}`;
     }
+    // Baseline WER over the same section keys, so the gate is a delta. The plan
+    // allows `baseline_WER + 0.5%`; the absolute 5% stays as a sanity floor.
+    let baselineWerSum = 0;
+    let baselineWerCount = 0;
+    for (const row of werRows) {
+      const beforeRow = (before.sections ?? []).find((entry) => entry.key === row.key);
+      if (!beforeRow?.file || !existsSync(join(baselineDir, before.name, beforeRow.file))) {
+        continue;
+      }
+      const source = (beforeRow.text ?? "").trim();
+      if (!source) continue;
+      const baselineResult = transcribe(join(baselineDir, before.name, beforeRow.file));
+      if (!baselineResult.ok || !baselineResult.text) continue;
+      baselineWerSum += wordErrorRate(source, baselineResult.text);
+      baselineWerCount += 1;
+    }
+
     if (sidecarError) {
       skip(
         `WER not measured: scripts/whisper-qa.py failed (${sidecarError.slice(0, 120)}). ` +
           "Install faster-whisper to enable it."
       );
     } else if (!werCount) {
-      skip("WER not measured: no comparable baseline transcripts");
+      skip("WER not measured: no comparable transcripts");
     } else {
       const mean = (werSum / werCount) * 100;
-      if (mean >= 5) fail(`mean WER ${mean.toFixed(2)}% (>= 5%)`);
-      else pass(`mean WER ${mean.toFixed(2)}% over ${werCount} sections`);
+      if (baselineWerCount) {
+        const baselineMean = (baselineWerSum / baselineWerCount) * 100;
+        const delta = mean - baselineMean;
+        if (delta > 0.5) {
+          fail(
+            `mean WER rose ${delta.toFixed(2)} points against the baseline ` +
+              `(${baselineMean.toFixed(2)}% -> ${mean.toFixed(2)}%); the plan allows +0.5`
+          );
+        } else {
+          pass(
+            `mean WER ${mean.toFixed(2)}% (baseline ${baselineMean.toFixed(2)}%, ` +
+              `delta ${delta >= 0 ? "+" : ""}${delta.toFixed(2)}) over ${werCount} sections`
+          );
+        }
+      } else {
+        pass(`mean WER ${mean.toFixed(2)}% over ${werCount} sections`);
+        skip("baseline produced no transcript; only the absolute 5% floor applies");
+      }
+      if (mean >= 5) fail(`mean WER ${mean.toFixed(2)}% (>= 5% absolute floor)`);
       if (repeatProblem) fail(`repeat/omission: ${repeatProblem}`);
       else pass("no repeated or missing 6-word runs");
     }

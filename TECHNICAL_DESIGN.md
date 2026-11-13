@@ -1365,6 +1365,23 @@ snapshot would hand a restored container a path it never compiled.
 | Codec decoded per finished section during AR, then encoded and uploaded | all AR, then all codec, then all encode, then all upload | `S2B_PIPELINE_CODEC=0` |
 | `weight_norm` frozen, codec mask cached, micro-batch 16, length-sorted | parametrized convs, mask rebuilt per call, micro-batch 8 | `S2B_CODEC_TUNING=0` |
 | The opening wave's prompts prefilled in one right-padded causal pass | one serial prefill per lane | `S2B_BATCHED_PREFILL=0` |
+
+**v9 is a separate loop, not a set of flags.** `_render_legacy` is PR 283's
+decode loop transcribed: lane `r` owns `slots[r]` for the whole call, units run in
+index order, nothing is work-stolen. That pinning decides the audio — the sampler
+draws from one batched RNG stream, so a lane assignment that differs (say
+"longest remaining section first") consumes different random numbers and renders
+different tokens for any book whose sections differ in length. `_embed` and
+`_fast_step` likewise keep their deployed bodies (a scalar `torch.where`, a CUDA
+`fast_pos` slice) under `LEGACY_RENDER`, because the v10 rewrite is equal in exact
+arithmetic and not bitwise in bfloat16.
+`modal/test_s2_legacy_identity.py` imports the base branch's module out of git and
+compares embeddings, sampling and the loop's statements directly.
+
+**A bare `modal deploy` now targets staging.** A deploy invalidates every GPU
+snapshot for its app, so a branch under review must not be able to evict
+production's: the production name requires `S2C_ALLOW_PRODUCTION=1` (or an
+explicit `S2C_APP_NAME`).
 | `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
 | Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
 | Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
