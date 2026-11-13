@@ -296,9 +296,11 @@ class TestCompletion:
         sched = batch_module._UnitScheduler(slots, width=4)
         claim = sched.claim()
         sched.assign(2, claim)
-        assert 2 not in sched.idle_lanes()
+        assert sched.lane[2] == claim
+        assert claim in sched.inflight
         sched.complete(2, claim, _Codes(0))
-        assert 2 in sched.idle_lanes()
+        assert sched.lane[2] is None
+        assert claim not in sched.inflight
 
     def test_the_scheduler_records_the_prompt_it_built(self, batch_module):
         slots = [_units(2)]
@@ -306,3 +308,54 @@ class TestCompletion:
         claim = sched.claim()
         sched.complete(0, claim, _Codes(0), prompt="PROMPT")
         assert sched.prompts[claim] == "PROMPT"
+
+
+# ── the streamed codec fires before generation ends ────────────────────────
+#
+# The overlap itself lives inside `render`, which needs torch tensors and a GPU.
+# What is testable without either is the *policy* `render` applies, and that is
+# where the bug would be: a gate that never opens until generation has ended
+# turns the streamed path back into the serial one. `test_s2_pipeline` covers the
+# service half (that `on_section` is called on the GPU thread and reaches the
+# encode pool); this covers when a section becomes decodable at all.
+
+
+def test_the_codec_runs_before_generation_finishes(batch_module):
+    """A section's decode must not wait for the slowest row.
+
+    Uses `_UnitScheduler` directly plus the same flush policy `render` applies,
+    so the assertion is about the rule rather than about torch plumbing: with
+    two sections of one unit each, the first to finish is decodable immediately
+    even though the other is still generating.
+    """
+    slots = [[{"text": "a", "pause": "para"}], [{"text": "b", "pause": "para"}]]
+    sched = batch_module._UnitScheduler(slots, width=4, work_steal=True)
+    pending: list[int] = []
+    decoded: list[int] = []
+
+    def flush(active_rows: int):
+        units = sum(len(slots[s]) for s in pending)
+        if pending and (active_rows <= batch_module.CODEC_TAIL_ROWS or units >= batch_module.CODEC_MIN_UNITS):
+            decoded.extend(pending)
+            pending.clear()
+
+    a = sched.claim()
+    b = sched.claim()
+    sched.assign(0, a)
+    sched.assign(1, b)
+
+    # Section 0 finishes while section 1 is still in flight (2 active rows is
+    # below the tail threshold, so the launch is allowed).
+    sched.complete(0, a, type("C", (), {"shape": (2, 5)})())
+    if 0 in sched.finished:
+        pending.append(0)
+    flush(active_rows=1)
+    assert decoded == [0], "section 0 must be decodable before section 1 finishes"
+
+    # Section 1 then finishes; nothing is left behind.
+    sched.complete(1, b, type("C", (), {"shape": (2, 5)})())
+    if 1 in sched.finished:
+        pending.append(1)
+    flush(active_rows=0)
+    assert decoded == [0, 1]
+    assert pending == []

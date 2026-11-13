@@ -152,9 +152,6 @@ def kv_buckets(env) -> tuple[int, ...]:
 
 #: Default buckets for this engine. `choose_kv_len` takes the list as an
 #: argument so a test can exercise both shapes without reloading the module.
-
-#: Default buckets for this engine. `choose_kv_len` takes the list as an
-#: argument so a test can exercise both shapes without reloading the module.
 KV_BUCKETS = kv_buckets(os.environ)
 
 #: Widths the active batch is rounded up to. A 17-unit call runs 24 rows, not
@@ -402,11 +399,11 @@ def _tune_decoder(decoder, device) -> dict:
     no per-call normalisation. This is pure bookkeeping removal: the emitted
     samples are unchanged, which is what `test_s2_codec_tuning` asserts.
 
-    The other codec cost the plan named — the CPU causal mask that
+    The other codec cost — the CPU causal mask that
     `WindowLimitedTransformer.forward` rebuilds and copies to the GPU on every
-    call — is handled by `_MaskCache`, which wraps `from_indices` rather than
-    monkey-patching a library method. It is a cache keyed by the code tensor's
-    frame length, and it hands back the identical mask the module would have
+    call — is handled by `_MaskCache`, which rebinds only the mask *builder* on
+    each causal module (nothing under `/opt/fish-speech` changes) and caches the
+    result per code length. It returns the identical mask the module would have
     built.
 
     Both are opt-out (`S2B_CODEC_TUNING=0`) so staging can isolate them.
@@ -505,9 +502,6 @@ class _BatchEngine:
         self.device = torch.device("cuda")
         self.device_name = torch.cuda.get_device_name(0)
         self.dtype = torch.bfloat16
-        # bf16 matmuls accumulate in fp32 on tensor cores; this is the
-        # documented setting for that and changes no sampled token in practice.
-        torch.set_float32_matmul_precision("high")
 
         model = DualARTransformer.from_pretrained(
             CHECKPOINT_DIR, load_weights=True, max_length=MAX_SEQ_LEN
@@ -562,11 +556,6 @@ class _BatchEngine:
         )
         self.sample_rate = self.decoder.sample_rate
         self.frame_length = self.decoder.frame_length
-        # A fresh CUDA stream for the codec, owned by whichever thread builds
-        # this engine (the GPU thread). Used to decode a finished section while
-        # other rows are still generating; every launch still happens on the
-        # owner thread, which is what the snapshot restore requires.
-        self.codec_stream = torch.cuda.Stream()
         decoder_tuning = _tune_decoder(self.decoder, self.device)
         self.mask_cache = _MaskCache(self.device)
         if CODEC_TUNING:
@@ -688,12 +677,15 @@ class _BatchEngine:
         )
         return attn.wo(y.reshape(bsz, 1, q_size))
 
-    def _attn_prefill(self, attn, x, freqs, row, length: int | None = None):
-        """Causal prefill for one row: fill the cache and attend `length` keys.
+    def _attn_prefill(self, attn, x, freqs, row):
+        """Causal prefill for one row: write its cache, attend its own prompt.
 
-        `length` is the row's real token count; the tensors may be right-padded
-        to the widest prompt in a batched prefill, and causal attention never
-        lets a real token see the padding.
+        One row at a time. A right-padded batched prefill would be valid (causal
+        attention never lets a real token see padding) and would cut the ~108
+        serial prompts per call, but it needs every lane's prompt built before
+        any of them samples, and it is not implemented here: a prefill that is
+        subtly wrong changes the first frame of a section, which is the most
+        audible part of it.
         """
         q, k, v, q_size = self._qkv(attn, x, freqs)  # (1, H, T, D)
         t = x.shape[1]
@@ -1102,7 +1094,6 @@ class _BatchEngine:
         truncated_by_slot = [0] * len(slots)
         audio_by_section: dict[int, list] = {}
         pending_decode: list[int] = []
-        decode_started = 0.0
 
         def start_lane(lane: int) -> None:
             claim = scheduler.claim()
@@ -1156,47 +1147,48 @@ class _BatchEngine:
             # take recorded here is what every later unit of this section is
             # prompted with.
             scheduler.complete(lane, claim, unit_codes)
-            if streaming:
+            if streaming and section in scheduler.finished:
+                # This section has no units left, so its codec decode can run
+                # while other rows keep generating. It is queued either way; the
+                # gate below only decides *when* the launch happens.
                 pending_decode.append(section)
-                # Decode as soon as the section's last unit lands, and only
-                # once enough work has accumulated (or generation is nearly
-                # done) that a codec launch is not contending with a full
-                # batch for HBM bandwidth.
-                if section in scheduler.finished and _codec_may_launch(
-                    pending_decode, scheduler, active_h
-                ):
-                    _flush_decode()
+            # `start_lane` may empty the last lane, so the drain check comes
+            # after it: a lone finished section still needs its decode, and a
+            # queue held back for bandwidth must not survive generation ending.
             start_lane(lane)
+            if streaming:
+                _maybe_flush()
 
-        def _codec_may_launch(queued: list[int], active_rows) -> bool:
-            """Should the codec run now, or buffer for the straggler tail?
-
-            While generation still has a full batch in flight it owns the HBM
-            bandwidth a codec decode would need, so decoding then buys nothing
-            and costs AR throughput. The queue therefore waits for either enough
-            accumulated work to be worth one launch, or for the tail where
-            lanes are running dry and the bandwidth is free.
-            """
-            units = sum(len(slots[s]) for s in queued)
-            live = int(active_rows.sum())
-            if live <= CODEC_TAIL_ROWS:
-                return True
-            return units >= CODEC_MIN_UNITS
+        def _maybe_flush() -> None:
+            if not pending_decode:
+                return
+            units = sum(len(slots[s]) for s in pending_decode)
+            live = int(active_h.sum())
+            # While generation still has rows in flight it owns the HBM
+            # bandwidth a codec decode would need, so a launch then buys nothing
+            # and costs AR throughput. The queue waits for enough accumulated
+            # work to be worth one launch, or for the tail where lanes are
+            # running dry — and a queue that is still waiting when generation
+            # ends is flushed by the loop's final `_flush_decode`.
+            if live <= CODEC_TAIL_ROWS or units >= CODEC_MIN_UNITS:
+                _flush_decode()
 
         def _flush_decode() -> None:
             """Decode queued sections and hand each one to `on_section`.
 
-            The decode itself runs in `torch.inference_mode` on this thread,
-            which is the CUDA owner. Only the finished float arrays cross to the
-            CPU pools, and the copy happens here rather than on a worker thread.
+            The decode runs on this thread, which is the CUDA owner, and is
+            interleaved between `EOS_CHECK_EVERY` ticks rather than after the
+            whole call. Only finished float arrays cross to the CPU pools, and
+            the device→host copy happens here, never on a worker thread.
             """
-            nonlocal decode_started
-            ready = [s for s in pending_decode if s in scheduler.finished]
+            # `pending_decode` only ever gains a section once it has finished,
+            # so the membership check is a guard against a duplicate queue, not
+            # a filter that could drop one.
+            ready = list(dict.fromkeys(pending_decode))
             if not ready:
                 return
             pending_decode.clear()
             t0 = time.time()
-            decode_started = decode_started or t0
             for section in ready:
                 codes_for_section = [
                     c for c in codes[section] if c is not None and c.shape[1] > 0
@@ -1471,8 +1463,6 @@ class _BatchEngine:
         self.decode_codes(
             [probe_codes, codec_probe_codes(self.cfg.num_codebooks, CODEC_PROBE_FRAMES * 3)]
         )
-        # The side codec stream is created on the owner thread. Touching it here
-        # proves it is usable after a snapshot restore on that same thread.
         _cuda_synchronize()
         stats = {
             "ok": True,
@@ -1716,9 +1706,6 @@ class _UnitScheduler:
         """Claims currently held by a lane (assigned and not yet completed)."""
         return {claim for claim in self.lane if claim is not None}
 
-    def idle_lanes(self) -> list[int]:
-        return [lane for lane in range(self.width) if self.lane[lane] is None]
-
     def history_for(self, section: int) -> list:
         """The history turns a section's next unit must be prompted with."""
         anchor = self.anchor[section]
@@ -1745,10 +1732,6 @@ class _UnitScheduler:
 
     def is_done(self) -> bool:
         return all(self.next_unit[s] >= len(self.slots[s]) for s in self._sections())
-
-    def sections_ready(self) -> list[int]:
-        """Sections whose every unit has finished, not yet handed to the codec."""
-        return list(self.finished)
 
     def take_finished(self) -> int | None:
         return self.finished.pop(0) if self.finished else None
