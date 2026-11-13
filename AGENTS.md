@@ -48,7 +48,7 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   Home, `/sign-in`, Library, Voices, and the emailed confirm page do not
   explain it. `POST /api/jobs` accepts that cookie, so Make audiobook does not ask
   for Google or email.
-  `/` shows Voices and Library for a signed-out visitor. The circled plus
+  `/` shows Voices and Library for a signed-out visitor. The plus
   for a new audiobook stays in the dashboard chrome and is absent from `/`.
   The Sign in control on those pages is the link itself.
   `/terms` is not a page. An unknown address gets the dark not-found screen.

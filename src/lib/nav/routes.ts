@@ -1,7 +1,7 @@
 /**
  * Destinations the header actually moves between.
  *
- * Home is the create flow. The circled plus points here and is rendered
+ * Home is the create flow. The plus points here and is rendered
  * only by the dashboard chrome, so it does not appear on `/` itself.
  * Library and Voices are the other two stops. Full prefetch is required:
  * these routes read cookies nowhere in their shell, but a default Link

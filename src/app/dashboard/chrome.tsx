@@ -86,7 +86,7 @@ export function DashboardChrome({
                 prefetch={PREFETCH_SCREEN}
                 aria-label="New audiobook"
                 onClick={() => prepareNewAudiobook()}
-                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
+                className="inline-flex h-11 w-11 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
               </Link>
