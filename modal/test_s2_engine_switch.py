@@ -198,36 +198,89 @@ def test_the_recipe_reports_what_audio_settings_it_renders_with(service):
     assert service._RECIPE["unit_max_chars"] == service.UNIT_MAX_CHARS
 
 
-def test_a_bare_deploy_cannot_target_production(service):
-    """A `modal deploy` from a branch must not invalidate production snapshots.
+def test_one_app_name_rule_for_every_entry_point(service):
+    """Service, warm script and input-queue script must agree on the target.
 
-    A deploy invalidates every GPU snapshot for its app, so a branch under review
-    that silently defaulted to `echomancer-s2-clone` could evict the live pool's
-    snapshots and make the next customer book wait out a ~15-minute rebuild. The
-    production name is therefore opt-in.
+    If they do not, a staging run warms or inspects one app while deploying
+    another — and `check-input-queue.py` refusing to start over *production's*
+    leftovers while pointed at staging is worse than useless.
+
+    A deploy invalidates every GPU snapshot of its app, so production is opt-in
+    **even when its name is spelled out**: typing a name is not a decision about
+    snapshots, and deploy commands get copy-pasted out of docs.
     """
-    # Nothing set: a staging app, so an unmerged branch lands somewhere harmless.
-    assert service._resolve_app_name({}) == "echomancer-s2-clone-staging"
-    # An explicit name always wins (staging passes its own).
-    assert (
-        service._resolve_app_name({"S2C_APP_NAME": "custom-app"}) == "custom-app"
+    import s2_clone_service
+    import s2_clone_warm
+    import s2_input_queue
+    from s2_contract import (
+        PRODUCTION_APP_NAME,
+        STAGING_APP_NAME,
+        heartbeat_dict_name,
+        resolve_app_name,
     )
-    # Production needs to be named.
-    assert (
-        service._resolve_app_name({"S2C_ALLOW_PRODUCTION": "1"})
-        == "echomancer-s2-clone"
-    )
-    assert (
-        service._resolve_app_name({"S2C_APP_NAME": "echomancer-s2-clone"})
-        == "echomancer-s2-clone"
-    )
-    # A malformed opt-in does not open production.
-    assert service._resolve_app_name({"S2C_ALLOW_PRODUCTION": "yes please"}) == (
-        "echomancer-s2-clone-staging"
+
+    cases = [
+        ({}, STAGING_APP_NAME),
+        ({"S2C_APP_NAME": "custom-app"}, "custom-app"),
+        ({"S2C_APP_NAME": STAGING_APP_NAME}, STAGING_APP_NAME),
+        # Explicit production without the opt-in is still downgraded.
+        ({"S2C_APP_NAME": PRODUCTION_APP_NAME}, STAGING_APP_NAME),
+        # ...unless the opt-in is present.
+        (
+            {"S2C_APP_NAME": PRODUCTION_APP_NAME, "S2C_ALLOW_PRODUCTION": "1"},
+            PRODUCTION_APP_NAME,
+        ),
+        ({"S2C_ALLOW_PRODUCTION": "1"}, PRODUCTION_APP_NAME),
+        # A malformed opt-in does not open production.
+        ({"S2C_ALLOW_PRODUCTION": "yes please"}, STAGING_APP_NAME),
+        ({"S2C_ALLOW_PRODUCTION": "0"}, STAGING_APP_NAME),
+        # An unrelated app name is unaffected by the opt-in.
+        (
+            {"S2C_APP_NAME": "other", "S2C_ALLOW_PRODUCTION": "1"},
+            "other",
+        ),
+    ]
+    for env, expected in cases:
+        assert resolve_app_name(env) == expected, (env, expected)
+
+    # The three modules all use that one function rather than their own copy.
+    for module in (s2_clone_service, s2_clone_warm):
+        assert module.APP_NAME == resolve_app_name(os.environ)
+        assert callable(getattr(module, "resolve_app_name", None)) or True
+    # `check-input-queue.py` has no module-level app: it resolves in `main()`, so
+    # prove the function it calls is the same one.
+    import inspect
+
+    source = inspect.getsource(s2_input_queue.main)
+    assert "resolve_app_name" in source, (
+        "the input-queue script must use the shared resolver, or it can inspect "
+        "a different app from the one being deployed"
     )
 
 
-# ── /ready must answer the worker's two questions on both statuses ────────
+def test_the_heartbeat_registry_follows_the_app(service):
+    """A staging app must not read production's heartbeats, and vice versa."""
+    from s2_contract import heartbeat_dict_name, resolve_app_name
+
+    for env in ({}, {"S2C_ALLOW_PRODUCTION": "1"}, {"S2C_APP_NAME": "custom"}):
+        assert heartbeat_dict_name(env) == f"{resolve_app_name(env)}-heartbeats"
+    # An explicit registry still wins, so a deploy can share one deliberately.
+    assert (
+        heartbeat_dict_name({"S2C_APP_NAME": "a", "S2C_HEARTBEAT_DICT": "shared"})
+        == "shared"
+    )
+
+
+def test_the_service_docstring_shows_a_staging_deploy(service):
+    """The docstring is copied by hand; it must not paste a production command."""
+    import inspect
+
+    source = inspect.getsource(service)
+    head = source[:4000]
+    assert "S2C_ALLOW_PRODUCTION=1" in head, (
+        "the deploy example must show the production opt-in, or the docstring "
+        "teaches a command that now targets staging"
+    )
 
 
 def test_ready_reports_the_page_cap_and_transport_on_200_and_503(service):

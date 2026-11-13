@@ -37,8 +37,20 @@ starts one container per concurrent call. Multi-GPU inside one container is
 deliberately not used: GPU memory snapshots are documented as generally
 incompatible with multi-GPU programs.
 
+    # STAGING (what a bare command does):
     modal deploy modal/s2_clone_service.py
     modal run modal/s2_clone_warm.py          # builds+verifies the snapshot
+
+    # PRODUCTION (must be named):
+    S2C_ALLOW_PRODUCTION=1 modal deploy modal/s2_clone_service.py
+    S2C_ALLOW_PRODUCTION=1 modal run modal/s2_clone_warm.py
+
+`S2C_APP_NAME`, `S2C_ALLOW_PRODUCTION` and the heartbeat registry are resolved
+by `s2_contract.resolve_app_name`, which the warm script and
+`scripts/s2/check-input-queue.py` use as well — so all three always target the
+same app. Production is opt-in even when its name is spelled out: a deploy
+**invalidates every GPU snapshot of its app**, and a branch under review must not
+be able to evict the live pool's by pasting a command from a docstring.
 
 Every deploy invalidates the snapshot, and a rebuild takes ~15 min. Modal's
 web proxy drops a request after ~542 s, so an HTTP call cannot build the first
@@ -115,7 +127,9 @@ from s2_contract import (
     ReferenceTextError,
     boot_kind,
     container_limits,
+    heartbeat_dict_name,
     parse_sampling,
+    resolve_app_name,
     decoded_reference_stats,
     seed_for_call,
     snapshot_age_s,
@@ -129,35 +143,11 @@ from s2_contract import (
 from s2_audio_store import UploadPool, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
-def _resolve_app_name(env) -> str:
-    """The Modal app to deploy to, refusing production unless it is asked for.
-
-    A bare `modal deploy modal/s2_clone_service.py` from a feature branch used to
-    target `echomancer-s2-clone` — production — and a deploy **invalidates every
-    GPU snapshot** for that app, so a branch under review could evict the live
-    pool's snapshots and make the next customer book wait out a 15-minute
-    rebuild. That is too easy a mistake for one missing environment variable.
-
-    So the production name now has to be named:
-
-    * `S2C_APP_NAME` set to anything: used as given (staging passes its own);
-    * `S2C_APP_NAME` unset **and** `S2C_ALLOW_PRODUCTION=1`: production, which is
-      the documented production deploy;
-    * `S2C_APP_NAME` unset otherwise: a `-staging` app, so a bare deploy of an
-      unmerged branch lands somewhere harmless.
-
-    The production deploy process is unchanged apart from exporting one
-    variable, which `docs/s2-gpu-staging-runbook.md` §8 spells out.
-    """
-    explicit = (env.get("S2C_APP_NAME") or "").strip()
-    if explicit:
-        return explicit
-    if str(env.get("S2C_ALLOW_PRODUCTION", "")).strip() in ("1", "true", "yes"):
-        return "echomancer-s2-clone"
-    return "echomancer-s2-clone-staging"
-
-
-APP_NAME = _resolve_app_name(os.environ)
+#: The app this module deploys to. `s2_contract.resolve_app_name` is the one
+#: rule the service, the warm script and the input-queue script share: production
+#: needs `S2C_ALLOW_PRODUCTION=1`, even when its name is spelled out, because a
+#: deploy invalidates every snapshot that app has.
+APP_NAME = resolve_app_name(os.environ)
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
@@ -183,9 +173,7 @@ HEARTBEAT_TTL_SECONDS = int(os.environ.get("S2C_HEARTBEAT_TTL", "90"))
 HEARTBEAT_MIN_INTERVAL = int(os.environ.get("S2C_HEARTBEAT_INTERVAL", "30"))
 #: Boot registry name. A staging app must set its own, or its `/ready` would
 #: report production's containers and vice versa.
-HEARTBEAT_DICT_NAME = os.environ.get(
-    "S2C_HEARTBEAT_DICT", f"{APP_NAME}-heartbeats"
-)
+HEARTBEAT_DICT_NAME = heartbeat_dict_name(os.environ)
 
 _LIMITS = container_limits(os.environ)
 
@@ -644,11 +632,18 @@ class S2CloneWorker:
         self._start_heartbeat_timer()
 
     def _verify_graphs(self) -> str:
-        """Replay every warmed decode shape on the GPU thread. Raises on failure."""
+        """Replay every warmed decode shape on the GPU thread. Raises on failure.
+
+        `expected` is the size of the engine's own `(width, kv_len)` product — the
+        same list the snapshot warmed — so a restore that invalidated any one of
+        them is caught at boot. Comparing against the width count alone (the
+        first version of this) would have passed while three quarters of the
+        shapes were never replayed.
+        """
+        expected = len(self.engine.decode_shapes())
         stats = self.engine.selftest()
         replayed = int(stats.get("decode_shapes") or 0)
-        expected = len(self.engine._warm_widths())
-        if replayed < expected:
+        if replayed != expected:
             raise RuntimeError(
                 f"decode step replayed {replayed} shape(s), expected {expected}"
             )

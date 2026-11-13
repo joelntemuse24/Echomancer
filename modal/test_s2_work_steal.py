@@ -18,6 +18,7 @@ CPU with no GPU, no torch and no Modal.
 from __future__ import annotations
 
 import importlib
+import types
 import os
 import sys
 
@@ -499,3 +500,96 @@ class TestEmptyTakesKeepTheirPlace:
         out = batch_module.assemble_slot_audio(units, [take, None, take], rate)
         # trim(~50) + sentence gap(400) + trim(~50), and nothing after the last.
         assert 480 <= len(out) <= 520, len(out)
+
+
+class _Shape:
+    """Stand-in for a tensor: the replay only reads its first dimension."""
+
+    def __init__(self, shape) -> None:
+        self.shape = tuple(shape)
+
+    def clone(self):
+        return self
+
+
+class TestDecodeShapes:
+    """The warm-up set and the post-restore replay set must be the same set.
+
+    A CUDA graph is keyed by tensor shape, so "warm 32-wide at every KV bucket"
+    leaves every narrower call to record its own graph on a customer's request.
+    Both the snapshot warm-up and `publish()`'s replay walk `decode_shapes()`, so
+    a mismatch cannot arise — but the *content* still has to be the product, and
+    that is what these pin.
+    """
+
+    def test_shapes_are_the_width_by_kv_product(self, batch_module):
+        engine = object.__new__(batch_module._BatchEngine)
+        engine.model = types.SimpleNamespace(max_seq_len=batch_module.MAX_SEQ_LEN)
+        engine.cfg = types.SimpleNamespace()
+        widths = engine._warm_widths()
+        shapes = engine.decode_shapes()
+        kv = sorted({k for _, k in shapes})
+        assert kv == sorted(batch_module.KV_BUCKETS)
+        assert sorted({w for w, _ in shapes}) == sorted(widths)
+        assert len(shapes) == len(widths) * len(batch_module.KV_BUCKETS)
+        assert len(shapes) == len(set(shapes)), "no duplicate shapes"
+
+    def test_v10_has_six_widths_and_four_kv_buckets(self, batch_module):
+        engine = object.__new__(batch_module._BatchEngine)
+        engine.model = types.SimpleNamespace(max_seq_len=batch_module.MAX_SEQ_LEN)
+        engine.cfg = types.SimpleNamespace()
+        assert len(engine._warm_widths()) == 6
+        assert len(engine.decode_shapes()) == 24
+
+    def test_the_kv_dimension_never_exceeds_the_cached_prefix(self, batch_module):
+        """A small cache must shrink the buckets, not index past them."""
+        engine = object.__new__(batch_module._BatchEngine)
+        engine.model = types.SimpleNamespace(max_seq_len=700)
+        engine.cfg = types.SimpleNamespace()
+        shapes = engine.decode_shapes()
+        assert all(kv <= 700 for _, kv in shapes), shapes
+        # Only the buckets that fit remain, so replay cannot over-attend.
+        assert sorted({k for _, k in shapes}) == [512]
+
+    def test_replay_walks_every_shape_not_just_the_widest(self, batch_module):
+        """`_replay_decode_shapes` must cover the product, not a sample of it.
+
+        The first version replayed each *width* once at the longest KV prefix, so
+        a restore that broke the 1-wide/512-token graph was invisible. This counts
+        the steps it actually takes.
+        """
+        engine = object.__new__(batch_module._BatchEngine)
+        engine.model = types.SimpleNamespace(max_seq_len=batch_module.MAX_SEQ_LEN)
+        engine.cfg = types.SimpleNamespace(num_codebooks=2)
+        engine.device = "cpu"
+        engine.dtype = "f32"
+        engine.device_name = "stub"
+        engine.codec_stream = object()  # pretend a GPU so the guard passes
+        engine.selftest_stats = {}
+        engine._kv_cache_len = lambda: batch_module.MAX_SEQ_LEN
+        # This suite installs a thinner torch stub than the codec-probe one, so
+        # lend `s2_batch` the three constructors the replay uses. They only need
+        # to report a shape: the fake step reads `x.shape[0]` and `kv_len`.
+        sys.modules["torch"].full = lambda shape, value, **kw: _Shape(shape)
+        sys.modules["torch"].zeros = lambda shape, **kw: _Shape(shape)
+        sys.modules["torch"].tensor = lambda data, **kw: _Shape((1,))
+        if not hasattr(sys.modules["torch"], "compiler"):
+            sys.modules["torch"].compiler = types.SimpleNamespace(
+                cudagraph_mark_step_begin=lambda: None
+            )
+        elif not hasattr(sys.modules["torch"].compiler, "cudagraph_mark_step_begin"):
+            sys.modules["torch"].compiler.cudagraph_mark_step_begin = lambda: None
+
+        stepped: list[tuple[int, int]] = []
+
+        def fake_step(x, pos, kv_len, prev, temp, topp):
+            stepped.append((int(x.shape[0]), int(kv_len)))
+            return x
+
+        engine.step = fake_step
+        # torch.zeros is stubbed by this suite, so the loop's buffers are cheap.
+        replayed = engine._replay_decode_shapes()
+        assert replayed == len(engine.decode_shapes())
+        assert sorted(set(stepped)) == sorted(engine.decode_shapes()), (
+            "the replay must visit every warmed (width, kv) pair"
+        )

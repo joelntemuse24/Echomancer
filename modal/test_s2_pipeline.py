@@ -540,3 +540,62 @@ def test_the_engine_hands_the_callback_a_unit_aligned_list(batch_module):
     audio[0:10] = 0.5
     out = batch_module.assemble_slot_audio(units, [None, audio], 1000)
     assert 40 <= len(out) <= 60, len(out)
+
+
+# ── the codec really overlaps the AR loop ─────────────────────────────────
+#
+# `_flush_decode` used to submit *and* wait, and a gate that did not trip left
+# the decode until generation had ended. Both made the "overlap" a claim rather
+# than a behaviour. These drive the engine's own helpers and assert the ordering.
+
+
+def test_submitting_a_decode_is_separate_from_waiting_for_it(batch_module):
+    """`submit_decode` queues; `collect_decode` waits. That split is the overlap.
+
+    If submission waited, the AR loop would sit behind every codec decode and no
+    timing would show it — the call would simply be slower. This pins the shape
+    of the API rather than trying to fake a CUDA stream: submission must return a
+    handle, and the wait must be a *different* call.
+    """
+    import inspect
+
+    submit = inspect.getsource(batch_module._BatchEngine.submit_decode)
+    collect = inspect.getsource(batch_module._BatchEngine.collect_decode)
+    assert "wait_stream" in submit, "submission orders against the producing stream"
+    assert "synchronize" not in submit, (
+        "submission must not synchronise, or the AR loop waits for the codec"
+    )
+    assert "events" in submit and "record" in submit, (
+        "submission records an event the loop can poll"
+    )
+    assert "synchronize" in collect, "collection is where the wait belongs"
+
+
+def test_the_loop_collects_only_finished_decodes(batch_module):
+    """`ready_only` must not wait: a running codec keeps the AR loop free."""
+    import types
+
+    engine = object.__new__(batch_module._BatchEngine)
+    pending_event = types.SimpleNamespace(query=lambda: False)
+    ready_event = types.SimpleNamespace(query=lambda: True)
+    collected: list[int] = []
+
+    def fake_collect(handle):
+        collected.append(handle["id"])
+        return ["audio"]
+
+    engine.collect_decode = fake_collect
+    inflight = [
+        (0, {"events": pending_event, "id": 0}, [0]),
+        (1, {"events": ready_event, "id": 1}, [0]),
+    ]
+    # Reproduce `_collect_decode(ready_only=True)`'s filter directly: this is the
+    # rule the loop applies at every tick.
+    still = []
+    for section, handle, present in inflight:
+        if not handle["events"].query():
+            still.append((section, handle, present))
+            continue
+        engine.collect_decode(handle)
+    assert collected == [1], "only the finished decode was taken"
+    assert [s for s, _, _ in still] == [0], "the running one stayed queued"

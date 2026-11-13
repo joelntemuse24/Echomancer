@@ -1156,6 +1156,66 @@ def warm_reference_wav(seconds: float = 6.0, rate: int = 44100) -> bytes:
 WARM_REFERENCE_TEXT = "The river had not moved for three days."
 
 
+#: The production Modal app. Every deploy invalidates **all** of its GPU
+#: snapshots, so naming it has to be deliberate.
+PRODUCTION_APP_NAME = "echomancer-s2-clone"
+#: Where an un-opted deploy lands, so a branch under review cannot evict
+#: production's snapshots.
+STAGING_APP_NAME = "echomancer-s2-clone-staging"
+
+#: Values of `S2C_ALLOW_PRODUCTION` that count as opting in.
+_PRODUCTION_OPT_IN = ("1", "true", "yes", "on")
+
+
+def resolve_app_name(env) -> str:
+    """Which Modal app a command targets. One rule, every entry point.
+
+    The service, the warm script and the input-queue script all ask this, because
+    they have to agree: warming one app while deploying another is how a staging
+    run ends up reading production's heartbeats, and `check-input-queue.py`
+    refusing to start over production's leftovers while pointed at staging is
+    worse than useless.
+
+    A `modal deploy` **invalidates every GPU snapshot of the app it deploys to**,
+    so a branch under review must not be able to do that to production by
+    accident. Hence:
+
+    * `S2C_ALLOW_PRODUCTION=1` **and** no staging name: production. The opt-in is
+      required even when `S2C_APP_NAME` spells production out, because typing a
+      name is not a decision about snapshots — and a checked-out branch's deploy
+      command is often copy-pasted from a doc.
+    * `S2C_APP_NAME=<anything else>`: that app.
+    * nothing set: `echomancer-s2-clone-staging`.
+
+    The staging default is not a fallback for a typo; it is the safe target. A
+    mistyped variable deploys a new throwaway app rather than replacing the live
+    pool's snapshots.
+    """
+    explicit = str(env.get("S2C_APP_NAME") or "").strip()
+    opted_in = str(env.get("S2C_ALLOW_PRODUCTION") or "").strip().lower() in _PRODUCTION_OPT_IN
+    if explicit == PRODUCTION_APP_NAME:
+        if opted_in:
+            return PRODUCTION_APP_NAME
+        return STAGING_APP_NAME
+    if explicit:
+        return explicit
+    if opted_in:
+        return PRODUCTION_APP_NAME
+    return STAGING_APP_NAME
+
+
+def heartbeat_dict_name(env) -> str:
+    """The boot registry for the app this command is pointed at.
+
+    Follows the app so the two cannot disagree; a staging app that read
+    production's heartbeats would report the wrong pool's containers as warm.
+    """
+    explicit = str(env.get("S2C_HEARTBEAT_DICT") or "").strip()
+    if explicit:
+        return explicit
+    return f"{resolve_app_name(env)}-heartbeats"
+
+
 def container_limits(env) -> dict:
     """Autoscaler knobs, read once so health output and the decorator agree.
 

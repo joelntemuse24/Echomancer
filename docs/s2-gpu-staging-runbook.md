@@ -153,8 +153,19 @@ loudly, because it is a guaranteed 404.
 **Production rule:** a bare `modal deploy` now targets
 `echomancer-s2-clone-staging`, because a deploy *invalidates every GPU snapshot
 for its app* and a branch under review must not be able to evict production's.
-Production therefore needs `S2C_ALLOW_PRODUCTION=1` (or the explicit
-`S2C_APP_NAME=echomancer-s2-clone`) in addition to leaving `S2C_APP_NAME` unset.
+
+**`S2C_ALLOW_PRODUCTION=1` is required, and it is required even when
+`S2C_APP_NAME=echomancer-s2-clone` is spelled out.** Typing a name is not a
+decision about snapshots, and deploy commands get copy-pasted out of docs and PR
+descriptions. Without the opt-in, either form is redirected to staging.
+
+One resolver decides this for **all three** entry points — the service, the warm
+script, and `scripts/s2/check-input-queue.py`
+(`s2_contract.resolve_app_name`) — so a warm cannot land on a different app from
+the one just deployed. The heartbeat registry follows the same name
+(`s2_contract.heartbeat_dict_name`), so staging never reads production's
+containers as warm.
+
 Never export a staging `S2C_APP_NAME` when deploying production, and
 deploy with `S2C_MAX_CONTAINERS` unset (i.e. 1). Keep it at 1 through step 7;
 once step 7 passes and production has been deployed and warmed, the four lanes

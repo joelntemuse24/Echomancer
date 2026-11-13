@@ -62,7 +62,9 @@ def base_engine_module():
     """PR 283's `s2_batch` imported under a private name."""
     source = _base_source()
     if source is None:
-        pytest.skip(
+        from test_s2_numerics import _skip_or_fail
+
+        _skip_or_fail(
             f"cannot read {BASE_PATH} at {BASE_COMMIT} / {BASE_REF}; this suite "
             "needs the base branch in git to compare against"
         )
@@ -87,6 +89,17 @@ def base_engine_module():
         exec(compile(source, synthetic, "exec"), module.__dict__)
     except Exception as err:  # pragma: no cover - depends on the checkout
         pytest.skip(f"the base module could not be executed: {err}")
+    # The base module also gets its sampler from `gpu_image.imports()`, which
+    # does not run outside the container. Bind the same upstream functions so
+    # the comparison is between two engines, not two missing names.
+    from test_s2_numerics import _upstream_inference_functions
+
+    names = _upstream_inference_functions()
+    if names:
+        module.logits_to_probs = names["logits_to_probs"]
+        module.multinomial_sample_one_no_sync = names[
+            "multinomial_sample_one_no_sync"
+        ]
     return module
 
 
@@ -219,7 +232,9 @@ def test_v9_sampling_matches_the_deployed_function(v9_engine):
     against it is the strongest available statement.
     """
     if not hasattr(v9_engine, "logits_to_probs"):
-        pytest.skip("the pinned upstream sampler is not available on this machine")
+        from test_s2_numerics import _skip_or_fail
+
+        _skip_or_fail("the pinned upstream sampler is not available")
     torch.manual_seed(13)
     logits = torch.randn(5, 128)
     engine = object.__new__(v9_engine._BatchEngine)
@@ -372,3 +387,207 @@ def test_v10_is_the_only_engine_with_a_scheduler(v9_engine):
     assert "_render_pipelined" in source
     # The dispatch reads the switch this module reads once, at import.
     assert "LEGACY_RENDER" in source
+
+
+# ── executed identity: tokens, not text ───────────────────────────────────
+#
+# The checks above compare source structure, which cannot see a difference in
+# *how many rows* a step runs. PR 283's `_prefill` expands the fast transformer
+# to `BATCH` rows; prefilling one row wide consumes fewer draws from the batched
+# RNG stream and every later codebook token of the unit comes out different. Only
+# running both and comparing tokens catches that.
+
+
+def _executable_engine(module, model):
+    """A `_BatchEngine` from `module` that can prefill and step on the CPU.
+
+    Built by hand rather than by `__init__`, which needs a GPU and the 3.6 B
+    checkpoint. Every attribute is one `__init__` also sets, so a missing one
+    fails loudly instead of silently taking a default.
+    """
+    import math
+
+    engine = object.__new__(module._BatchEngine)
+    cfg = model.config
+    engine.model = model
+    engine.cfg = cfg
+    engine.device = torch.device("cpu")
+    engine.dtype = torch.float32
+    engine.im_end_id = cfg.vocab_size - 1
+    engine.top_k = 30
+    engine.fast_pos = torch.arange(cfg.num_codebooks, dtype=torch.long)
+    engine.high_temperature = torch.tensor(1.0)
+    engine.high_top_p = torch.tensor(0.9)
+    engine._last_audio = {}
+    if hasattr(module._BatchEngine, "_kv_cache_len"):
+        engine.selftest_stats = {}
+        engine.codec_stream = None
+    # PR 283's `_embed` builds its own offsets; this branch's v10 body reads a
+    # preallocated tensor, so supply it and both work.
+    engine.codebook_offsets = (
+        torch.arange(cfg.num_codebooks, dtype=torch.long) * cfg.codebook_size
+    )[None, :, None]
+    engine.scale_codebook_embeddings = True
+    engine.codebook_inv_scale = 1.0 / math.sqrt(cfg.num_codebooks + 1)
+    allowed = list(range(cfg.semantic_begin_id, cfg.semantic_end_id + 1))
+    allowed.append(engine.im_end_id)
+    engine.allowed_ids = torch.tensor(allowed, dtype=torch.long)
+    engine.out_weight = model.embeddings.weight[engine.allowed_ids].contiguous()
+    return engine
+
+
+def _fresh_model(module):
+    """A tiny `DualARTransformer` with two caches and a re-seedable RNG."""
+    from test_s2_numerics import _fish_source
+
+    source = _fish_source()
+    if source is None:
+        from test_s2_numerics import _skip_or_fail
+
+        _skip_or_fail("the pinned fish-speech source is not available")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    from fish_speech.models.text2semantic.llama import (
+        DualARModelArgs,
+        DualARTransformer,
+    )
+
+    args = DualARModelArgs(
+        vocab_size=256,
+        n_layer=2,
+        n_head=4,
+        dim=32,
+        intermediate_size=64,
+        n_local_heads=2,
+        head_dim=8,
+        num_codebooks=3,
+        codebook_size=32,
+        semantic_begin_id=100,
+        semantic_end_id=131,
+        n_fast_layer=2,
+        fast_dim=32,
+        fast_n_head=4,
+        fast_n_local_heads=2,
+        fast_head_dim=8,
+        fast_intermediate_size=64,
+        scale_codebook_embeddings=True,
+        norm_fastlayer_input=True,
+        rope_base=10_000,
+    )
+    torch.manual_seed(0)
+    model = DualARTransformer(args).eval()
+    with torch.device("cpu"):
+        # The fast transformer's cache must be exactly `BATCH` rows: `_prefill`
+        # expands to that width, and the upstream `KVCache.update` writes a
+        # full-width tensor, so a larger cache would not accept it (and a smaller
+        # one is what production would never allocate).
+        model.setup_caches(
+            max_batch_size=module.BATCH, max_seq_len=1024, dtype=torch.float32
+        )
+    return model
+
+
+def _clear(model):
+    for layer in model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    for layer in model.fast_layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+
+
+def test_prefill_produces_the_same_tokens_as_pr_283(v9_engine, base_engine_module):
+    """The first frame **and its codebook tokens**, from a fixed seed.
+
+    This is the assertion the source comparison could not make. `_prefill` ends
+    in the fast transformer, which samples; PR 283 ran it over `BATCH` rows and
+    kept row 0, so the RNG stream advances by `BATCH` draws per codebook step. A
+    one-row prefill is numerically the same frame but leaves the stream in a
+    different place, and the next unit's first semantic token already differs.
+    """
+    if not hasattr(v9_engine, "logits_to_probs"):
+        from test_s2_numerics import _skip_or_fail
+
+        _skip_or_fail("the pinned upstream sampler is not available")
+
+    prompt = torch.zeros((4, 6), dtype=torch.long)  # (num_codebooks + 1, T)
+    prompt[0] = 101
+    prompt[1:] = 3
+
+    def first_frames(module):
+        model = _fresh_model(module)
+        engine = _executable_engine(module, model)
+        _clear(model)
+        torch.manual_seed(1234)
+        with torch.no_grad():
+            return engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]))
+
+    ours = first_frames(v9_engine)
+    theirs = first_frames(base_engine_module)
+    assert ours.shape == theirs.shape
+    assert torch.equal(ours, theirs), (
+        "the first frame's tokens differ from PR 283's.\n"
+        f"ours:   {ours.tolist()}\n"
+        f"theirs: {theirs.tolist()}"
+    )
+
+
+def test_prefill_leaves_the_rng_stream_where_pr_283_leaves_it(
+    v9_engine, base_engine_module
+):
+    """The draw *after* the prefill must also match.
+
+    The frame can be equal while the stream has moved a different distance — that
+    is exactly the width bug, and it only shows up on the next sample. So this
+    prefills, then draws once from the stream and compares.
+    """
+    if not hasattr(v9_engine, "logits_to_probs"):
+        from test_s2_numerics import _skip_or_fail
+
+        _skip_or_fail("the pinned upstream sampler is not available")
+
+    prompt = torch.zeros((4, 6), dtype=torch.long)
+    prompt[0] = 101
+    prompt[1:] = 3
+
+    def frame_then_draw(module):
+        model = _fresh_model(module)
+        engine = _executable_engine(module, model)
+        _clear(model)
+        torch.manual_seed(4321)
+        with torch.no_grad():
+            frame = engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]))
+            # One draw from the same stream, after the prefill has run.
+            following = torch.rand(4)
+        return frame, following
+
+    ours_frame, ours_next = frame_then_draw(v9_engine)
+    theirs_frame, theirs_next = frame_then_draw(base_engine_module)
+    assert torch.equal(ours_next, theirs_next), (
+        "the RNG stream moved a different distance through the prefill, so the "
+        "next unit's first token would differ even if this frame matched.\n"
+        f"ours:   {ours_next.tolist()}\n"
+        f"theirs: {theirs_next.tolist()}"
+    )
+    assert torch.equal(ours_frame, theirs_frame)
+
+
+def test_the_legacy_prefill_width_is_batch(v9_engine, base_engine_module):
+    """A structural backstop for the two executed tests above."""
+    assert v9_engine.LEGACY_RENDER is True
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(v9_engine._BatchEngine._prefill)))
+    defaults = [
+        ast.unparse(d) for d in tree.body[0].args.kw_defaults if d is not None
+    ]
+    assert "BATCH" in defaults, (
+        "`_prefill` must default to the batch width, as PR 283 expanded to BATCH"
+    )
+    # And the deployed loop passes it explicitly, so the default cannot drift.
+    loop = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(v9_engine._BatchEngine._render_legacy)))
+    )
+    assert "width=BATCH" in loop

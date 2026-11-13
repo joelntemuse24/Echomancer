@@ -1,0 +1,80 @@
+name: modal tests
+
+# The Modal suites compare this branch's decode maths against the pinned
+# upstream `fish-speech` package and against PR 283's engine read out of git.
+# Without those they *skip*, which is the same as not testing — so this workflow
+# installs CPU torch, fetches the source, and runs with
+# `S2B_REQUIRE_FISH_SOURCE=1`, which turns every such skip into a failure.
+#
+# No GPU, no Modal account, no paid API. Everything here is CPU-only.
+#
+# `on.push` is deliberately limited to branches that touch `modal/`: the suite is
+# ~30 s but the source fetch is a network clone, and no other change can affect
+# it. Widen `paths` if that stops being true.
+
+on:
+  push:
+    paths:
+      - "modal/**"
+      - "scripts/s2/**"
+      - ".github/workflows/modal-tests.yml"
+  pull_request:
+    paths:
+      - "modal/**"
+      - "scripts/s2/**"
+      - ".github/workflows/modal-tests.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: modal-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  modal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The v9 identity suite reads `modal/s2_batch.py` at PR 283's commit, so
+          # a shallow clone that does not contain it would skip (or, under
+          # `--strict`/enforcement, fail). Full history is the simple answer.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # CPU-only torch: the numeric tests do real tensor maths, but none of it
+      # needs a GPU. Pinned to the CPU index so the download is ~200 MB rather
+      # than ~2 GB of CUDA wheels.
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install pytest numpy
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # Shallow, blobless, one commit. About 40 MB, and cached between runs.
+      - name: Fetch the pinned fish-speech source
+        run: bash scripts/s2/fetch-fish-source.sh
+
+      - name: Check prerequisites
+        run: python scripts/s2/check-test-prereqs.py --strict
+
+      # `S2B_REQUIRE_FISH_SOURCE=1` is the important part: a missing source or a
+      # missing upstream module fails instead of silently skipping.
+      - name: pytest (skips are failures)
+        env:
+          S2B_REQUIRE_FISH_SOURCE: "1"
+        run: python -m pytest modal -q --junitxml=modal-tests.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modal-pytest
+          path: modal-tests.xml
+          if-no-files-found: ignore

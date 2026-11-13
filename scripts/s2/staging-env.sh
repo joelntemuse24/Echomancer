@@ -18,6 +18,13 @@
 export S2C_APP_NAME=echomancer-s2-clone-staging
 export S2C_HEARTBEAT_DICT=echomancer-s2-clone-heartbeats-staging
 
+# Explicitly NOT production. `S2C_ALLOW_PRODUCTION` is deliberately left unset
+# here, and `s2_contract.resolve_app_name` would still send even an explicit
+# `S2C_APP_NAME=echomancer-s2-clone` to staging without it — a deploy wipes every
+# GPU snapshot of the app it targets, so production has to be a deliberate act.
+# The warm script and `scripts/s2/check-input-queue.py` read the same resolver, so
+# `source scripts/s2/staging-env.sh` points all three at the same app.
+
 # ── the engine under test ──────────────────────────────────────────────────
 #
 # `v10` turns on: bucketed active batch width, unit work-stealing, coarse

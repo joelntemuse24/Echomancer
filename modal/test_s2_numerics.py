@@ -38,17 +38,55 @@ MODAL_DIR = __import__("pathlib").Path(__file__).parent
 FISH_DIR = "/opt/fish-speech"
 
 
+#: Which upstream checkout the numeric comparisons run against.
+#:
+#: The GPU image has it at `/opt/fish-speech`; a CI runner or the VM can point
+#: `S2B_FISH_DIR` at `scripts/s2/fetch-fish-source.sh`'s output. Without one the
+#: comparisons skip, which is honest on a bare laptop — but a silent skip in CI
+#: is the same failure as a broken test, so `S2B_REQUIRE_FISH_SOURCE=1` turns
+#: every such skip into a failure. `scripts/s2/check-test-prereqs.py` reports
+#: which of these can actually run.
+FISH_DIR = "/opt/fish-speech"
+REQUIRE_SOURCE_ENV = "S2B_REQUIRE_FISH_SOURCE"
+
+
+def _require_fish_source() -> bool:
+    return str(__import__("os").environ.get(REQUIRE_SOURCE_ENV, "")).strip() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _skip_or_fail(reason: str) -> None:
+    """Skip where the dependency is genuinely optional; fail where it is required.
+
+    A test that silently skips has not run, so "all green" means nothing unless
+    the caller can demand it ran. CI and the VM set `S2B_REQUIRE_FISH_SOURCE=1`.
+    """
+    if _require_fish_source():
+        pytest.fail(
+            f"{reason}. {REQUIRE_SOURCE_ENV}=1 requires this to run: "
+            "fetch the source with scripts/s2/fetch-fish-source.sh"
+        )
+    pytest.skip(reason)
+
+
 def _fish_source():
     """The pinned upstream package, if this machine has a copy.
 
-    The GPU image clones it to `/opt/fish-speech`. A local checkout may be
-    anywhere else, so `S2B_FISH_DIR` names it; without a copy these tests skip
-    rather than pretend to compare against something they did not run.
+    The GPU image clones it to `/opt/fish-speech`, `scripts/s2/fetch-fish-source.sh`
+    puts it at `.fish-speech-src`, and `S2B_FISH_DIR` names any other checkout.
     """
     import os
     import pathlib
 
-    for candidate in (os.environ.get("S2B_FISH_DIR"), FISH_DIR):
+    here = pathlib.Path(__file__).parent.parent
+    for candidate in (
+        os.environ.get("S2B_FISH_DIR"),
+        FISH_DIR,
+        str(here / ".fish-speech-src"),
+    ):
         if candidate and (pathlib.Path(candidate) / "fish_speech").is_dir():
             return str(candidate)
     return None
@@ -219,27 +257,25 @@ def _upstream_inference_functions() -> dict:
 def llama():
     source = _fish_source()
     if not source:
-        pytest.skip("pinned fish-speech source is not available on this machine")
+        _skip_or_fail("pinned fish-speech source is not available on this machine")
     if source not in sys.path:
         sys.path.insert(0, source)
-    import os
-
     # `llama.py` pulls `fish_speech.tokenizer` only for text, and the fast
-    # layers need nothing from it. Import the module directly; skip if a
-    # dependency of the checkout is missing rather than fail the suite.
+    # layers need nothing from it. Import the module directly; a missing
+    # dependency of the checkout is reported, not swallowed.
     try:
         import fish_speech.models.text2semantic.llama as module
 
         return module
     except Exception as err:  # pragma: no cover - depends on the checkout
-        pytest.skip(f"fish-speech llama module could not be imported: {err}")
+        _skip_or_fail(f"fish-speech llama module could not be imported: {err}")
 
 
 @pytest.fixture(scope="module")
 def inference():
     functions = _upstream_inference_functions()
     if not functions:
-        pytest.skip("pinned fish-speech source is not available on this machine")
+        _skip_or_fail("pinned fish-speech source is not available on this machine")
     return types.SimpleNamespace(**functions)
 
 
@@ -574,13 +610,7 @@ def test_our_logits_to_probs_equals_upstreams(batch_module, inference):
 
 
 def test_the_topk_fast_path_returns_the_same_distribution(batch_module):
-    """Opt-in path: the same support and mass as the full-vocabulary sort.
-
-    It returns a **distribution over the top-k block**, not a drawn token, so
-    `_sample` does exactly one multinomial. (An earlier version drew inside this
-    function and then drew again over its output — two independent draws, and the
-    wrong distribution.)
-    """
+    """Opt-in path: the same support and mass, plus the rank -> column map."""
     torch.manual_seed(9)
     logits = torch.randn(8, 4096) * 2
     temperature = torch.tensor(1.0)
@@ -596,7 +626,7 @@ def test_the_topk_fast_path_returns_the_same_distribution(batch_module):
     original = module.TOPK_FAST_SAMPLE
     try:
         module.TOPK_FAST_SAMPLE = True
-        fast = batch_module._BatchEngine._logits_to_probs(
+        fast, column_of = batch_module._BatchEngine._sample_distribution(
             engine, logits, temperature, top_p
         )
     finally:
@@ -604,17 +634,48 @@ def test_the_topk_fast_path_returns_the_same_distribution(batch_module):
 
     assert fast.shape == (8, 30), "the fast path is a distribution over top-k"
     assert torch.allclose(fast.sum(dim=-1), torch.ones(8), atol=1e-5), "it normalises"
-
-    # The retained tokens must be exactly the full path's top-k, and the masses
-    # must agree after renormalising the full row onto that block.
+    assert column_of is not None and column_of.shape == (8, 30)
     order = torch.argsort(reference, dim=-1, descending=True)[:, :30]
+    assert torch.equal(column_of, order), "sorted topk is the full path's order"
     assert torch.allclose(fast, reference.gather(-1, order), atol=1e-5), (
         (fast - reference.gather(-1, order)).abs().max()
     )
 
 
+def test_the_topk_path_maps_a_sampled_rank_back_to_the_token(batch_module):
+    """A drawn column is a **rank**, not a vocabulary index.
+
+    Sampling rank `i` and returning `i` as a token id would speak whatever sits
+    at index `i` in the vocabulary, not the token sampled. With `top_p=0` only
+    rank 0 survives, so `_sample` must return that rank's original column — the
+    row's argmax — and not the rank (0).
+    """
+    import s2_batch as module
+
+    torch.manual_seed(37)
+    logits = torch.randn(6, 512)
+    engine = object.__new__(batch_module._BatchEngine)
+    engine.top_k = 16
+    original_flag = module.TOPK_FAST_SAMPLE
+    original_draw = module.multinomial_sample_one_no_sync
+    # Deterministic: always take the highest-probability column.
+    module.multinomial_sample_one_no_sync = lambda probs: probs.argmax(
+        dim=-1, keepdim=True
+    ).long()
+    try:
+        module.TOPK_FAST_SAMPLE = True
+        drawn = batch_module._BatchEngine._sample(
+            engine, logits, torch.tensor(1.0), torch.tensor(0.0)
+        )
+    finally:
+        module.TOPK_FAST_SAMPLE = original_flag
+        module.multinomial_sample_one_no_sync = original_draw
+    assert torch.equal(drawn[:, 0], logits.argmax(dim=-1))
+    assert not torch.equal(drawn[:, 0], torch.zeros(6, dtype=torch.long))
+
+
 def test_the_topk_fast_path_never_keeps_an_empty_support(batch_module):
-    """Top-1 of every row survives, as upstream's `sorted_indices_to_remove` does."""
+    """Top-1 of every row survives, as upstream's removal mask does."""
     import s2_batch as module
 
     torch.manual_seed(31)
@@ -624,12 +685,11 @@ def test_the_topk_fast_path_never_keeps_an_empty_support(batch_module):
     original = module.TOPK_FAST_SAMPLE
     try:
         module.TOPK_FAST_SAMPLE = True
-        probs = batch_module._BatchEngine._logits_to_probs(
+        probs, _ = batch_module._BatchEngine._sample_distribution(
             engine, logits, torch.tensor(1.0), torch.tensor(0.0)
         )
     finally:
         module.TOPK_FAST_SAMPLE = original
-    # top_p=0 keeps only the first entry, and it must still have all the mass.
     assert torch.allclose(probs[:, 0], torch.ones(4), atol=1e-6)
 
 
@@ -693,7 +753,7 @@ def test_decode_attention_ignores_rows_above_the_active_width(batch_module):
 
 
 @pytest.fixture(scope="module")
-def small_model(llama):
+def small_model(llama, batch_module):
     """A tiny `DualARTransformer`: real upstream layers, no checkpoint."""
     from fish_speech.models.text2semantic.llama import (
         DualARModelArgs,
@@ -725,10 +785,13 @@ def small_model(llama):
     torch.manual_seed(0)
     model = DualARTransformer(args).eval()
     with torch.device("cpu"):
-        # Long enough for a unit to reach `im_end` without hitting the frame cap:
-        # the loop's `limit` is `MAX_NEW_FRAMES` (1024) minus the prompt, so a
-        # 128-token cache would run off the end.
-        model.setup_caches(max_batch_size=8, max_seq_len=2048, dtype=torch.float32)
+        # `BATCH` rows: `_prefill` expands the fast transformer to the batch
+        # width (as PR 283 does), and upstream's `KVCache.update` writes a
+        # full-width tensor. `max_seq_len` is long enough for a unit to reach
+        # `im_end` without hitting the frame cap.
+        model.setup_caches(
+            max_batch_size=batch_module.BATCH, max_seq_len=2048, dtype=torch.float32
+        )
     return model
 
 
@@ -776,14 +839,19 @@ def test_batched_prefill_matches_the_single_row_path(batch_module, small_model):
     _clear_fast_cache(small_model)
     batched = engine._prefill_many(rows, prompts, temp, topp)
 
-    # Now one at a time, from clean caches.
+    # Now one at a time, from clean caches. `width=BATCH` on purpose: the point
+    # of this test is that batching the slow layers does not change a row's
+    # frame, so the fast-transformer width must be the same on both sides (it is
+    # what advances the RNG stream).
     single = []
     for row, prompt in zip(rows, prompts):
         for layer in small_model.layers:
             layer.attention.kv_cache.k_cache.zero_()
             layer.attention.kv_cache.v_cache.zero_()
         _clear_fast_cache(small_model)
-        single.append(engine._prefill(row, prompt, temp, topp))
+        single.append(
+            engine._prefill(row, prompt, temp, topp, width=batch_module.BATCH)
+        )
 
     for slot, (mine, theirs) in enumerate(zip(batched, single)):
         assert torch.equal(mine, theirs), (
@@ -854,7 +922,10 @@ def test_one_prompt_is_prefilled_by_the_single_row_path(batch_module, small_mode
         layer.attention.kv_cache.k_cache.zero_()
         layer.attention.kv_cache.v_cache.zero_()
     _clear_fast_cache(small_model)
-    alone = engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]))
+    # `_prefill_many` with one prompt delegates to `_prefill(width=1)`, so the
+    # comparison is against the same width; the *legacy* loop's width=BATCH is
+    # what `test_s2_legacy_identity` pins.
+    alone = engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]), width=1)
     assert torch.equal(only[0], alone)
 
 
@@ -1011,3 +1082,65 @@ def test_the_v10_loop_puts_more_lanes_to_work_than_there_are_sections(
     # The opening wave prefills several lanes at once; a per-section loop would
     # have 3 lanes in total and 3 prefill calls of one.
     assert max(prefills) >= 3, prefills
+
+
+# ── clocks ───────────────────────────────────────────────────────────────
+
+
+def test_codec_time_is_reported_separately_from_the_ar_clock(
+    batch_module, small_model, sampler_bound
+):
+    """`generate_s` must be the AR loop, and codec time must be its own column.
+
+    The service reports `loop_s` as `generate_s`, and the A/B compares that
+    column, so codec time folded into it would make a decode change look like an
+    AR regression.
+
+    The assertion is **structural plus accounting**, not a wall-clock
+    comparison: `loop_s` is a real clock on a shared CI machine, and a test that
+    compares two of them measures how busy the runner was. What actually has to
+    hold is that the codec's cost is recorded in its own columns, and that the AR
+    clock is stopped before the codec tail runs — which is where the time would
+    otherwise leak in on a GPU.
+    """
+    import inspect
+    import time as _time
+
+    CODEC_SLEEP_S = 0.15
+    slots = [[{"text": "a", "pause": "para"}], [{"text": "b", "pause": "para"}]]
+
+    class _SlowCodec:
+        frame_length = 4
+        sample_rate = 1000
+
+        def from_indices(self, z):
+            _time.sleep(CODEC_SLEEP_S)
+            return torch.zeros((z.shape[0], 1, z.shape[1] * 4), dtype=torch.float32)
+
+    torch.manual_seed(101)
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    engine = _runnable_engine(batch_module, small_model)
+    engine.decoder = _SlowCodec()
+    result = engine.render(slots, None, "0.7,0.7")
+
+    # The codec's cost is accounted, not merely felt.
+    codec_total = float(result["codec_s"]) + float(result["codec_tail_s"])
+    assert codec_total >= CODEC_SLEEP_S, (
+        "the codec's cost must be recorded in a codec column "
+        f"(codec_s={result['codec_s']}, tail={result['codec_tail_s']})"
+    )
+    assert "codec_wait_s" in result, "the wait is reported on its own line"
+    assert float(result["loop_s"]) > 0
+
+    # The AR clock is stopped before the tail flush, so on a GPU — where the tail
+    # is the only serial codec work left — codec time cannot leak into it.
+    source = inspect.getsource(batch_module._BatchEngine._render_pipelined)
+    loop_at = source.index("loop_s = time.time() - loop_t0")
+    tail_at = source.index("_flush_decode()", loop_at)
+    assert loop_at < tail_at, (
+        "the AR clock must be stopped before the codec tail runs, or "
+        "`generate_s` includes the codec"
+    )

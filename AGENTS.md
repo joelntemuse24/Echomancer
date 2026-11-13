@@ -371,6 +371,20 @@ because a snapshot must be built for the kernels it will run.
 `modal/test_s2_engine_switch.py` asserts the v9 defaults, including the 128-token
 KV rounding and the upstream fast-transformer call.
 
+**v9 is a separate loop, not a set of flags.** `_render_legacy` is PR 283's
+decode loop transcribed: lane `r` owns `slots[r]` for the whole call, units run
+in index order, nothing is work-stolen, and `_prefill` runs the fast transformer
+at `width=BATCH` exactly as the deployed code does. All of that decides the
+audio — the sampler draws from one batched RNG stream, so a lane assignment or a
+prefill width that differs consumes different random numbers. `modal/test_s2_legacy_identity.py`
+imports PR 283's module **out of git** and compares the first frame's tokens and
+the RNG position after a prefill, not source text.
+
+**Tests that need the pinned upstream source fail rather than skip under
+`S2B_REQUIRE_FISH_SOURCE=1`.** `scripts/s2/fetch-fish-source.sh` puts it at
+`.fish-speech-src`, `scripts/s2/check-test-prereqs.py` reports what can run, and
+`.github/workflows/modal-tests.yml` runs the suite CPU-only with enforcement.
+
 One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
@@ -1284,7 +1298,12 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # S2B_TOPK_FAST_SAMPLE=1 # OPT-IN top-k-block sampling (same distribution, different rounding)
 # S2C_CPU=8 # worker CPU threads for the encode/upload pools; 4 extra cores < 5% of the H100
 # S2C_APP_NAME=echomancer-s2-clone-staging # a SEPARATE app; a bare deploy lands here now
-# S2C_ALLOW_PRODUCTION=1 # required to deploy the PRODUCTION app; a deploy wipes its snapshots
+# S2C_ALLOW_PRODUCTION=1 # required to target PRODUCTION, even with S2C_APP_NAME set;
+                         # a deploy wipes every GPU snapshot of the app it targets.
+                         # s2_contract.resolve_app_name is the one rule the service,
+                         # modal/s2_clone_warm.py and scripts/s2/check-input-queue.py use.
+# S2B_REQUIRE_FISH_SOURCE=1 # make the upstream numeric comparisons FAIL rather than skip
+# S2B_FISH_DIR=/path # the pinned fish-speech checkout (scripts/s2/fetch-fish-source.sh)
 # S2C_HEARTBEAT_DICT=echomancer-s2-clone-heartbeats-staging # its own registry
 # S2B_BATCHED_PREFILL= # 0 prefills one lane at a time
 

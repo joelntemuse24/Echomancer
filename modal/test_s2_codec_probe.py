@@ -67,6 +67,24 @@ def _install_torch_stub() -> None:
     def zeros(shape, device=None, dtype=None):
         return _Tensor(tuple(shape))
 
+    def full(shape, fill_value, device=None, dtype=None):
+        # `_warm_kv_buckets` and `_replay_decode_shapes` position every row at a
+        # prefix length; the stub only needs the shape.
+        return _Tensor(tuple(shape))
+
+    def arange(*args, **kwargs):
+        if len(args) == 1:
+            (end,) = args
+            return _Tensor((int(end),))
+        start, end = args[0], args[1]
+        return _Tensor((int(end) - int(start),))
+
+    def tensor(data, **kwargs):
+        return _Tensor(tuple(data) if hasattr(data, "__len__") else (1,))
+
+    def rand(*shape, **kwargs):
+        return _Tensor(tuple(shape))
+
     def mm(a, b):
         # cuBLAS would reject a mismatch; keep that contract so a bad probe fails.
         if a.shape[-1] != b.shape[0]:
@@ -116,6 +134,10 @@ def _install_torch_stub() -> None:
             setattr(cuda, method, getattr(existing_cuda, method))
     torch.cuda = cuda
     torch.zeros = zeros
+    torch.full = full
+    torch.arange = arange
+    torch.tensor = tensor
+    torch.rand = rand
     torch.mm = mm
     torch.manual_seed = manual_seed
     for name in ("long", "float32", "bfloat16", "int64", "float16"):

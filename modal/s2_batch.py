@@ -818,15 +818,57 @@ class _BatchEngine:
         return logits, self.model.fast_project_in(hidden)
 
     def _sample(self, logits, temperature, top_p):
-        """Draw one token per row: `_logits_to_probs` then one multinomial.
+        """Draw one token per row: one distribution, one multinomial, one mapping.
 
-        The top-k fast path returns a **distribution over the top-k block**, not a
-        drawn token, so exactly one sample happens here. An earlier version drew
-        inside the fast path and then drew again on its output indices, which is
-        two independent draws and the wrong distribution.
+        The top-k fast path builds its distribution over the **top-k block**, so
+        a drawn column is a *rank*, not a vocabulary index. It hands back the rank
+        -> column map and this maps through it; sampling a rank and returning it
+        as a token id would speak the wrong token entirely.
+
+        An earlier version also drew inside the fast path and then drew again on
+        its output indices — two independent draws, and the wrong distribution.
+        Exactly one draw happens here.
         """
-        probs = self._logits_to_probs(logits, temperature, top_p)
-        return multinomial_sample_one_no_sync(probs).long()  # (B, 1)
+        probs, column_of = self._sample_distribution(logits, temperature, top_p)
+        column = multinomial_sample_one_no_sync(probs).long()  # (B, 1)
+        if column_of is not None:
+            column = column_of.gather(-1, column)
+        return column
+
+    def _sample_distribution(self, logits, temperature, top_p):
+        """`(probs, column_of)` — the distribution and how to map a column back.
+
+        `column_of` is None for the full-vocabulary path, where a column *is* the
+        token's index in `logits`. The top-k fast path returns `top_idx`, the
+        original column of each retained token, so a sample can be mapped out of
+        rank space.
+        """
+        if TOPK_FAST_SAMPLE and not LEGACY_RENDER and FAST_DECODE:
+            k = min(self.top_k, logits.shape[-1])
+            top_vals, top_idx = torch.topk(logits, k=k, dim=-1, sorted=True)
+            return self._topk_probs(top_vals, logits, temperature, top_p), top_idx
+        return self._logits_to_probs(logits, temperature, top_p), None
+
+    def _topk_probs(self, top_vals, logits, temperature, top_p):
+        """The distribution over the top-k block, renormalised.
+
+        `cum_probs` is the cumulative mass upstream builds over the full row:
+        every token outside the block contributes zero after the top-k mask, so
+        the truncated support's cumulative mass is that same function restricted
+        to the retained tokens, divided by the full-row partition function.
+        """
+        k = top_vals.shape[-1]
+        shifted = (logits - top_vals[:, :1]).float()
+        total = torch.exp(shifted).sum(dim=-1, keepdim=True)
+        block = torch.exp((top_vals - top_vals[:, :1]).float())
+        cum_probs = torch.cumsum(block, dim=-1) / total
+        remove = cum_probs > top_p
+        # Keep the top-1 token of every row, as upstream does.
+        remove = remove.masked_fill(
+            torch.arange(k, device=remove.device) == 0, False
+        )
+        kept = top_vals.masked_fill(remove, float("-inf"))
+        return torch.softmax(kept / torch.clip(temperature, min=1e-5), dim=-1)
 
     def _logits_to_probs(self, logits, temperature, top_p):
         """Upstream `logits_to_probs`, with tensor-only masking.
@@ -856,23 +898,6 @@ class _BatchEngine:
             return sampler(
                 logits, temperature=temperature, top_p=top_p, top_k=self.top_k
             )
-        if TOPK_FAST_SAMPLE:
-            k = min(self.top_k, logits.shape[-1])
-            top_vals, _top_idx = torch.topk(logits, k=k, dim=-1, sorted=True)
-            # The truncated support's probabilities, renormalised. `cum_probs`
-            # is the same cumulative mass upstream builds over the full row,
-            # because every removed token contributes zero after the top-k mask;
-            # the partition function is computed over the whole row so the two
-            # cannot drift.
-            shifted = (logits - top_vals[:, :1]).float()
-            total = torch.exp(shifted).sum(dim=-1, keepdim=True)
-            block = torch.exp((top_vals - top_vals[:, :1]).float())
-            cum_probs = torch.cumsum(block, dim=-1) / total
-            remove = cum_probs > top_p
-            # Keep the top-1 token of every row, as upstream does.
-            remove = remove.masked_fill(torch.arange(k, device=remove.device) == 0, False)
-            kept = top_vals.masked_fill(remove, float("-inf"))
-            return torch.softmax(kept / torch.clip(temperature, min=1e-5), dim=-1)
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
         cum_probs = torch.cumsum(
             torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
@@ -1004,15 +1029,21 @@ class _BatchEngine:
         token = torch.where(in_window & is_semantic, high, normal)
         return self._fast(hidden, token, temperature, top_p)
 
-    def _prefill(self, row: int, prompt, temperature, top_p, *, width: int = 1):
+    def _prefill(self, row: int, prompt, temperature, top_p, *, width: int = BATCH):
         """Fill one row's KV cache with its prompt; returns the first frames.
 
-        `width` is how many rows the caller is prefilling at once. The fast
-        transformer's tiny cache is sized for the batch, so running it `width`
-        wide keeps every lane on the same code path while still allocating only
-        what this call uses. The extra rows are identical copies and the caller
-        keeps the one it asked for, so the returned frame is the same either
-        way.
+        `width` defaults to **`BATCH`**, which is what PR 283 does: the fast
+        transformer's tiny cache is sized for the batch, so the deployed code ran
+        the reference clip's codebook tokens on `BATCH` rows and kept row 0.
+
+        This is not cosmetic. Those fast-transformer steps sample from the
+        batched RNG stream, so how many rows they draw for decides how many
+        random numbers are consumed — and therefore what the *next* sample sees.
+        Prefilling one row wide gives the first frame the same values but moves
+        the stream, and every later codebook token of that unit differs. The v10
+        loop passes its own width explicitly (`width=b`) because it is already
+        stepping `b` lanes; the legacy loop passes nothing, which must mean
+        `BATCH`.
         """
         inp = prompt[None].to(self.device)
         t = inp.shape[-1]
@@ -1330,7 +1361,9 @@ class _BatchEngine:
             max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
             if max_frames < 64:
                 raise ValueError(f"prompt of {t} tokens leaves no room to generate")
-            first = self._prefill(r, prompt, temp, topp)
+            # `width=BATCH`, exactly as PR 283: the reference's codebook tokens
+            # run on every row so the RNG stream advances identically.
+            first = self._prefill(r, prompt, temp, topp, width=BATCH)
             x[r, :, 0] = first
             buf[r, :, 0] = first
             pos[r] = t
@@ -1442,7 +1475,8 @@ class _BatchEngine:
         codes = scheduler.codes
         counters = {
             "prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0,
-            "codec_s": 0.0, "codec_tail_s": 0.0, "sections_streamed": 0,
+            "codec_s": 0.0, "codec_tail_s": 0.0, "codec_wait_s": 0.0,
+            "sections_streamed": 0,
             "batch_width": b, "work_steal": int(scheduler.work_steal),
         }
         # Per slot, so a batch response can say which section hit the frame cap.
@@ -1566,7 +1600,7 @@ class _BatchEngine:
             # prompted with.
             scheduler.complete(lane, claim, unit_codes)
             # Mark the lane idle *before* anything else looks at it: `active_h`
-            # is what `refill_idle_lanes` and `_maybe_flush` read, and a lane
+            # is what `refill_idle_lanes` and `_maybe_launch_codec` read, and a lane
             # that still looks active is a lane that stays parked for the rest of
             # the call.
             active[lane] = False
@@ -1579,21 +1613,30 @@ class _BatchEngine:
                 # gate below only decides *when* the launch happens.
                 pending_decode.append(section)
             if streaming:
-                _maybe_flush()
+                _maybe_launch_codec()
 
-        def _maybe_flush() -> None:
+        def _maybe_launch_codec() -> None:
+            """Queue ready sections on the side stream. **Never waits.**
+
+            This is the whole overlap. While generation still has rows in flight
+            it owns the HBM bandwidth a codec decode would need, so a launch then
+            buys little and costs AR throughput; the queue therefore waits for
+            enough accumulated work to be worth one launch, or for the tail where
+            lanes are running dry. Once launched, the decode stays queued across
+            every later AR step and is picked up by `_collect_decode` when its
+            event fires. Nothing here synchronises.
+            """
             if not pending_decode:
                 return
             units = sum(len(slots[s]) for s in pending_decode)
             live = int(active_h.sum())
-            # While generation still has rows in flight it owns the HBM
-            # bandwidth a codec decode would need, so a launch then buys nothing
-            # and costs AR throughput. The queue waits for enough accumulated
-            # work to be worth one launch, or for the tail where lanes are
-            # running dry — and a queue that is still waiting when generation
-            # ends is flushed by the loop's final `_flush_decode`.
-            if live <= CODEC_TAIL_ROWS or units >= CODEC_MIN_UNITS:
-                _flush_decode()
+            if live > CODEC_TAIL_ROWS and units < CODEC_MIN_UNITS:
+                return
+            launched = time.time()
+            for section in list(dict.fromkeys(pending_decode)):
+                _start_decode(section)
+            pending_decode.clear()
+            counters["codec_s"] += time.time() - launched
 
         #: Section ids waiting on a side-stream decode: `(section, handle, present)`.
         inflight_decode: list[tuple[int, dict, list[int]]] = []
@@ -1631,7 +1674,9 @@ class _BatchEngine:
                 if ready_only and handle.get("events") is not None and not handle["events"].query():
                     still.append((section, handle, present))
                     continue
+                wait_started = time.time()
                 decoded = self.collect_decode(handle)
+                counters["codec_wait_s"] += time.time() - wait_started
                 # Scatter back to unit indexes. `assemble_slot_audio` indexes
                 # takes by unit number, so a compacted list would shift every
                 # later take onto the previous unit's pause and drop the last —
@@ -1648,13 +1693,21 @@ class _BatchEngine:
             inflight_decode[:] = still
 
         def _flush_decode() -> None:
-            """Drain every queued section's decode, blocking for the last one."""
+            """Queue anything left and wait for every decode. Tail only.
+
+            Called exactly once, after the AR loop has ended, so its wait is the
+            call's codec tail rather than something generation sat behind.
+            """
+            # Queueing is timed too: with no side stream the engine decodes
+            # inline, so `_start_decode` is where that cost lands.
+            started = time.time()
+            launched = time.time()
             for section in list(dict.fromkeys(pending_decode)):
                 _start_decode(section)
             pending_decode.clear()
-            started = time.time()
+            counters["codec_s"] += time.time() - launched
             _collect_decode(ready_only=False)
-            counters["codec_s"] += time.time() - started
+            counters["codec_tail_s"] += time.time() - started
 
 
         _cuda_synchronize()
@@ -1697,14 +1750,19 @@ class _BatchEngine:
                     # never blocks: a codec still running keeps the AR loop free,
                     # and `_flush_decode` at the tail waits for the rest.
                     _collect_decode(ready_only=True)
-            # Anything left after the loop (a last unit that finished inside the
-            # final tick, or a section whose decode was deferred) runs now. This
-            # is the codec tail, and the only part that is still serial.
+        # The AR loop is over: stop its clock **before** waiting on any codec
+        # work, so `loop_s` is generation and nothing else. The service reports
+        # it as `generate_s`; folding a codec wait in would make the decode
+        # change look like an AR regression the first time a tail ran long.
+        _cuda_synchronize()
+        loop_s = time.time() - loop_t0
+        # Anything left (a unit that finished inside the final tick, or a section
+        # whose decode was deferred) runs now. This is the codec tail, and the
+        # only part of the call that is still serial.
+        with torch.inference_mode():
             tail_started = time.time()
             _flush_decode()
             counters["codec_tail_s"] += time.time() - tail_started
-        _cuda_synchronize()
-        loop_s = time.time() - loop_t0
         audio_s = counters["frames"] * self.frame_length / self.sample_rate
         return {
             "codes": codes,
@@ -1719,7 +1777,10 @@ class _BatchEngine:
             "generated_realtime_x": round(audio_s / loop_s, 1),
             "batch_width": counters["batch_width"],
             "work_steal": counters["work_steal"],
+            # `codec_s` is time the AR loop spent *collecting* a finished
+            # decode (normally zero); `codec_tail_s` is the post-loop wait.
             "codec_s": round(counters["codec_s"], 2),
+            "codec_wait_s": round(counters["codec_wait_s"], 2),
             "codec_tail_s": round(counters["codec_tail_s"], 2),
             "sections_streamed": counters["sections_streamed"],
             "_audio_by_section": audio_by_section,
@@ -1831,27 +1892,17 @@ class _BatchEngine:
         print(f"[S2B] warm-up render: {stats}")
 
     def _warm_kv_buckets(self) -> None:
-        """Step once at **every** (width, KV) shape a call can take.
+        """Record a graph at **every** shape `decode_shapes()` names.
 
         A CUDA graph is keyed by tensor shape, so warming only the widest width
         leaves every narrower call — a 1-section opening, a short book, a ramp
-        step — to record its own graph on the customer's request. The width and
-        the KV length are independent knobs, so the set is their product: the
-        width buckets this engine can choose, crossed with the KV buckets it
-        rounds up to.
-
-        On v10 that is 6 widths × 4 buckets = 24 shapes, all recorded inside the
-        snapshot. On v9 the width is always `BATCH` and the KV rounding is
-        128-token, so it stays the handful the deployed build warms.
+        step — to record its own graph on the customer's request. Width and KV
+        length are independent knobs, so the set is their product.
         """
         import torch
 
         try:
-            shapes: list[tuple[int, int]] = []
-            for width in self._warm_widths():
-                for kv_len in _warm_shape_list(KV_BUCKETS, MAX_SEQ_LEN):
-                    shapes.append((width, int(min(kv_len, MAX_SEQ_LEN))))
-            shapes = list(dict.fromkeys(shapes))
+            shapes = self.decode_shapes()
             temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
             topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
             started = time.time()
@@ -1881,7 +1932,8 @@ class _BatchEngine:
             self.selftest_stats["decode_shapes"] = [list(s) for s in shapes]
             print(
                 f"[S2B] warm decode shapes: {len(shapes)} "
-                f"(widths {sorted({w for w, _ in shapes})}) in "
+                f"(widths {sorted({w for w, _ in shapes})}, "
+                f"kv {sorted({k for _, k in shapes})}) in "
                 f"{time.time() - started:.2f}s"
             )
         except Exception as err:  # a warm-up miss is reported, not fatal
@@ -1997,11 +2049,33 @@ class _BatchEngine:
         print(f"[S2B] selftest: {stats}")
         return stats
 
-    def _replay_decode_shapes(self) -> int:
-        """Step once at each warmed shape, on whichever thread calls this.
+    def decode_shapes(self) -> list[tuple[int, int]]:
+        """Every `(width, kv_len)` the snapshot warmed, and the only ones allowed.
 
-        The count is returned so `selftest` can report it and `publish` can
-        compare it against what the snapshot warmed.
+        This is the single list both the warm-up and the post-restore replay
+        walk, so "warmed" and "verified" cannot disagree. It is the **product**
+        of the width buckets and the KV buckets: a graph is keyed by shape, so
+        warming 32-wide and then stepping 4-wide records a second graph on a
+        customer's request.
+        """
+        shapes: list[tuple[int, int]] = []
+        kv_limit = min(MAX_SEQ_LEN, int(self._kv_cache_len() or MAX_SEQ_LEN))
+        for width in self._warm_widths():
+            for kv_len in _warm_shape_list(KV_BUCKETS, kv_limit):
+                entry = (int(width), int(min(kv_len, kv_limit)))
+                if entry not in shapes:
+                    shapes.append(entry)
+        return shapes
+
+    def _replay_decode_shapes(self) -> int:
+        """Step once at **every** warmed shape, on whichever thread calls this.
+
+        The count is returned so `selftest` can report it, and so `publish` can
+        compare it against `decode_shapes()` after a restore. A graph captured
+        before the snapshot is the one thing here a restore could plausibly
+        invalidate, so the check has to cover the whole set: replaying the widest
+        shape at the longest KV prefix proves almost nothing about the 1-wide
+        call a book opens with.
         """
         import torch
 
@@ -2010,26 +2084,26 @@ class _BatchEngine:
         temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
         topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
         replayed = 0
-        with torch.inference_mode():
-            for width in self._warm_widths():
-                kv_len = int(min(KV_BUCKETS[-1], MAX_SEQ_LEN))
-                x = torch.zeros(
-                    (width, self.cfg.num_codebooks + 1, 1),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                prev = torch.zeros(
-                    (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                pos = torch.full(
-                    (width,), kv_len - 1, dtype=torch.long, device=self.device
-                )
+        for width, kv_len in self.decode_shapes():
+            x = torch.zeros(
+                (width, self.cfg.num_codebooks + 1, 1),
+                dtype=torch.long,
+                device=self.device,
+            )
+            prev = torch.zeros(
+                (width, self.cfg.num_codebooks + 1, RAS_WIN_SIZE),
+                dtype=torch.long,
+                device=self.device,
+            )
+            pos = torch.full(
+                (width,), min(kv_len - 1, self._kv_cache_len() - 1),
+                dtype=torch.long, device=self.device,
+            )
+            with torch.inference_mode():
                 if CUDAGRAPHS:
                     torch.compiler.cudagraph_mark_step_begin()
                 self.step(x, pos, kv_len, prev, temp, topp).clone()
-                replayed += 1
+            replayed += 1
         return replayed
 
 
@@ -2047,11 +2121,20 @@ def _warm_shape_list(buckets: tuple[int, ...], max_seq_len: int) -> tuple[int, .
     of what this branch fixes. Warming the same handful keeps the v9 path
     identical rather than quietly changing its snapshot build time.
     """
-    if buckets == kv_buckets({"S2C_ENGINE": "v10"}):
-        return buckets
-    bucket = buckets[-1]
+    # Only lengths `choose_kv_len` can actually return. A shorter sequence limit
+    # must *drop* buckets that do not fit, not invent a truncated one: a graph
+    # recorded at 700 tokens when the only buckets are multiples of 128 could
+    # never be replayed by a real call.
+    usable = tuple(b for b in buckets if b <= max_seq_len)
+    if not usable:
+        # The limit is below every bucket. `choose_kv_len` then clamps to the
+        # limit, so that single shape is the only one a call can take.
+        return (max_seq_len,)
+    if usable == kv_buckets({"S2C_ENGINE": "v10"}):
+        return usable
+    bucket = usable[-1]
     return tuple(
-        min(max_seq_len, bucket * n) for n in range(1, min(4, max_seq_len // bucket) + 1)
+        bucket * n for n in range(1, min(4, max_seq_len // bucket) + 1) if bucket * n <= max_seq_len
     )
 
 

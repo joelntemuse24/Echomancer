@@ -111,11 +111,25 @@ def main() -> int:
             continue
         if label == "warm decode shapes" and args.expect_shapes:
             shapes = int(found[-1].group(1))
-            if shapes < args.expect_shapes:
+            if shapes != args.expect_shapes:
                 failures.append(
-                    f"warm-up recorded {shapes} decode shape(s), expected at least "
-                    f"{args.expect_shapes}: a call at an unwarmed shape records a "
-                    "graph on the request path"
+                    f"warm-up recorded {shapes} decode shape(s), expected exactly "
+                    f"{args.expect_shapes}: a call at a shape that was not warmed "
+                    "records its graph on the request path"
+                )
+
+    # The replayed count must *equal* the warmed count when the caller says what
+    # it expects: `graphs=ok(6)` against 24 warmed shapes means three quarters of
+    # the shapes were never proven, which is the shape of bug this gate exists
+    # for. A ">=" test would pass on it.
+    if args.expect_shapes:
+        for match in re.finditer(r"graphs=ok\((\d+)\)", log):
+            replayed = int(match.group(1))
+            if replayed != args.expect_shapes:
+                failures.append(
+                    f"post-restore replay covered {replayed} shape(s), expected "
+                    f"exactly {args.expect_shapes}; the remaining shapes would "
+                    "record a graph on a customer's first section"
                 )
 
     if failures:
