@@ -4,10 +4,11 @@
  * The "before" rows were simulated on e84c389 (PR 282): section 0 at 1,000
  * characters, later rows grown to leave 15s at 1.5× and then capped at
  * 2,000, the long-book audio ramp still in place, and 45s of idle scaledown.
- * Dollars use the planner curve (about 2.8× for one row, about 8.8× at four
- * or more) plus restore and idle at $3.95/h. That curve is slower than the
- * measured 24-row smoke (~33×, about $0.14 per audio hour). A 13-row call
- * is not that smoke. These figures are estimates.
+ * Dollars use the planner curve (about 2.8× for one row, about 8.8× at
+ * four, and the measured 24-row smoke at about 33×, with the widths
+ * between four and 24 interpolated) plus restore and idle at $3.95/h.
+ * A 14-row page has not been measured on its own. These figures are
+ * estimates.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -16,8 +17,12 @@ import {
   MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_SECTION_CHARS_DEFAULT,
   cloneBookGpuBill,
+  cloneCallWallMs,
   coldClonePackFitsAbort,
+  estimateCloneBatchJsonBytes,
+  modalWarmLaneCharLimit,
   planCloneSectionChars,
+  MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import { MODAL_CLONE_SCALEDOWN_TARGET_S } from "@/lib/tts/providers/modal-clone-guard";
 
@@ -112,19 +117,47 @@ describe("estimated GPU bill", () => {
     expect(warm.wallMs).toBeLessThan(60_000);
   });
 
-  it("sends a 10-hour book to full batches after the opening", () => {
+  it("sends a 10-hour book as 14-row pages after the opening", () => {
     const sections = planCloneSectionChars(TEN_HOUR_CHARS);
     const bill = cloneBookGpuBill({ sectionChars: sections });
     expect(bill.widths[0]).toBe(1);
-    expect(bill.widths[1]).toBeGreaterThanOrEqual(8);
-    // About 13 rows, not the old 24. The planner prices both at ~8.8×, so
-    // its dollar figure does not show a real slowdown from giving up the
-    // measured ~33× of a 24-row call.
-    expect(Math.max(...bill.widths)).toBeLessThan(24);
-    expect(Math.max(...bill.widths)).toBeGreaterThanOrEqual(8);
+    // 24 × 4,000 is about 130 MiB of base64. The body ceiling is 80 MiB,
+    // so the page that fits is 14 × 4,000.
+    expect(estimateCloneBatchJsonBytes(24 * 4_000)).toBeGreaterThan(
+      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    );
+    expect(bill.widths.filter((rows) => rows === 14)).toHaveLength(10);
+    expect(bill.widths[bill.widths.length - 1]).toBe(3);
+    expect(bill.calls).toBe(12);
     expect(bill.calls).toBeLessThan(BEFORE.tenHour.calls);
     expect(bill.idleMs).toBe(15_000);
-    expect(dollars(bill.usd)).toBeGreaterThan(4);
-    expect(dollars(bill.usd)).toBeLessThan(6);
+    const pageChars = 14 * 4_000;
+    expect(pageChars).toBeLessThanOrEqual(modalWarmLaneCharLimit({} as NodeJS.ProcessEnv));
+    expect(estimateCloneBatchJsonBytes(pageChars)).toBeLessThanOrEqual(
+      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    );
+    const wall = cloneCallWallMs({
+      chars: pageChars,
+      largestRow: 4_000,
+      rows: 14,
+      shape: "warm",
+      restore: false,
+    });
+    // About 186s. Comfortable under the 400s wait and the 542s proxy.
+    expect(wall).toBeGreaterThan(150_000);
+    expect(wall).toBeLessThan(240_000);
+    expect(wall).toBeLessThan(400_000);
+    const refused = cloneCallWallMs({
+      chars: 24 * 4_000,
+      largestRow: 4_000,
+      rows: 24,
+      shape: "warm",
+      restore: false,
+    });
+    // The refused 24-row page would be about 3.5 minutes at the smoke rate.
+    expect(refused).toBeGreaterThan(180_000);
+    expect(refused).toBeLessThan(240_000);
+    expect(refused).toBeLessThan(400_000);
+    expect(dollars(bill.usd)).toBe(2.233);
   });
 });

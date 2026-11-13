@@ -79,9 +79,12 @@ lane cap          = 80s x 100 chars/s
   the timeout therefore cannot disagree.
 - `modalCloneSectionChars` — **4,000** characters after section 0 (~4.2 min).
   Section 0 stays **1,000**. A cold call holds two of the steady rows. A
-  warm call carries the largest prefix under the 400s wait and the ~57,000
-  character / 80 MiB cap, about twelve or thirteen rows. It is not sized
-  so playback at 1.5× stays ahead.
+  warm call carries the largest prefix under the 400s wait and the 80 MiB
+  body. The wanted page is 24 × 4,000 characters. That body is about
+  130 MiB, so the page that is sent is 14 × 4,000 (56,000 characters,
+  about 76 MiB, about 186s on the curve from the 4-row ~9× measurement
+  to the 24-row ~33× smoke). It is not sized so playback at 1.5× stays
+  ahead.
 
 ## Current schedule
 
@@ -98,8 +101,10 @@ at the previous 45s window; a 10s hold is safe under that longer window.
 
 Dollars in `modal-clone-short-book-cost.test.ts` use this planner curve
 plus restore and idle at $3.95/h. They are estimates. The curve is ~2.8×
-for one row and ~8.8× at four or more rows. The 24-row smoke was ~33×.
-A 13-wide page is not that smoke.
+for one row, ~8.8× at four rows, and the 24-row smoke (~33×, 528 chars/s)
+at 24 rows. Widths between four and 24 are interpolated. A 14-row page
+has not been measured on its own. 24 × 4,000 characters does not fit the
+80 MiB body, so a long book of 4,000-character sections sends 14 rows.
 
 ## The previous ramp, kept as the measurement it was
 
@@ -257,13 +262,14 @@ Healthy:
 
 - `pack evenFanout=… target=4000` — the clone width after section 0, not 7797
 - `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:N`
-  on the first claim, where N is the largest proxy-safe page (about 13
-  rows of 4,000 characters). A second runnable book stops the tick after
-  one call. A wide page on the call immediately after section 0 is the
-  schedule.
+  on the first claim, where N is the largest proxy-safe page (14 rows of
+  4,000 characters, 56,000 characters). A second runnable book stops the
+  tick after one call. A wide page on the call immediately after section 0
+  is the schedule.
   A `cold:` page stays **at or under 8,000** characters. A `warm:` page
-  stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
-  and at or under 24 rows.
+  stays at or under `modalWarmLaneCharLimit` (the 80 MiB body, under
+  60,000 characters at the defaults) and at or under 24 rows. 24 rows of
+  4,000 characters are about 130 MiB and are not that page.
 - no `multi-section call missed its budget` line
 - `first=0:staged@Ns` for the first audio
 

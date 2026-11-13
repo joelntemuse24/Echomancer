@@ -483,11 +483,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   before one 4-section call at 9.2× (197 fps), about 64s of GPU wall on
   the old ramp. `cloneGenerationMs` uses that shape: `MODAL_S2_NARROW_FPS`
   (default 60, about 2.8× and ~44 chars/s) for one row, `MODAL_S2_WIDE_FPS`
-  (default 190, about 8.8×) at four or more rows, with two and three rows
-  interpolated. A call is never planned faster than its largest row at
-  the narrow rate. The 2026-11-11 smoke's 33 chars/s curve, which got
-  slower per row, is not the planner, and the 24-row ~33× smoke is faster
-  than this curve. Transfer is still the measured 12s per 43,907
+  (default 190, about 8.8×) at four rows, then the 24-row smoke (528
+  chars/s, about 33×) at 24 rows. Two and three rows interpolate between
+  one and four, and five through 23 interpolate between four and 24. A
+  call is never planned faster than its largest row at the narrow rate.
+  The 2026-11-11 smoke's 33 chars/s curve, which got slower per row, is
+  not the planner. Transfer is still the measured 12s per 43,907
   characters. Each call stays under the ~542s proxy kill
   (`MODAL_S2_BATCH_SIZE`, default 24, max 32, is the row ceiling). Cold
   first light stays one small section. Clone section 0 is 1,000 characters
@@ -526,23 +527,21 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   **2.9x realtime for a one-row call** on the 2026-11-11 smoke. Production
   on 2026-11-12 (`e745d067`) measured one row at about 2.8× (~60 codec fps,
   ~44 chars/s) and a 4-row call at 9.2× (197 fps). The planner uses
-  `MODAL_S2_NARROW_FPS` / `MODAL_S2_WIDE_FPS` (defaults 60 and 190). A full
-  24-row call of 2,000-character sections is planned near 9×, which stays
-  under the 400s warm wait. The smoke's 528 chars/s 24-row figure is faster
-  than this plan and is not what the listener wall uses.
-  `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character
-  cap, above the unfinished 4-row floor on `job 7e4a8b48` (≥127 chars/s).
-  The HTTP wait is
-  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill.   A warm page of about twelve 4,000-character sections is 48,000
-  characters, the same page as 24 rows of 2,000: about 105s at the
-  planning curve, under the 400s wait and about 68MB of base64. After
-  first light a long book sends that page on the next call. The planner
-  treats every call of four or more rows as ~8.8×, so it does not show
-  the measured jump from a 4-row ~9× call to a 24-row ~33× call. A
-  10-hour book now posts about 13-wide pages. If real throughput still
-  climbs with width, those pages cost more GPU time than the old 24-wide
-  ones. That difference is not in the planner. `MODAL_S2_WARM_LANE_MAX_CHARS`
-  can only lower the cap.
+  `MODAL_S2_NARROW_FPS` / `MODAL_S2_WIDE_FPS` (defaults 60 and 190). Four
+  rows stay at that ~9×. The factor then climbs to the 24-row smoke,
+  528 chars/s of generation, about 33×. Two and three rows still
+  interpolate between one row and four. The HTTP wait is
+  **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill.
+  The warm character cap is one batch of steady sections (24 × 4,000 =
+  96,000), then the 80 MiB body and that wait. 24 rows of 4,000
+  characters are about 130 MiB of base64 and are not sent. The longest
+  page that fits is 14 rows, 56,000 characters, about 76 MiB, with a
+  planned wall of about 186s. A 24-row call of the old 2,000-character
+  sections (48,000 characters, about 68 MiB) still fits and is priced at
+  the smoke rate. VRAM is the same at either section length: the
+  container's cache is batch 32 by sequence 4,096, and a row holds one
+  unit. `modal/` is unchanged. `MODAL_S2_WARM_LANE_MAX_CHARS` can only
+  lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
   31k characters. On `job db10a6d6` the old round-robin split made 5 sections
   into four 1-row calls on one container (`36459a5cb16f`), so 246s of audio
@@ -577,8 +576,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   larger than a call. `MODAL_S2_SECTION_CHARS` (default 4,000) sets the width
   after section 0, which stays 1,000. A single cold row still fits 6,000
   characters inside the 180s abort and rejects 6,400; 4,000 keeps the 20s
-  prep margin. Warm calls add rows, not wider rows: about twelve of those
-  sections is one batch. A cold call holds two. A clone book frozen wider
+  prep margin. Warm calls add rows, not wider rows: the longest page
+  under the 80 MiB body is fourteen of those sections. A cold call holds
+  two. A clone book frozen wider
   than the cap is **re-packed once, only while nothing has been published**;
   an outline already at 2,000 is under the cap and is kept. An outline with
   a ready section is kept so published timestamps never move.
@@ -1219,7 +1219,7 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # auth/quota/billing errors still surface as errors.
 # MODAL_S2_PLACEMENT_BUDGET_MS=360000 # First-light HTTP wait. Floor is the 75s pack abort. Ceiling is 482s (542s proxy minus 60s).
 # MODAL_S2_NARROW_FPS=60 # 1-wide codec fps (~2.8×, ~44 chars/s). Wide batches interpolate up to MODAL_S2_WIDE_FPS.
-# MODAL_S2_WIDE_FPS=190 # 4-or-more-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×.
+# MODAL_S2_WIDE_FPS=190 # 4-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×. A 24-row call uses the 528 chars/s smoke, not this fps.
 
 # ── MiniMax Free API (optional slim test catalog) ───────
 # When both are set: catalog = Storyteller (default) + Gemini Kore only.

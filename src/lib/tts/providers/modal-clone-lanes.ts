@@ -51,6 +51,7 @@ import {
   MODAL_CLONE_CALL_PREP_MS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
   MODAL_CLONE_PROXY_KILL_MS,
+  modalCloneBatchItems,
   modalCloneCallTimeoutMs,
   modalCloneColdWaitMs,
   modalCloneFirstLightWaitMs,
@@ -195,14 +196,10 @@ export const MODAL_LANE_ROW_CHARS_PER_SECOND = 50;
 export const MODAL_LANE_WARM_CHARS_PER_SECOND = 525;
 
 /**
- * Rate a warm call is packed against.
- *
- * A one-row H100 call is ~50 chars/s. The unfinished four-row call on
- * `job 7e4a8b48` was already at least 127 chars/s when it was aborted, and
- * a full 24-row batch should be faster because the model rereads its weights
- * per frame. 150 sits just above that floor and well under the 525 chars/s
- * the 35× band implies, so a batch that only partly fills the GPU still
- * finishes inside its wait. The old 2,900 constant was a unit error
+ * Old warm packing floor. Kept so a reader can see the number that used
+ * to size the page (380s × 150 = 57,000 characters). A warm page is now
+ * `batch` × the section width, then clamped by the body and by the
+ * measured wide rate. The old 2,900 constant was a unit error
  * (realtime treated as chars/s) and is what let one call swallow 31k chars.
  */
 export const MODAL_LANE_WARM_PACK_CHARS_PER_SECOND = 150;
@@ -308,19 +305,47 @@ export function modalLaneWorkMs(
 /**
  * Characters one warm call may carry.
  *
- * Time is the warm wait minus prep, at the packing rate. Bytes are the
- * base64 ceiling. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the result,
- * the same way `MODAL_S2_LANE_MAX_CHARS` can only lower a cold call.
+ * The page is one full batch of steady sections (`modalCloneBatchItems` ×
+ * `modalCloneSectionChars`: 24 × 4,000 = 96,000 at the defaults). That page
+ * is then the minimum of three ceilings:
+ *
+ * - the 80 MiB base64 body ({@link estimateCloneBatchJsonBytes})
+ * - the warm HTTP wait, priced at {@link cloneRealtimeFactor} for a full
+ *   batch so a 24-row call is judged at the measured ~33× (about 3 minutes
+ *   of generation) rather than at the old 150 chars/s floor
+ * - the page itself
+ *
+ * `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the result, the same way
+ * `MODAL_S2_LANE_MAX_CHARS` can only lower a cold call. 24 × 4,000 does not
+ * survive the body ceiling (about 130 MiB at 128 kbps). The walker then
+ * takes the longest prefix that does.
  */
 export function modalWarmLaneCharLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const generateMs = Math.max(1_000, modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_PREP_MS);
-  const byTime = Math.floor((generateMs / 1000) * MODAL_LANE_WARM_PACK_CHARS_PER_SECOND);
+  const byPage = modalCloneBatchItems(env) * Math.max(1, modalCloneSectionChars(env));
   const perChar = estimateCloneBatchJsonBytes(10_000) / 10_000;
   const byResponse = Math.floor(MODAL_CLONE_RESPONSE_BODY_MAX_BYTES / perChar);
-  const cap = Math.max(MODAL_LANE_MIN_CHARS, Math.min(byTime, byResponse));
+  const byTime = warmCallCharBudget(modalCloneBatchItems(env), env);
+  const cap = Math.max(MODAL_LANE_MIN_CHARS, Math.min(byPage, byResponse, byTime));
   const override = Number(env.MODAL_S2_WARM_LANE_MAX_CHARS);
   if (!Number.isFinite(override) || override <= 0) return cap;
   return Math.min(cap, Math.floor(override));
+}
+
+/**
+ * Characters whose generation-plus-transfer stays inside the warm wait
+ * at this call width. Publish is reserved out of the wait. The rate is
+ * {@link cloneRealtimeFactor}, so a 24-row budget uses the measured
+ * full-batch throughput and a 4-row budget stays at the 4-row rate.
+ */
+function warmCallCharBudget(rows: number, env: NodeJS.ProcessEnv): number {
+  const factor = cloneRealtimeFactor(Math.max(1, rows), env);
+  const genPerCharMs = 1000 / (MODAL_CLONE_CHARS_PER_AUDIO_SECOND * factor);
+  const transferPerCharMs =
+    MODAL_CLONE_TRANSFER_REFERENCE_MS / MODAL_CLONE_TRANSFER_REFERENCE_CHARS;
+  const budget = modalCloneWarmWaitMs(env) - MODAL_CLONE_PUBLISH_MS;
+  const perChar = genPerCharMs + transferPerCharMs;
+  if (!(budget > 0) || !(perChar > 0)) return MODAL_LANE_MIN_CHARS;
+  return Math.floor(budget / perChar);
 }
 
 /**
@@ -346,14 +371,26 @@ export function clonePoolStillWarm(
  * planned every width from a 33 chars/s single row and got slower per row
  * as the call widened, so the buffer check kept emitting one-section batches.
  *
- * One row uses the narrow rate. Four or more rows use the wide rate.
- * Two and three rows interpolate. `MODAL_S2_NARROW_FPS` / `MODAL_S2_WIDE_FPS`
- * override the defaults. The cold character cap above stays at 100 chars/s;
- * these numbers are only how long the listener waits.
+ * One row uses the narrow rate. Two and three rows interpolate up to the
+ * 4-row rate. Four rows stay at that measured ~9×. From there the factor
+ * climbs to the 24-row smoke (~33×, 528 chars/s of generation) so a full
+ * batch is judged at that throughput and a 4-row call is not. Transfer
+ * and publish are added on top of this factor. `MODAL_S2_NARROW_FPS` /
+ * `MODAL_S2_WIDE_FPS` override the 1-row and 4-row anchors. The cold
+ * character cap above stays at 100 chars/s; these numbers are only how
+ * long the listener waits.
  */
 export const MODAL_CLONE_CODEC_FPS = 44100 / 2048;
 export const MODAL_CLONE_NARROW_FPS_DEFAULT = 60;
 export const MODAL_CLONE_WIDE_FPS_DEFAULT = 190;
+/**
+ * 24-row smoke, 2026-11-11: 528 characters per wall second of generation,
+ * about 33× at 15.85 characters per audio second. Not applied to a 4-row
+ * call. That measurement was ~9.2×.
+ */
+export const MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND = 528;
+/** Width the full-batch smoke was measured at. Wider calls use the same rate. */
+export const MODAL_CLONE_FULL_BATCH_ROWS = 24;
 
 /**
  * 1-wide chars/s at the default narrow fps (15.85 narration chars/s × ~2.8×).
@@ -382,12 +419,20 @@ export function cloneRealtimeFactor(
   env: NodeJS.ProcessEnv = process.env
 ): number {
   const narrow = modalCloneThroughputFps("narrow", env) / MODAL_CLONE_CODEC_FPS;
-  const wide = modalCloneThroughputFps("wide", env) / MODAL_CLONE_CODEC_FPS;
+  const wide = Math.max(narrow, modalCloneThroughputFps("wide", env) / MODAL_CLONE_CODEC_FPS);
   const n = Math.max(1, Math.floor(rows) || 1);
   if (n <= 1) return narrow;
-  if (n >= 4) return Math.max(narrow, wide);
-  const t = (n - 1) / 3;
-  return narrow + (Math.max(narrow, wide) - narrow) * t;
+  if (n < 4) {
+    const t = (n - 1) / 3;
+    return narrow + (wide - narrow) * t;
+  }
+  const full = Math.max(
+    wide,
+    MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND / MODAL_CLONE_CHARS_PER_AUDIO_SECOND
+  );
+  if (n >= MODAL_CLONE_FULL_BATCH_ROWS) return full;
+  const t = (n - 4) / (MODAL_CLONE_FULL_BATCH_ROWS - 4);
+  return wide + (full - wide) * t;
 }
 
 /**
@@ -466,9 +511,18 @@ export const MODAL_CLONE_OPENING_SECTION_CHARS = 1_000;
  *   prep margin (wall ~133s, abort ~153s). At the measured ~50 chars/s
  *   that row is ~80s of generation. A 7,700-character row was the one that
  *   could not finish (`job 7e4a8b48`, ~154s of generation).
- * - A warm call is capped at 400s and ~57,000 characters / 80 MiB. Twelve
- *   rows of 4,000 are 48,000 characters, the same page as 24 rows of
- *   2,000, and the planned wall stays under 400s. The proxy kill is 542s.
+ * - A warm page wants one full batch of these sections (24 × 4,000 =
+ *   96,000 characters). The 80 MiB body is what stops that page: 128 kbps
+ *   of that audio is about 130 MiB of base64. Fourteen rows (56,000
+ *   characters) fit at about 76 MiB. VRAM does not stop it. The container
+ *   allocates KV for `S2B_BATCH` (default 32) by `MAX_SEQ_LEN` 4,096, and
+ *   `synthesize_batch` accepts at most 24 items. A row holds one unit
+ *   (≤560 characters, ≤1,024 new frames), so 24 rows of 4,000 characters
+ *   is the same footprint as the 24-row smoke. At the measured 24-row
+ *   rate a 96,000-character call is about 3.5 minutes, inside the 400s
+ *   wait and the 542s proxy. The page that is actually sent is the
+ *   longest prefix under the body, and its wall is the curve from the
+ *   4-row ~9× up to that 24-row rate.
  * - 4,000 characters is ~4.2 minutes of audio. Whisper's QA budget
  *   (`audio × 0.4`, ceiling 180s) still covers that section (~101s).
  *   The MP3 is ~4 MB at 128 kbps, and concat packet-copies it.
@@ -476,8 +530,9 @@ export const MODAL_CLONE_OPENING_SECTION_CHARS = 1_000;
  *   (~4.8× on this curve) and costs more than the old 6-row call. 4,000
  *   leaves that book a 3-row call (~6.8×) and is still twice the old width.
  *
- * Rows are what make a batch faster than 2.8×. This width does not claim
- * the measured ~33× of a 24-row call.
+ * Rows are what make a batch faster than 2.8×. A 4-row call stays at the
+ * measured ~9×. The ~33× figure is the 24-row smoke, and only a call that
+ * wide is priced at it.
  */
 export const MODAL_CLONE_SECTION_CHARS_DEFAULT = 4_000;
 
@@ -1951,8 +2006,9 @@ export type CloneBookGpuBill = {
  * `simulateClonePlayback` supplies the wall (restore, generation, transfer,
  * publish). Idle is the scaledown window when this book is the last input
  * on its container, and 0 when it reused a container another book still
- * holds. This is not a measured H100 trace. The curve is ~2.8× for one row
- * and ~8.8× for four or more, which is slower than the 24-row smoke (~33×).
+ * holds. This is not a measured H100 trace. The curve is ~2.8× for one row,
+ * ~8.8× at four rows, and the 24-row smoke (~33×, 528 chars/s) at 24 rows,
+ * with the widths between those two measurements interpolated.
  */
 export function cloneBookGpuBill(input: {
   sectionChars: number[];

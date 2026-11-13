@@ -1021,10 +1021,11 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- early `warm:N` grows with the buffer. `warm:24` is only once that
-  buffer covers a full batch. A `warm:24` on the call right after section 0
-  means the ramp is not running. One row per page (`page of 1 rendered 1/1`
-  for every section) is the old round-robin split, not the ramp
+- the call after section 0 is the largest page that fits the body and
+  the warm wait: `warm:14` for 4,000-character sections (56,000
+  characters), or `warm:24` for a book still frozen at 2,000. One row
+  per page (`page of 1 rendered 1/1` for every section) is the old
+  round-robin split
 - `boot=restored` (or `unknown`) says whether that time was a restore or a
   compile. A long first light that reports `unknown` and then succeeds is a
   warm compile; the off-path `::cover` is what prevents it.
