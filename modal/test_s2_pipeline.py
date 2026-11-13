@@ -357,3 +357,65 @@ def test_ready_reports_the_batch_cap_and_transport(service):
 def test_the_version_is_bumped_so_a_stale_snapshot_cannot_serve(service):
     """The decode path changed shape; a v9 snapshot must not answer."""
     assert service.S2C_VERSION == "10"
+
+
+def test_the_serial_fallback_does_not_double_apply_the_pauses(service, monkeypatch):
+    """A serial (v9) call must not splice a section's pauses in twice.
+
+    The rollback path decodes every section after generation with
+    `decode_slots`, which already joins the takes with their pauses. That result
+    goes to the encoder as an **assembled** waveform; running the assembly rules
+    over it again would treat the whole section as one unit and keep it, but a
+    version that passed it through as one *take* of the section's units would
+    add a second set of gaps — audibly longer pauses on every v9 call.
+    """
+    import s2_clone_service as module
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "t")
+    monkeypatch.setattr(module, "PIPELINE_CODEC", False)
+
+    from test_s2_service_import import _FakeRequest, _batch_payload
+
+    worker = _pipeline_worker(service)
+    # Two paragraphs, so each section is two units. With one unit the fallback
+    # would look correct by accident: `assemble_slot_audio` only appends a pause
+    # when there is a following unit, so a bug that re-assembles the whole
+    # section as one take adds a **trailing** pause — the "narrator stops before
+    # the next section" defect the module exists to prevent.
+    # Two paragraphs, each long enough not to be merged by
+    # `MERGE_PARA_MAX_CHARS` (260), so each section really is two units.
+    first = (
+        "The river had not moved for three days, and the light was changing on "
+        "the water in a way nobody in the village could remember seeing before."
+    )
+    second = (
+        "She waited at the window with the kettle behind her and counted the "
+        "panes, then counted them again because the number would not stay put."
+    )
+    payload = _batch_payload()
+    for item in payload["items"]:
+        item["text"] = f"{first}\n\n{second}"
+    worker.engine.decode_slots = lambda codes, slots: [
+        numpy.concatenate(
+            [numpy.zeros(2000, dtype=numpy.float32), numpy.zeros(4000, dtype=numpy.float32)]
+        )
+        for _ in slots
+    ]
+    samples_seen: list[int] = []
+    real_pcm = module._to_pcm16
+
+    def spy(samples):
+        samples_seen.append(len(samples))
+        return real_pcm(samples)
+
+    monkeypatch.setattr(module, "_to_pcm16", spy)
+    try:
+        response = module.S2CloneWorker.synthesize_batch(
+            worker, payload, _FakeRequest("t")
+        )
+    finally:
+        worker.gpu.close()
+    assert response.content["items"]
+    # Each section's assembled length is exactly what `decode_slots` returned —
+    # no extra pause spliced on the end.
+    assert samples_seen == [6000, 6000], samples_seen

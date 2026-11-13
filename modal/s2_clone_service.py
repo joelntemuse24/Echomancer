@@ -92,6 +92,7 @@ from s2_batch import (
     TOPK_FAST_SAMPLE,
     WORK_STEAL,
     _BatchEngine,
+    _as_float_array,
     assemble_slot_audio,
     gpu_image,
     make_units,
@@ -907,7 +908,9 @@ class S2CloneWorker:
         ]
         pipeline = {"first_section_s": None, "encode_s": 0.0}
 
-        def encode_section(section: int, unit_audio: list) -> None:
+        def encode_section(
+            section: int, unit_audio: list, *, assembled: bool = False
+        ) -> None:
             """Runs on the GPU thread; only hands bytes to the CPU pools.
 
             Assembly and the 16-bit conversion touch no CUDA state, but they are
@@ -918,23 +921,35 @@ class S2CloneWorker:
             section.
             """
             record = sections[section]
-            samples = assemble_slot_audio(record.units, unit_audio, sample_rate)
+            if assembled:
+                # Already joined by `decode_slots`; running the assembly rules
+                # again would add a second set of pauses.
+                samples = _as_float_array(unit_audio[0]) if unit_audio else _as_float_array([])
+            else:
+                samples = assemble_slot_audio(record.units, unit_audio, sample_rate)
             record.samples = int(len(samples))
             record.pcm = _to_pcm16(samples)
             del samples
             if pipeline["first_section_s"] is None:
                 pipeline["first_section_s"] = time.time() - t0
-            started = time.time()
 
             def encode_and_upload() -> bytes:
-                mp3 = _master_pcm(record.pcm, sample_rate)
+                started = time.time()
+                try:
+                    mp3 = _master_pcm(record.pcm, sample_rate)
+                finally:
+                    # 16-bit PCM is ~21 MB for a four-minute section. It is not
+                    # needed once ffmpeg has it, and holding a page of them
+                    # until the call ends would double the peak memory for no
+                    # benefit.
+                    record.pcm = b""
+                    pipeline["encode_s"] += time.time() - started
                 record.upload = upload_pool.submit(
                     record.item_key, mp3, job_id, call_id
                 )
                 return mp3
 
             record.encode = encode_pool.submit(encode_and_upload)
-            pipeline["encode_s"] += time.time() - started
 
         def gpu_work() -> dict:
             """Everything that touches CUDA or the codec, on the GPU thread.
@@ -990,10 +1005,17 @@ class S2CloneWorker:
                 # failure mode that matters most.
                 subset = [codes[s] for s in missing]
                 if any(c is not None for unit in subset for c in unit):
+                    # `decode_slots` returns one **assembled** waveform per
+                    # section (takes joined with their pauses). Handing that back
+                    # to `encode_section` as a single unit would run the
+                    # assembly again over one piece and keep the result, which is
+                    # correct — but it also means the pauses must not be applied
+                    # twice, so it goes through `take_assembled` rather than the
+                    # per-unit path.
                     decoded = self.engine.decode_slots(subset, [slots[s] for s in missing])
                     for section, samples in zip(missing, decoded):
                         audio_by_section[section] = [samples]
-                        encode_section(section, [samples])
+                        encode_section(section, [samples], assembled=True)
             decoded_at = time.time()
             return {
                 "ref_key": ref_key,
