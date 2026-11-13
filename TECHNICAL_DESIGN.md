@@ -1422,6 +1422,65 @@ found: the fast loop must write fast-KV position 0 from the **slow** hidden
 state (its logits are discarded, but every later codebook step attends it), and
 each fast layer's attention reads its *normalised* input.
 
+**The step must *compile*, and that is tested.** Every earlier numeric test
+bypassed `torch.compile` (the CPU harness set `engine.step = engine._decode_step`),
+so two production boot bugs lived in that gap:
+
+- the v9 path called `globals().get("logits_to_probs")`, and
+  `torch.compile(fullgraph=True)` refuses to trace the `globals` builtin — the
+  **default** engine failed to compile before a single section could render;
+- a `float` attribute read inside the step (`self.codebook_inv_scale`, every
+  `RMSNorm.eps`) was wrapped by Dynamo as a 0-D CPU `float64` placeholder, which
+  Inductor reports as `skipping cudagraphs due to cpu device (arg10_1)`.
+
+`modal/test_s2_compile.py` now traces the **real** `_decode_step` through
+`torch.compile(fullgraph=True, dynamic=True)` for both engines, at two widths, and
+compares the result with eager. Both sampler names are bound inside
+`gpu_image.imports()` and called directly; `torch._dynamo.config.specialize_float`
+is set before compiling so every float attribute becomes a constant;
+`selftest()` reads `torch._dynamo.utils.counters["inductor"]["cudagraph_skips"]`
+and **raises** on a non-zero count, so a skip fails the boot instead of quietly
+halving throughput on every call.
+
+**A CUDA graph needs three calls, not one.** Inductor's `CUDAGraphTreeManager`
+warms up on call 1 for a new `(width, kv_len)` key, records on call 2 and replays
+on call 3. `_warm_kv_buckets()` runs `WARM_STEPS_PER_SHAPE` (3) steps per shape,
+feeding the output back into the next step as `render` does, so all 24 shapes are
+recorded inside the snapshot. Bucketing is forced off when `S2B_FAST_DECODE=0`,
+because upstream's `forward_generate_fast` writes a `BATCH`-row KVCache that a
+narrower active batch cannot broadcast into.
+
+**A restore that invalidates the graphs recaptures once.** `cudaGraphExec_t`
+handles are captured before the snapshot, and `cuda-checkpoint` restoring onto a
+different Modal worker variant may invalidate them. `_verify_graphs()` therefore
+resets `cudagraph_trees` and re-runs the warm-up (a capture pass over the already
+compiled Triton kernels, about a second), logs `graphs=recaptured(24)` and only
+fails on a second failure. `check-cudagraphs.py` accepts both `ok(N)` and
+`recaptured(N)`, with `N` equal to `--expect-shapes`.
+
+**The codec's host copy is pinned, and its event is recorded after it.** A D2H
+copy into pageable memory is synchronous on the calling thread — it would stall
+the AR loop inside `submit_decode` and inflate `generate_s`. The copy therefore
+goes into `pin_memory=True` buffers with `non_blocking=True`, the event is
+recorded **after** every copy is enqueued (recording first let `query()` report
+done while the DMA was still writing, which is corrupted section audio), and
+`collect_decode` drops both the device and pinned buffers once the caller has its
+arrays.
+
+**Every decode switch is forwarded into the container.** `@app.cls(env={...})`
+replaces the container's environment rather than extending it, so a switch
+`_BUILD_ENV` omits does not reach the container - and since each is also in
+`snapshot_fingerprint`, the deploy hashed one value locally while the container
+re-hashed another. Every isolation toggle in `staging-env.sh` was a no-op on
+Modal until all of `S2B_*`, `S2C_MAX_BATCH_ITEMS` and `S2C_ENCODE_WORKERS` were
+listed, and `batched_prefill` / `cpu` / `warm_steps` were added to the
+fingerprint.
+
+**One R2 pool for the container's life.** `S2CloneWorker` builds a
+`KeepAlivePool` in `publish()` and closes it in `exit()`; `UploadPool.close()`
+closes a pool it owns. A pool per request paid a handshake per object and left
+its idle sockets to GC.
+
 **Nothing in the worker's planner changed to assume a speedup.**
 `MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at the measured 528, so a v10
 page is *over*-estimated in wall time until staging measures a real rate. The

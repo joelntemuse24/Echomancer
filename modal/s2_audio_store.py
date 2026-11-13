@@ -391,6 +391,12 @@ class UploadPool:
         self.env = env
         self.transport = transport_name(env)
         self._opener = opener
+        # A borrowed pool belongs to the caller (the worker keeps one alive across
+        # calls, so consecutive pages reuse warm sockets instead of re-handshaking).
+        # An owned one is this object's to close — otherwise its idle sockets sit
+        # in the LifoQueue until GC, which is a descriptor leak as well as a
+        # wasted handshake per page.
+        self._owns_pool = pool is None
         self._pool = pool if pool is not None else (
             KeepAlivePool() if self.transport == R2 else None
         )
@@ -431,6 +437,8 @@ class UploadPool:
         if self._closed:
             return
         self._closed = True
+        if self._owns_pool and self._pool is not None:
+            self._pool.close()
         self._executor.shutdown(wait=True)
 
     def __enter__(self) -> "UploadPool":

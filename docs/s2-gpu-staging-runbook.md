@@ -1182,6 +1182,16 @@ export MODAL_S2_TTS_URL=<synthesize_batch host>
 export MODAL_S2_READY_URL=<ready host>
 export MODAL_S2_TOKEN=…                  # never echo this
 
+# The r2 build returns keys, so `bench-ab.mjs` has to read the objects back to
+# check them — and `qa-compare.ts` cannot measure r2 audio at all without these.
+# Omit them and every r2 row is recorded as deferred: the timing is still real,
+# the audio gates are not, and `qa-compare.ts` now exits 1 rather than reporting
+# "all gates passed" with nothing measured.
+export R2_ACCOUNT_ID=…
+export R2_ACCESS_KEY_ID=…
+export R2_SECRET_ACCESS_KEY=…
+export R2_BUCKET_NAME=echomancer-audio
+
 # a. the **unmodified PR 283 code**, recorded as the baseline.
 #    Not this branch with S2C_ENGINE=v9: the point of a baseline is that it is
 #    the code running in production, and a branch's "v9 mode" is a claim about
@@ -1204,7 +1214,12 @@ S2C_APP_NAME=echomancer-s2-clone-staging \
   python3 scripts/s2/check-cudagraphs.py --since 20m --expect-shapes 24
 node scripts/s2/bench-ab.mjs --record /tmp/s2-ab/after --reference-audio <clip>
 
-# c. latency and audio, side by side. Exits non-zero on a regression.
+# c. local QA prerequisites, once per machine
+bash scripts/install-reference-quality.sh        # onnxruntime-node + the ONNX models
+python3 -m pip install faster-whisper            # section ASR for the WER gate
+
+# d. latency and audio, side by side. Exits non-zero on a regression **or on any
+#    gate it could not run**; pass --allow-skips only for a latency-only run.
 npx tsx scripts/s2/qa-compare.ts /tmp/s2-ab/before /tmp/s2-ab/after
 ```
 
@@ -1301,9 +1316,21 @@ S2C_APP_NAME=echomancer-s2-clone-staging \
 ```
 
 It exits non-zero on any `skipping cudagraphs` line, any recompilation, any
-missing warm-up record, or a post-restore replay that came back short. A call
-still *succeeds* with the graphs skipped — about twice as slowly — which is why
-this has to be a gate and not a symptom anybody would notice.
+missing warm-up record, or a post-restore replay whose count differs from
+`--expect-shapes`. A call still *succeeds* with the graphs skipped — about twice
+as slowly — which is why this has to be a gate and not a symptom anybody would
+notice.
+
+`graphs=ok(24)` is the normal line. `graphs=recaptured(24)` is also a pass: the
+restored container's `cudaGraphExec_t` handles were invalid (a `cuda-checkpoint`
+restore onto a different worker variant can do that), so `publish()` reset the
+graph trees and recaptured over the already-compiled Triton kernels. A second
+failure after the recapture is fatal, and the container does not join the pool.
+
+The warm-up line now reads `warm decode shapes: 24 shapes x 3 steps`. Three
+steps per shape is required: Inductor warms up on the first call to a shape,
+records on the second and replays on the third, so a one-step warm-up recorded
+nothing.
 
 Then read the rest of the log for the qualitative facts:
 

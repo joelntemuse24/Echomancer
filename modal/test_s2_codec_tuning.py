@@ -231,3 +231,43 @@ def test_micro_batch_size_is_a_knob_and_defaults_above_the_old_eight(batch_modul
         batch_module._BatchEngine._decode_group_to_device
     )
     assert "micro_batch = DAC_MICRO_BATCH" in source
+
+
+def test_legacy_weight_norm_hooks_are_removed_too(batch_module, monkeypatch):
+    """The RVQ convolutions use the **legacy** `weight_norm`, not parametrizations.
+
+    `descript-audio-codec`'s `ResidualVectorQuantize` layers carry a `weight_g` /
+    `weight_v` pair with pre-forward hooks. Without the legacy branch those convs
+    kept recomputing the norm on every call and paid the hook overhead.
+    """
+    import torch
+
+    class _LegacyConv(torch.nn.Module):
+        def __init__(self, channels: int) -> None:
+            super().__init__()
+            self.conv = torch.nn.Conv1d(channels, channels, 3, padding=1)
+            torch.nn.utils.weight_norm(self.conv, name="weight", dim=0)
+
+        def forward(self, x):
+            return self.conv(x)
+
+    torch.manual_seed(5)
+    module = torch.nn.Sequential(_LegacyConv(4))
+    conv = module[0].conv
+    assert hasattr(conv, "weight_g") and hasattr(conv, "weight_v")
+
+    torch.manual_seed(9)
+    x = torch.randn(1, 4, 32)
+    with torch.no_grad():
+        before = module(x).clone()
+
+    monkeypatch.setattr(batch_module, "CODEC_TUNING", True)
+    stats = batch_module._tune_decoder(module, torch.device("cpu"))
+    assert stats["weight_norm_removed"] >= 1, stats
+    assert not hasattr(conv, "weight_g"), "the legacy hooks are gone"
+
+    with torch.no_grad():
+        after = module(x).clone()
+    assert torch.allclose(before, after, atol=1e-6), (
+        "removing the legacy weight_norm changed the output"
+    )

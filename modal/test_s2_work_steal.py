@@ -99,7 +99,11 @@ class TestBatchWidth:
         "sections,units,expected",
         [
             (1, 1, 1),
-            (1, 2, 4),     # work-stealing: both units can run at once
+            # A 2-unit section still starts 1 lane: unit 1 cannot run until
+            # unit 0 (its anchor) finishes, so `max(len(slots), sum(len-1))` is 1.
+            (1, 2, 1),
+            (2, 2, 4),     # two anchors plus two stolen units
+            (1, 4, 4),     # one anchor, then three stolen units
             (2, 1, 4),
             (3, 1, 4),
             (5, 1, 8),
@@ -593,3 +597,31 @@ class TestDecodeShapes:
         assert sorted(set(stepped)) == sorted(engine.decode_shapes()), (
             "the replay must visit every warmed (width, kv) pair"
         )
+
+
+class TestTheBatchWidthCountsAnchors:
+    """`sum(len(units))` over-counts: a later unit waits for its section's anchor."""
+
+    def test_a_one_section_two_unit_call_uses_one_lane(self, batch_module):
+        """`firstLight` is one section with two units; only unit 0 can start."""
+        width = batch_module.choose_batch_width(
+            [[{"text": "a"}, {"text": "b"}]], work_steal=True
+        )
+        assert width == 1
+
+    def test_the_formula_is_the_anchors_plus_the_stealable_remainder(self, batch_module):
+        for sections, units, expected in (
+            (1, 4, 4),   # one anchor, then three stolen
+            (2, 2, 4),   # two anchors, then two stolen
+            (3, 6, 16),  # three anchors, then fifteen stolen
+            (8, 1, 8),   # no remainder: one lane per section
+        ):
+            slots = [_units(units) for _ in range(sections)]
+            assert batch_module.choose_batch_width(slots, work_steal=True) == expected
+
+    def test_work_stealing_is_off_when_the_anchor_is_off(self, batch_module, monkeypatch):
+        """A unit depends on its predecessor when the anchor is off, so it cannot
+        start early — the independence work-stealing relies on does not exist."""
+        monkeypatch.setattr(batch_module, "HISTORY_ANCHOR_FIRST", False)
+        sched = batch_module._UnitScheduler([_units(3)], width=8)
+        assert sched.work_steal is False

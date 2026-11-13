@@ -393,3 +393,50 @@ def test_the_js_sigv4_copy_in_the_harness_matches_this_module():
         "the harness's SigV4 copy has drifted from `signed_put`; every R2 read "
         "it makes would answer 403"
     )
+
+
+# ── pool lifetime ─────────────────────────────────────────────────────────
+#
+# A pool per request paid a handshake per object and leaked idle sockets, since
+# `UploadPool.close()` shut the executor down without closing the pool it owned.
+
+
+def test_an_owned_pool_is_closed_with_the_upload_pool():
+    factory = _CountingFactory()
+    sockets = KeepAlivePool(connector=factory)
+    pool = UploadPool(ENV, workers=2, pool=sockets)
+    # Borrowed: the caller owns it, so closing the upload pool must leave it open.
+    pool.close()
+    assert sockets._closed is False
+    assert sockets.put("https://acct.r2.cloudflarestorage.com/b/0.mp3", b"x", {}) is None
+    sockets.close()
+
+
+def test_an_upload_pool_that_made_its_own_pool_closes_it():
+    pool = UploadPool(ENV, workers=1)
+    assert pool._owns_pool is True
+    inner = pool._pool
+    assert inner is not None
+    pool.close()
+    assert inner._closed is True, (
+        "an owned pool closed with the upload pool, or its idle TLS sockets "
+        "survive until GC"
+    )
+
+
+def test_a_reused_pool_serves_a_second_page_without_handshaking():
+    """The point of holding one pool for the container's life."""
+    factory = _CountingFactory()
+    sockets = KeepAlivePool(connector=factory)
+    for page in range(2):
+        pool = UploadPool(ENV, workers=4, pool=sockets)
+        try:
+            for i in range(8):
+                assert pool.fields(f"{page}-{i}", b"x" * 32, "job", "call")["storage_key"]
+        finally:
+            pool.close()
+    assert factory.calls == 1, (
+        f"a second page opened {factory.calls} connections; one warm socket "
+        "should have served both"
+    )
+    sockets.close()

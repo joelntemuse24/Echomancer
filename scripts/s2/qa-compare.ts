@@ -43,8 +43,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { dnsmos, speakerPairMin, warmReferenceModels } from "@/lib/tts/reference-quality/models";
-import { REF_RATE, speechMask } from "@/lib/tts/reference-quality/dsp";
+import {
+  cosineSimilarity,
+  dnsmos,
+  speakerEmbedding,
+  warmReferenceModels,
+} from "@/lib/tts/reference-quality/models";
+import { REF_RATE } from "@/lib/tts/reference-quality/dsp";
 
 // ── small helpers ──────────────────────────────────────────────────────────
 
@@ -110,7 +115,8 @@ for (let i = 0; i < args.length; i += 1) {
 if (positional.length !== 2) {
   console.error(
     "usage: npx tsx scripts/s2/qa-compare.ts <baseline-dir> <candidate-dir>\n" +
-      "  flags: --reference <clip>  --wer-sections N  --dnsmos-sections N"
+      "  flags: --reference <clip>  --wer-sections N  --dnsmos-sections N\n" +
+      "         --allow-skips  (exit 0 when a gate could not run; default is to fail)"
   );
   process.exit(2);
 }
@@ -274,16 +280,28 @@ function maxStepOutlier(pcm: Float32Array): number {
 
 // ── similarity ─────────────────────────────────────────────────────────────
 
+/**
+ * Cosine between the **mean speaker embeddings** of the clip and the take.
+ *
+ * This replaces a concatenate-then-`speakerPairMin` approach that could not
+ * measure what it claimed:
+ *
+ * - `speakerPairMin` keeps `MAX_WINDOWS = 8` windows of 4 s, i.e. 32 s of speech.
+ *   A 32 s reference clip fills every window on its own, so the take was never
+ *   embedded at all — the score was the clip's own internal worst pair.
+ * - It also returns the **minimum** cosine across all window pairs, including
+ *   pairs inside the clip, which clamps the result regardless of the take.
+ * - And because it takes one signal, `last 15 s` could not be compared with
+ *   `first 15 s` independently, so intra-section drift was unmeasurable.
+ *
+ * Resemblyzer's own protocol (and the reference gate's use of it) is one mean
+ * L2-normalised embedding per recording, compared by cosine. That is what this
+ * does, over the **whole** take as well as its first and last 15 s.
+ */
 async function embedSimilarity(clip: Float32Array, take: Float32Array): Promise<number | null> {
-  // `speakerPairMin` returns the lowest cosine between any two windows of one
-  // signal. Concatenating the reference and the take makes "any two windows"
-  // include cross-signal pairs, which is the comparison we want: a take that
-  // matches the clip stays high, a take in another voice drops.
-  const combined = new Float32Array(clip.length + take.length);
-  combined.set(clip);
-  combined.set(take, clip.length);
-  const mask = speechMask(combined);
-  return speakerPairMin(combined, mask);
+  const [a, b] = await Promise.all([speakerEmbedding(clip), speakerEmbedding(take)]);
+  if (!a || !b) return null;
+  return cosineSimilarity(a, b);
 }
 
 /**
@@ -774,7 +792,24 @@ async function main(): Promise<void> {
     console.log(`\n${failures.length} gate(s) FAILED`);
     process.exit(1);
   }
-  console.log("all gates passed");
+  // **A skipped gate is not a passed gate.** This used to print "all gates
+  // passed" and exit 0 with no R2 credentials, a placeholder reference tone, no
+  // `faster-whisper`, or no `onnxruntime-node` — i.e. exactly the situations in
+  // which nothing about audio quality had been measured. A caller that knows it
+  // is measuring latency only can opt in with `--allow-skips`.
+  if (skips.length && !flags.has("allow-skips")) {
+    console.log(
+      `\n${skips.length} gate(s) were skipped, so this run does not prove quality.\n` +
+        "Fix the prerequisites listed above, or pass --allow-skips if you are only\n" +
+        "measuring latency."
+    );
+    process.exit(1);
+  }
+  console.log(
+    skips.length
+      ? `all runnable gates passed (${skips.length} skipped, --allow-skips given)`
+      : "all gates passed"
+  );
 }
 
 main().catch((err) => {

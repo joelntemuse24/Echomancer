@@ -250,28 +250,21 @@ def test_v9_sampling_matches_the_deployed_function(v9_engine):
     assert torch.equal(ours, theirs), (ours - theirs).abs().max()
 
 
-def test_the_v9_sampler_failure_names_the_missing_dependency(v9_engine):
-    """A missing GPU-image binding must say `fish_speech`, not `logits_to_probs`.
+def test_the_v9_sampler_is_a_traced_global(v9_engine):
+    """The sampler must be a module-level name, not a runtime lookup.
 
-    The deployed path needs `fish_speech.models.text2semantic.inference`, which
-    is installed only in the GPU image. If that import block ever fails to run,
-    the useful message names the module; a bare `NameError` on a local variable
-    sends whoever reads the log looking for a bug in this file.
+    `fullgraph=True` cannot trace `globals()` or an `import` inside the function,
+    so the deployed path may only call the name directly. A missing binding is
+    therefore a compile failure at boot — which `test_s2_compile.py` exercises on
+    the real `_decode_step` for both engines — rather than a `NameError` on a
+    customer's section.
     """
-    engine = object.__new__(v9_engine._BatchEngine)
-    engine.top_k = 30
-    original = getattr(v9_engine, "logits_to_probs", None)
-    try:
-        # Remove the container binding, as a stub image would have.
-        if original is not None:
-            del v9_engine.logits_to_probs
-        with pytest.raises(ModuleNotFoundError, match="fish_speech"):
-            v9_engine._BatchEngine._logits_to_probs(
-                engine, torch.randn(2, 8), torch.tensor(0.8), torch.tensor(0.75)
-            )
-    finally:
-        if original is not None:
-            v9_engine.logits_to_probs = original
+    from test_s2_numerics import _code_only
+
+    # Code, not prose: the docstring explains the calls this must not contain.
+    source = _code_only(v9_engine._BatchEngine._logits_to_probs)
+    assert "globals(" not in source
+    assert "import " not in source
 
 
 # ── the schedule, which is the part that changes the audio ────────────────

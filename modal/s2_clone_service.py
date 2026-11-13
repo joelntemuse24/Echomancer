@@ -89,19 +89,24 @@ from fastapi import Request
 
 from s2_batch import (
     BATCH,
+    BATCHED_PREFILL,
     BUCKET_BATCH,
     CODEC_TUNING,
+    CUDAGRAPHS,
     DAC_MICRO_BATCH,
     ENGINE,
     EOS_CHECK_EVERY,
     FAST_DECODE,
     GPU,
+    KV_BUCKET,
     KV_BUCKETS,
     MAX_NEW_FRAMES,
     MAX_SEQ_LEN,
+    NEW_ENGINE,
     PIPELINE_CODEC,
     SDPA_DECODE,
     TOPK_FAST_SAMPLE,
+    WARM_STEPS_PER_SHAPE,
     WORK_STEAL,
     _BatchEngine,
     _as_float_array,
@@ -140,7 +145,7 @@ from s2_contract import (
     validate_reference_text,
     warm_reference_wav,
 )
-from s2_audio_store import UploadPool, transport_name
+from s2_audio_store import R2, KeepAlivePool, UploadPool, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
 #: The app this module deploys to. `s2_contract.resolve_app_name` is the one
@@ -177,6 +182,15 @@ HEARTBEAT_DICT_NAME = heartbeat_dict_name(os.environ)
 
 _LIMITS = container_limits(os.environ)
 
+#: CPU cores for the container. Eight under v10: the encode/upload pools are pure
+#: CPU overlapped with the GPU, so four more cores ($0.000052/s against the
+#: H100's $0.001097/s) shorten a call's tail whenever they save more than ~5% of
+#: its wall. Promoting `S2C_ENGINE=v10` should not silently drop back to four.
+_CPU = float(os.environ.get("S2C_CPU", "8" if NEW_ENGINE else "4"))
+#: Threads that run MP3 -> R2. Read here so the container env and the fingerprint
+#: report the same number the pools actually get.
+_ENCODE_WORKERS = int(os.environ.get("S2C_ENCODE_WORKERS", "8"))
+
 #: The narration recipe this build renders with.
 #:
 #: Reported by `status()` and `GET /ready`, written into every synthesis
@@ -196,6 +210,30 @@ _RECIPE = {
         "paragraph": PARAGRAPH_PAUSE_S,
     },
 }
+
+def max_batch_items(env=None) -> int:
+    """Rows one `synthesize_batch` call may carry.
+
+    Reported by `GET /ready` as `max_batch_items`. The worker only plans a page
+    wider than its safe inline width when `/ready` reports both
+    `audio_transport: "r2"` and this number at 32, so a worker deployed against
+    the live 24-row container keeps sending at most 24 rows and never sees a 422
+    `batch_too_large`.
+
+    Never above `BATCH`: the KV cache is allocated for that many rows, and a
+    row past it would index out of the cache.
+    """
+    env = os.environ if env is None else env
+    try:
+        value = int(str(env.get("S2C_MAX_BATCH_ITEMS", "")).strip())
+    except (TypeError, ValueError):
+        # Unset or malformed: the capacity, not a floor. A typo must not quietly
+        # shrink every page to one row.
+        return BATCH
+    if value < 1:
+        return BATCH
+    return min(BATCH, value)
+
 
 _BUILD_ENV = {
     "S2C_BUILD": snapshot_fingerprint(
@@ -233,6 +271,12 @@ _BUILD_ENV = {
             "topk_fast": int(TOPK_FAST_SAMPLE),
             "dac_micro": DAC_MICRO_BATCH,
             "pipeline_codec": int(PIPELINE_CODEC),
+            "batched_prefill": int(BATCHED_PREFILL),
+            # CPU cores change how much of a call's encode/upload tail overlaps
+            # generation, so a container with a different count is a different
+            # build as far as the A/B is concerned.
+            "cpu": _CPU,
+            "warm_steps": WARM_STEPS_PER_SHAPE,
             "audio_transport": transport_name(os.environ),
         }
     ),
@@ -251,8 +295,52 @@ _BUILD_ENV = {
     "S2C_ENGINE": ENGINE,
     # Reported so a staging A/B can prove the container really got more CPU;
     # Modal's own dashboard shows the same number, but a log line beats clicking.
-    "S2C_CPU": str(os.environ.get("S2C_CPU", "4")),
+    "S2C_CPU": str(_CPU),
+    # **Every** decode switch, forwarded explicitly.
+    #
+    # `@app.cls(env={...})` replaces the container's environment rather than
+    # extending it, so a switch this dict omits does not reach the container at
+    # all — and because each one is also in the fingerprint above, the deploy
+    # hashed one value locally and the container re-hashed another. Every
+    # isolation toggle in `staging-env.sh` was therefore a no-op on Modal, and
+    # the two builds disagreed about their own id. Listing them here is what
+    # makes `S2C_BUILD` mean the same thing on both sides.
+    "S2B_BATCH": str(BATCH),
+    "S2B_MAX_SEQ_LEN": str(MAX_SEQ_LEN),
+    "S2B_CUDAGRAPHS": "1" if CUDAGRAPHS else "0",
+    "S2B_KV_BUCKET": str(KV_BUCKET),
+    "S2B_SDPA_DECODE": "1" if SDPA_DECODE else "0",
+    "S2B_TOPK_FAST_SAMPLE": "1" if TOPK_FAST_SAMPLE else "0",
+    "S2B_WORK_STEAL": "1" if WORK_STEAL else "0",
+    "S2B_BUCKET": "1" if BUCKET_BATCH else "0",
+    "S2B_EOS_CHECK_EVERY": str(EOS_CHECK_EVERY),
+    "S2B_DAC_MICRO_BATCH": str(DAC_MICRO_BATCH),
+    "S2B_PIPELINE_CODEC": "1" if PIPELINE_CODEC else "0",
+    "S2B_BATCHED_PREFILL": "1" if BATCHED_PREFILL else "0",
+    "S2B_CODEC_TUNING": "1" if CODEC_TUNING else "0",
+    "S2B_FAST_DECODE": "1" if FAST_DECODE else "0",
+    "S2B_WARM_STEPS": str(WARM_STEPS_PER_SHAPE),
+    "S2C_MAX_BATCH_ITEMS": str(max_batch_items()),
+    "S2C_ENCODE_WORKERS": str(_ENCODE_WORKERS),
 }
+
+
+def _reset_cudagraph_trees() -> None:
+    """Drop captured CUDA-graph handles so they can be recorded again.
+
+    Only the graph handles are released: the compiled Triton kernels and the
+    Inductor artifacts stay resident, so a recapture costs a capture pass rather
+    than a compile. A torch without the tree manager (a CPU build, an older
+    version) has nothing to reset.
+    """
+    try:
+        from torch._inductor.cudagraph_trees import reset_cudagraph_trees
+    except Exception:
+        return
+    try:
+        reset_cudagraph_trees()
+    except Exception as err:
+        print(f"[S2C] reset_cudagraph_trees failed: {type(err).__name__}: {err}")
 
 
 def _max_containers() -> int:
@@ -266,30 +354,6 @@ def _max_containers() -> int:
     on this one; that decorator is in effect only after a redeploy.
     """
     return int(_LIMITS["max_containers"])
-
-
-def max_batch_items(env=None) -> int:
-    """Rows one `synthesize_batch` call may carry.
-
-    Reported by `GET /ready` as `max_batch_items`. The worker only plans a page
-    wider than its safe inline width when `/ready` reports both
-    `audio_transport: "r2"` and this number at 32, so a worker deployed against
-    the live 24-row container keeps sending at most 24 rows and never sees a 422
-    `batch_too_large`.
-
-    Never above `BATCH`: the KV cache is allocated for that many rows, and a
-    row past it would index out of the cache.
-    """
-    env = os.environ if env is None else env
-    try:
-        value = int(str(env.get("S2C_MAX_BATCH_ITEMS", "")).strip())
-    except (TypeError, ValueError):
-        # Unset or malformed: the capacity, not a floor. A typo must not quietly
-        # shrink every page to one row.
-        return BATCH
-    if value < 1:
-        return BATCH
-    return min(BATCH, value)
 
 
 def _token_ok(request: Request) -> bool:
@@ -490,7 +554,7 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
     # (four more cores are about $0.000052/s against $0.001097/s). Read at deploy
     # time, like every other sizing knob, and reported by `/ready` so a staging
     # A/B can prove it took effect.
-    cpu=float(os.environ.get("S2C_CPU", "4")),
+    cpu=_CPU,
     memory=32768,
     # The token lives in its own secret so rotating it never touches the other
     # Echomancer credentials.
@@ -581,6 +645,14 @@ class S2CloneWorker:
         executes while the marks it compares against were captured.
         """
         self.ready_at = time.time()
+        # One TLS pool for the container's whole life. Consecutive pages then
+        # reuse warm sockets instead of paying a handshake per object, which is
+        # the entire point of `KeepAlivePool` and was wasted when each request
+        # built its own. Created here (not in `load`) so a restored snapshot does
+        # not carry sockets that died with the old process.
+        self.r2_pool = (
+            KeepAlivePool() if transport_name(os.environ) == R2 else None
+        )
         self.container_id = os.environ.get("MODAL_CONTAINER_ID") or uuid.uuid4().hex[:12]
         self.calls = 0
         self._heartbeat_at = 0.0
@@ -632,22 +704,55 @@ class S2CloneWorker:
         self._start_heartbeat_timer()
 
     def _verify_graphs(self) -> str:
-        """Replay every warmed decode shape on the GPU thread. Raises on failure.
+        """Replay every warmed decode shape on the GPU thread.
 
         `expected` is the size of the engine's own `(width, kv_len)` product — the
         same list the snapshot warmed — so a restore that invalidated any one of
-        them is caught at boot. Comparing against the width count alone (the
-        first version of this) would have passed while three quarters of the
+        them is caught at boot. Comparing against the width count alone (an
+        earlier version of this) would have passed while three quarters of the
         shapes were never replayed.
+
+        **A replay failure is recaptured once, then fatal.** The graphs are
+        `cudaGraphExec_t` handles captured before the snapshot, and
+        `cuda-checkpoint` restoring onto a different Modal worker variant may
+        invalidate them. Re-raising straight away would brick every restored
+        container on that variant; resetting `cudagraph_trees` and re-running the
+        warm-up rebuilds them over the already-compiled Triton kernels in about a
+        second, with no recompile. Only a *second* failure is fatal, because that
+        is no longer a restore artefact.
         """
         expected = len(self.engine.decode_shapes())
+        try:
+            stats = self.engine.selftest()
+            replayed = int(stats.get("decode_shapes") or 0)
+            if replayed != expected:
+                raise RuntimeError(
+                    f"decode step replayed {replayed} shape(s), expected {expected}"
+                )
+            return f"ok({replayed})"
+        except Exception as first:
+            print(
+                f"[S2C] decode-graph replay failed after restore "
+                f"({type(first).__name__}: {first}); recapturing over the "
+                "compiled kernels"
+            )
+        # One recapture. `reset_cudagraph_trees` drops the invalid handles; the
+        # Triton kernels and the Inductor artifacts stay in memory, so this is a
+        # capture pass, not a compile.
+        _reset_cudagraph_trees()
+        refreshed = self.engine._warm_kv_buckets()
+        if refreshed != expected:
+            raise RuntimeError(
+                f"graph recapture covered {refreshed} shape(s), expected {expected}"
+            )
         stats = self.engine.selftest()
         replayed = int(stats.get("decode_shapes") or 0)
         if replayed != expected:
             raise RuntimeError(
-                f"decode step replayed {replayed} shape(s), expected {expected}"
+                f"decode step replayed {replayed} shape(s) after recapture, "
+                f"expected {expected}"
             )
-        return f"ok({replayed})"
+        return f"recaptured({replayed})"
 
 
     # ── liveness ───────────────────────────────────────────────────────────
@@ -692,6 +797,12 @@ class S2CloneWorker:
         way, so the only thing worth doing is the bookkeeping.
         """
         self._stopped.set()
+        pool = getattr(self, "r2_pool", None)
+        if pool is not None:
+            try:
+                pool.close()
+            except Exception as err:  # never fail teardown on a socket close
+                print(f"[S2C] r2 pool close failed: {err}")
         try:
             heartbeats.pop(self.container_id, None)
         except Exception as err:  # never fail teardown on bookkeeping
@@ -970,10 +1081,10 @@ class S2CloneWorker:
         job_id = str(payload.get("job_id") or "")
         sample_rate = self.engine.sample_rate
         encode_pool = ThreadPoolExecutor(
-            max_workers=int(os.environ.get("S2C_ENCODE_WORKERS", "8")),
+            max_workers=_ENCODE_WORKERS,
             thread_name_prefix="s2-mp3",
         )
-        upload_pool = UploadPool(os.environ)
+        upload_pool = UploadPool(os.environ, pool=getattr(self, "r2_pool", None))
         #: One `_PipelinedSection` per section, indexed by section id, so the
         #: response can be built in item order however the sections finished.
         sections = [

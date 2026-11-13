@@ -85,6 +85,7 @@ from typing import Callable
 import modal
 
 from s2_contract import (
+    HISTORY_ANCHOR_FIRST,
     MERGE_PARA_MAX_CHARS,
     UNIT_MAX_CHARS,
     history_anchor,
@@ -158,8 +159,17 @@ KV_BUCKETS = kv_buckets(os.environ)
 #: 32: the eight idle rows would each read their own KV slice and take part in
 #: the full-vocabulary sort, and contribute nothing.
 BATCH_BUCKETS = (1, 4, 8, 16, 24, 32)
+#: The rewritten fast-transformer step and tensor-only sampling mask.
+FAST_DECODE = os.environ.get("S2B_FAST_DECODE", "1" if NEW_ENGINE else "0") == "1"
+
 #: 0 disables bucketing (every call runs `BATCH` rows, as v9 does).
-BUCKET_BATCH = os.environ.get("S2B_BUCKET", "1" if NEW_ENGINE else "0") == "1"
+#:
+#: Forced off when the fast step is off: upstream's `forward_generate_fast`
+#: updates a `BATCH`-row KVCache and writes a full-width tensor, so a narrower
+#: active batch cannot broadcast into it. The v10 loop only ever passes `width=b`
+#: to `_prefill`, so bucketing and the upstream fast step are mutually exclusive.
+_BUCKET_DEFAULT = "1" if (NEW_ENGINE and FAST_DECODE) else "0"
+BUCKET_BATCH = os.environ.get("S2B_BUCKET", _BUCKET_DEFAULT) == "1"
 #: 1 lets an idle lane take a later unit of a section whose unit 0 is done.
 WORK_STEAL = os.environ.get("S2B_WORK_STEAL", "1" if NEW_ENGINE else "0") == "1"
 #: Decode steps between host synchronisations. A finished row idles at most
@@ -183,8 +193,6 @@ PIPELINE_CODEC = os.environ.get("S2B_PIPELINE_CODEC", "1" if NEW_ENGINE else "0"
 BATCHED_PREFILL = os.environ.get("S2B_BATCHED_PREFILL", "1" if NEW_ENGINE else "0") == "1"
 #: Freeze `weight_norm` and cache the codec's causal mask (bit-identical).
 CODEC_TUNING = os.environ.get("S2B_CODEC_TUNING", "1" if NEW_ENGINE else "0") == "1"
-#: The rewritten fast-transformer step and tensor-only sampling mask.
-FAST_DECODE = os.environ.get("S2B_FAST_DECODE", "1" if NEW_ENGINE else "0") == "1"
 #: Everything the deployed build computes, from the render loop down to the
 #: scalar operands inside `_embed`. True when `S2C_ENGINE` is unset.
 #:
@@ -200,6 +208,11 @@ KV_BUCKET = KV_BUCKETS[0] if not NEW_ENGINE else 128
 #: and the active-row count below which the tail has bandwidth to spare.
 CODEC_MIN_UNITS = 16
 CODEC_TAIL_ROWS = 12
+
+#: Steps per `(width, kv_len)` in the warm-up. Inductor's `CUDAGraphTreeManager`
+#: warms up on call 1, records on call 2 and replays on call 3 for each shape key,
+#: so one step records nothing and two leave the shape unproven.
+WARM_STEPS_PER_SHAPE = int(os.environ.get("S2B_WARM_STEPS", "3"))
 
 APP_NAME = "echomancer-s2-batch"
 CLASS_NAME = "S2BatchWorker"
@@ -253,24 +266,22 @@ gpu_image = (
 )
 
 # Functions traced by torch.compile(fullgraph=True) must not run import
-# statements, so their dependencies are bound here (inside the container only).
-def _upstream_sampler():
-    """Upstream's `logits_to_probs`, resolved on first use.
-
-    Imported here rather than in `gpu_image.imports()` so the v9 sampler has one
-    binding, and a failure names the dependency instead of raising a bare
-    `NameError: logits_to_probs` from a traced function. The import is cheap
-    after the first call (the module is cached).
-    """
-    import fish_speech.models.text2semantic.inference as upstream
-
-    return upstream.logits_to_probs
-
-
+# statements, and must not reach for a name through `globals()`. Dynamo fails
+# `fullgraph=True` on both: `globals()` is an untraceable builtin, and an
+# `import` inside the traced function is a graph break. So both sampler names are
+# bound here, at module scope, where the tracer can resolve them as ordinary
+# globals.
+#:
+#: `logits_to_probs` is the v9 path (`S2C_ENGINE` unset, the deployed rollback)
+#: and also the `S2B_FAST_DECODE=0` isolation switch. A missing binding therefore
+#: fails the *compile* of the default engine rather than a customer's section,
+#: which is why this import is not lazy: `test_s2_compile.py` traces the real
+#: `_decode_step` through `fullgraph=True` for v9 and catches it offline.
 with gpu_image.imports():
     import torch
     import torch.nn.functional as F
     from fish_speech.models.text2semantic.inference import (
+        logits_to_probs,
         multinomial_sample_one_no_sync,
     )
 
@@ -416,6 +427,39 @@ def _cuda_synchronize() -> None:
         torch.cuda.synchronize()
 
 
+def _pinned_copy(tensor):
+    """Copy a CUDA tensor into **pinned** host memory, asynchronously.
+
+    Pinned (page-locked) memory is what makes `non_blocking=True` mean anything
+    for D2H: into pageable memory the driver has to stage through an internal
+    buffer and the calling thread waits. Falls back to a plain CPU copy where
+    pinning is unavailable (a CPU build), which is correct there because there is
+    no asynchronous transfer to overlap.
+    """
+    import torch
+
+    host = torch.empty(
+        tuple(tensor.shape), dtype=torch.float32, pin_memory=tensor.is_cuda
+    )
+    host.copy_(tensor, non_blocking=True)
+    return host
+
+
+def _cudagraph_skips() -> int:
+    """How many times inductor refused to CUDA-graph a kernel.
+
+    `check-cudagraphs.py` greps the log, but a number in `selftest()` is what
+    fails the *boot* instead of the operator's next `grep`. A skip is nearly
+    always a CPU-tensor argument: `arg10_1` is what the float-attribute
+    specialization bug looked like.
+    """
+    try:
+        counters = torch._dynamo.utils.counters
+        return int(counters.get("inductor", {}).get("cudagraph_skips", 0))
+    except Exception:  # a torch without the counter is not a failure
+        return 0
+
+
 def _sync_ar_stream() -> None:
     """Wait for the **AR stream only**, not the whole device.
 
@@ -482,6 +526,18 @@ def _tune_decoder(decoder, device) -> dict:
             if callable(weight_norm) and hasattr(module, "conv"):
                 try:
                     weight_norm()
+                    stats["weight_norm_removed"] += 1
+                    continue
+                except Exception:
+                    pass
+            # `descript-audio-codec`'s `ResidualVectorQuantize` convolutions use
+            # the **legacy** `torch.nn.utils.weight_norm` (a `weight_g` /
+            # `weight_v` pair with pre-hooks), not the parametrizations module.
+            # Without this branch those convs kept recomputing the norm on every
+            # call and paid the hook overhead in the forward pass.
+            if hasattr(module, "weight_g") and hasattr(module, "weight_v"):
+                try:
+                    torch.nn.utils.remove_weight_norm(module)
                     stats["weight_norm_removed"] += 1
                 except Exception:
                     pass
@@ -623,6 +679,24 @@ class _BatchEngine:
             decoder_tuning["masks_cached"] = self.mask_cache.install(self.decoder)
         else:
             decoder_tuning["masks_cached"] = 0
+
+        # **Every Python `float` read inside the step must become a constant.**
+        #
+        # Under `dynamic=True` Dynamo wraps a float attribute it cannot
+        # specialize as a `pass_arg_as_tensor=True` **0-D CPU float64 placeholder**
+        # — and Inductor then logs `skipping cudagraphs due to cpu device
+        # (arg10_1)` for the whole graph. The attributes that did it here are
+        # `self.codebook_inv_scale` and every `RMSNorm.eps` in the model.
+        # `specialize_float=True` constant-folds them, which is also exactly what
+        # they are: values fixed at load time, not per-call tensors.
+        #
+        # Set for every engine, not just v10: the v9 path reads the same
+        # `RMSNorm.eps`, and a compile-time config must not depend on which
+        # branch a later call takes.
+        try:
+            torch._dynamo.config.specialize_float = True
+        except Exception as err:  # a torch without the flag keeps the default
+            print(f"[S2B] specialize_float unavailable: {type(err).__name__}: {err}")
 
         if CUDAGRAPHS:
             # At most `len(KV_BUCKETS)` shapes, each recorded once.
@@ -919,10 +993,10 @@ class _BatchEngine:
         as before" a code fact rather than a claim.
         """
         if LEGACY_RENDER or not FAST_DECODE:
-            # Resolved lazily so a missing GPU-image binding fails with the real
-            # dependency name rather than `NameError: logits_to_probs`.
-            sampler = globals().get("logits_to_probs") or _upstream_sampler()
-            return sampler(
+            # A direct call to the bound global. `globals()` and a runtime
+            # `import` are both untraceable under `fullgraph=True`, which is what
+            # made the default engine fail to compile at boot.
+            return logits_to_probs(
                 logits, temperature=temperature, top_p=top_p, top_k=self.top_k
             )
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
@@ -1250,12 +1324,23 @@ class _BatchEngine:
         self.codec_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self.codec_stream):
             handle["output"] = self._decode_group_to_device(code_list, micro_batch)
-            handle["events"] = torch.cuda.Event()
-            handle["events"].record(self.codec_stream)
+            # **Pinned** host buffers. `tensor.to("cpu", non_blocking=True)` looks
+            # asynchronous but allocates pageable memory, and a CUDA D2H copy into
+            # pageable memory is synchronous on the calling thread — it would stall
+            # the AR loop inside this call and inflate `generate_s`. A pinned
+            # buffer makes the copy a real async DMA.
             handle["host"] = [
-                None if tensor is None else tensor.to("cpu", non_blocking=True)
+                None
+                if tensor is None
+                else _pinned_copy(tensor)
                 for tensor in handle["output"]
             ]
+            # Recorded **after** the copies are enqueued. Recording first let the
+            # event report "done" while the DMA was still writing `handle["host"]`,
+            # so `numpy()` below could read a half-written buffer — corrupted
+            # section audio, and only under real asynchrony.
+            handle["events"] = torch.cuda.Event()
+            handle["events"].record(self.codec_stream)
         return handle
 
     def collect_decode(self, handle):
@@ -1274,6 +1359,11 @@ class _BatchEngine:
         out = []
         for tensor in handle["host"]:
             out.append(None if tensor is None else np.asarray(tensor.numpy(), dtype="float32"))
+        # Drop the device tensors (and the pinned host buffers) now the caller has
+        # its arrays: a page of 32 finished sections would otherwise hold both
+        # copies alive until the whole call ended.
+        handle["output"] = None
+        handle["host"] = []
         return out
 
     def decode_pending(self) -> None:
@@ -1920,8 +2010,11 @@ class _BatchEngine:
         self.reset_state()
         print(f"[S2B] warm-up render: {stats}")
 
-    def _warm_kv_buckets(self) -> None:
+    def _warm_kv_buckets(self) -> int:
         """Record a graph at **every** shape `decode_shapes()` names.
+
+        Returns the number of shapes recorded, so a post-restore recapture can
+        assert it covered the whole set.
 
         A CUDA graph is keyed by tensor shape, so warming only the widest width
         leaves every narrower call — a 1-section opening, a short book, a ramp
@@ -1935,6 +2028,7 @@ class _BatchEngine:
             temp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
             topp = torch.tensor([0.7], device=self.device, dtype=self.dtype)
             started = time.time()
+            recorded = 0
             for width, kv_len in shapes:
                 x = torch.zeros(
                     (width, self.cfg.num_codebooks + 1, 1),
@@ -1952,21 +2046,40 @@ class _BatchEngine:
                     dtype=torch.long,
                     device=self.device,
                 )
-                with torch.inference_mode():
-                    if CUDAGRAPHS:
-                        torch.compiler.cudagraph_mark_step_begin()
-                    self.step(x, pos, kv_len, prev, temp, topp).clone()
+                # **Three** steps per shape, not one. Inductor's
+                # `CUDAGraphTreeManager` uses the first call at a new
+                # `(width, kv_len)` key to WARM UP (eager, no graph), the second
+                # to RECORD, and only the third REPLAYS. With one step per shape
+                # nothing was recorded: 22 of 24 shapes were left for the first
+                # customer call, and `selftest()` became someone else's
+                # recording call.
+                for _ in range(WARM_STEPS_PER_SHAPE):
+                    with torch.inference_mode():
+                        if CUDAGRAPHS:
+                            torch.compiler.cudagraph_mark_step_begin()
+                        # Feed the output back as the next input, exactly as
+                        # `render` does, so the storage liveness the tree
+                        # manager sees matches the real loop.
+                        x = self.step(x, pos, kv_len, prev, temp, topp).clone()[
+                            :, :, None
+                        ].contiguous()
+                recorded += 1
             _cuda_synchronize()
-            self.selftest_stats["decode_graphs"] = len(shapes)
+            self.selftest_stats["decode_graphs"] = recorded
             self.selftest_stats["decode_shapes"] = [list(s) for s in shapes]
+            self.selftest_stats["cudagraph_skips"] = _cudagraph_skips()
             print(
-                f"[S2B] warm decode shapes: {len(shapes)} "
+                f"[S2B] warm decode shapes: {recorded} shapes x "
+                f"{WARM_STEPS_PER_SHAPE} steps "
                 f"(widths {sorted({w for w, _ in shapes})}, "
-                f"kv {sorted({k for _, k in shapes})}) in "
+                f"kv {sorted({k for _, k in shapes})}), "
+                f"cudagraph_skips={_cudagraph_skips()} in "
                 f"{time.time() - started:.2f}s"
             )
+            return recorded
         except Exception as err:  # a warm-up miss is reported, not fatal
             print(f"[S2B] warm decode shapes skipped: {type(err).__name__}: {err}")
+            return int(self.selftest_stats.get("decode_graphs") or 0)
 
     def _warm_widths(self) -> tuple[int, ...]:
         """Every active width a call in this engine can choose."""
@@ -2071,10 +2184,26 @@ class _BatchEngine:
             "batch_width_max": BATCH,
             "kv_buckets": list(KV_BUCKETS),
             "decode_shapes": replayed,
+            "cudagraph_skips": _cudagraph_skips(),
             "side_stream": side_stream,
             "engine": ENGINE,
             "codec_tuning": dict(getattr(self, "decoder_tuning", {}) or {}),
         }
+        skips = int(stats.get("cudagraph_skips") or 0)
+        if CUDAGRAPHS and skips:
+            # A skip means the step runs uncompiled, about twice as slowly, and
+            # every call still succeeds — which is why it has to be an error here
+            # rather than a note. This fires at boot, before a snapshot is
+            # published, instead of after a paid staging compile.
+            stats["ok"] = False
+            print(
+                f"[S2B] selftest: {stats}\n"
+                f"[S2B] ERROR: inductor skipped CUDA graphs {skips} time(s); a "
+                "CPU-tensor argument is back (see arg10_1)"
+            )
+            raise RuntimeError(
+                f"inductor skipped CUDA graphs {skips} time(s); refusing to serve"
+            )
         print(f"[S2B] selftest: {stats}")
         return stats
 
@@ -2199,8 +2328,17 @@ def choose_batch_width(
         return 1
     if not bucketed:
         return max(1, min(capacity, BATCH))
+    # The number of units that can genuinely run *at once*.
+    #
+    # With work-stealing, a section contributes one unit immediately (its first,
+    # the anchor) and each later unit only once that anchor has finished. Summing
+    # `len(units)` therefore over-counts: a 1-section, 2-unit `firstLight` call
+    # picked width 4 for work that can only ever use 1 lane. `max(len(slots), ...)`
+    # is exact — one per section, plus the stolen remainder.
     if work_steal:
-        parallel = sum(len(units) for units in slots)
+        parallel = max(
+            len(slots), sum(max(0, len(units) - 1) for units in slots)
+        )
     else:
         parallel = max(len(units) for units in slots)
     parallel = max(1, parallel)
@@ -2282,7 +2420,13 @@ class _UnitScheduler:
     ) -> None:
         self.slots = slots
         self.width = int(width)
-        self.work_steal = WORK_STEAL if work_steal is None else bool(work_steal)
+        # Stealing a later unit is only sound because every unit after the first
+        # is conditioned on the section's **first** take
+        # (`HISTORY_ANCHOR_FIRST`). With the anchor off, a unit depends on its
+        # immediate predecessor, so it cannot start before that one finishes —
+        # the independence the scheduler relies on would not exist.
+        requested = WORK_STEAL if work_steal is None else bool(work_steal)
+        self.work_steal = requested and HISTORY_ANCHOR_FIRST
         self.next_unit = [0] * len(slots)
         self.remaining = [sum(len(unit.get("text") or "") for unit in units) for units in slots]
         self.anchor_ready = [not units for units in slots]

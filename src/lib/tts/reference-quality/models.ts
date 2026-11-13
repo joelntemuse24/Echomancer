@@ -156,6 +156,60 @@ export async function speakerPairMin(pcm: Float32Array, mask: boolean[]): Promis
   return min;
 }
 
+/**
+ * Mean L2-normalised speaker embedding of one signal.
+ *
+ * Resemblyzer's protocol averages the per-window embeddings of a recording into
+ * one vector, then compares recordings by cosine. That is the comparison a
+ * listener makes — "is this the same speaker?" — and it is not the same thing as
+ * `speakerPairMin`, which reports the *worst* pair of windows inside one signal.
+ *
+ * Windows are non-overlapping 4 s slices of speech, and every slice is used (no
+ * 32 s cap): a take that drifts in its last minute has to affect its own
+ * embedding, or the drift cannot be measured at all.
+ */
+export async function speakerEmbedding(pcm: Float32Array): Promise<Float64Array | null> {
+  const s = await session("speaker_encoder.onnx");
+  const ort = loadOrt();
+  if (!s || !ort || pcm.length < WINDOW_FRAMES * 160) return null;
+  const frames = melFrames(normalizeVolumeUp(pcm));
+  const windows = Math.floor(frames.length / WINDOW_FRAMES);
+  if (windows < 1) return null;
+  const starts: number[] = [];
+  for (let st = 0; st + PARTIAL_FRAMES <= WINDOW_FRAMES; st += PARTIAL_STEP) starts.push(st);
+  const per = starts.length;
+  const input = new Float32Array(windows * per * PARTIAL_FRAMES * 40);
+  let o = 0;
+  for (let w = 0; w < windows; w++) {
+    for (const st of starts) {
+      for (let f = 0; f < PARTIAL_FRAMES; f++) {
+        input.set(frames[w * WINDOW_FRAMES + st + f]!, o);
+        o += 40;
+      }
+    }
+  }
+  const out = await s.run({
+    [s.inputNames[0]!]: new ort.Tensor("float32", input, [windows * per, PARTIAL_FRAMES, 40]),
+  });
+  const e = out[s.outputNames[0]!]!.data;
+  const dim = 256;
+  const v = new Float64Array(dim);
+  for (let w = 0; w < windows; w++) {
+    for (let p = 0; p < per; p++) for (let i = 0; i < dim; i++) v[i]! += e[(w * per + p) * dim + i]!;
+  }
+  const norm = Math.hypot(...v) || 1;
+  for (let i = 0; i < dim; i++) v[i]! /= norm;
+  return v;
+}
+
+/** Cosine of two embeddings `speakerEmbedding` produced. */
+export function cosineSimilarity(a: Float64Array, b: Float64Array): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0;
+  for (let i = 0; i < n; i++) dot += a[i]! * b[i]!;
+  return dot;
+}
+
 /** Load both models ahead of the first score (the worker calls this at boot). */
 export async function warmReferenceModels(): Promise<boolean> {
   const [a, b] = await Promise.all([session("dnsmos_sig_bak_ovr.onnx"), session("speaker_encoder.onnx")]);

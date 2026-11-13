@@ -619,3 +619,122 @@ def test_synthesize_and_batch_report_the_same_generate_s(service):
     )
     # And the codec cost is still reported, just in its own column.
     assert "codec_tail_s" in source
+
+
+# ── the D2H copy: pinned, and ordered before the event ────────────────────
+#
+# `submit_decode` used to record its event *before* enqueuing the copy, and copy
+# into pageable memory. The first is an audio-corruption race (the event reports
+# done while the DMA is still writing), the second quietly synchronises the
+# calling thread, which is the AR loop.
+
+
+def test_the_decode_copy_is_pinned_and_the_event_follows_it(batch_module):
+    """The event must be recorded after every host copy is enqueued."""
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(
+        inspect.getsource(batch_module._BatchEngine.submit_decode)
+    )
+    tree = ast.parse(source)
+    fn = tree.body[0]
+
+    def first_index(predicate) -> int | None:
+        for node in ast.walk(fn):
+            if predicate(node):
+                return node.lineno
+        return None
+
+    record_line = first_index(
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "record"
+    )
+    copy_line = first_index(
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_pinned_copy"
+    )
+    assert record_line is not None, "the handle records an event"
+    assert copy_line is not None, (
+        "every host copy goes through `_pinned_copy`, not `.to('cpu')`"
+    )
+    assert copy_line < record_line, (
+        "the event must be recorded after the D2H copies are enqueued, or "
+        "`query()` reports done while the DMA is still writing the buffer"
+    )
+
+
+def test_pinned_copy_uses_pin_memory_when_the_source_is_cuda(batch_module):
+    """`non_blocking` only means anything into pinned memory."""
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(batch_module._pinned_copy))
+    # Drop the docstring: it names the call this replaced.
+    body = source.split('"""')
+    code = body[0] + body[-1] if len(body) >= 3 else source
+    assert "pin_memory" in code
+    assert "non_blocking=True" in code
+    assert 'to("cpu"' not in code, "`.to('cpu')` allocates pageable memory"
+
+
+def test_collect_decode_releases_the_device_and_pinned_buffers(batch_module):
+    """A page of 32 sections must not hold both copies until the call ends."""
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(batch_module._BatchEngine.collect_decode))
+    body = source.split('"""')
+    code = body[0] + body[-1] if len(body) >= 3 else source
+    assert 'handle["output"] = None' in code
+    assert 'handle["host"] = []' in code
+
+
+# ── every decode switch reaches the container ─────────────────────────────
+
+
+def test_every_s2b_switch_is_forwarded_into_the_container(service):
+    """`@app.cls(env={...})` replaces the container env; an omitted key is lost.
+
+    Each switch is also in `snapshot_fingerprint`, so a switch the container does
+    not receive made the deploy hash one value locally and the container re-hash
+    another — every isolation toggle in `staging-env.sh` was a no-op on Modal.
+    """
+    env = service._BUILD_ENV
+    for name in (
+        "S2B_SDPA_DECODE",
+        "S2B_TOPK_FAST_SAMPLE",
+        "S2B_WORK_STEAL",
+        "S2B_BUCKET",
+        "S2B_EOS_CHECK_EVERY",
+        "S2B_DAC_MICRO_BATCH",
+        "S2B_PIPELINE_CODEC",
+        "S2B_BATCHED_PREFILL",
+        "S2B_CODEC_TUNING",
+        "S2B_FAST_DECODE",
+        "S2B_CUDAGRAPHS",
+        "S2B_KV_BUCKET",
+        "S2B_WARM_STEPS",
+        "S2C_MAX_BATCH_ITEMS",
+        "S2C_ENCODE_WORKERS",
+    ):
+        assert name in env, f"{name} does not reach the container"
+    # And the ones the fingerprint hashes must match what the container gets.
+    assert env["S2B_FAST_DECODE"] in ("0", "1")
+    assert env["S2B_BATCHED_PREFILL"] in ("0", "1")
+
+
+def test_the_fingerprint_covers_prefill_and_cpu(service):
+    """Two builds that differ in these must not share an id."""
+    from s2_contract import snapshot_fingerprint
+
+    base = {"app": "a", "version": "10"}
+    assert snapshot_fingerprint({**base, "batched_prefill": 0}) != snapshot_fingerprint(
+        {**base, "batched_prefill": 1}
+    )
+    assert snapshot_fingerprint({**base, "cpu": 4}) != snapshot_fingerprint(
+        {**base, "cpu": 8}
+    )

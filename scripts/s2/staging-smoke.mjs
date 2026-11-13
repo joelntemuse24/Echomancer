@@ -574,10 +574,29 @@ async function main() {
   );
 
   const boots = new Set(checked.map((entry) => entry?.body?.boot).filter(Boolean));
+  // `restored` is only *provable* when the host monotonic clock went backwards,
+  // which needs a different, younger worker (`s2_contract.boot_kind`). A real
+  // restore onto an older host — normal across Modal's worker variants — reports
+  // `unknown`, so demanding `restored` failed the smoke for a restore that
+  // worked. A fast lane is the other evidence: inside the restore budget it did
+  // not compile (a compile is 8–16 min).
+  const RESTORE_BUDGET_MS =
+    Number(process.env.MODAL_S2_COLD_WAIT_MAX_MS || "180000");
+  const slowestLaneMs = Math.max(
+    0,
+    ...checked.map((entry) => Number(entry?.wall) || 0)
+  );
+  const bootIsRestore =
+    (boots.size === 1 && boots.has("restored")) ||
+    (slowestLaneMs > 0 &&
+      slowestLaneMs <= RESTORE_BUDGET_MS &&
+      [...boots].every((b) => b === "unknown" || b === "restored"));
   record(
     "every lane served by a restored container",
-    boots.size === 1 && boots.has("restored"),
-    `${[...boots].join(",") || "none"}`
+    bootIsRestore,
+    `${[...boots].join(",") || "none"}, slowest lane ${(
+      slowestLaneMs / 1000
+    ).toFixed(1)}s (restore budget ${(RESTORE_BUDGET_MS / 1000).toFixed(0)}s)`
   );
 
   console.log("\n-- consistency --");
