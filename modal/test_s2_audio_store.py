@@ -318,3 +318,78 @@ def test_a_forced_inline_diagnostic_row_is_possible_with_r2_set():
     row = audio_fields(ENV, "0", b"mp3-bytes", "job", "call", forced="inline")
     assert "audio_b64" in row
     assert "storage_key" not in row
+
+
+# ── the harness scripts sign R2 requests too ──────────────────────────────
+#
+# `scripts/s2/staging-smoke.mjs` and `scripts/s2/bench-ab.mjs` read a take back
+# from R2 to prove the object the worker will fetch exists and is audio. They
+# sign with their own copy of SigV4 (they must stay dependency-free), so the copy
+# has to agree with this module — a disagreement is a 403 in a smoke run and
+# looks like a bucket problem rather than a signature bug.
+
+_SIG_JS = r"""
+import { createHash, createHmac } from "node:crypto";
+const creds = { account: "acct", access: "AKIA_TEST", secret: "secret", bucket: "bucket" };
+const key = "s2-takes/job/call/0.mp3";
+const amzDate = "20261113T120000Z", dateStamp = "20261113";
+const host = `${creds.account}.r2.cloudflarestorage.com`;
+const canonicalUri = "/" + creds.bucket + "/" + key.split("/").map(encodeURIComponent).join("/");
+const payloadHash = createHash("sha256").update("").digest("hex");
+const headers = { host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate };
+const names = Object.keys(headers).sort();
+const canonicalHeaders = names.map((n) => `${n}:${headers[n]}\n`).join("");
+const signedHeaders = names.join(";");
+const canonicalRequest = ["GET", canonicalUri, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+const scope = `${dateStamp}/auto/s3/aws4_request`;
+const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope,
+  createHash("sha256").update(canonicalRequest).digest("hex")].join("\n");
+const sign = (v, m) => createHmac("sha256", v).update(m).digest();
+const signing = sign(sign(sign(sign(`AWS4${creds.secret}`, dateStamp), "auto"), "s3"), "aws4_request");
+console.log(createHmac("sha256", signing).update(stringToSign).digest("hex"));
+"""
+
+
+def test_the_js_sigv4_copy_in_the_harness_matches_this_module():
+    """A GET signature from the JS helper must equal this module's."""
+    import hashlib
+    import hmac
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    js = subprocess.run(
+        [node, "--input-type=module", "-e", _SIG_JS],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    host = "acct.r2.cloudflarestorage.com"
+    uri = "/bucket/s2-takes/job/call/0.mp3"
+    payload = hashlib.sha256(b"").hexdigest()
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload}\n"
+        f"x-amz-date:20261113T120000Z\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join(
+        ["GET", uri, "", canonical_headers, signed_headers, payload]
+    )
+    scope = "20261113/auto/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            "20261113T120000Z",
+            scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest(),
+        ]
+    )
+    sign = lambda k, m: hmac.new(k, m.encode(), hashlib.sha256).digest()
+    signing = sign(sign(sign(sign(b"AWS4secret", "20261113"), "auto"), "s3"), "aws4_request")
+    ours = hmac.new(signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    assert js == ours, (
+        "the harness's SigV4 copy has drifted from `signed_put`; every R2 read "
+        "it makes would answer 403"
+    )
