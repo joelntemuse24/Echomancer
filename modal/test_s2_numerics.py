@@ -366,13 +366,37 @@ def fast_model(llama):
 
 
 def _engine_for(batch_module, model, token=999):
-    """An engine whose fast-transformer state is `model`'s, on CPU."""
+    """An engine whose state is `model`'s, on CPU, for the parts under test.
+
+    Only what `_embed` / `_prefill` / `_decode_step` read is attached. It is a
+    deliberately partial engine: loading S2-Pro needs a GPU, and every field here
+    is one the real `__init__` also sets, so a missing one fails loudly.
+    """
+    import math
+
     engine = object.__new__(batch_module._BatchEngine)
     engine.model = model
     engine.cfg = model.config
     engine.device = torch.device("cpu")
     engine.dtype = torch.float32
     engine.im_end_id = token
+    engine.codebook_offsets = (
+        torch.arange(model.config.num_codebooks, dtype=torch.long) * model.config.codebook_size
+    )[None, :, None]
+    engine.scale_codebook_embeddings = bool(
+        getattr(model.config, "scale_codebook_embeddings", False)
+    )
+    engine.codebook_inv_scale = 1.0 / math.sqrt(model.config.num_codebooks + 1)
+    engine.top_k = 30
+    # The allowed-token projection `_head` uses: the semantic range plus
+    # `<|im_end|>`, exactly as `__init__` builds it.
+    cfg = model.config
+    allowed = list(range(cfg.semantic_begin_id, cfg.semantic_end_id + 1))
+    # `<|im_end|>` is a real vocabulary id in production; the tests that sample
+    # pass their own `allowed_ids`, so any in-range id is fine here.
+    allowed.append(min(cfg.vocab_size - 1, cfg.semantic_end_id + 1))
+    engine.allowed_ids = torch.tensor(allowed, dtype=torch.long)
+    engine.out_weight = model.embeddings.weight[engine.allowed_ids].contiguous()
     return engine
 
 
@@ -641,3 +665,169 @@ def test_decode_attention_ignores_rows_above_the_active_width(batch_module):
     assert torch.allclose(narrow, wide, atol=1e-6), (
         "rows above the active width must not affect the result"
     )
+
+
+# ── batched prefill ───────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def small_model(llama):
+    """A tiny `DualARTransformer`: real upstream layers, no checkpoint."""
+    from fish_speech.models.text2semantic.llama import (
+        DualARModelArgs,
+        DualARTransformer,
+    )
+
+    args = DualARModelArgs(
+        vocab_size=512,
+        n_layer=2,
+        n_head=4,
+        dim=32,
+        intermediate_size=64,
+        n_local_heads=2,
+        head_dim=8,
+        num_codebooks=2,
+        codebook_size=64,
+        semantic_begin_id=100,
+        semantic_end_id=163,
+        n_fast_layer=1,
+        fast_dim=32,
+        fast_n_head=4,
+        fast_n_local_heads=2,
+        fast_head_dim=8,
+        fast_intermediate_size=64,
+        scale_codebook_embeddings=True,
+        norm_fastlayer_input=True,
+        rope_base=10_000,
+    )
+    torch.manual_seed(0)
+    model = DualARTransformer(args).eval()
+    with torch.device("cpu"):
+        model.setup_caches(max_batch_size=8, max_seq_len=128, dtype=torch.float32)
+    return model
+
+
+def _clear_fast_cache(model):
+    for layer in model.fast_layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+
+
+def test_batched_prefill_matches_the_single_row_path(batch_module, small_model):
+    """Right-padded prefill must give each row the frame it would get alone.
+
+    The padding is safe because a causal mask never lets a token attend forward,
+    but "safe in theory" is exactly the kind of claim that hides an off-by-one.
+    This compares the first sampled frame of three deliberately different prompt
+    lengths against the same prompts prefilled one at a time.
+    """
+    engine = _engine_for(batch_module, small_model, token=999)
+    engine.device = torch.device("cpu")
+    engine.dtype = torch.float32
+    torch.manual_seed(23)
+    def prompt(t: int):
+        """A legal prompt tensor: semantic ids on row 0, codebook ids below."""
+        codes = torch.zeros((small_model.config.num_codebooks + 1, t), dtype=torch.long)
+        codes[0] = torch.randint(
+            small_model.config.semantic_begin_id,
+            small_model.config.semantic_end_id + 1,
+            (t,),
+        )
+        codes[1:] = torch.randint(0, small_model.config.codebook_size, (codes.shape[0] - 1, t))
+        return codes
+
+    prompts = [prompt(9), prompt(17), prompt(5)]
+    rows = [0, 1, 2]
+    temp = torch.tensor([0.7])
+    topp = torch.tensor([0.7])
+
+    # Deterministic: argmax instead of sampling, so a difference is the maths.
+    engine._sample = lambda logits, temperature, top_p: logits.argmax(
+        dim=-1, keepdim=True
+    ).long()
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    batched = engine._prefill_many(rows, prompts, temp, topp)
+
+    # Now one at a time, from clean caches.
+    single = []
+    for row, prompt in zip(rows, prompts):
+        for layer in small_model.layers:
+            layer.attention.kv_cache.k_cache.zero_()
+            layer.attention.kv_cache.v_cache.zero_()
+        _clear_fast_cache(small_model)
+        single.append(engine._prefill(row, prompt, temp, topp))
+
+    for slot, (mine, theirs) in enumerate(zip(batched, single)):
+        assert torch.equal(mine, theirs), (
+            f"row {slot} (prompt {prompts[slot].shape[1]} tokens) diverged under "
+            f"batched prefill: {mine} vs {theirs}"
+        )
+
+
+def test_batched_prefill_writes_only_the_real_cache_prefix(
+    batch_module, small_model
+):
+    """The padded tail must not be written into a row's KV cache.
+
+    A later decode step attends `pos+1` keys, so a row whose cache holds padding
+    where its prompt ended would attend zeros it never conditioned on.
+    """
+    engine = _engine_for(batch_module, small_model, token=999)
+    engine.device = torch.device("cpu")
+    engine.dtype = torch.float32
+    engine._sample = lambda logits, temperature, top_p: logits.argmax(
+        dim=-1, keepdim=True
+    ).long()
+    torch.manual_seed(29)
+    def prompt(t: int):
+        codes = torch.zeros((small_model.config.num_codebooks + 1, t), dtype=torch.long)
+        codes[0] = torch.randint(
+            small_model.config.semantic_begin_id,
+            small_model.config.semantic_end_id + 1,
+            (t,),
+        )
+        codes[1:] = torch.randint(0, small_model.config.codebook_size, (codes.shape[0] - 1, t))
+        return codes
+
+    prompts = [prompt(4), prompt(12)]
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    engine._prefill_many([0, 1], prompts, torch.tensor([0.7]), torch.tensor([0.7]))
+
+    layer = small_model.layers[0].attention
+    # Row 0's prompt was 4 tokens; everything from 4 to 11 must still be zero.
+    tail = layer.kv_cache.k_cache[0, :, 4:12]
+    assert torch.equal(tail, torch.zeros_like(tail)), (
+        "the padded tail of a short prompt must not be written into its cache"
+    )
+    # Row 1's prompt was 12 tokens, so its prefix is fully populated.
+    assert layer.kv_cache.k_cache[1, :, :12].abs().sum() > 0
+
+
+def test_one_prompt_is_prefilled_by_the_single_row_path(batch_module, small_model):
+    """A one-lane call must not pay for batching machinery."""
+    engine = _engine_for(batch_module, small_model, token=999)
+    engine.device = torch.device("cpu")
+    engine.dtype = torch.float32
+    engine._sample = lambda logits, temperature, top_p: logits.argmax(
+        dim=-1, keepdim=True
+    ).long()
+    prompt = torch.zeros((small_model.config.num_codebooks + 1, 6), dtype=torch.long)
+    prompt[0] = small_model.config.semantic_begin_id + 1
+    prompt[1:] = 3
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    only = engine._prefill_many([0], [prompt], torch.tensor([0.7]), torch.tensor([0.7]))
+    for layer in small_model.layers:
+        layer.attention.kv_cache.k_cache.zero_()
+        layer.attention.kv_cache.v_cache.zero_()
+    _clear_fast_cache(small_model)
+    alone = engine._prefill(0, prompt, torch.tensor([0.7]), torch.tensor([0.7]))
+    assert torch.equal(only[0], alone)

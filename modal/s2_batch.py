@@ -176,6 +176,10 @@ TOPK_FAST_SAMPLE = os.environ.get("S2B_TOPK_FAST_SAMPLE", "0") == "1"
 DAC_MICRO_BATCH = int(os.environ.get("S2B_DAC_MICRO_BATCH", "16" if NEW_ENGINE else "8"))
 #: Decode a finished section on a side stream while other rows keep generating.
 PIPELINE_CODEC = os.environ.get("S2B_PIPELINE_CODEC", "1" if NEW_ENGINE else "0") == "1"
+#: Prefill every lane's first prompt in one padded forward pass instead of one
+#: pass per lane. Causal attention makes the right-padding inert, so the frames
+#: are identical to the single-row path (`test_s2_numerics` asserts it).
+BATCHED_PREFILL = os.environ.get("S2B_BATCHED_PREFILL", "1" if NEW_ENGINE else "0") == "1"
 #: Freeze `weight_norm` and cache the codec's causal mask (bit-identical).
 CODEC_TUNING = os.environ.get("S2B_CODEC_TUNING", "1" if NEW_ENGINE else "0") == "1"
 #: The rewritten fast-transformer step and tensor-only sampling mask.
@@ -679,12 +683,8 @@ class _BatchEngine:
     def _attn_prefill(self, attn, x, freqs, row):
         """Causal prefill for one row: write its cache, attend its own prompt.
 
-        One row at a time. A right-padded batched prefill would be valid (causal
-        attention never lets a real token see padding) and would cut the ~108
-        serial prompts per call, but it needs every lane's prompt built before
-        any of them samples, and it is not implemented here: a prefill that is
-        subtly wrong changes the first frame of a section, which is the most
-        audible part of it.
+        The reference path for `_attn_prefill_many`; `test_s2_numerics` asserts
+        the batched form gives every row exactly these frames.
         """
         q, k, v, q_size = self._qkv(attn, x, freqs)  # (1, H, T, D)
         t = x.shape[1]
@@ -692,6 +692,72 @@ class _BatchEngine:
         attn.kv_cache.v_cache[row, :, :t] = v[0]
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
         return attn.wo(y.transpose(1, 2).reshape(1, t, q_size))
+
+    def _attn_prefill_many(self, attn, x, freqs, rows: list[int], lengths: list[int]):
+        """Causal prefill for several rows at once, right-padded.
+
+        `x` is `(K, T_max, D)` with every prompt already padded to the widest
+        one, and `lengths` are the real token counts. Causal attention never
+        lets a token at `i` see `j > i`, so the padding at `j >= lengths[k]`
+        cannot affect any real query position — the result for each real token is
+        identical to prefilling that prompt on its own, which
+        `test_s2_numerics` asserts against the single-row path.
+
+        `enable_gqa=True` keeps the KV heads unexpanded: FlashAttention takes the
+        grouped layout directly.
+        """
+        q, k, v, q_size = self._qkv(attn, x, freqs)  # (K, H, T, D)
+        t = x.shape[1]
+        for slot, row in enumerate(rows):
+            real = min(lengths[slot], t)
+            attn.kv_cache.k_cache[row, :, :real] = k[slot, :, :real]
+            attn.kv_cache.v_cache[row, :, :real] = v[slot, :, :real]
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
+        return attn.wo(y.transpose(1, 2).reshape(len(rows), t, q_size))
+
+    def _prefill_many(self, rows: list[int], prompts: list, temperature, top_p):
+        """Fill several rows' caches in one pass; returns one first frame each.
+
+        A call starts every lane at once, so the old loop ran ~32 serial
+        single-row prompts through 36 layers before any lane could sample. Doing
+        them together turns that into one forward pass over a padded batch — the
+        same arithmetic per row, one launch instead of 32.
+
+        Prompts differ in length, so they are right-padded to the widest. The
+        padding is harmless for the same reason a causal mask is: a token never
+        attends forward. Only the *last real* position of each row is sampled,
+        which is what the single-row path did.
+        """
+        import torch
+
+        if not prompts:
+            return []
+        if len(prompts) == 1:
+            return [self._prefill(rows[0], prompts[0], temperature, top_p, width=1)]
+        widths = [int(p.shape[1]) for p in prompts]
+        t_max = max(widths)
+        padded = torch.zeros(
+            (len(prompts), prompts[0].shape[0], t_max),
+            dtype=prompts[0].dtype,
+            device=self.device,
+        )
+        for slot, prompt in enumerate(prompts):
+            t = int(prompt.shape[1])
+            padded[slot, :, :t] = prompt.to(self.device)
+        freqs = self.model.freqs_cis[:t_max][None]
+        h = self._embed(padded)
+        for layer in self.model.layers:
+            h = h + self._attn_prefill_many(
+                layer.attention, layer.attention_norm(h), freqs, rows, widths
+            )
+            h = h + layer.feed_forward(layer.ffn_norm(h))
+        # Only each row's last real token, not the padding after it.
+        last = torch.tensor([t - 1 for t in widths], device=self.device, dtype=torch.long)
+        picked = h[torch.arange(len(prompts), device=self.device), last]
+        logits, hidden = self._head(picked[:, None])
+        token = self.allowed_ids[self._sample(logits[:, 0], temperature, top_p)]
+        frames = self._fast(hidden, token, temperature, top_p)
+        return [frames[slot] for slot in range(len(prompts))]
 
     def _head(self, x):
 
@@ -1092,9 +1158,19 @@ class _BatchEngine:
         # Per slot, so a batch response can say which section hit the frame cap.
         truncated_by_slot = [0] * len(slots)
         audio_by_section: dict[int, list] = {}
+        #: lane -> (prompt, prompt tokens, max frames), claimed but not prefilled.
+        pending_prompts: dict[int, tuple] = {}
         pending_decode: list[int] = []
 
-        def start_lane(lane: int) -> None:
+        def start_lane(lane: int, *, prefill: bool = True) -> None:
+            """Claim the next unit for `lane` and prefill it.
+
+            With `prefill=False` the prompt is built and recorded but not run:
+            `start_lanes_batch` collects a whole tick's claims first, then
+            prefills them in one pass (`_prefill_many`). Building the prompt is
+            host work and prefill is GPU work, so batching only the GPU half
+            keeps the two separable.
+            """
             claim = scheduler.claim()
             if claim is None:
                 active[lane] = False
@@ -1106,7 +1182,6 @@ class _BatchEngine:
             section, unit = claim
             scheduler.assign(lane, claim)
             unit_spec = slots[section][unit]
-            t0 = time.time()
             prompt = self.build_prompt(
                 ref, scheduler.history_for(section), unit_spec["text"]
             )
@@ -1114,19 +1189,50 @@ class _BatchEngine:
             max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
             if max_frames < 64:
                 raise ValueError(f"prompt of {t} tokens leaves no room to generate")
-            first = self._prefill(lane, prompt, temp, topp, width=b)
-            x[lane, :, 0] = first
-            buf[lane, :, 0] = first
-            pos[lane] = t
-            pos_h[lane] = t
-            steps[lane] = 1
-            limit[lane] = max_frames
-            eos[lane] = first[0] == self.im_end_id
-            prev[lane] = 0
-            active[lane] = True
-            active_h[lane] = True
+            pending_prompts[lane] = (prompt, t, max_frames)
+            if not prefill:
+                return
+            _run_prefills([lane])
+
+        def _run_prefills(lanes: list[int]) -> None:
+            """Prefill these lanes, in one pass when the engine supports it."""
+            lanes = [lane for lane in lanes if lane in pending_prompts]
+            if not lanes:
+                return
+            t0 = time.time()
+            prompts = [pending_prompts[lane][0] for lane in lanes]
+            if BATCHED_PREFILL and len(lanes) > 1:
+                frames = self._prefill_many(lanes, prompts, temp, topp)
+            else:
+                frames = [
+                    self._prefill(lane, prompt, temp, topp, width=b)
+                    for lane, prompt in zip(lanes, prompts)
+                ]
+            for lane, first in zip(lanes, frames):
+                _prompt, t, max_frames = pending_prompts.pop(lane)
+                x[lane, :, 0] = first
+                buf[lane, :, 0] = first
+                pos[lane] = t
+                pos_h[lane] = t
+                steps[lane] = 1
+                limit[lane] = max_frames
+                eos[lane] = first[0] == self.im_end_id
+                prev[lane] = 0
+                active[lane] = True
+                active_h[lane] = True
+                counters["prefills"] += 1
             counters["prefill_s"] += time.time() - t0
-            counters["prefills"] += 1
+
+        def start_lanes_batch() -> None:
+            """Claim for every idle lane, then prefill them all together."""
+            claimed: list[int] = []
+            for lane in range(b):
+                if scheduler.lane[lane] is not None or active_h[lane]:
+                    continue
+                start_lane(lane, prefill=False)
+                if lane in pending_prompts:
+                    claimed.append(lane)
+            _run_prefills(claimed)
 
         def finish(lane: int, streaming: bool) -> None:
             claim = scheduler.lane[lane]
@@ -1154,6 +1260,9 @@ class _BatchEngine:
             # `start_lane` may empty the last lane, so the drain check comes
             # after it: a lone finished section still needs its decode, and a
             # queue held back for bandwidth must not survive generation ending.
+            # A lane that just finished starts its own next unit immediately,
+            # which is the point of per-lane progress; only the *first* wave is
+            # batched, because that is when every lane claims at once.
             start_lane(lane)
             if streaming:
                 _maybe_flush()
@@ -1202,8 +1311,7 @@ class _BatchEngine:
         torch.cuda.synchronize()
         loop_t0 = time.time()
         with torch.inference_mode():
-            for lane in range(b):
-                start_lane(lane)
+            start_lanes_batch()
             while active_h.any():
                 for _ in range(EOS_CHECK_EVERY):
                     kv_len = choose_kv_len(int(pos_h.max()))
