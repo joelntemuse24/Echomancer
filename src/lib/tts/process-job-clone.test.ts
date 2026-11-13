@@ -1217,8 +1217,9 @@ describe("lane staging", () => {
       const frozen = await loadFrozenScript(JOB_ID);
       expect(frozen!.sections.length).toBeGreaterThan(4);
       expect(
-        frozen!.sections.every((section) => section.text.length <= modalCloneSectionChars())
+        frozen!.sections.every((section) => section.text.length <= 6_000)
       ).toBe(true);
+      expect(frozen!.sections.some((section) => section.text.length > 7_000)).toBe(false);
     });
 
     it("never re-packs a clone book that has already published audio", async () => {

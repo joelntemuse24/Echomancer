@@ -30,9 +30,10 @@
  * So the cold packer fills each call toward `batch` before opening the next,
  * and the batch size is the real concurrency knob. `lanes` stays the cap on
  * how many calls a book may have in flight. Once section 0 has returned,
- * `planModalCloneBookWave` sends the largest proxy-safe batch, back to back
- * on the one GPU. It does not shrink that batch so a listener at 1.5× stays
- * ahead of it.
+ * `planModalCloneBookWave` sends a short book as one call and a long book
+ * as a 1–2 minute page, then a 5–6 minute page, then even pages near 24
+ * rows. It does not leave a short last call, and it does not shrink a
+ * page so a listener at 1.5× stays ahead of it.
  *
  * ## …but a call must also finish
  *
@@ -59,7 +60,11 @@ import {
   modalCloneWarmWaitMs,
   MODAL_CLONE_SCALEDOWN_TARGET_S,
 } from "@/lib/tts/providers/modal-clone-guard";
-import { decideCloneGpuAdmission, type GpuLeaseView } from "@/lib/tts/providers/modal-gpu-lease";
+import {
+  decideCloneGpuAdmission,
+  MODAL_CLONE_SHORT_BOOK_CHARS,
+  type GpuLeaseView,
+} from "@/lib/tts/providers/modal-gpu-lease";
 import { modalCloneAudioTransport } from "@/lib/tts/providers/modal-clone-transport";
 
 export interface LaneLimits {
@@ -327,24 +332,25 @@ export function modalLaneWorkMs(
 /**
  * Characters one warm call may carry.
  *
- * The page is one full batch of steady sections (`modalCloneBatchItems` ×
- * `modalCloneSectionChars`: 24 × 4,000 = 96,000 at the defaults). That page
- * is then the minimum of three ceilings:
+ * The page is one full batch of the widest section the planner may cut
+ * (`modalCloneBatchItems` × {@link MODAL_CLONE_SECTION_CHARS_MAX}). That
+ * page is then the minimum of three ceilings:
  *
  * - the 80 MiB base64 body, only while the container returns `audio_b64`
  * - the warm HTTP wait, priced at {@link cloneRealtimeFactor} for a full
- *   batch so a 24-row call is judged at the measured ~33× (about 3 minutes
- *   of generation) rather than at the old 150 chars/s floor
- * - the page itself
+ *   batch so a 24-row call is judged at the measured ~33× rather than at
+ *   the old 150 chars/s floor
+ * - the widest full batch itself
  *
  * When `/ready` reports `audio_transport: r2` the MP3s are objects and the
  * JSON is keys, so the body ceiling does not shrink the page. Until that
  * deploy, the worker stays on the inline ceiling. `MODAL_S2_WARM_LANE_MAX_CHARS`
  * can only lower the result, the same way `MODAL_S2_LANE_MAX_CHARS` can
- * only lower a cold call.
+ * only lower a cold call. The wave still drops a prefix whose wall is
+ * inside the last minute of the wait.
  */
 export function modalWarmLaneCharLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const byPage = modalCloneBatchItems(env) * Math.max(1, modalCloneSectionChars(env));
+  const byPage = modalCloneBatchItems(env) * MODAL_CLONE_SECTION_CHARS_MAX;
   const byTime = warmCallCharBudget(modalCloneBatchItems(env), env);
   let cap = Math.min(byPage, byTime);
   if (modalCloneAudioTransport(env) !== "r2") {
@@ -538,32 +544,64 @@ export const MODAL_CLONE_OPENING_SECTION_CHARS = 1_000;
  *   prep margin (wall ~133s, abort ~153s). At the measured ~50 chars/s
  *   that row is ~80s of generation. A 7,700-character row was the one that
  *   could not finish (`job 7e4a8b48`, ~154s of generation).
- * - A warm page wants one full batch of these sections (24 × 4,000 =
- *   96,000 characters). VRAM does not stop it. The container allocates KV
- *   for `S2B_BATCH` (default 32) by `MAX_SEQ_LEN` 4,096, and
- *   `synthesize_batch` accepts at most 24 items. A row holds one unit
- *   (≤560 characters, ≤1,024 new frames), so 24 rows of 4,000 characters
- *   is the same footprint as the 24-row smoke. At the measured 24-row
- *   rate that call is about 3.5 minutes, inside the 400s wait and the
- *   542s proxy. The 128 kbps MP3 of those 96,000 characters is about
- *   98 MiB, ~130 MiB once base64'd, which is past the 80 MiB JSON ceiling.
- *   While the container returns `audio_b64` the page stops at fourteen
- *   rows (56,000 characters, ~76 MiB). Once `/ready` reports
- *   `audio_transport: r2` the MP3s are objects and the JSON is keys, and
- *   the page is the full 24 rows. The bitrate stays 128 kbps: mastering
- *   re-encodes from this file, and 64 kbps is the rate that dulls speech.
- * - 4,000 characters is ~4.2 minutes of audio. Whisper's QA budget
- *   (`audio × 0.4`, ceiling 180s) still covers that section (~101s).
- *   The MP3 is ~4 MB at 128 kbps, and concat packet-copies it.
- * - An 11-minute book at 4,800 characters collapses to a 2-row call
- *   (~4.8× on this curve) and costs more than the old 6-row call. 4,000
- *   leaves that book a 3-row call (~6.8×) and is still twice the old width.
+ * - `planCloneSectionChars` picks the width from the book's length, inside
+ *   2,500–6,000 characters. 4,000 is the default when a caller has no
+ *   total. A full page wants 24 rows and about 3.5 minutes. VRAM does not
+ *   choose the width: the container allocates KV for `S2B_BATCH` (default
+ *   32) by `MAX_SEQ_LEN` 4,096, and a row holds one unit (≤560 characters,
+ *   ≤1,024 new frames), so 24 rows of 6,000 characters is the same
+ *   footprint as the 24-row smoke. The 128 kbps MP3 of a 3.5 minute page
+ *   is about 98 MiB, ~130 MiB once base64'd, past the 80 MiB JSON ceiling.
+ *   While the container returns `audio_b64` the body ceiling binds first,
+ *   so a long book uses fewer than 24 rows (about 22 of ~2,550 characters,
+ *   about 2.2 minutes). Once `/ready` reports `audio_transport: r2` the
+ *   MP3s are objects and the JSON is keys, and the page is 24 rows at
+ *   about 3.5 minutes. The bitrate stays 128 kbps: mastering re-encodes
+ *   from this file, and 64 kbps is the rate that dulls speech.
+ * - 6,000 characters is ~6.3 minutes of audio. Whisper's QA budget
+ *   (`audio × 0.4`, ceiling 180s) still covers that section (~152s).
+ * - An 11-minute book is one call of three rows after the opening. A
+ *   2-row call of wider sections costs more on this curve.
  *
  * Rows are what make a batch faster than 2.8×. A 4-row call stays at the
  * measured ~9×. The ~33× figure is the 24-row smoke, and only a call that
  * wide is priced at it.
  */
 export const MODAL_CLONE_SECTION_CHARS_DEFAULT = 4_000;
+
+/**
+ * Steady section width after the opening and the two ramp steps.
+ * Shorter than this sounds chopped. Longer than this is a cold row that
+ * misses the single-section abort (`coldClonePackFitsAbort` fits 6,000
+ * and rejects 6,400).
+ */
+export const MODAL_CLONE_SECTION_CHARS_MIN = 2_500;
+export const MODAL_CLONE_SECTION_CHARS_MAX = 6_000;
+
+/** A full steady call aims at this wall. The 24-row smoke page is about here. */
+export const MODAL_CLONE_TARGET_CALL_MS = 3.5 * 60_000;
+
+/**
+ * Stay this far under the 400s wait and the 542s proxy. A call planned
+ * on the line itself misses when the GPU is a little slower than the curve.
+ */
+export const MODAL_CLONE_CALL_MARGIN_MS = 60_000;
+
+/** First warm page of a long book: about a minute and a half, inside 1–2 min. */
+export const MODAL_CLONE_FAST_AUDIO_MS = 90_000;
+/** Second warm page: about five and a half minutes, inside 5–6. */
+export const MODAL_CLONE_MID_AUDIO_MS = 5.5 * 60_000;
+
+/**
+ * A remainder this short is one call, not a ramp. An 11-minute book fits.
+ * A 40-minute article does not, so it still takes the 1–2 then 5–6 steps.
+ */
+export const MODAL_CLONE_RAMP_SKIP_AUDIO_MS = 12 * 60_000;
+
+/** Characters of narration for `ms` of audio at the smoke rate. */
+export function cloneAudioChars(ms: number): number {
+  return Math.round((Math.max(0, ms) / 1000) * MODAL_CLONE_CHARS_PER_AUDIO_SECOND);
+}
 
 /** Narration rate measured on the smoke, not the 900-character product minute. */
 export const MODAL_CLONE_CHARS_PER_AUDIO_SECOND = 15.85;
@@ -1162,8 +1200,10 @@ export function planModalCloneBookWave(input: CloneBookWaveInput): CloneBookWave
   const warm = input.firstLight || input.poolWarm;
   if (warm) {
     while (rest.length > 0 && calls.length < maxCalls) {
-      // Section 0 is already staged. The rest is the largest proxy-safe
-      // batch, not a page sized so 1.5× playback stays ahead.
+      // Section 0 is already staged. A short remainder is one call. A long
+      // book takes a 1–2 minute page, then a 5–6 minute page, then even
+      // slices of the rest. The page is not sized so 1.5× playback stays
+      // ahead.
       if (state.started) {
         const indexes = unpacedWarmIndexes(rest, batch, input.textAt, env);
         if (indexes.length === 0) break;
@@ -1295,10 +1335,11 @@ function warmPrefixStats(
 /**
  * Width of the next warm call after first light.
  *
- * The largest prefix that stays inside the warm character cap, the 80 MiB
- * body, and the warm HTTP wait. A short remainder is that prefix. A long
- * book is the same prefix, repeated, not a 1–2 minute page grown so a
- * listener at 1.5× cannot catch up.
+ * A short remainder is one call. A long book takes a 1–2 minute page,
+ * then a 5–6 minute page, then even slices of the rest so the last call
+ * is the same width as the others. Each slice stays inside the warm
+ * character cap, the transport's body limit, and the wait, with
+ * {@link MODAL_CLONE_CALL_MARGIN_MS} to spare.
  */
 function unpacedWarmIndexes(
   rest: number[],
@@ -1308,7 +1349,93 @@ function unpacedWarmIndexes(
 ): number[] {
   const safe = warmPrefixStats(rest, batch, textAt, env);
   if (safe.length === 0) return rest.slice(0, 1);
-  return safe[safe.length - 1]!.indexes;
+  const ceiling = cloneCallWallCeiling(env);
+  const under = safe.filter((prefix) => prefix.wallMs < ceiling);
+  const usable = under.length > 0 ? under : safe.slice(0, 1);
+  const widest = usable[usable.length - 1]!;
+  const maxRows = widest.indexes.length;
+  let restChars = 0;
+  for (const index of rest) restChars += textAt(index).length;
+  const restAudio = cloneAudioMs(restChars);
+  const next = rest[0] ?? 0;
+  const shortBook =
+    next <= 1 &&
+    restChars + MODAL_CLONE_OPENING_SECTION_CHARS <= MODAL_CLONE_SHORT_BOOK_CHARS;
+  if (maxRows >= rest.length && (shortBook || restAudio <= MODAL_CLONE_RAMP_SKIP_AUDIO_MS || next > 2)) {
+    return rest.slice();
+  }
+  if (shortBook) {
+    return evenPrefix(usable, rest.length);
+  }
+  if (next === 1 && restAudio > MODAL_CLONE_RAMP_SKIP_AUDIO_MS) {
+    return audioBoundedPrefix(
+      usable,
+      textAt,
+      rest,
+      cloneAudioChars(60_000),
+      cloneAudioChars(120_000)
+    );
+  }
+  if (next === 2 && restAudio > MODAL_CLONE_RAMP_SKIP_AUDIO_MS) {
+    return audioBoundedPrefix(
+      usable,
+      textAt,
+      rest,
+      cloneAudioChars(5 * 60_000),
+      cloneAudioChars(6 * 60_000)
+    );
+  }
+  return evenPrefix(usable, rest.length);
+}
+
+function cloneCallWallCeiling(env: NodeJS.ProcessEnv): number {
+  return Math.min(
+    modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_MARGIN_MS,
+    MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_CALL_MARGIN_MS
+  );
+}
+
+/** Longest usable prefix whose row count splits `count` into even calls. */
+function evenPrefix(usable: WarmPrefix[], count: number): number[] {
+  const maxRows = usable[usable.length - 1]!.indexes.length;
+  const width = evenCallWidth(count, maxRows);
+  return (
+    usable.find((prefix) => prefix.indexes.length === width)?.indexes ??
+    usable[usable.length - 1]!.indexes
+  );
+}
+
+/** Calls differ by at most one row. A leftover of 3 behind a run of 14 does not. */
+export function evenCallWidth(count: number, maxRows: number): number {
+  const rows = Math.max(1, Math.floor(maxRows) || 1);
+  const n = Math.max(0, Math.floor(count));
+  if (n <= rows) return n;
+  const calls = Math.ceil(n / rows);
+  return Math.ceil(n / calls);
+}
+
+/**
+ * Grow a prefix until its text is inside `[minChars, maxChars]`.
+ * One section is always taken, including when that section is already
+ * longer than the window.
+ */
+function audioBoundedPrefix(
+  usable: WarmPrefix[],
+  textAt: (index: number) => string,
+  rest: number[],
+  minChars: number,
+  maxChars: number
+): number[] {
+  let chars = 0;
+  let chosen = usable[0]!.indexes;
+  for (const prefix of usable) {
+    const index = rest[prefix.indexes.length - 1]!;
+    chars += textAt(index).length;
+    if (prefix.indexes.length > 1 && chars > maxChars) break;
+    chosen = prefix.indexes;
+    if (chars >= minChars) break;
+  }
+  return chosen;
 }
 
 /**
@@ -1991,10 +2118,96 @@ export function simulateClonePlayback(input: {
   };
 }
 
+export type SteadyCloneCall = {
+  sectionChars: number;
+  rows: number;
+  wallMs: number;
+  chars: number;
+};
+
 /**
- * Section widths a new clone book is frozen at. Section 0 is the quick
- * opening. Later sections are the steady width, cut shorter only for the
- * tail. Sentence breaks make a real book a little shorter than this.
+ * The steady page for this transport.
+ *
+ * Rows want to be 24 and the wall wants to be {@link MODAL_CLONE_TARGET_CALL_MS}.
+ * Inline audio cannot be both: 24 rows of enough text to take 3.5 minutes
+ * is about 130 MiB of base64. The search keeps every candidate inside the
+ * body, the row cap, and the wait margin, and picks the closest pair.
+ */
+export function steadyCloneCall(env: NodeJS.ProcessEnv = process.env): SteadyCloneCall {
+  const batch = modalCloneBatchItems(env);
+  const ceiling = Math.min(
+    modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_MARGIN_MS,
+    MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_CALL_MARGIN_MS
+  );
+  let best: SteadyCloneCall & { score: number } = {
+    sectionChars: MODAL_CLONE_SECTION_CHARS_DEFAULT,
+    rows: 1,
+    wallMs: 0,
+    chars: MODAL_CLONE_SECTION_CHARS_DEFAULT,
+    score: Number.POSITIVE_INFINITY,
+  };
+  for (
+    let section = MODAL_CLONE_SECTION_CHARS_MIN;
+    section <= MODAL_CLONE_SECTION_CHARS_MAX;
+    section += 50
+  ) {
+    for (let rows = 1; rows <= batch; rows += 1) {
+      const chars = rows * section;
+      if (cloneBatchHttpBytes(chars, rows, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) break;
+      const wallMs = cloneCallWallMs({
+        chars,
+        largestRow: section,
+        rows,
+        shape: "warm",
+        restore: false,
+      });
+      if (wallMs >= ceiling || wallMs >= modalCloneWarmWaitMs(env)) break;
+      const score =
+        (Math.abs(rows - batch) / batch) * 4 +
+        Math.abs(wallMs - MODAL_CLONE_TARGET_CALL_MS) / MODAL_CLONE_TARGET_CALL_MS;
+      if (score < best.score) {
+        best = { sectionChars: section, rows, wallMs, chars, score };
+      }
+    }
+  }
+  return {
+    sectionChars: best.sectionChars,
+    rows: best.rows,
+    wallMs: best.wallMs,
+    chars: best.chars,
+  };
+}
+
+/**
+ * How many sections of `target` chars split `chars` without a short last piece.
+ * Sizes differ by at most one character. A remainder below `min` stays one
+ * piece when it is the whole stretch, and otherwise folds into the count
+ * the minimum allows.
+ */
+function splitEvenChars(chars: number, target: number, min: number, max: number): number[] {
+  const total = Math.max(0, Math.floor(chars));
+  if (total === 0) return [];
+  if (total <= max) return [total];
+  let count = Math.max(1, Math.round(total / Math.max(1, target)));
+  while (count > 1 && Math.ceil(total / count) > max) count += 1;
+  while (count > 1 && Math.floor(total / count) < min) count -= 1;
+  const base = Math.floor(total / count);
+  const extra = total - base * count;
+  const out: number[] = [];
+  for (let i = 0; i < count; i += 1) out.push(base + (i < extra ? 1 : 0));
+  return out;
+}
+
+/**
+ * Section widths a new clone book is frozen at, from the book's length.
+ *
+ * Section 0 is the quick opening. A short book (at most
+ * {@link MODAL_CLONE_SHORT_BOOK_CHARS}, the same line as a hitch) puts
+ * the rest in one call, in as many rows as fit inside 2,500–6,000
+ * characters. A longer book takes a 1–2 minute section, then a 5–6
+ * minute section, then a steady width whose page is the closest legal
+ * approach to 24 rows and 3.5 minutes. Sentence breaks make a real book
+ * a little shorter than these targets.
  */
 export function planCloneSectionChars(
   totalChars: number,
@@ -2002,16 +2215,137 @@ export function planCloneSectionChars(
 ): number[] {
   const total = Math.max(0, Math.floor(totalChars));
   if (total === 0) return [];
-  const steady = modalCloneSectionChars(env);
   const opening = Math.min(MODAL_CLONE_OPENING_SECTION_CHARS, total);
-  const sections = [opening];
-  let used = opening;
-  while (used < total) {
-    const size = Math.min(steady, total - used);
-    sections.push(size);
-    used += size;
+  if (total <= opening) return [opening];
+  const rest = total - opening;
+  if (total <= MODAL_CLONE_SHORT_BOOK_CHARS) {
+    return [opening, ...shortRemainderSections(rest, env)];
   }
-  return sections;
+  const fast = Math.min(rest, cloneAudioChars(MODAL_CLONE_FAST_AUDIO_MS));
+  let left = rest - fast;
+  const midBudget = Math.min(
+    MODAL_CLONE_SECTION_CHARS_MAX,
+    Math.max(MODAL_CLONE_SECTION_CHARS_MIN, cloneAudioChars(MODAL_CLONE_MID_AUDIO_MS))
+  );
+  const mid = Math.min(left, midBudget);
+  left -= mid;
+  const tail = steadyRemainderSections(left, env);
+  return [opening, fast, mid, ...tail].filter((size) => size > 0);
+}
+
+/**
+ * Steady pages after the ramp. Each page wants 24 rows and a 3.5 minute
+ * wall. The call count is whatever gets closest, and the sections are sized
+ * so those pages come out even: the wave planner's even split then has no
+ * short last call.
+ */
+function steadyRemainderSections(left: number, env: NodeJS.ProcessEnv): number[] {
+  if (left <= 0) return [];
+  if (left <= MODAL_CLONE_SECTION_CHARS_MAX) return [left];
+  const batch = modalCloneBatchItems(env);
+  const ceiling = Math.min(
+    modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_MARGIN_MS,
+    MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_CALL_MARGIN_MS
+  );
+  let best: { pieces: number[]; score: number } | null = null;
+  const maxCalls = Math.max(1, Math.ceil(left / MODAL_CLONE_SECTION_CHARS_MIN));
+  for (let calls = 1; calls <= maxCalls && calls <= 64; calls += 1) {
+    const perCall = Math.round(left / calls);
+    let page: { rows: number; section: number; score: number } | null = null;
+    for (let rows = 1; rows <= batch; rows += 1) {
+      const section = Math.round(perCall / rows);
+      if (section < MODAL_CLONE_SECTION_CHARS_MIN || section > MODAL_CLONE_SECTION_CHARS_MAX) {
+        continue;
+      }
+      const chars = rows * section;
+      if (cloneBatchHttpBytes(chars, rows, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) continue;
+      const wallMs = cloneCallWallMs({
+        chars,
+        largestRow: section,
+        rows,
+        shape: "warm",
+        restore: false,
+      });
+      if (wallMs >= ceiling) continue;
+      const score =
+        (Math.abs(rows - batch) / batch) * 4 +
+        Math.abs(wallMs - MODAL_CLONE_TARGET_CALL_MS) / MODAL_CLONE_TARGET_CALL_MS;
+      if (!page || score < page.score) page = { rows, section, score };
+    }
+    if (!page) continue;
+    const pieces = splitEvenChars(
+      left,
+      page.section,
+      MODAL_CLONE_SECTION_CHARS_MIN,
+      MODAL_CLONE_SECTION_CHARS_MAX
+    );
+    const width = evenCallWidth(pieces.length, page.rows);
+    if (width < 1) continue;
+    const groups = Math.ceil(pieces.length / width);
+    const last = pieces.length - width * (groups - 1);
+    if (groups > 1 && width - last > 1) continue;
+    const callChars = Math.round((left / pieces.length) * width);
+    const wallMs = cloneCallWallMs({
+      chars: callChars,
+      largestRow: page.section,
+      rows: width,
+      shape: "warm",
+      restore: false,
+    });
+    if (wallMs >= ceiling) continue;
+    if (
+      cloneBatchHttpBytes(callChars, width, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    ) {
+      continue;
+    }
+    if (!best || page.score < best.score) best = { pieces, score: page.score };
+  }
+  if (best) return best.pieces;
+  return splitEvenChars(
+    left,
+    MODAL_CLONE_SECTION_CHARS_DEFAULT,
+    MODAL_CLONE_SECTION_CHARS_MIN,
+    MODAL_CLONE_SECTION_CHARS_MAX
+  );
+}
+
+/** One call after section 0. The widest row count inside 2,500–6,000 wins. */
+function shortRemainderSections(rest: number, env: NodeJS.ProcessEnv): number[] {
+  if (rest <= MODAL_CLONE_SECTION_CHARS_MAX) return [rest];
+  const batch = modalCloneBatchItems(env);
+  const ceiling = Math.min(
+    modalCloneWarmWaitMs(env) - MODAL_CLONE_CALL_MARGIN_MS,
+    MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_CALL_MARGIN_MS
+  );
+  for (let rows = batch; rows >= 1; rows -= 1) {
+    const size = Math.round(rest / rows);
+    if (size < MODAL_CLONE_SECTION_CHARS_MIN || size > MODAL_CLONE_SECTION_CHARS_MAX) continue;
+    const pieces = splitEvenChars(
+      rest,
+      size,
+      MODAL_CLONE_SECTION_CHARS_MIN,
+      MODAL_CLONE_SECTION_CHARS_MAX
+    );
+    if (pieces.length !== rows) continue;
+    const largest = Math.max(...pieces);
+    const chars = pieces.reduce((sum, piece) => sum + piece, 0);
+    if (cloneBatchHttpBytes(chars, rows, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) continue;
+    const wallMs = cloneCallWallMs({
+      chars,
+      largestRow: largest,
+      rows,
+      shape: "warm",
+      restore: false,
+    });
+    if (wallMs >= ceiling) continue;
+    return pieces;
+  }
+  return splitEvenChars(
+    rest,
+    MODAL_CLONE_SECTION_CHARS_DEFAULT,
+    MODAL_CLONE_SECTION_CHARS_MIN,
+    MODAL_CLONE_SECTION_CHARS_MAX
+  );
 }
 
 /** H100 list price Joel costs books against. $3.95/h = $0.001097/s. */

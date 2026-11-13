@@ -1021,17 +1021,22 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- the call after section 0 is the largest page that fits the warm wait:
-  `warm:24` for 4,000-character sections once `/ready` reports
-  `audio_transport: r2` (the MP3s are objects, the JSON is keys),
-  `warm:14` until that deploy (the inline 80 MiB body), or `warm:24`
-  for a book still frozen at 2,000 characters. One row per page
-  (`page of 1 rendered 1/1` for every section) is the old round-robin
-  split. The deploy that adds `audio_transport` wipes GPU snapshots and
-  is a separate step from this worker. The container reads
+- the calls after section 0 follow the book's length. A short book is
+  one warm call. A long book is a 1–2 minute page, then a 5–6 minute
+  page, then even pages: `warm:24` of about 3,910 characters once
+  `/ready` reports `audio_transport: r2` (the MP3s are objects, the JSON
+  is keys), or `warm:22` of about 2,559 characters until that deploy
+  (the inline 80 MiB body). A book already frozen at 4,000 characters
+  still ramps, then sends the widest even page that body allows
+  (`warm:24` on r2, `warm:13` inline for a 10-hour outline). One row per
+  page (`page of 1 rendered 1/1` for every section) is the old
+  round-robin split. The deploy that adds `audio_transport` wipes GPU
+  snapshots and is a separate step from this worker. The container reads
   `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
   `R2_BUCKET_NAME` from the `echomancer-secrets` Modal secret. Without
-  those, `/ready` stays `inline` and the page stays 14 rows.
+  those, `/ready` stays `inline` and the body ceiling stays in force.
+  Do not set `MODAL_S2_AUDIO_TRANSPORT=r2` on the worker before that
+  deploy.
 - `boot=restored` (or `unknown`) says whether that time was a restore or a
   compile. A long first light that reports `unknown` and then succeeds is a
   warm compile; the off-path `::cover` is what prevents it.

@@ -166,7 +166,7 @@ describe("one book's call schedule", () => {
     );
   });
 
-  it("sends the largest proxy-safe batch after the opening", () => {
+  it("ramps the first warm pages, then even slices of the rest", () => {
     const chars = tenHourSections();
     const plan = planModalCloneBookWave({
       pending: pending(60),
@@ -176,23 +176,24 @@ describe("one book's call schedule", () => {
       batch: 24,
       env,
     });
-    const next = plan.calls[1]!;
-    expect(next.shape).toBe("warm");
-    expect(next.indexes[0]).toBe(1);
-    // 4,000-character sections: 14 rows is the longest page under 80 MiB.
-    expect(next.indexes.length).toBe(14);
-    expect(next.chars).toBe(14 * 4_000);
-    expect(next.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
-    expect(next.wallMs).toBeLessThan(400_000);
-    expect(estimateCloneBatchJsonBytes(next.chars)).toBeLessThanOrEqual(
-      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
-    );
+    expect(plan.calls[0]!.indexes).toEqual([0]);
+    expect(plan.calls[1]).toMatchObject({ shape: "warm", indexes: [1] });
+    expect(plan.calls[2]).toMatchObject({ shape: "warm", indexes: [2] });
+    const steady = plan.calls.slice(3);
+    expect(steady.length).toBeGreaterThan(0);
+    const widths = steady.map((call) => call.indexes.length);
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+    expect(Math.min(...widths)).toBeGreaterThanOrEqual(8);
     expect([...plan.calls.flatMap((call) => call.indexes), ...plan.deferred]).toEqual(
       pending(60)
     );
-    for (const call of plan.calls.slice(1)) {
+    for (const call of plan.calls) {
+      expect(call.chars).toBeLessThanOrEqual(modalWarmLaneCharLimit(env));
       expect(call.waitMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
-      expect(call.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+      expect(call.wallMs).toBeLessThan(400_000);
+      expect(estimateCloneBatchJsonBytes(call.chars)).toBeLessThanOrEqual(
+        MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+      );
     }
   });
 
@@ -337,10 +338,14 @@ describe("one book's call schedule", () => {
       } as NodeJS.ProcessEnv)
     ).toBe(modalWarmLaneCharLimit(env));
     expect(modalWarmLaneCharLimit(env)).toBeGreaterThan(modalLaneCharCap(env));
-    // 24 × 2,000 still fits. 24 × 4,000 does not: the body ceiling binds.
+    // Inline audio stops near 59,000 characters (14 × 4,000 fits, 15 × 4,000
+    // does not). Stored audio may carry a full batch of the widest section.
     expect(modalWarmLaneCharLimit(env)).toBeGreaterThanOrEqual(24 * 2_000);
     expect(modalWarmLaneCharLimit(env)).toBeGreaterThanOrEqual(14 * 4_000);
     expect(modalWarmLaneCharLimit(env)).toBeLessThan(15 * 4_000);
+    expect(
+      modalWarmLaneCharLimit({ MODAL_S2_AUDIO_TRANSPORT: "r2" } as NodeJS.ProcessEnv)
+    ).toBeGreaterThanOrEqual(24 * 4_000);
     expect(estimateCloneBatchJsonBytes(24 * 4_000)).toBeGreaterThan(
       MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
     );
@@ -389,9 +394,12 @@ describe("a 10-hour book played at 1.5×", () => {
     );
     const report = simulateClonePlayback({ sectionChars: sections, batch: 24, env });
     expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: 1_000 });
-    expect(report.steps[1]!.rows).toBe(24);
-    expect(report.steps[1]!.chars).toBe(24 * 2_000);
-    expect(report.steps[1]!.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    expect(report.steps[1]!.rows).toBe(1);
+    expect(report.steps[2]!.rows).toBe(2);
+    const steady = report.steps.slice(3);
+    const widths = steady.map((step) => step.rows);
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+    expect(Math.min(...widths)).toBeGreaterThanOrEqual(8);
     for (const step of report.steps) {
       expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
     }
@@ -404,13 +412,15 @@ describe("a 10-hour book played at 1.5×", () => {
       env,
     });
     expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: MODAL_CLONE_OPENING_SECTION_CHARS });
-    expect(report.steps[1]!.rows).toBe(14);
-    expect(report.steps[1]!.chars).toBe(14 * 4_000);
+    expect(report.steps[1]!.rows).toBe(1);
+    expect(report.steps[2]!.rows).toBe(1);
     expect(report.steps[1]!.wallMs).toBeLessThan(400_000);
     expect(report.timeToFirstAudioMs).toBeLessThan(75_000);
     expect(report.steps[0]!.wallMs).toBe(report.timeToFirstAudioMs);
     expect(report.sizeSequence[0]).toBe(1);
-    expect(report.sizeSequence.filter((n) => n === 1).length).toBe(1);
+    const steady = report.sizeSequence.slice(3);
+    expect(Math.max(...steady) - Math.min(...steady)).toBeLessThanOrEqual(1);
+    expect(report.sizeSequence.filter((n) => n === 1).length).toBe(3);
     expect(report.sizeSequence.some((n) => n >= 8)).toBe(true);
     for (const step of report.steps) {
       expect(step.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
@@ -430,10 +440,14 @@ describe("a 10-hour book played at 1.5×", () => {
       env: r2,
     });
     expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: 1_000 });
-    expect(report.steps[1]!.rows).toBe(24);
-    expect(report.steps[1]!.chars).toBe(24 * 4_000);
-    expect(report.steps[1]!.wallMs).toBeLessThan(400_000);
-    expect(report.steps[1]!.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    expect(report.steps[1]!.rows).toBe(1);
+    expect(report.steps[2]!.rows).toBe(1);
+    const page = report.steps.find((step) => step.rows === 24);
+    expect(page?.chars).toBe(24 * 4_000);
+    expect(page!.wallMs).toBeLessThan(400_000);
+    expect(page!.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    const steady = report.steps.slice(3).map((step) => step.rows);
+    expect(Math.max(...steady) - Math.min(...steady)).toBeLessThanOrEqual(1);
     expect(cloneBatchHttpBytes(24 * 4_000, 24, r2)).toBeLessThan(
       MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
     );
@@ -912,11 +926,11 @@ describe("book-wave dispatch", () => {
     const rows = render.mock.calls.map((call) => call[0].map((item: { key: string }) => item.key));
     expect(rows[0]).toEqual(["0"]);
     expect(render.mock.calls[0]![2]?.warmBatch).toBe(false);
-    expect(rows[1]!.length).toBeGreaterThan(1);
+    expect(rows[3]!.length).toBeGreaterThan(1);
     expect(render.mock.calls[1]![2]?.warmBatch).toBe(true);
     const widths = rows.map((keys) => keys.length);
-    expect(widths).toEqual([1, 14, 14]);
-    expect(widths.filter((width) => width === 1).length).toBe(1);
+    expect(widths).toEqual([1, 1, 1, 13, 13]);
+    expect(widths.filter((width) => width === 1).length).toBe(3);
     expect(widths.reduce((sum, n) => sum + n, 0)).toBe(29);
   });
 

@@ -476,9 +476,10 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `chooseCloneGpuTurn`. Younger waiters queue. The first call of a book is section 0, cold-sized
   (`modalLaneCharCap`, 8,000 characters, restore budget). A batch returns
   every row together, so the time until the next audio is the whole call.
-  After first light the next call is the largest prefix that fits the
-  warm character cap, the 80 MiB body, and the 400s wait. It is not sized
-  so playback at 1.5× stays ahead. Book `e745d067` (2026-11-12, 9 sections,
+  After first light a short book is one call. A long book takes a 1–2
+  minute page, then a 5–6 minute page, then even pages that fit the warm
+  character cap, the transport's body limit, and the 400s wait, with a
+  minute of margin. It is not sized so playback at 1.5× stays ahead. Book `e745d067` (2026-11-12, 9 sections,
   11m39s) spent five serial 1-section calls at 2.7–2.9× (~60 codec fps)
   before one 4-section call at 9.2× (197 fps), about 64s of GPU wall on
   the old ramp. `cloneGenerationMs` uses that shape: `MODAL_S2_NARROW_FPS`
@@ -496,12 +497,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   restore, transfer, and 3s of publish, still under the 75s pack abort. A
   second section of about 700 characters still fits in that opening call;
   a longer second section waits so first audio stays the opening. Later
-  sections are 4,000 characters. The listen buffer is still reported. It
-  does not choose the page.
+  sections come from the book's length, inside 2,500–6,000 characters.
+  The listen buffer is still reported. It does not choose the page.
   A listener at 1.5× can catch the playhead on a wide call. That is
   accepted. A gap longer than the scaledown hold
   (`MODAL_S2_WARM_HOLD_MS`, default 10s, under the 15s autoscaler target)
-  is one cold-sized call again, then full batches resume.
+  is one cold-sized call again, then the even pages resume.
   Warmth is in-process memory: a worker restart costs one cold call.
   Under the ceiling, two 10-hour books are two of those ramps at once,
   peak **2** GPUs. Ten books from ten users stay on that same ramp, peak
@@ -532,21 +533,29 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   528 chars/s of generation, about 33×. Two and three rows still
   interpolate between one row and four. The HTTP wait is
   **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill.
-  The warm character cap is one batch of steady sections (24 × 4,000 =
-  96,000), then that wait. 24 rows of 4,000 characters are about 98 MiB
-  of 128 kbps MP3 and about 130 MiB of base64, past the 80 MiB JSON
-  ceiling. The bitrate stays 128 kbps: the app loudnorms and re-encodes
-  from this file, and 64 kbps is the rate that dulls speech. The
-  container uploads each MP3 to R2 and returns `storage_key`. The JSON
-  is then about 12 KiB, and the page is the full 24 rows, about 211s at
-  the smoke rate. Until `/ready` reports `audio_transport: r2` the
-  worker still sends the inline page: 14 rows, 56,000 characters, about
-  76 MiB, about 186s. That deploy is required for the 24-row page and
+  Section width comes from the book's length (`planCloneSectionChars`),
+  inside 2,500–6,000 characters, and the packer still closes on a
+  sentence. Section 0 stays 1,000 and goes alone. A book of 20,000
+  characters or less (the hitch line) puts the remainder in one call.
+  A longer book takes a 1–2 minute page, then a 5–6 minute page, then
+  even pages as close as the transport allows to 24 rows and about 3.5
+  minutes. Call widths of that steady stretch differ by at most one row.
+  The warm character cap is one batch of the widest section (24 × 6,000),
+  then the wait and the body. 24 rows of a 3.5 minute page are about
+  98 MiB of 128 kbps MP3 and about 130 MiB of base64, past the 80 MiB
+  JSON ceiling. The bitrate stays 128 kbps: the app loudnorms and
+  re-encodes from this file, and 64 kbps is the rate that dulls speech.
+  The container uploads each MP3 to R2 and returns `storage_key`. The
+  JSON is then a few kilobytes, and a 10-hour book is six 24-row pages
+  of about 3,910 characters, about 206s, about $1.62. Until `/ready`
+  reports `audio_transport: r2` the worker stays inside the 80 MiB body:
+  the same book is ten 22-row pages of about 2,559 characters, about
+  133s, about $1.73. That deploy is required for the 24-row page and
   wipes GPU snapshots; it is not part of a worker restart. A container
   with no R2 env keeps returning `audio_b64`, and the worker still
   accepts that field. Do not set `MODAL_S2_AUDIO_TRANSPORT=r2` on the
   worker before the deploy: the old container would be asked for a
-  130 MiB body. VRAM is the same at either section length: the
+  body it cannot return. VRAM is the same at either section length: the
   container's cache is batch 32 by sequence 4,096, and a row holds one
   unit. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
@@ -575,19 +584,20 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   can only lower a cold lane. The wait for a cold call is sized from that
   call's own text (`modalLaneWorkMs`), so the packer and the timeout cannot
   disagree. A warm call waits the full 400s rather than its optimistic time.
-- **A row must fit too, so sections after the first are 4,000 characters.**
+- **A row must fit too, so later sections stay inside 2,500–6,000 characters.**
   Section sizes were the other half of `job 7e4a8b48`: at the Fish 8,000
   ceiling the book froze four 7.7k sections, and a row renders its paragraph
   units in sequence at ~50 chars/s, so one 7.7k row needs ~154s of generation —
   more than the whole placement budget. No packer or retry can rescue a row
-  larger than a call. `MODAL_S2_SECTION_CHARS` (default 4,000) sets the width
-  after section 0, which stays 1,000. A single cold row still fits 6,000
-  characters inside the 180s abort and rejects 6,400; 4,000 keeps the 20s
-  prep margin. Warm calls add rows, not wider rows: the longest page
-  under the 80 MiB body is fourteen of those sections. A cold call holds
-  two. A clone book frozen wider
-  than the cap is **re-packed once, only while nothing has been published**;
-  an outline already at 2,000 is under the cap and is kept. An outline with
+  larger than a call. `planCloneSectionChars` chooses the width from the
+  book's length. Section 0 stays 1,000. A single cold row still fits 6,000
+  characters inside the 180s abort and rejects 6,400, so 6,000 is the top
+  of the range. `MODAL_S2_SECTION_CHARS` (default 4,000) is the width a
+  caller uses when it has no total. Warm calls add rows. The inline body
+  ceiling, not a fixed page of fourteen, decides how many of those rows
+  fit. A clone book frozen wider
+  than the cold-safe cap is **re-packed once, only while nothing has been published**;
+  an outline already inside 6,000 is kept. An outline with
   a ready section is kept so published timestamps never move.
 - **A multi-section call that misses its budget is split, not resent.**
   `job 7e4a8b48` packed 31k characters into one call, aborted it at 150s,

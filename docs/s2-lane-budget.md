@@ -77,26 +77,31 @@ lane cap          = 80s x 100 chars/s
 - `modalLaneWorkMs` — the wait handed to the HTTP call, derived from that call's
   own text at the worse of the aggregate and single-row rates. The packer and
   the timeout therefore cannot disagree.
-- `modalCloneSectionChars` — **4,000** characters after section 0 (~4.2 min).
-  Section 0 stays **1,000**. A cold call holds two of the steady rows. A
-  warm call carries the largest prefix under the 400s wait. The wanted
-  page is 24 × 4,000 characters, about 211s at the 24-row smoke rate.
-  Those MP3s are about 98 MiB and about 130 MiB of base64, past the
-  80 MiB JSON ceiling. The container uploads them and returns keys, so
-  the JSON stays a few kilobytes. Until `/ready` reports
-  `audio_transport: r2` the page that is sent is 14 × 4,000 (56,000
-  characters, about 76 MiB, about 186s). That report needs a Modal
+- `planCloneSectionChars` — section width from the book's length. Section 0
+  stays **1,000**. Later sections sit in **2,500–6,000** (one cold row of
+  6,000 still fits the 180s abort; 6,400 does not). A book of 20,000
+  characters or less is one call after the opening. A longer book takes a
+  1–2 minute page, then a 5–6 minute page, then even pages. Each full page
+  wants 24 rows and about 3.5 minutes, with 60s of margin under the 400s
+  wait and the 542s proxy. While the container returns `audio_b64` the
+  80 MiB body binds first, so a 10-hour book is 22-row pages of about
+  2,559 characters (about 133s, about 76 MiB). Once `/ready` reports
+  `audio_transport: r2` the same book is 24-row pages of about 3,910
+  characters (about 206s); the JSON is keys. That report needs a Modal
   deploy. The page is not sized so playback at 1.5× stays ahead.
+  `modalCloneSectionChars` remains the 4,000 default for a caller that
+  has no total.
 
 ## Current schedule
 
-Section 0 is one quick section. Every later section is the steady width.
-The next GPU call is the largest proxy-safe batch, not a page grown so a
-1.5× listener cannot catch up. A book of 20,000 characters or less shares
-an already-running H100, one call at a time, even when the GPU ceiling
-still has room. An idle restored container (`warm_containers` above the
-other live leases) is a warm start for the next book. The worker's warm
-hold is 10s. The live autoscaler target is `scaledown_window=15`, set by
+Section 0 is one quick section, sent alone. A short book skips the ramp
+and uses one call for the rest. A long book then sends about 1–2 minutes,
+then about 5–6 minutes, then the steady pages, and those pages differ by
+at most one row. A book of 20,000 characters or less shares an
+already-running H100, one call at a time, even when the GPU ceiling still
+has room. An idle restored container (`warm_containers` above the other
+live leases) is a warm start for the next book. The worker's warm hold is
+10s. The live autoscaler target is `scaledown_window=15`, set by
 `scripts/s2/set-live-autoscaler.py` after the worker that holds for 10s is
 restarted. That script does not deploy. Until it is run, production stays
 at the previous 45s window; a 10s hold is safe under that longer window.
@@ -104,10 +109,12 @@ at the previous 45s window; a 10s hold is safe under that longer window.
 Dollars in `modal-clone-short-book-cost.test.ts` use this planner curve
 plus restore and idle at $3.95/h. They are estimates. The curve is ~2.8×
 for one row, ~8.8× at four rows, and the 24-row smoke (~33×, 528 chars/s)
-at 24 rows. Widths between four and 24 are interpolated. A 14-row page
-has not been measured on its own. Once the container stores the MP3s, a
-long book of 4,000-character sections sends 24 rows. Until that deploy
-it sends 14.
+at 24 rows. Widths between four and 24 are interpolated. A page that is
+not 1, 4, or 24 rows has not been measured on its own. Cold, with 15s of
+idle: a 2-page article is $0.1126 either way (`[1, 1]`); an 11-minute book
+is $0.1889 (`[1, 3]`); a 1-hour book is $0.4045 (`[1, 1, 1, 19]`); a
+10-hour book is $1.725 inline (`[1, 1, 1]` then ten 22-row calls) and
+$1.619 once the MP3s are stored (`[1, 1, 1]` then six 24-row calls).
 
 ## The previous ramp, kept as the measurement it was
 
