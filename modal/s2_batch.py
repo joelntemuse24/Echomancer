@@ -87,7 +87,6 @@ import modal
 from s2_contract import (
     MERGE_PARA_MAX_CHARS,
     UNIT_MAX_CHARS,
-    history_anchor,
     inserted_pause_s,
     split_long_text,
 )

@@ -408,6 +408,7 @@ def _master_bytes(samples, sample_rate: int) -> bytes:
     """
     return _master_pcm(_to_pcm16(samples), sample_rate)
 
+
 def _to_pcm16(samples) -> bytes:
     """Float samples in [-1, 1] → little-endian 16-bit PCM.
 
@@ -1045,8 +1046,6 @@ class S2CloneWorker:
         finally:
             encode_pool.shutdown(wait=True)
             upload_pool.close()
-        t_encode = time.time()
-
         rows = []
         for i, record in enumerate(sections):
             rows.append({

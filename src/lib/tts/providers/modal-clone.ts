@@ -1856,16 +1856,6 @@ export const MODAL_CLONE_AUDIO_READ_CONCURRENCY = 8;
 const pendingTakeDeletes = new Set<Promise<void>>();
 
 /**
- * Delete a staged take without holding up the caller.
- *
- * The take is already in memory, which is all the next stage needs. Waiting for
- * the DELETE would put a network round trip between one batch and the next, and
- * that gap is idle GPU time (`MODAL_S2_WARM_HOLD_MS` is 10–30 s, so a page of
- * slow deletes can cost the warm container). Failures are swallowed on purpose:
- * an orphaned object is swept by the bucket's `s2-takes/` lifecycle rule, while
- * a thrown delete would fail a section that is already rendered.
- */
-/**
  * The storage module, resolved once.
  *
  * `loadBatchAudio` used to `await import("@/lib/storage")` per row. On a wide
@@ -1892,6 +1882,16 @@ export function resetModalCloneStorageForTests(): void {
   storageModule = null;
 }
 
+/**
+ * Delete a staged take without holding up the caller.
+ *
+ * The take is already in memory, which is all the next stage needs. Waiting for
+ * the DELETE would put a network round trip between one batch and the next, and
+ * that gap is idle GPU time (`MODAL_S2_WARM_HOLD_MS` is 10–30 s, so a page of
+ * slow deletes can cost the warm container). Failures are swallowed on purpose:
+ * an orphaned object is swept by the bucket's `s2-takes/` lifecycle rule, while
+ * a thrown delete would fail a section that is already rendered.
+ */
 export function scheduleTakeCleanup(key: string): void {
   const run = (async () => {
     try {

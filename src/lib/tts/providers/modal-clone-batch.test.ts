@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ModalCloneColdError,
+  drainTakeCleanup,
   loadCloneReference,
   modalCloneBatchSize,
   modalClonePoolReady,
   resetModalCloneRuntimeForTests,
+  resetModalCloneStorageForTests,
   synthesizeModalCloneBatch,
 } from "./modal-clone";
 import { modalCloneReportedMaxBatchItems } from "./modal-clone-transport";
@@ -69,6 +71,9 @@ function setup(rows: Record<string, unknown>[] = [audioRow("0"), audioRow("1")])
 
 afterEach(() => {
   resetModalCloneRuntimeForTests();
+  // The storage module is cached per process, so a mock swapped between cases
+  // must be re-resolved or the next case sees the previous one's function.
+  resetModalCloneStorageForTests();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -145,10 +150,11 @@ describe("modal clone batch", () => {
       inFlight -= 1;
       return Buffer.from(mp3);
     });
-    // A delete that never resolves: the call must not wait on it.
-    vi.mocked(deleteFile).mockImplementation((path: string) => {
+    // A delete that is slow enough to be visible if the call awaited it. The
+    // call must return without waiting, but the delete must still happen.
+    vi.mocked(deleteFile).mockImplementation(async (path: string) => {
       deletes.push(path);
-      return new Promise<void>(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
     fetchMock.mockImplementation(async (url) => {
       if (endpointOf(String(url)) === "ready") return readyResponse();
@@ -165,6 +171,10 @@ describe("modal clone batch", () => {
     expect(out.size).toBe(24);
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(8);
+    // Every staged object still gets its DELETE — just not on the critical path.
+    await drainTakeCleanup();
+    expect(deletes).toHaveLength(24);
+    expect(deletes[0]).toBe("s2-takes/job/call/0.mp3");
   });
 
   it("records the batch cap /ready reports so the planner can widen", async () => {
