@@ -533,15 +533,22 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   interpolate between one row and four. The HTTP wait is
   **400s** (`MODAL_S2_WARM_WAIT_MS`), under the proxy's ~542s kill.
   The warm character cap is one batch of steady sections (24 × 4,000 =
-  96,000), then the 80 MiB body and that wait. 24 rows of 4,000
-  characters are about 130 MiB of base64 and are not sent. The longest
-  page that fits is 14 rows, 56,000 characters, about 76 MiB, with a
-  planned wall of about 186s. A 24-row call of the old 2,000-character
-  sections (48,000 characters, about 68 MiB) still fits and is priced at
-  the smoke rate. VRAM is the same at either section length: the
+  96,000), then that wait. 24 rows of 4,000 characters are about 98 MiB
+  of 128 kbps MP3 and about 130 MiB of base64, past the 80 MiB JSON
+  ceiling. The bitrate stays 128 kbps: the app loudnorms and re-encodes
+  from this file, and 64 kbps is the rate that dulls speech. The
+  container uploads each MP3 to R2 and returns `storage_key`. The JSON
+  is then about 12 KiB, and the page is the full 24 rows, about 211s at
+  the smoke rate. Until `/ready` reports `audio_transport: r2` the
+  worker still sends the inline page: 14 rows, 56,000 characters, about
+  76 MiB, about 186s. That deploy is required for the 24-row page and
+  wipes GPU snapshots; it is not part of a worker restart. A container
+  with no R2 env keeps returning `audio_b64`, and the worker still
+  accepts that field. Do not set `MODAL_S2_AUDIO_TRANSPORT=r2` on the
+  worker before the deploy: the old container would be asked for a
+  130 MiB body. VRAM is the same at either section length: the
   container's cache is batch 32 by sequence 4,096, and a row holds one
-  unit. `modal/` is unchanged. `MODAL_S2_WARM_LANE_MAX_CHARS` can only
-  lower the cap.
+  unit. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap.
   The old 2,900 constant was a unit error and is what let one call swallow
   31k characters. On `job db10a6d6` the old round-robin split made 5 sections
   into four 1-row calls on one container (`36459a5cb16f`), so 246s of audio
@@ -826,10 +833,14 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   section is reproducible. Section audio is content-addressed in
   `tts-cache/`, and every progress write is lease-conditioned.
 - **Batch contract.** `POST /synthesize_batch` rows are
-  `{ key, audio_b64, duration_s, units, truncated_units }` or
-  `{ key, error, error_code }`, plus `build` / `container_id` / `seed` /
+  `{ key, audio_b64, duration_s, units, truncated_units }`,
+  `{ key, storage_key, audio_bytes, duration_s, units, truncated_units }`,
+  or `{ key, error, error_code }`, plus `build` / `container_id` / `seed` /
   `performance`. The client reads `audio_b64` (still accepts `audio_base64`)
-  and fails the call if a row has neither audio nor an error.
+  and a `storage_key` under `s2-takes/<job>/<call>/<item>.mp3`. It fails
+  the call if a row has neither audio nor an error. `/ready` adds
+  `audio_transport` (`inline` or `r2`). A build that omits the field is
+  inline.
 - **`modal/s2_contract.py` is stdlib-only** so its rules (empty or silent
   reference, empty transcript, sampling, lane planning, seeding) are testable
   with `python3 -m pytest modal -q`. Keep it dependency-free.

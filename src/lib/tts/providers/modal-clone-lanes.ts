@@ -60,6 +60,7 @@ import {
   MODAL_CLONE_SCALEDOWN_TARGET_S,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { decideCloneGpuAdmission, type GpuLeaseView } from "@/lib/tts/providers/modal-gpu-lease";
+import { modalCloneAudioTransport } from "@/lib/tts/providers/modal-clone-transport";
 
 export interface LaneLimits {
   /** Concurrent batch calls (containers) this book may fill. */
@@ -198,8 +199,8 @@ export const MODAL_LANE_WARM_CHARS_PER_SECOND = 525;
 /**
  * Old warm packing floor. Kept so a reader can see the number that used
  * to size the page (380s × 150 = 57,000 characters). A warm page is now
- * `batch` × the section width, then clamped by the body and by the
- * measured wide rate. The old 2,900 constant was a unit error
+ * `batch` × the section width, then clamped by the body (while the
+ * container returns base64) and by the measured wide rate. The old 2,900 constant was a unit error
  * (realtime treated as chars/s) and is what let one call swallow 31k chars.
  */
 export const MODAL_LANE_WARM_PACK_CHARS_PER_SECOND = 150;
@@ -207,20 +208,41 @@ export const MODAL_LANE_WARM_PACK_CHARS_PER_SECOND = 150;
 /**
  * Largest base64 JSON body a warm call is allowed to plan.
  *
- * Production returns `audio_b64` over HTTP. A box-side `.remote()` download
- * of a multi-megabyte body was truncated (`ContentLengthError`) on
- * 2026-11-10; HTTP is a different path, and this change does not alter the
- * deployed container's contract. The bound keeps one response near 80 MiB
- * of base64 (about 60 MiB of 128 kbps MP3). A paid smoke has to confirm the
- * body arrives whole.
+ * Production returns `audio_b64` over HTTP until the container that
+ * uploads each MP3 is deployed. A box-side `.remote()` download of a
+ * multi-megabyte body was truncated (`ContentLengthError`) on 2026-11-10.
+ * The bound keeps one JSON response near 80 MiB of base64. An R2 page
+ * returns keys, so {@link cloneBatchHttpBytes} does not charge the MP3
+ * against this ceiling. The worker still refuses a body larger than it.
  */
 export const MODAL_CLONE_RESPONSE_BODY_MAX_BYTES = 80 * 1024 * 1024;
 
+/** 128 kbps mono MP3 bytes, before base64. This is the object, not the JSON. */
+export function estimateCloneObjectBytes(chars: number): number {
+  const audioSeconds = (Math.max(0, chars) / CLONE_CHARS_PER_AUDIO_MINUTE) * 60;
+  return Math.ceil(audioSeconds * (128_000 / 8));
+}
+
 /** 128 kbps mono MP3, then base64 (4/3), at the narration rate. */
 export function estimateCloneBatchJsonBytes(chars: number): number {
-  const audioSeconds = (Math.max(0, chars) / CLONE_CHARS_PER_AUDIO_MINUTE) * 60;
-  const mp3Bytes = audioSeconds * (128_000 / 8);
-  return Math.ceil((mp3Bytes * 4) / 3);
+  return Math.ceil((estimateCloneObjectBytes(chars) * 4) / 3);
+}
+
+/**
+ * Bytes of the HTTP JSON for one call.
+ *
+ * Inline rows carry the MP3 as base64. An R2 row carries a storage key,
+ * so a 24-row page stays a few kilobytes. The MP3s are
+ * {@link estimateCloneObjectBytes}.
+ */
+export function cloneBatchHttpBytes(
+  chars: number,
+  rows: number,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  if (modalCloneAudioTransport(env) !== "r2") return estimateCloneBatchJsonBytes(chars);
+  const n = Math.max(1, Math.floor(rows) || 1);
+  return n * 512;
 }
 
 /**
@@ -309,23 +331,28 @@ export function modalLaneWorkMs(
  * `modalCloneSectionChars`: 24 × 4,000 = 96,000 at the defaults). That page
  * is then the minimum of three ceilings:
  *
- * - the 80 MiB base64 body ({@link estimateCloneBatchJsonBytes})
+ * - the 80 MiB base64 body, only while the container returns `audio_b64`
  * - the warm HTTP wait, priced at {@link cloneRealtimeFactor} for a full
  *   batch so a 24-row call is judged at the measured ~33× (about 3 minutes
  *   of generation) rather than at the old 150 chars/s floor
  * - the page itself
  *
- * `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the result, the same way
- * `MODAL_S2_LANE_MAX_CHARS` can only lower a cold call. 24 × 4,000 does not
- * survive the body ceiling (about 130 MiB at 128 kbps). The walker then
- * takes the longest prefix that does.
+ * When `/ready` reports `audio_transport: r2` the MP3s are objects and the
+ * JSON is keys, so the body ceiling does not shrink the page. Until that
+ * deploy, the worker stays on the inline ceiling. `MODAL_S2_WARM_LANE_MAX_CHARS`
+ * can only lower the result, the same way `MODAL_S2_LANE_MAX_CHARS` can
+ * only lower a cold call.
  */
 export function modalWarmLaneCharLimit(env: NodeJS.ProcessEnv = process.env): number {
   const byPage = modalCloneBatchItems(env) * Math.max(1, modalCloneSectionChars(env));
-  const perChar = estimateCloneBatchJsonBytes(10_000) / 10_000;
-  const byResponse = Math.floor(MODAL_CLONE_RESPONSE_BODY_MAX_BYTES / perChar);
   const byTime = warmCallCharBudget(modalCloneBatchItems(env), env);
-  const cap = Math.max(MODAL_LANE_MIN_CHARS, Math.min(byPage, byResponse, byTime));
+  let cap = Math.min(byPage, byTime);
+  if (modalCloneAudioTransport(env) !== "r2") {
+    const perChar = estimateCloneBatchJsonBytes(10_000) / 10_000;
+    const byResponse = Math.floor(MODAL_CLONE_RESPONSE_BODY_MAX_BYTES / perChar);
+    cap = Math.min(cap, byResponse);
+  }
+  cap = Math.max(MODAL_LANE_MIN_CHARS, cap);
   const override = Number(env.MODAL_S2_WARM_LANE_MAX_CHARS);
   if (!Number.isFinite(override) || override <= 0) return cap;
   return Math.min(cap, Math.floor(override));
@@ -512,17 +539,19 @@ export const MODAL_CLONE_OPENING_SECTION_CHARS = 1_000;
  *   that row is ~80s of generation. A 7,700-character row was the one that
  *   could not finish (`job 7e4a8b48`, ~154s of generation).
  * - A warm page wants one full batch of these sections (24 × 4,000 =
- *   96,000 characters). The 80 MiB body is what stops that page: 128 kbps
- *   of that audio is about 130 MiB of base64. Fourteen rows (56,000
- *   characters) fit at about 76 MiB. VRAM does not stop it. The container
- *   allocates KV for `S2B_BATCH` (default 32) by `MAX_SEQ_LEN` 4,096, and
+ *   96,000 characters). VRAM does not stop it. The container allocates KV
+ *   for `S2B_BATCH` (default 32) by `MAX_SEQ_LEN` 4,096, and
  *   `synthesize_batch` accepts at most 24 items. A row holds one unit
  *   (≤560 characters, ≤1,024 new frames), so 24 rows of 4,000 characters
  *   is the same footprint as the 24-row smoke. At the measured 24-row
- *   rate a 96,000-character call is about 3.5 minutes, inside the 400s
- *   wait and the 542s proxy. The page that is actually sent is the
- *   longest prefix under the body, and its wall is the curve from the
- *   4-row ~9× up to that 24-row rate.
+ *   rate that call is about 3.5 minutes, inside the 400s wait and the
+ *   542s proxy. The 128 kbps MP3 of those 96,000 characters is about
+ *   98 MiB, ~130 MiB once base64'd, which is past the 80 MiB JSON ceiling.
+ *   While the container returns `audio_b64` the page stops at fourteen
+ *   rows (56,000 characters, ~76 MiB). Once `/ready` reports
+ *   `audio_transport: r2` the MP3s are objects and the JSON is keys, and
+ *   the page is the full 24 rows. The bitrate stays 128 kbps: mastering
+ *   re-encodes from this file, and 64 kbps is the rate that dulls speech.
  * - 4,000 characters is ~4.2 minutes of audio. Whisper's QA budget
  *   (`audio × 0.4`, ceiling 180s) still covers that section (~101s).
  *   The MP3 is ~4 MB at 128 kbps, and concat packet-copies it.
@@ -961,7 +990,7 @@ function shortOpeningIndexes(
   }
   const charCap = poolWarm ? modalWarmLaneCharLimit(env) : modalLaneCharLimit(env);
   if (chars > charCap) return null;
-  if (estimateCloneBatchJsonBytes(chars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) return null;
+  if (cloneBatchHttpBytes(chars, pending.length, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) return null;
   const wall = cloneCallWallMs({
     chars,
     largestRow: largest,
@@ -1245,7 +1274,7 @@ function warmPrefixStats(
     const nextChars = chars + size;
     const nextLargest = Math.max(largest, size);
     if (n > 1 && nextChars > charCap) break;
-    if (n > 1 && estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
+    if (n > 1 && cloneBatchHttpBytes(nextChars, n, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES) {
       break;
     }
     const wallMs = cloneCallWallMs({
@@ -1461,7 +1490,7 @@ export function planMixedCloneBatch(input: {
       if (rows.length > 0 && nextChars > charCap) continue;
       if (
         rows.length > 0 &&
-        estimateCloneBatchJsonBytes(nextChars) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+        cloneBatchHttpBytes(nextChars, rows.length + 1, env) > MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
       ) {
         continue;
       }

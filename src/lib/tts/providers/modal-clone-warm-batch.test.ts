@@ -49,7 +49,9 @@ import {
   clonePoolStillWarm,
   cloneRowCharsPerSecond,
   cloneTransferMs,
+  cloneBatchHttpBytes,
   estimateCloneBatchJsonBytes,
+  estimateCloneObjectBytes,
   modalLaneCharCap,
   modalWarmLaneCharLimit,
   chooseCloneGpuTurn,
@@ -418,6 +420,32 @@ describe("a 10-hour book played at 1.5×", () => {
       if (step.shape === "cold") expect(step.chars).toBeLessThanOrEqual(modalLaneCharCap(env));
     }
     expect(report.sizeSequence.reduce((sum, n) => sum + n, 0)).toBe(tenHourSections().length);
+  });
+
+  it("sends 24 rows of 4,000 once the container stores the MP3", () => {
+    const r2 = { MODAL_S2_AUDIO_TRANSPORT: "r2" } as NodeJS.ProcessEnv;
+    const report = simulateClonePlayback({
+      sectionChars: tenHourSections(),
+      batch: 24,
+      env: r2,
+    });
+    expect(report.steps[0]).toMatchObject({ shape: "cold", rows: 1, chars: 1_000 });
+    expect(report.steps[1]!.rows).toBe(24);
+    expect(report.steps[1]!.chars).toBe(24 * 4_000);
+    expect(report.steps[1]!.wallMs).toBeLessThan(400_000);
+    expect(report.steps[1]!.wallMs).toBeLessThan(MODAL_CLONE_PROXY_KILL_MS);
+    expect(cloneBatchHttpBytes(24 * 4_000, 24, r2)).toBeLessThan(
+      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    );
+    expect(estimateCloneObjectBytes(24 * 4_000)).toBeGreaterThan(
+      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    );
+    for (const step of report.steps) {
+      expect(step.wallMs).toBeLessThan(400_000);
+      expect(cloneBatchHttpBytes(step.chars, step.rows, r2)).toBeLessThanOrEqual(
+        MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+      );
+    }
   });
 });
 

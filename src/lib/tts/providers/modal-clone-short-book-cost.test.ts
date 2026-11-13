@@ -8,7 +8,8 @@
  * four, and the measured 24-row smoke at about 33×, with the widths
  * between four and 24 interpolated) plus restore and idle at $3.95/h.
  * A 14-row page has not been measured on its own. These figures are
- * estimates.
+ * estimates. The R2 page is the measured 24-row rate; the HTTP body of
+ * that page is keys, and the MP3s are objects.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -16,10 +17,12 @@ import {
   MODAL_CLONE_CHARS_PER_AUDIO_SECOND,
   MODAL_CLONE_OPENING_SECTION_CHARS,
   MODAL_CLONE_SECTION_CHARS_DEFAULT,
+  cloneBatchHttpBytes,
   cloneBookGpuBill,
   cloneCallWallMs,
   coldClonePackFitsAbort,
   estimateCloneBatchJsonBytes,
+  estimateCloneObjectBytes,
   modalWarmLaneCharLimit,
   planCloneSectionChars,
   MODAL_CLONE_RESPONSE_BODY_MAX_BYTES,
@@ -159,5 +162,41 @@ describe("estimated GPU bill", () => {
     expect(refused).toBeLessThan(240_000);
     expect(refused).toBeLessThan(400_000);
     expect(dollars(bill.usd)).toBe(2.233);
+  });
+
+  it("sends a 10-hour book as 24-row pages once audio is stored", () => {
+    const r2 = { MODAL_S2_AUDIO_TRANSPORT: "r2" } as NodeJS.ProcessEnv;
+    const sections = planCloneSectionChars(TEN_HOUR_CHARS);
+    const bill = cloneBookGpuBill({ sectionChars: sections, env: r2 });
+    expect(bill.widths).toEqual([1, 24, 24, 24, 24, 24, 23]);
+    expect(bill.calls).toBe(7);
+    expect(bill.idleMs).toBe(15_000);
+    const pageChars = 24 * 4_000;
+    expect(pageChars).toBeLessThanOrEqual(modalWarmLaneCharLimit(r2));
+    expect(cloneBatchHttpBytes(pageChars, 24, r2)).toBeLessThan(
+      MODAL_CLONE_RESPONSE_BODY_MAX_BYTES
+    );
+    expect(estimateCloneObjectBytes(pageChars)).toBe(102_400_000);
+    const wall = cloneCallWallMs({
+      chars: pageChars,
+      largestRow: 4_000,
+      rows: 24,
+      shape: "warm",
+      restore: false,
+    });
+    expect(wall).toBe(211_055);
+    expect(wall).toBeLessThan(400_000);
+    expect(wall).toBeLessThan(542_000);
+    expect(dollars(bill.usd)).toBe(1.4679);
+    const eleven = cloneBookGpuBill({
+      sectionChars: planCloneSectionChars(ELEVEN_MIN_CHARS),
+      env: r2,
+    });
+    const two = cloneBookGpuBill({
+      sectionChars: planCloneSectionChars(TWO_PAGE_CHARS),
+      env: r2,
+    });
+    expect(eleven.widths).toEqual([1, 3]);
+    expect(two.widths).toEqual([1, 1]);
   });
 });

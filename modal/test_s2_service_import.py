@@ -515,6 +515,8 @@ def test_batch_handler_runs_every_gpu_call_on_the_owner_thread(
     must now happen on the one thread that owns the context.
     """
     monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
     worker = _worker_with_recording_engine(service)
     try:
         response = service.S2CloneWorker.synthesize_batch(

@@ -1021,11 +1021,17 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- the call after section 0 is the largest page that fits the body and
-  the warm wait: `warm:14` for 4,000-character sections (56,000
-  characters), or `warm:24` for a book still frozen at 2,000. One row
-  per page (`page of 1 rendered 1/1` for every section) is the old
-  round-robin split
+- the call after section 0 is the largest page that fits the warm wait:
+  `warm:24` for 4,000-character sections once `/ready` reports
+  `audio_transport: r2` (the MP3s are objects, the JSON is keys),
+  `warm:14` until that deploy (the inline 80 MiB body), or `warm:24`
+  for a book still frozen at 2,000 characters. One row per page
+  (`page of 1 rendered 1/1` for every section) is the old round-robin
+  split. The deploy that adds `audio_transport` wipes GPU snapshots and
+  is a separate step from this worker. The container reads
+  `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
+  `R2_BUCKET_NAME` from the `echomancer-secrets` Modal secret. Without
+  those, `/ready` stays `inline` and the page stays 14 rows.
 - `boot=restored` (or `unknown`) says whether that time was a restore or a
   compile. A long first light that reports `unknown` and then succeeds is a
   warm compile; the off-path `::cover` is what prevents it.

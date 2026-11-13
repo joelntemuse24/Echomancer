@@ -17,7 +17,7 @@ vi.mock("@/lib/turso", () => ({
   queryOne: vi.fn(),
   execute: vi.fn(async () => ({ rowsAffected: 1 })),
 }));
-vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
+vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn(), deleteFile: vi.fn() }));
 
 const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0, 1]);
 const items = [
@@ -87,6 +87,39 @@ describe("modal clone batch", () => {
     expect(body.reference_text).toBe("the sample words");
     expect(out.size).toBe(2);
     expect(out.get("1")!.durationSeconds).toBe(14);
+  });
+
+  it("reads a storage key and leaves a foreign key alone", async () => {
+    const fetchMock = setup();
+    vi.mocked(downloadFile).mockImplementation(async (path: string) => {
+      if (String(path).startsWith("s2-takes/")) return Buffer.from(mp3);
+      return Buffer.from("reference audio");
+    });
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(
+        JSON.stringify({
+          items: [
+            { key: "0", storage_key: "s2-takes/job/call/0.mp3", duration_s: 12 },
+          ],
+        })
+      );
+    });
+    const ref = await loadCloneReference("clone:saved-id", "fish-id");
+    const out = await synthesizeModalCloneBatch([items[0]!], ref);
+    expect(out.get("0")!.audio.equals(Buffer.from(mp3))).toBe(true);
+    expect(downloadFile).toHaveBeenCalledWith("s2-takes/job/call/0.mp3");
+
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(
+        JSON.stringify({
+          items: [{ key: "0", storage_key: "audiobooks/other/full.mp3", duration_s: 12 }],
+        })
+      );
+    });
+    await expect(synthesizeModalCloneBatch([items[0]!], ref)).rejects.toThrow(/decodable audio/);
+    expect(downloadFile).not.toHaveBeenCalledWith("audiobooks/other/full.mp3");
   });
 
   it("still accepts the legacy audio_base64 name", async () => {

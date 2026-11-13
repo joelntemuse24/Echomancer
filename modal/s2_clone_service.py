@@ -113,6 +113,7 @@ from s2_contract import (
     validate_reference_text,
     warm_reference_wav,
 )
+from s2_audio_store import audio_fields, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
 APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
@@ -246,7 +247,9 @@ app = modal.App(APP_NAME)
 # batch app's image, and its snapshots, stay untouched.
 web_image = (
     gpu_image.pip_install("fastapi[standard]==0.115.6")
-    .add_local_python_source("s2_batch", "s2_mastering", "s2_contract", copy=True)
+    .add_local_python_source(
+        "s2_batch", "s2_mastering", "s2_contract", "s2_audio_store", copy=True
+    )
 )
 
 #: Shared boot registry: one entry per container, written after restore.
@@ -528,6 +531,7 @@ class S2CloneWorker:
             # book's audio can be matched to the numbers behind it without
             # reading the container's image.
             "recipe": _RECIPE,
+            "audio_transport": transport_name(os.environ),
         }
 
     def _resolve_reference(
@@ -656,10 +660,14 @@ class S2CloneWorker:
         keeps its own rhythm. Batching across sections is what makes the GPU
         worth its price: rows share each weight read.
 
-        Row contract (the app reads `audio_b64`):
+        Row contract. The app reads `audio_b64`, and also `storage_key`
+        when this build uploaded the MP3 to R2:
             {"key", "audio_b64", "duration_s", "units", "truncated_units"}
+            {"key", "storage_key", "audio_bytes", "duration_s", "units", "truncated_units"}
         or, for a section this call could not render:
             {"key", "error", "error_code"}
+        A wide page uses the key. Inline base64 stays for a container
+        with no R2 env, which is what an older build always returns.
         """
         import tempfile
         from concurrent.futures import ThreadPoolExecutor
@@ -803,13 +811,15 @@ class S2CloneWorker:
         with ThreadPoolExecutor(4) as pool:
             mp3s = list(pool.map(encode, rendered)) if rendered else []
 
+        call_id = uuid.uuid4().hex
+        job_id = str(payload.get("job_id") or "")
         rows = []
         for i, ((item_key, units), samples, mp3) in enumerate(
             zip(units_by_item, rendered, mp3s)
         ):
+            fields = audio_fields(os.environ, item_key, mp3, job_id, call_id)
             rows.append({
-                "key": item_key,
-                "audio_b64": base64.b64encode(mp3).decode(),
+                **fields,
                 "duration_s": round(len(samples) / sample_rate, 2),
                 "units": len(units),
                 "unit_shape": units_summary(units),
@@ -973,7 +983,9 @@ class S2CloneWorker:
 ready_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("fastapi[standard]==0.115.6")
-    .add_local_python_source("s2_batch", "s2_mastering", "s2_contract")
+    .add_local_python_source(
+        "s2_batch", "s2_mastering", "s2_contract", "s2_audio_store"
+    )
 )
 
 
@@ -1064,6 +1076,9 @@ def ready(request: Request):
         # width it was made with. This is the mapping, reported without
         # starting a GPU.
         "recipe": _RECIPE,
+        # `r2` means a wide batch uploads each MP3 and returns storage_key.
+        # A build from before this field is what the worker treats as inline.
+        "audio_transport": transport_name(os.environ),
         "containers": [
             {
                 "container_id": row.get("container_id") or "",

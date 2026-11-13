@@ -88,6 +88,12 @@ import {
   resetModalCloneWarmForTests,
 } from "@/lib/tts/providers/modal-clone-warm";
 import {
+  modalCloneAudioTransport,
+  noteModalCloneAudioTransport,
+  resetModalCloneAudioTransportForTests,
+  type ModalCloneAudioTransport,
+} from "@/lib/tts/providers/modal-clone-transport";
+import {
   cancelAbandonedModalCallsAfterAbort,
   modalCloneCancelConfigured,
   resetModalCloneCancelForTests,
@@ -248,6 +254,7 @@ export function resetModalCloneRuntimeForTests(): void {
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
   resetModalCloneCancelForTests();
+  resetModalCloneAudioTransportForTests();
 }
 
 export function noteModalClonePoolAnswered(
@@ -477,6 +484,8 @@ type BatchRow = {
   key: string;
   audio_b64?: string;
   audio_base64?: string;
+  /** MP3 uploaded by the container. Only `s2-takes/.../*.mp3` is fetched. */
+  storage_key?: string;
   duration_s?: number;
   truncated_units?: number;
   error?: string;
@@ -641,7 +650,7 @@ async function renderModalCloneBatchBody(
   const undecodable: string[] = [];
   for (const row of body.items ?? []) {
     if (row.error) continue;
-    const decoded = decodeBatchAudio(row);
+    const decoded = await loadBatchAudio(row, jobId);
     if (!decoded) {
       undecodable.push(String(row.key));
       continue;
@@ -770,7 +779,7 @@ export async function synthesizeModalClonePreview(
         `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
       );
     }
-    const decoded = decodeBatchAudio(row);
+    const decoded = await loadBatchAudio(row);
     if (!decoded) {
       throw new ModalCloneProviderError(
         "Modal clone returned a row without decodable audio"
@@ -965,10 +974,11 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
   ready: boolean;
   warmContainers: number;
   build: string | null;
+  audioTransport: ModalCloneAudioTransport;
 }> {
   if (!modalCloneReadyProbeEnabled()) {
     // No probe: assume reachable and let the call's own timeout decide.
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   let url: string | null;
   try {
@@ -980,12 +990,12 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       "[modal-clone] ready probe disabled:",
       err instanceof Error ? err.message : err
     );
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   if (!url) {
     // Only the batch endpoint is configured. There is nothing to probe, so do
     // not invent `${batch}/ready` — that host has no such route.
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
@@ -999,12 +1009,12 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     });
   } catch {
     signal?.throwIfAborted();
-    return { ready: false, warmContainers: 0, build: null };
+    return { ready: false, warmContainers: 0, build: null, audioTransport: modalCloneAudioTransport() };
   }
   if (response.status === 404) {
     // Ready route not deployed: the deploy predates it. Stay optimistic.
     await response.body?.cancel().catch(() => undefined);
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   const raw = await response.text().catch(() => "");
   let ready = response.ok;
@@ -1016,15 +1026,35 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
         ready?: boolean;
         warm_containers?: number;
         build?: string;
+        audio_transport?: string;
       };
       if (body.ready === false) ready = false;
       if (typeof body.warm_containers === "number") warm = body.warm_containers;
       if (typeof body.build === "string") build = body.build;
+      if (Object.prototype.hasOwnProperty.call(body, "audio_transport")) {
+        noteModalCloneAudioTransport(body.audio_transport);
+      } else {
+        // A build from before the field returns the MP3 inline.
+        noteModalCloneAudioTransport("inline");
+      }
     } catch {
       ready = response.ok;
     }
   }
-  return { ready, warmContainers: warm, build };
+  return { ready, warmContainers: warm, build, audioTransport: modalCloneAudioTransport() };
+}
+
+/**
+ * Read `/ready` so the next plan knows whether a wide page's MP3s come
+ * back as keys. A pinned `MODAL_S2_AUDIO_TRANSPORT` wins and does not
+ * fetch. No probe configured leaves the last note, which starts as inline.
+ */
+export async function refreshModalCloneAudioTransport(): Promise<ModalCloneAudioTransport> {
+  const pinned = (process.env.MODAL_S2_AUDIO_TRANSPORT ?? "").trim();
+  if (pinned === "r2" || pinned === "inline") return pinned;
+  if (!modalCloneReadyProbeEnabled()) return modalCloneAudioTransport();
+  const probe = await modalClonePoolReady();
+  return probe.audioTransport;
 }
 
 /**
@@ -1598,7 +1628,7 @@ async function postSynthesize(
       `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
     );
   }
-  const decoded = decodeBatchAudio(row);
+  const decoded = await loadBatchAudio(row, input.jobId);
   if (!decoded) {
     throw new ModalCloneProviderError(
       "Modal clone returned a row without decodable audio"
@@ -1793,6 +1823,41 @@ async function postModal(
 /** Delay the worker should wait before trying a cold pool again. */
 export function modalCloneNextRetryDelayMs(attempt: number): number {
   return modalCloneRetryDelayMs(attempt);
+}
+
+const S2_TAKE_KEY = /^s2-takes\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.mp3$/;
+
+/**
+ * Inline `audio_b64` is the current container. `storage_key` is the
+ * container that uploaded the MP3. Any other key is ignored.
+ */
+async function loadBatchAudio(
+  row: BatchRow,
+  jobId?: string
+): Promise<{ audio: Buffer; durationSeconds: number } | null> {
+  const inline = decodeBatchAudio(row);
+  if (inline) return inline;
+  const key = typeof row.storage_key === "string" ? row.storage_key.trim() : "";
+  if (!S2_TAKE_KEY.test(key)) return null;
+  if (jobId) {
+    const segment = jobId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || "call";
+    if (!key.startsWith(`s2-takes/${segment}/`)) return null;
+  }
+  const storage = await import("@/lib/storage");
+  const audio = await storage.downloadFile(key);
+  if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") return null;
+  // Best-effort. A test mock that only exports downloadFile must not fail
+  // the take, and a delete error must not either.
+  let remove: ((path: string) => Promise<void>) | undefined;
+  try {
+    remove = storage.deleteFile;
+  } catch {
+    remove = undefined;
+  }
+  if (typeof remove === "function") {
+    await Promise.resolve(remove(key)).catch(() => undefined);
+  }
+  return { audio, durationSeconds: Number(row.duration_s) || 0 };
 }
 
 function decodeBatchAudio(row: BatchRow): { audio: Buffer; durationSeconds: number } | null {

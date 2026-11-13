@@ -38,7 +38,9 @@ import {
   ModalCloneLaneBusyError,
   ModalCloneProviderError,
   modalCloneBookHasSpareContainer,
+  modalCloneJobBackoffRemainingMs,
   modalClonePoolIsWarm,
+  refreshModalCloneAudioTransport,
   noteModalCloneBookLost,
   noteModalClonePoolLost,
   rememberModalCloneCold,
@@ -448,6 +450,8 @@ export async function dispatchModalCloneLanes(
  */
 async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});
+  const backingOff = opts.jobId ? modalCloneJobBackoffRemainingMs(opts.jobId) > 0 : false;
+  if (!backingOff) await refreshModalCloneAudioTransport();
   const tally = emptyTally();
   let firstLight: FirstLightReport | null = null;
   const publishState: { error: unknown } = { error: null };
