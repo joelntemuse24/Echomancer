@@ -235,14 +235,32 @@ def test_digital_silence_is_rejected_whatever_the_container(container):
 
 
 def test_a_truncated_mp3_reports_the_container():
-    """A truncated upload must be a named 422, not a decoder traceback."""
-    # Cut inside the first frame, so there is not one complete MPEG frame.
-    truncated = _encode("mp3", 3.0)[:300]
+    """A truncated upload must be a named 422, not a decoder traceback.
+
+    The cut is deliberately tiny: **no complete MPEG frame fits**, so every
+    ffmpeg build must fail. 300 bytes looked like "inside the first frame" but
+    ffmpeg 7 (Ubuntu 24.04, what CI runs) decodes that happily while ffmpeg 6
+    refuses it — the test then failed only in CI, for a reason that had nothing
+    to do with the code under test.
+    """
+    truncated = _encode("mp3", 3.0)[:120]
     with pytest.raises(ReferenceClipError) as err:
         decode_reference_samples(truncated)
     message = str(err.value)
     assert "mp3" in message, message
     assert "metadata_errors" not in message
+
+
+def test_a_short_but_decodable_clip_still_reaches_the_size_rule():
+    """A clip a lenient decoder accepts is not silently treated as usable.
+
+    The size floor is what protects a book from a 0.05 s reference, and it must
+    apply whether or not the local ffmpeg happened to decode the truncation.
+    """
+    short = _encode("mp3", 0.05)
+    with pytest.raises(ReferenceClipError) as err:
+        validate_reference_audio(short)
+    assert "short" in str(err.value).lower() or "bytes" in str(err.value).lower()
 
 
 def test_a_missing_ffmpeg_is_a_named_error(encoded):
