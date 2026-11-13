@@ -35,6 +35,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { createHash, createHmac } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -117,6 +118,9 @@ const singleUrl = endpoint(
   "MODAL_S2_SYNTHESIZE_URL"
 );
 const token = (process.env.MODAL_S2_TOKEN || "").trim();
+// One job id for every lane: the worker validates a take key against the job
+// it asked for, so a per-lane id would not match what a real call looks like.
+const SMOKE_JOB_ID = "staging-smoke";
 const lanes = Number(args.get("lanes") || "4");
 const sectionsPerLane = Number(args.get("sections-per-lane") || "2");
 const timeoutMs = Number(args.get("timeout-ms") || "600000");
@@ -263,7 +267,9 @@ async function checkReady() {
     "ready",
     ready,
     body
-      ? `status=${response.status} warm=${body.warm_containers} build=${body.build} lanes=${body.lanes}`
+      ? `status=${response.status} warm=${body.warm_containers} build=${body.build} ` +
+        `lanes=${body.lanes} transport=${body.audio_transport ?? "inline"} ` +
+        `max_rows=${body.max_batch_items ?? "?"} version=${body.version ?? "?"}`
       : `status=${response.status} (non-JSON)`
   );
   return body;
@@ -281,7 +287,10 @@ async function batchCall(reference, laneIndex) {
       reference_audio_base64: reference.audio.toString("base64"),
       reference_text: reference.transcript,
       sampling: "0.9,0.9",
-      job_id: `staging-smoke-${laneIndex}`,
+      // One job id for the whole smoke, so every lane's keys share the prefix
+      // a worker would check (`s2-takes/<job>/...`) and the sweep below finds
+      // them all.
+      job_id: SMOKE_JOB_ID,
       seed_epoch: 0,
     },
   });
@@ -343,10 +352,11 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
   const audioRows = rows.filter((row) => !row.error);
   let decodable = 0;
   let totalSeconds = 0;
+  const unreadable = [];
   for (const row of audioRows) {
-    const b64 = row.audio_b64 || row.audio_base64 || "";
-    const buffer = Buffer.from(b64, "base64");
+    const buffer = rowAudioBuffer(row, laneIndex);
     if (looksLikeMp3(buffer)) decodable += 1;
+    else if (row.storage_key) unreadable.push(row.storage_key);
     totalSeconds += Number(row.duration_s) || 0;
   }
   const truncated = audioRows.reduce(
@@ -354,24 +364,158 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
     0
   );
   const ok =
-    rows.length === items.length && decodable === items.length && truncated === 0;
+    rows.length === items.length &&
+    decodable === items.length &&
+    truncated === 0 &&
+    unreadable.length === 0;
   record(
     `lane ${laneIndex} batch`,
     ok,
     `rows=${rows.length}/${items.length} decodable=${decodable} ` +
       `audio=${totalSeconds.toFixed(1)}s wall=${(wall / 1000).toFixed(1)}s ` +
       `truncated=${truncated} build=${body.build} container=${body.container_id}` +
-      (errors.length ? ` errors=${JSON.stringify(errors.slice(0, 2))}` : "")
+      (errors.length ? ` errors=${JSON.stringify(errors.slice(0, 2))}` : "") +
+      (unreadable.length ? ` unreadable_r2=${unreadable.length}` : "")
   );
   const perf = body.performance;
   if (perf) {
     console.log(
       `      perf: generate=${perf.generate_s}s codec=${perf.codec_s}s ` +
         `encode=${perf.encode_s}s realtime=${perf.generated_realtime_x}x ` +
-        `boot=${body.boot} snapshot_age=${perf.snapshot_age_s}s`
+        `boot=${body.boot} snapshot_age=${perf.snapshot_age_s}s ` +
+        `width=${perf.batch_width ?? "?"} pipeline=${perf.pipeline ?? "?"} ` +
+        `codec_inline=${perf.codec_inline_s ?? "?"}s codec_tail=${perf.codec_tail_s ?? "?"}s ` +
+        `upload=${perf.upload_transport ?? "?"}`
     );
   }
   return { body, decodable, totalSeconds, wall };
+}
+
+/**
+ * The MP3 bytes for one row, from either transport.
+ *
+ * An `inline` build returns `audio_b64`. An `r2` build uploads the MP3 and
+ * returns a `storage_key`, so the bytes are read from R2 with a SigV4 GET. That
+ * read is what proves the object the worker will fetch actually exists and is
+ * an MP3 — a smoke that only checked the key would pass on a broken upload.
+ *
+ * The object is deleted afterwards so staging leaves nothing behind under
+ * `s2-takes/`. R2 credentials are read from the environment and never printed.
+ */
+function rowAudioBuffer(row, laneIndex) {
+  const b64 = row.audio_b64 || row.audio_base64 || "";
+  if (b64) return Buffer.from(b64, "base64");
+  const key = typeof row.storage_key === "string" ? row.storage_key.trim() : "";
+  if (!key) return Buffer.alloc(0);
+  if (!/^s2-takes\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.mp3$/.test(key)) {
+    return Buffer.alloc(0);
+  }
+  const buffer = r2Get(key);
+  r2Delete(key);
+  return buffer || Buffer.alloc(0);
+}
+
+/** R2 credentials for a direct object read, or null when this host has none. */
+function r2Credentials() {
+  const account = (process.env.R2_ACCOUNT_ID || "").trim();
+  const access = (process.env.R2_ACCESS_KEY_ID || "").trim();
+  const secret = (process.env.R2_SECRET_ACCESS_KEY || "").trim();
+  const bucket = (process.env.R2_BUCKET_NAME || "").trim() || "echomancer-audio";
+  if (!account || !access || !secret) return null;
+  return { account, access, secret, bucket };
+}
+
+/**
+ * SigV4 for one object request. Written out rather than imported so this script
+ * stays dependency-free; the algorithms match `modal/s2_audio_store.py`, and a
+ * disagreement shows up as a 403 here rather than as a mystery in a book.
+ */
+function sigv4(method, key, extraHeaders = {}) {
+  const creds = r2Credentials();
+  if (!creds) return null;
+  const moment = new Date();
+  const amzDate = moment.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const host = `${creds.account}.r2.cloudflarestorage.com`;
+  const canonicalUri = `/${creds.bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
+  const payloadHash = createHash("sha256").update("").digest("hex");
+  const headers = {
+    host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate,
+    ...extraHeaders,
+  };
+  const names = Object.keys(headers).sort();
+  const canonicalHeaders = names.map((n) => `${n}:${headers[n]}\n`).join("");
+  const signedHeaders = names.join(";");
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+  const scope = `${dateStamp}/auto/s3/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    createHash("sha256").update(canonicalRequest).digest("hex"),
+  ].join("\n");
+  const sign = (value, message) =>
+    createHmac("sha256", value).update(message).digest();
+  const signing = sign(
+    sign(sign(sign(`AWS4${creds.secret}`, dateStamp), "auto"), "s3"),
+    "aws4_request"
+  );
+  const signature = createHmac("sha256", signing).update(stringToSign).digest("hex");
+  return {
+    url: `https://${host}${canonicalUri}`,
+    headers: {
+      ...headers,
+      Authorization:
+        `AWS4-HMAC-SHA256 Credential=${creds.access}/${scope}, ` +
+        `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+    },
+  };
+}
+
+/** Blocking GET so `rowAudioBuffer` can stay synchronous. Never logs secrets. */
+function r2Get(key) {
+  const signed = sigv4("GET", key);
+  if (!signed) {
+    console.error(
+      "  r2 row returned but R2_* is not set on this host; cannot verify the object"
+    );
+    return null;
+  }
+  const curl = spawnSync(
+    "curl",
+    ["-sS", "--fail", "-H", `Authorization: ${signed.headers.Authorization}`,
+     "-H", `x-amz-content-sha256: ${signed.headers["x-amz-content-sha256"]}`,
+     "-H", `x-amz-date: ${signed.headers["x-amz-date"]}`, signed.url],
+    { maxBuffer: 64 * 1024 * 1024 }
+  );
+  if (curl.status !== 0) {
+    console.error(`  r2 GET failed for ${key.split("/").pop()}: ${curl.status}`);
+    return null;
+  }
+  return curl.stdout;
+}
+
+/** Best-effort DELETE so staging leaves zero orphan objects under `s2-takes/`. */
+function r2Delete(key) {
+  const signed = sigv4("DELETE", key);
+  if (!signed) return;
+  spawnSync(
+    "curl",
+    ["-sS", "-o", "/dev/null", "-X", "DELETE",
+     "-H", `Authorization: ${signed.headers.Authorization}`,
+     "-H", `x-amz-content-sha256: ${signed.headers["x-amz-content-sha256"]}`,
+     "-H", `x-amz-date: ${signed.headers["x-amz-date"]}`, signed.url],
+    { maxBuffer: 1024 * 1024 }
+  );
 }
 
 async function main() {
