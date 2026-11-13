@@ -554,7 +554,6 @@ async function main() {
     .filter((value) => value.length > 0);
 
   const results = [];
-  let failed = false;
   for (const name of requested) {
     const spec = WORKLOADS[Number(name)];
     if (!spec) {
@@ -570,10 +569,7 @@ async function main() {
     }
     const result = await runWorkload(name, spec, reference, ready);
     results.push(result);
-    if (!result.ok) {
-      failed = true;
-      continue;
-    }
+    if (!result.ok) continue;
     // Back-to-back calls reuse the warm container, which is what production
     // does. Pausing here would measure a cold start instead.
     console.log("  (next call immediately, to keep the container warm)");

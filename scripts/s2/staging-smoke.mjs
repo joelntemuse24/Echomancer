@@ -354,7 +354,7 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
   let totalSeconds = 0;
   const unreadable = [];
   for (const row of audioRows) {
-    const buffer = rowAudioBuffer(row, laneIndex);
+    const buffer = rowAudioBuffer(row);
     if (looksLikeMp3(buffer)) decodable += 1;
     else if (row.storage_key) unreadable.push(row.storage_key);
     totalSeconds += Number(row.duration_s) || 0;
@@ -402,7 +402,7 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
  * The object is deleted afterwards so staging leaves nothing behind under
  * `s2-takes/`. R2 credentials are read from the environment and never printed.
  */
-function rowAudioBuffer(row, laneIndex) {
+function rowAudioBuffer(row) {
   const b64 = row.audio_b64 || row.audio_base64 || "";
   if (b64) return Buffer.from(b64, "base64");
   const key = typeof row.storage_key === "string" ? row.storage_key.trim() : "";

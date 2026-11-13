@@ -249,7 +249,9 @@ src/
   test/{harness,setup-env}.ts
 modal/                         # S2-Pro clone service, contract, warm/cover
 scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
-scripts/s2/                    # Staging HTTP smoke (synthetic clip only)
+scripts/s2/                    # Staging smoke, A/B bench, quality compare,
+                               # and staging-env.sh (S2C_ENGINE=v10 on a
+                               # separate app)
 workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
 docker-compose.yml             # Optional Docker path (pm2 is primary)
@@ -1340,6 +1342,64 @@ still use `GET /api/tts/live`.
 
 `CatalogVoice`, `SynthesizeInput/Result`, `TtsProviderAdapter`, `JobSegment`,
 `PriceEstimate`, `JobKind`, `StockProvider`.
+
+### The clone GPU engine (`modal/`), and the `S2C_ENGINE` switch
+
+`S2C_ENGINE` selects which decode path a container runs, and it defaults to
+**`v9`** — the behaviour the deployed app has today. A plain `modal deploy`
+therefore changes nothing about how a book sounds; `v10` is opt-in and is what
+`scripts/s2/staging-env.sh` sets on the staging app.
+
+It is read **at import**, pinned into the container env (`_BUILD_ENV`, hence
+`S2C_BUILD`), and never re-read per request: a snapshot has to be built for the
+exact kernels it will run, so a runtime override that disagreed with the
+snapshot would hand a restored container a path it never compiled.
+
+| v10 change | v9 behaviour (`S2C_ENGINE` unset) | Switch to isolate |
+|---|---|---|
+| Active batch width bucketed to `(1,4,8,16,24,32)` from the parallel unit count | steps `S2B_BATCH` rows, dummies included | `S2B_BUCKET=0` |
+| An idle lane steals a later unit of a section whose unit 0 is done | one unit at a time per section | `S2B_WORK_STEAL=0` |
+| Four coarse, pre-warmed CUDA-graph KV buckets | 128-token rounding (32 shapes, a few warmed) | `S2B_KV_BUCKET` |
+| `_fast_step`: no mask, no `repeat_interleave`, no CPU scalar | upstream `forward_generate_fast` | `S2B_FAST_DECODE=0` |
+| `masked_fill` instead of `torch.where(…, float("-inf"), …)` | upstream `logits_to_probs` | `S2B_FAST_DECODE=0` |
+| Codec decoded per finished section during AR, then encoded and uploaded | all AR, then all codec, then all encode, then all upload | `S2B_PIPELINE_CODEC=0` |
+| `weight_norm` frozen, codec mask cached, micro-batch 16, length-sorted | parametrized convs, mask rebuilt per call, micro-batch 8 | `S2B_CODEC_TUNING=0` |
+| `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
+| Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
+| Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
+
+Why `v9` is the default: the worker and the Modal app ship separately, and the
+app is a ~15-minute snapshot rebuild, so there is always a window where one has
+changed and the other has not. A `modal deploy` with no new env vars must
+reproduce today's audio, and `modal/test_s2_engine_switch.py` asserts it does —
+down to the 128-token KV rounding and the upstream fast-transformer call.
+
+**What is bit-identical and what is not.** Freezing `weight_norm`, caching the
+codec mask, length-sorting the codec micro-batch, `EOS_CHECK_EVERY`, the coarse
+KV buckets and the streaming order change no sample, and each has a test that
+says so (`modal/test_s2_codec_tuning.py`, `modal/test_s2_numerics.py`). The
+fast-transformer rewrite is numerically equal to upstream's step in fp32 —
+asserted against the pinned upstream source, which is how two real bugs were
+found: the fast loop must write fast-KV position 0 from the **slow** hidden
+state (its logits are discarded, but every later codebook step attends it), and
+each fast layer's attention reads its *normalised* input.
+
+**Nothing in the worker's planner changed to assume a speedup.**
+`MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at the measured 528, so a v10
+page is *over*-estimated in wall time until staging measures a real rate. The
+24-row baseline is still what a 32-row page is interpolated toward.
+
+**Rollout order for the worker.** A 32-row page needs `/ready` to report both
+`audio_transport: "r2"` and `max_batch_items >= 32`
+(`modalCloneBatchRowsForTransport`). Against the live v9 container the worker
+plans ≤ 24 inline rows, so a worker deployed first cannot collect
+`422 batch_too_large`. Its R2 reads are bounded-concurrent (`mapPool`, 8) and the
+per-object delete is not awaited, so a page does not spend the warm-hold budget
+on round trips.
+
+Staged A/B procedure, gates and cost: `docs/s2-gpu-staging-runbook.md` §9a. The
+tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
+(gate).
 
 ---
 

@@ -360,6 +360,17 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 
 ### Self-hosted clone (S2-Pro on Modal)
 
+**`S2C_ENGINE` is the decode path, and it defaults to `v9`.** `v9` is the
+behaviour the deployed app has today; `v10` is this branch's speedup work
+(bucketed batch width, unit work-stealing, four coarse pre-warmed KV buckets,
+the rewritten fast-transformer step, streamed codec/encode/R2). A plain
+`modal deploy` therefore changes nothing about how a book sounds. It is read at
+import, pinned into `_BUILD_ENV` and `S2C_BUILD`, and never re-read per request,
+because a snapshot must be built for the kernels it will run.
+`scripts/s2/staging-env.sh` sets `v10` on the staging app only.
+`modal/test_s2_engine_switch.py` asserts the v9 defaults, including the 128-token
+KV rounding and the upstream fast-transformer call.
+
 One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
@@ -599,8 +610,23 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   than the cold-safe cap is **re-packed once, only while nothing has been published**;
   an outline already inside 6,000 is kept. An outline with
   a ready section is kept so published timestamps never move.
-- **A multi-section call that misses its budget is split, not resent.**
-  `job 7e4a8b48` packed 31k characters into one call, aborted it at 150s,
+- **A 32-row page is gated on `/ready`, not on the deploy.** The worker only
+  widens a steady page past 24 rows when `/ready` reports **both**
+  `audio_transport: "r2"` and `max_batch_items >= 32`
+  (`modalCloneBatchRowsForTransport`). Against the live v9 container it plans
+  ≤ 24 inline rows, so a worker deployed before the Modal app cannot collect
+  `422 batch_too_large`. A cold pool reports neither and the last note stands,
+  so a book does not re-plan at half width every time it parks. Within the
+  worker, an `r2` page's object reads are bounded-concurrent (`mapPool`, 8) and
+  the per-object delete is not awaited: an awaited DELETE is a round trip of
+  idle GPU time, and an orphan is swept by the bucket's `s2-takes/` lifecycle
+  rule while a thrown delete would fail a section that is already rendered.
+- **The 33x baseline is still what the planner assumes.** Engine work that has
+  not been measured on a GPU cannot move `MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND`
+  (528). A v10 page is therefore *over*-estimated in wall time, which is the safe
+  direction: `job 7e4a8b48` is what planning on an assumed speedup costs. Calibrate
+  from a staged A/B (`docs/s2-gpu-staging-runbook.md` §9a) with a ~15% margin.
+- **A multi-section call that misses its budget is split, not resent.**  `job 7e4a8b48` packed 31k characters into one call, aborted it at 150s,
   classified it as a cold placement, and resent the same pack on another
   container — twice, while two GPUs rendered the same rows. A pack that did not
   fit is a rate miss, not a restore: dispatch retries **one section** and
@@ -1241,6 +1267,23 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # MODAL_S2_PLACEMENT_BUDGET_MS=360000 # First-light HTTP wait. Floor is the 75s pack abort. Ceiling is 482s (542s proxy minus 60s).
 # MODAL_S2_NARROW_FPS=60 # 1-wide codec fps (~2.8×, ~44 chars/s). Wide batches interpolate up to MODAL_S2_WIDE_FPS.
 # MODAL_S2_WIDE_FPS=190 # 4-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×. A 24-row call uses the 528 chars/s smoke, not this fps.
+# MODAL_S2_BATCH_SIZE= # Explicit rows per call, 1–32. Unset: 32 only after /ready reports r2 AND max_batch_items >= 32, else 24.
+
+# ── Clone engine on the Modal app (deploy-time; baked into S2C_BUILD) ──────
+# S2C_ENGINE=v9 # v9 (default) is the deployed behaviour. v10 is the staged speedup path.
+# S2B_BUCKET= # 0 restores stepping S2B_BATCH rows per call
+# S2B_WORK_STEAL= # 0 restores one unit at a time per section
+# S2B_PIPELINE_CODEC= # 0 restores serial codec → encode → upload
+# S2B_CODEC_TUNING= # 0 keeps weight_norm and rebuilds the codec's causal mask
+# S2B_FAST_DECODE= # 0 calls upstream's fast-transformer step and sampler
+# S2B_EOS_CHECK_EVERY= # host sync interval; v9 used 8, v10 uses 16
+# S2B_DAC_MICRO_BATCH= # codec micro-batch; v9 used 8, v10 uses 16
+# S2B_KV_BUCKET=128 # v9's graph rounding. v10 uses (512, 1024, 2048, 4096)
+# S2B_SDPA_DECODE=1 # OPT-IN folded-GQA SDPA decode attention (measure it)
+# S2B_TOPK_FAST_SAMPLE=1 # OPT-IN top-k-block sampling (same distribution, different rounding)
+# S2C_CPU=8 # worker CPU threads for the encode/upload pools; 4 extra cores < 5% of the H100
+# S2C_APP_NAME=echomancer-s2-clone-staging # a SEPARATE app; never set for a production deploy
+# S2C_HEARTBEAT_DICT=echomancer-s2-clone-heartbeats-staging # its own registry
 
 # ── MiniMax Free API (optional slim test catalog) ───────
 # When both are set: catalog = Storyteller (default) + Gemini Kore only.

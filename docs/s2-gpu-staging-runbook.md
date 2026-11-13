@@ -1130,6 +1130,122 @@ A book that is already `ready` is never re-synthesized by any of these.
 
 ---
 
+## 9a. The v10 engine: staged A/B, and how to promote it
+
+`S2C_ENGINE` selects the decode path. It defaults to **`v9`**, which is
+byte-for-byte the behaviour of the app running today, so a plain `modal deploy`
+changes nothing about how a book sounds. `v10` is the speedup work in this
+branch, and it is only ever switched on deliberately.
+
+`S2C_ENGINE` is read **at deploy time** and pinned into the container env (it is
+in `_BUILD_ENV`, hence in `S2C_BUILD`). A runtime override cannot move a restored
+container onto a decode path its snapshot never compiled.
+
+```bash
+# 1. Staging app, v10 engine. Separate app, separate heartbeat dict.
+source scripts/s2/staging-env.sh          # S2C_APP_NAME=…-staging, S2C_ENGINE=v10
+python3 scripts/s2/check-input-queue.py --app echomancer-s2-clone-staging
+modal deploy modal/s2_clone_service.py
+modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+python3 scripts/s2/set-live-autoscaler.py --app echomancer-s2-clone-staging \
+  --max-containers 1 --scaledown-window 30
+```
+
+**Never** export `S2C_APP_NAME` for a production deploy, and never set
+`S2C_ENGINE=v10` on production until the numbers below exist.
+
+### A matched A/B, not two different jobs
+
+Run this on the **same staging app**, once per build. The corpus, the seed and
+the widths are fixed, so the only variable is the engine.
+
+```bash
+export MODAL_S2_TTS_URL=<synthesize_batch host>
+export MODAL_S2_READY_URL=<ready host>
+export MODAL_S2_TOKEN=…                  # never echo this
+
+# a. the deployed behaviour, recorded as the baseline
+S2C_ENGINE=v9  modal deploy modal/s2_clone_service.py && \
+  modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+node scripts/s2/bench-ab.mjs --record /tmp/s2-ab/before
+
+# b. the candidate
+S2C_ENGINE=v10 modal deploy modal/s2_clone_service.py && \
+  modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+node scripts/s2/bench-ab.mjs --record /tmp/s2-ab/after
+
+# c. latency and audio, side by side. Exits non-zero on a regression.
+npx tsx scripts/s2/qa-compare.ts /tmp/s2-ab/before /tmp/s2-ab/after
+```
+
+`bench-ab.mjs` records wall time, the server's own `performance` breakdown, and
+every section's MP3. `qa-compare.ts` prints per-width throughput and gates on:
+every section present and decodable, no `truncated_units`, duration within ±7%,
+speaker similarity ≥ 0.80, intra-section drift ≥ −0.05, DNSMOS OVRL ≥ 3.0, no
+splice click, and WER < 5% with no repeated or missing 6-word run.
+
+A **placeholder reference tone is not a quality measurement.** Pass
+`--reference-audio <16–20 s public-domain reading>` (with `<path>.txt` beside it)
+for the similarity and WER gates to mean anything. The script says so, and
+`qa-compare.ts` lists every gate it could not run: a run that measured no quality
+must not look like a pass.
+
+### What to expect, and what must be measured
+
+The plan's model is ~45–50x realtime before the AR changes and ~70x+ after, from
+a measured 33x baseline (24 rows, 43,907 characters, 83.18 s). **None of that is
+in the worker's planner yet.** `MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at
+the measured 528, so a page is *over*-estimated in wall time until staging
+replaces it with a number this engine actually produced. Calibrate it, with a
+~15% safety margin, only after the A/B is green.
+
+The two switches that are a measurement rather than a known win are off in v10
+and should be tried on their own:
+
+| Switch | What it changes |
+|---|---|
+| `S2B_SDPA_DECODE=1` | folded-GQA SDPA for the slow decode attention. Wins or loses by KV length; measure at 512/1024/2048/4096 |
+| `S2B_TOPK_FAST_SAMPLE=1` | sample over the top-k block instead of the full vocabulary. Same distribution, different rounding |
+
+And each v10 change can be isolated off, which is what a targeted A/B needs:
+
+| Switch | v9 behaviour it restores |
+|---|---|
+| `S2B_WORK_STEAL=0` | one unit at a time per section |
+| `S2B_BUCKET=0` | step `S2B_BATCH` rows per call |
+| `S2B_PIPELINE_CODEC=0` | serial codec → encode → upload |
+| `S2B_CODEC_TUNING=0` | keep `weight_norm` and rebuild the codec's causal mask |
+| `S2B_FAST_DECODE=0` | call upstream's fast-transformer step and sampler |
+
+### Hard checks before promoting
+
+```bash
+modal app logs echomancer-s2-clone-staging --since 20m \
+  | grep -E 'S2B|S2C|cudagraph|selftest|Snapshot created'
+```
+
+- **zero** `skipping cudagraphs` lines — that is the `arg10_1` CPU-scalar bug
+  this build fixes, and a v10 container that still logs it is not the build you
+  think it is;
+- `[S2B] warm KV buckets: 4 shape(s)` present (v10 warms all four);
+- `[S2B] selftest: {... 'ok': True ...}` present;
+- `/ready` reports `version=10`, `audio_transport=r2`, `max_batch_items=32`;
+- after ~30 s idle, `/ready` returns 503 with `warm_containers: 0`
+  (`min_containers` is still 0).
+
+Then the cold-HTTP proof from §5a: a first `POST /synthesize` after
+scale-to-zero must be **200**, not 500 `CUBLAS_STATUS_ALLOC_FAILED`.
+
+### Order matters for the worker
+
+The worker widens a steady page to 32 rows only once `/ready` reports **both**
+`audio_transport: "r2"` **and** `max_batch_items >= 32`. Against the live v9
+container it plans ≤ 24 inline rows, which is exactly what that container
+accepts. So the worker may be deployed before the Modal app; a worker that
+guessed 32 would collect `422 batch_too_large` on every full page.
+
+---
+
 ## 9. Evidence checklist for the PR
 
 Copy this into the PR description, filled in.

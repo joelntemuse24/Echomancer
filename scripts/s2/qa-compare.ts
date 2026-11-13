@@ -240,7 +240,7 @@ function longRepeatOrDrop(reference: string, hypothesis: string, n = 6): string 
 // ── splice hygiene ─────────────────────────────────────────────────────────
 
 /** Share of 20 ms windows below the silence threshold. */
-function silenceRatio(pcm: Float32Array, seconds: number): number {
+function silenceRatio(pcm: Float32Array): number {
   const win = Math.round(0.02 * REF_RATE);
   if (pcm.length < win) return 0;
   let silent = 0;
@@ -459,7 +459,7 @@ async function main(): Promise<void> {
       if (edge && !sample.includes(edge)) sample.push(edge);
     }
 
-    let dnsmosSum = { sig: 0, bak: 0, ovrl: 0, n: 0 };
+    const dnsmosSum = { sig: 0, bak: 0, ovrl: 0, n: 0 };
     for (const row of sample) {
       const path = join(candidateDir, after.name, row.file!);
       const take = decodeAudio(path, REF_RATE);
@@ -492,7 +492,7 @@ async function main(): Promise<void> {
           dnsmosSum.n += 1;
         }
       }
-      const ratio = silenceRatio(take.pcm, take.seconds);
+      const ratio = silenceRatio(take.pcm);
       if (!silenceWorst || Math.abs(ratio - 20) > Math.abs(silenceWorst.ratio - 20)) {
         silenceWorst = { key: row.key, ratio };
       }

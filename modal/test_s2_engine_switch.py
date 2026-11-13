@@ -21,7 +21,32 @@ case imports the module fresh through the `engine` fixture.
 
 from __future__ import annotations
 
+import importlib
+import os
+import sys
+
 import pytest
+
+MODAL_DIR = __import__("pathlib").Path(__file__).parent
+
+
+@pytest.fixture(scope="module")
+def service():
+    """The service module imported against the shared stubs (v9 default)."""
+    from test_s2_service_import import Recorder, _install_stubs
+
+    recorder = Recorder()
+    _install_stubs(recorder)
+    sys.path.insert(0, str(MODAL_DIR))
+    for name in ("s2_contract", "s2_batch", "s2_mastering", "s2_clone_service"):
+        sys.modules.pop(name, None)
+    os.environ.pop("S2C_ENGINE", None)
+    module = importlib.import_module("s2_clone_service")
+    module._recorder = recorder  # type: ignore[attr-defined]
+    yield module
+    for name in ("s2_batch", "s2_clone_service"):
+        sys.modules.pop(name, None)
+    sys.path.remove(str(MODAL_DIR))
 
 
 # ── the deployed default ───────────────────────────────────────────────────
@@ -138,3 +163,45 @@ def test_an_individual_switch_can_be_turned_back_off_under_v10(engine, monkeypat
     assert module.ENGINE == "v10"
     assert module.WORK_STEAL is False
     assert module.BUCKET_BATCH is True
+
+
+# ── the deploy surface ─────────────────────────────────────────────────────
+
+
+def test_the_engine_is_pinned_into_the_container_env(service):
+    """A snapshot must be built for exactly the kernels it will run.
+
+    Reading `S2C_ENGINE` from the ambient environment at request time would let a
+    restored container run a decode path it never compiled. Pinning it into
+    `_BUILD_ENV` applies the same value to the GPU class and the CPU probe, so
+    `/ready` describes the engine the containers are actually running.
+    """
+    assert "S2C_ENGINE" in service._BUILD_ENV
+    assert service._BUILD_ENV["S2C_ENGINE"] in ("v9", "v10")
+
+
+def test_the_engine_is_part_of_the_build_fingerprint(service):
+    """Two engines must not share a build id, or a stale one looks current."""
+    from s2_contract import snapshot_fingerprint
+
+    common = {"app": "a", "version": "10", "gpu": "H100!", "batch": 32}
+    old = snapshot_fingerprint({**common, "engine": "v9"})
+    new = snapshot_fingerprint({**common, "engine": "v10"})
+    assert old != new
+
+
+def test_the_recipe_reports_what_audio_settings_it_renders_with(service):
+    """`/ready`'s recipe is how a stored take is traced to its settings."""
+    assert service._RECIPE["history"] == "first"
+    assert service._RECIPE["unit_max_chars"] == service.UNIT_MAX_CHARS
+
+
+def test_the_production_app_name_is_unchanged_by_default(service):
+    """Staging must be opt-in; a plain deploy still targets production."""
+    import os
+
+    assert service.APP_NAME == os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
+    # And the heartbeat registry follows the app, so the two cannot disagree.
+    assert service.HEARTBEAT_DICT_NAME == os.environ.get(
+        "S2C_HEARTBEAT_DICT", f"{service.APP_NAME}-heartbeats"
+    )

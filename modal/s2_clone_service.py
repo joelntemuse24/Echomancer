@@ -225,6 +225,13 @@ _BUILD_ENV = {
     # Both the GPU class and the CPU probe resolve the registry from this, so a
     # staging deploy cannot read production's heartbeats.
     "S2C_HEARTBEAT_DICT": HEARTBEAT_DICT_NAME,
+    # The engine is pinned into the container, not read from the ambient
+    # environment at request time. Two reasons: a snapshot has to be built for
+    # exactly the kernels it will run, and a runtime override that disagreed with
+    # the snapshot would hand a restored container a decode path it never
+    # compiled. `_BUILD_ENV` is applied to both the GPU class and the CPU probe,
+    # so `/ready` describes the engine the containers are actually running.
+    "S2C_ENGINE": ENGINE,
 }
 
 
