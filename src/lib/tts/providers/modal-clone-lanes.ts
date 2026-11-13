@@ -420,9 +420,22 @@ export const MODAL_CLONE_WIDE_FPS_DEFAULT = 190;
  * 24-row smoke, 2026-11-11: 528 characters per wall second of generation,
  * about 33× at 15.85 characters per audio second. Not applied to a 4-row
  * call. That measurement was ~9.2×.
+ *
+ * Deliberately unchanged by this build. The engine work (overlapped codec and
+ * upload, bucketed width, work-stealing, batched prefill, decode-graph fixes)
+ * is expected to raise this number, but nothing here has been measured on a
+ * GPU yet, and planning a call on an assumed speedup is how `job 7e4a8b48`
+ * ended up with a 31k-character pack it could not finish. 528 is the number
+ * the deployed build actually produced, so a call planned at 32 rows is
+ * *over*-estimated in wall time until staging replaces this constant with a
+ * measured value (see `docs/s2-gpu-staging-runbook.md`).
  */
 export const MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND = 528;
-/** Width the full-batch smoke was measured at. Wider calls use the same rate. */
+/**
+ * Width the full-batch smoke was measured at (24). A 32-row page is planned at
+ * the same per-character rate and interpolated from the 4-row anchor, so a
+ * wider page is never planned faster than a measured one.
+ */
 export const MODAL_CLONE_FULL_BATCH_ROWS = 24;
 
 /**
