@@ -257,10 +257,10 @@ gpu_image = (
 def _upstream_sampler():
     """Upstream's `logits_to_probs`, resolved on first use.
 
-    It is imported inside `gpu_image.imports()`, which only executes in the GPU
-    image. Resolving it lazily means a bare `NameError: logits_to_probs` cannot
-    be what a v9 container reports if that block ever fails to run: the failure
-    names the missing dependency instead.
+    Imported here rather than in `gpu_image.imports()` so the v9 sampler has one
+    binding, and a failure names the dependency instead of raising a bare
+    `NameError: logits_to_probs` from a traced function. The import is cheap
+    after the first call (the module is cached).
     """
     import fish_speech.models.text2semantic.inference as upstream
 
@@ -271,7 +271,6 @@ with gpu_image.imports():
     import torch
     import torch.nn.functional as F
     from fish_speech.models.text2semantic.inference import (
-        logits_to_probs,
         multinomial_sample_one_no_sync,
     )
 

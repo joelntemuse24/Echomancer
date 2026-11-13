@@ -239,6 +239,19 @@ def test_one_app_name_rule_for_every_entry_point(service):
             {"S2C_APP_NAME": "other", "S2C_ALLOW_PRODUCTION": "1"},
             "other",
         ),
+        # The legacy variable goes through the same rule, so a script that only
+        # sets it cannot reach production without the opt-in either.
+        ({"MODAL_S2_APP_NAME": PRODUCTION_APP_NAME}, STAGING_APP_NAME),
+        (
+            {"MODAL_S2_APP_NAME": PRODUCTION_APP_NAME, "S2C_ALLOW_PRODUCTION": "1"},
+            PRODUCTION_APP_NAME,
+        ),
+        ({"MODAL_S2_APP_NAME": "legacy-stage"}, "legacy-stage"),
+        # `S2C_APP_NAME` wins over the legacy variable when both are set.
+        (
+            {"S2C_APP_NAME": "newer", "MODAL_S2_APP_NAME": "older"},
+            "newer",
+        ),
     ]
     for env, expected in cases:
         assert resolve_app_name(env) == expected, (env, expected)

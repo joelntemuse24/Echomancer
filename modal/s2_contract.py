@@ -1180,18 +1180,25 @@ def resolve_app_name(env) -> str:
     so a branch under review must not be able to do that to production by
     accident. Hence:
 
-    * `S2C_ALLOW_PRODUCTION=1` **and** no staging name: production. The opt-in is
-      required even when `S2C_APP_NAME` spells production out, because typing a
-      name is not a decision about snapshots — and a checked-out branch's deploy
-      command is often copy-pasted from a doc.
-    * `S2C_APP_NAME=<anything else>`: that app.
-    * nothing set: `echomancer-s2-clone-staging`.
+    * `S2C_APP_NAME=echomancer-s2-clone` **with** `S2C_ALLOW_PRODUCTION=1`:
+      production. The opt-in is required even when the name is spelled out,
+      because typing a name is not a decision about snapshots — and a branch's
+      deploy command is often copy-pasted from a doc.
+    * `S2C_APP_NAME=<any other name>`: that app, whatever the opt-in says.
+    * nothing set, opt-in set: production.
+    * nothing set otherwise: `echomancer-s2-clone-staging`.
+
+    `MODAL_S2_APP_NAME` is read as a fallback for `S2C_APP_NAME` and passes
+    through the same rule, so an older script that sets only that cannot reach
+    production without the opt-in either.
 
     The staging default is not a fallback for a typo; it is the safe target. A
     mistyped variable deploys a new throwaway app rather than replacing the live
     pool's snapshots.
     """
-    explicit = str(env.get("S2C_APP_NAME") or "").strip()
+    explicit = str(
+        env.get("S2C_APP_NAME") or env.get("MODAL_S2_APP_NAME") or ""
+    ).strip()
     opted_in = str(env.get("S2C_ALLOW_PRODUCTION") or "").strip().lower() in _PRODUCTION_OPT_IN
     if explicit == PRODUCTION_APP_NAME:
         if opted_in:
