@@ -54,6 +54,69 @@ def _fish_source():
     return None
 
 
+def _names_called_after_v9_fallback(fn) -> set[str]:
+    """Function names the v10 statements call, excluding the v9 guard branch.
+
+    Needed because `if not FAST_DECODE:` is where upstream's
+    `logits_to_probs` is legitimately called, and the method's own name is also
+    `_logits_to_probs`. Walking the whole method would match both.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    node = tree.body[0]
+    node.body = [
+        statement
+        for statement in node.body
+        if not (
+            isinstance(statement, ast.If)
+            and isinstance(statement.test, ast.UnaryOp)
+            and isinstance(statement.test.op, ast.Not)
+        )
+    ]
+    names: set[str] = set()
+    for statement in node.body:
+        for child in ast.walk(statement):
+            if isinstance(child, ast.Call):
+                if isinstance(child.func, ast.Name):
+                    names.add(child.func.id)
+                elif isinstance(child.func, ast.Attribute):
+                    names.add(child.func.attr)
+    return names
+
+
+def _body_after_v9_fallback(fn) -> str:
+    """The v10 statements of a method, with its `if not FAST_DECODE` branch gone.
+
+    Both engines share one method so the deployed path has no second
+    implementation to drift. These tests are about the v10 half, so the guard is
+    removed by AST rather than by string search — `ast.unparse` puts a one-line
+    `if` and its `return` on the same line.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    node = tree.body[0]
+    node.body = [
+        statement
+        for statement in node.body
+        if not (
+            isinstance(statement, ast.If)
+            and isinstance(statement.test, ast.UnaryOp)
+            and isinstance(statement.test.op, ast.Not)
+        )
+    ]
+    if node.body and isinstance(node.body[0], ast.Expr) and isinstance(
+        node.body[0].value, ast.Constant
+    ):
+        node.body = node.body[1:]
+    return ast.unparse(tree)
+
+
 def _code_only(fn) -> str:
     """Source of `fn` with its docstring removed.
 
@@ -75,10 +138,20 @@ def _code_only(fn) -> str:
 
 @pytest.fixture(scope="module")
 def batch_module():
+    """`s2_batch` imported for the v10 engine.
+
+    The fast step, the tensor-only sampling mask and the coarse KV buckets are
+    all v10 behaviour, so the module must be imported with that engine selected
+    (it reads its switches once, at import, for the snapshot).
+    """
+    import os
+
     from test_s2_unit_assembly import _install_stubs
 
+    os.environ["S2C_ENGINE"] = "v10"
     sys.path.insert(0, str(MODAL_DIR))
     _install_stubs()
+    sys.modules.pop("s2_batch", None)
     module = importlib.import_module("s2_batch")
     # `gpu_image.imports()` binds these inside the container; a stub image does
     # not, so bind them here to exercise the real sampling code instead of
@@ -89,7 +162,9 @@ def batch_module():
             "multinomial_sample_one_no_sync"
         ]
     yield module
+    sys.modules.pop("s2_batch", None)
     sys.path.remove(str(MODAL_DIR))
+    os.environ.pop("S2C_ENGINE", None)
 
 
 def _upstream_inference_functions() -> dict:
@@ -411,12 +486,16 @@ def test_fast_step_writes_the_slow_hidden_into_position_zero(batch_module, fast_
         "steps attend it"
     )
 
+
+def test_fast_step_does_not_rebuild_a_cpu_mask(batch_module):
     """The mask was a CPU tensor copied to the GPU 40 times per decode step."""
-    source = _code_only(batch_module._BatchEngine._fast_step)
-    assert "make_window_limited_mask" not in source
-    assert "forward_generate_fast" not in source
-    assert "repeat_interleave" not in source
-    assert "dropout" not in source
+    # The v9 fallback calls upstream's method on purpose, so the v10 body is
+    # taken as "everything after that one guard" rather than by text search.
+    v10 = _body_after_v9_fallback(batch_module._BatchEngine._fast_step)
+    assert "make_window_limited_mask" not in v10
+    assert "forward_generate_fast" not in v10
+    assert "repeat_interleave" not in v10
+    assert "dropout" not in v10
 
 
 # ── 3. sampling ───────────────────────────────────────────────────────────
@@ -486,16 +565,24 @@ def test_the_topk_fast_path_samples_the_same_distribution(batch_module):
 def test_sampling_does_not_depend_on_a_container_only_binding(batch_module):
     """The masking is written in `s2_batch`, not imported from the GPU image.
 
-    `gpu_image.imports()` only runs inside a container. A decode path that
-    needed a name from there would fail off-GPU, which is exactly where the
+    `gpu_image.imports()` only runs inside a container, so a v10 decode path
+    that needed a name from there would fail off-GPU — exactly where the
     distribution check above has to run.
-    """
-    import inspect
 
-    source = inspect.getsource(batch_module._BatchEngine._logits_to_probs)
-    assert "masked_fill" in source
-    assert "logits_to_probs(\n" not in source, (
-        "the sampling path must not call a name bound only inside the GPU image's "
+    Checked on the AST, not on source text: `ast.unparse` (and a docstring that
+    names the upstream function) make substring tests match prose and
+    identifiers rather than calls.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    called = _names_called_after_v9_fallback(
+        batch_module._BatchEngine._logits_to_probs
+    )
+    assert "masked_fill" in called, "the v10 body must mask with a tensor op"
+    assert "logits_to_probs" not in called, (
+        "the v10 body must not call a name bound only inside the GPU image's "
         "`gpu_image.imports()` block"
     )
 

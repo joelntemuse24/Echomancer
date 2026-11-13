@@ -102,19 +102,73 @@ MAX_SEQ_LEN = int(os.environ.get("S2B_MAX_SEQ_LEN", "4096"))
 # They need repeated shapes, so the attended KV length is rounded up to a
 # bucket. `warm_up` records every bucket, so a customer call never records one.
 CUDAGRAPHS = os.environ.get("S2B_CUDAGRAPHS", "1") == "1"
-KV_BUCKETS = (512, 1024, 2048, 4096)
+
+
+def _engine_choice(env) -> str:
+    """`v9` (the deployed behaviour) or `v10` (this build's decode path).
+
+    The default is **v9**, and that is the whole production safety story: the
+    Modal app and the worker ship separately, and a `modal deploy` with no new
+    environment variable must keep behaving exactly as the app running today
+    does. Staging sets `S2C_ENGINE=v10`; production inherits it only when an
+    operator has run the staging A/B and decided to.
+
+    Unrecognised values fall back to v9 rather than guessing. A typo must not
+    silently change how a book sounds.
+    """
+    raw = str(env.get("S2C_ENGINE", "v9")).strip().lower()
+    if raw in ("v10", "new", "on", "1", "true"):
+        return "v10"
+    return "v9"
+
+
+#: Which decode path this container runs. See `_engine_choice`.
+ENGINE = _engine_choice(os.environ)
+#: True for the build that this branch introduces. Every default below reads
+#: from it, so `S2C_ENGINE` alone is a complete rollback.
+NEW_ENGINE = ENGINE == "v10"
+
+def kv_buckets(env) -> tuple[int, ...]:
+    """KV-length buckets the decode graph is rounded up to.
+
+    v10: four coarse buckets, all recorded during the snapshot. With the v9
+    128-token bucket there are 32 shapes and `warm_up` only exercised the first,
+    so a customer's longer prompt recorded a graph mid-request.
+
+    v9 keeps the old 128-token rounding **bit-identically**, because the bucket
+    only controls how many keys are attended and masked — the attention result
+    is the same either way, so this is not an audio change, it is a graph-count
+    change. The v9 shape is what the deployed app does and must keep doing.
+    """
+    if NEW_ENGINE:
+        return (512, 1024, 2048, 4096)
+    raw = str(env.get("S2B_KV_BUCKET", "128")).strip()
+    try:
+        bucket = int(raw)
+    except (TypeError, ValueError):
+        bucket = 128
+    return (max(16, bucket),)
+
+
+#: Default buckets for this engine. `choose_kv_len` takes the list as an
+#: argument so a test can exercise both shapes without reloading the module.
+
+#: Default buckets for this engine. `choose_kv_len` takes the list as an
+#: argument so a test can exercise both shapes without reloading the module.
+KV_BUCKETS = kv_buckets(os.environ)
+
 #: Widths the active batch is rounded up to. A 17-unit call runs 24 rows, not
 #: 32: the eight idle rows would each read their own KV slice and take part in
 #: the full-vocabulary sort, and contribute nothing.
 BATCH_BUCKETS = (1, 4, 8, 16, 24, 32)
-#: 0 disables bucketing (every call runs `BATCH` rows, as before).
-BUCKET_BATCH = os.environ.get("S2B_BUCKET", "1") == "1"
+#: 0 disables bucketing (every call runs `BATCH` rows, as v9 does).
+BUCKET_BATCH = os.environ.get("S2B_BUCKET", "1" if NEW_ENGINE else "0") == "1"
 #: 1 lets an idle lane take a later unit of a section whose unit 0 is done.
-WORK_STEAL = os.environ.get("S2B_WORK_STEAL", "1") == "1"
+WORK_STEAL = os.environ.get("S2B_WORK_STEAL", "1" if NEW_ENGINE else "0") == "1"
 #: Decode steps between host synchronisations. A finished row idles at most
 #: this many steps, and the tail frames past `<|im_end|>` are sliced off in
 #: `finish`, so a larger interval changes no audio — only the sync count.
-EOS_CHECK_EVERY = int(os.environ.get("S2B_EOS_CHECK_EVERY", "16"))
+EOS_CHECK_EVERY = int(os.environ.get("S2B_EOS_CHECK_EVERY", "16" if NEW_ENGINE else "8"))
 #: Folded-GQA SDPA for the slow decode attention. Opt-in: the compiled
 #: handwritten path may win at short KV lengths, so staging decides.
 SDPA_DECODE = os.environ.get("S2B_SDPA_DECODE", "0") == "1"
@@ -123,9 +177,13 @@ SDPA_DECODE = os.environ.get("S2B_SDPA_DECODE", "0") == "1"
 TOPK_FAST_SAMPLE = os.environ.get("S2B_TOPK_FAST_SAMPLE", "0") == "1"
 #: Codec micro-batch. The codec is causal, so right-padding a length-sorted
 #: group produces the same samples with less padding work.
-DAC_MICRO_BATCH = int(os.environ.get("S2B_DAC_MICRO_BATCH", "16"))
+DAC_MICRO_BATCH = int(os.environ.get("S2B_DAC_MICRO_BATCH", "16" if NEW_ENGINE else "8"))
 #: Decode a finished section on a side stream while other rows keep generating.
-PIPELINE_CODEC = os.environ.get("S2B_PIPELINE_CODEC", "1") == "1"
+PIPELINE_CODEC = os.environ.get("S2B_PIPELINE_CODEC", "1" if NEW_ENGINE else "0") == "1"
+#: Freeze `weight_norm` and cache the codec's causal mask (bit-identical).
+CODEC_TUNING = os.environ.get("S2B_CODEC_TUNING", "1" if NEW_ENGINE else "0") == "1"
+#: The rewritten fast-transformer step and tensor-only sampling mask.
+FAST_DECODE = os.environ.get("S2B_FAST_DECODE", "1" if NEW_ENGINE else "0") == "1"
 #: Units a side-stream codec launch waits for while generation still has work,
 #: and the active-row count below which the tail has bandwidth to spare.
 CODEC_MIN_UNITS = 16
@@ -354,7 +412,7 @@ def _tune_decoder(decoder, device) -> dict:
     Both are opt-out (`S2B_CODEC_TUNING=0`) so staging can isolate them.
     """
     stats = {"weight_norm_removed": 0, "skipped": ""}
-    if os.environ.get("S2B_CODEC_TUNING", "1") != "1":
+    if not CODEC_TUNING:
         stats["skipped"] = "S2B_CODEC_TUNING=0"
         return stats
     try:
@@ -511,7 +569,10 @@ class _BatchEngine:
         self.codec_stream = torch.cuda.Stream()
         decoder_tuning = _tune_decoder(self.decoder, self.device)
         self.mask_cache = _MaskCache(self.device)
-        decoder_tuning["masks_cached"] = self.mask_cache.install(self.decoder)
+        if CODEC_TUNING:
+            decoder_tuning["masks_cached"] = self.mask_cache.install(self.decoder)
+        else:
+            decoder_tuning["masks_cached"] = 0
 
         if CUDAGRAPHS:
             # At most `len(KV_BUCKETS)` shapes, each recorded once.
@@ -671,7 +732,16 @@ class _BatchEngine:
         below k is removed by the top-k mask in both paths, and the partition
         function is computed over the whole row. It rounds differently, so it
         is off unless staging measures a win.
+
+        `S2B_FAST_DECODE=0` (v9) calls upstream's function, whose scalar
+        `torch.where` is what made inductor skip CUDA graphs. Keeping the call
+        reachable is what makes "deploy with no new env vars behaves exactly as
+        before" a code fact rather than a claim.
         """
+        if not FAST_DECODE:
+            return logits_to_probs(
+                logits, temperature=temperature, top_p=top_p, top_k=self.top_k
+            )
         if TOPK_FAST_SAMPLE:
             top_vals, top_idx = torch.topk(
                 logits, k=min(self.top_k, logits.shape[-1]), dim=-1, sorted=True
@@ -713,8 +783,15 @@ class _BatchEngine:
         row is at the same position**. Keys `0..step` are then all valid for
         every row: no mask, no bias, no dropout, and the KV prefix is sliced to
         exactly its valid length.
+
+        `S2B_FAST_DECODE=0` (the v9 default) calls upstream's method instead, so
+        the deployed behaviour is reachable from the same code without a second
+        implementation to keep in sync.
         """
-        cfg = self.cfg
+        if not FAST_DECODE:
+            return self.model.forward_generate_fast(
+                h, torch.tensor([step], device=self.device, dtype=torch.long)
+            )
         m = self.model
         for layer in m.fast_layers:
             attn = layer.attention
@@ -1314,7 +1391,7 @@ class _BatchEngine:
             shapes = 0
             started = time.time()
             with torch.inference_mode():
-                for kv_len in KV_BUCKETS:
+                for kv_len in _warm_shape_list(KV_BUCKETS, MAX_SEQ_LEN):
                     pos = torch.full(
                         (width,), min(kv_len - 1, MAX_SEQ_LEN - 1),
                         dtype=torch.long, device=self.device,
@@ -1323,7 +1400,7 @@ class _BatchEngine:
                         torch.compiler.cudagraph_mark_step_begin()
                     self.step(x, pos, min(kv_len, MAX_SEQ_LEN), prev, temp, topp).clone()
                     shapes += 1
-            torch.cuda.synchronize()
+            _cuda_synchronize()
             self.selftest_stats["decode_graphs"] = shapes
             print(
                 f"[S2B] warm KV buckets: {shapes} shape(s) in "
@@ -1419,6 +1496,23 @@ class _BatchEngine:
 CODEC_PROBE_FRAMES = 4
 
 
+def _warm_shape_list(buckets: tuple[int, ...], max_seq_len: int) -> tuple[int, ...]:
+    """KV lengths a warm-up must record so no customer call records a graph.
+
+    v10's four coarse buckets are all needed. v9's 128-token rounding has 32
+    possible values, which was never affordable inside a snapshot — the deployed
+    build warms the first few and pays for the rest on a request, which is part
+    of what this branch fixes. Warming the same handful keeps the v9 path
+    identical rather than quietly changing its snapshot build time.
+    """
+    if buckets == kv_buckets({"S2C_ENGINE": "v10"}):
+        return buckets
+    bucket = buckets[-1]
+    return tuple(
+        min(max_seq_len, bucket * n) for n in range(1, min(4, max_seq_len // bucket) + 1)
+    )
+
+
 def choose_batch_width(
     slots: list,
     *,
@@ -1463,15 +1557,29 @@ def choose_batch_width(
     return max(1, capacity)
 
 
-def choose_kv_len(max_pos: int) -> int:
-    """Round the attended prefix up to a warmed bucket.
+def choose_kv_len(max_pos: int, buckets: tuple[int, ...] | None = None) -> int:
+    """Round the attended prefix up to a warmed graph bucket.
 
-    `KV_BUCKETS` is coarse on purpose. With 128-token buckets a warm-up that
-    only exercised `<= 512` left 27 of 32 shapes to be recorded on a customer's
-    call, during a request. Four buckets can all be recorded in the snapshot.
+    v10 uses four coarse buckets on purpose. With 128-token buckets a warm-up
+    that only exercised `<= 512` left 27 of 32 shapes to be recorded on a
+    customer's call, during a request. Four buckets can all be recorded in the
+    snapshot.
+
+    v9 keeps the deployed 128-token rounding: the next multiple of 128. Because
+    the extra attended columns are excluded by `key_mask`, attending a longer
+    masked prefix computes the same attention — so this can differ between
+    engines without changing a sample.
+
+    `buckets` lets a caller (or a test) supply its own set. With one value it
+    behaves as v9's multiple-of-N rounding; with several it picks the smallest
+    that covers the prefix, which is what a coarse set means.
     """
+    list_ = tuple(buckets) if buckets is not None else KV_BUCKETS
     needed = int(max_pos) + 1
-    for bucket in KV_BUCKETS:
+    if len(list_) == 1:
+        step = max(1, list_[0])
+        return min(MAX_SEQ_LEN, -(-needed // step) * step)
+    for bucket in list_:
         if bucket >= needed:
             return min(bucket, MAX_SEQ_LEN)
     return MAX_SEQ_LEN

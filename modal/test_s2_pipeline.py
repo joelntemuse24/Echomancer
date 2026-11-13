@@ -21,6 +21,7 @@ real binary instead of mocking it — a mock could not prove byte equality.
 from __future__ import annotations
 
 import importlib
+import os
 import shutil
 import subprocess
 import sys
@@ -45,14 +46,22 @@ def service():
     sys.path.insert(0, str(MODAL_DIR))
     for name in ("s2_contract", "s2_batch", "s2_mastering", "s2_clone_service"):
         sys.modules.pop(name, None)
+    # The pipelined service is v10 behaviour, so import it with that engine
+    # selected. `S2C_ENGINE` is read at import because it is part of what a GPU
+    # snapshot is built for.
+    os.environ["S2C_ENGINE"] = "v10"
     module = importlib.import_module("s2_clone_service")
     module._recorder = recorder  # type: ignore[attr-defined]
     yield module
+    for name in ("s2_batch", "s2_clone_service"):
+        sys.modules.pop(name, None)
     sys.path.remove(str(MODAL_DIR))
+    os.environ.pop("S2C_ENGINE", None)
 
 
 @pytest.fixture(scope="module")
 def batch_module(service):
+    """The engine this suite is about: v10, whose pipeline it exercises."""
     return importlib.import_module("s2_batch")
 
 

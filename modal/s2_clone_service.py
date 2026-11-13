@@ -78,8 +78,11 @@ from fastapi import Request
 from s2_batch import (
     BATCH,
     BUCKET_BATCH,
+    CODEC_TUNING,
     DAC_MICRO_BATCH,
+    ENGINE,
     EOS_CHECK_EVERY,
+    FAST_DECODE,
     GPU,
     KV_BUCKETS,
     MAX_NEW_FRAMES,
@@ -201,7 +204,10 @@ _BUILD_ENV = {
             # How the decode runs. These change which kernels, CUDA-graph
             # shapes and streams a container owns, so a snapshot built with
             # different values is a different engine.
+            "engine": ENGINE,
             "batch_max": BATCH,
+            "fast_decode": int(FAST_DECODE),
+            "codec_tuning": int(CODEC_TUNING),
             "kv_buckets": "-".join(str(v) for v in KV_BUCKETS),
             "bucket_batch": int(BUCKET_BATCH),
             "work_steal": int(WORK_STEAL),
@@ -875,8 +881,9 @@ class S2CloneWorker:
         #
         # `on_section` is called with plain `np.ndarray`s on the GPU thread, so
         # nothing outside that thread ever touches a CUDA handle — the rule the
-        # restored snapshot requires. `S2C_PIPELINE_CODEC=0` restores the serial
-        # order exactly, for an A/B on staging.
+        # restored snapshot requires. `S2B_PIPELINE_CODEC=0` (the v9 default)
+        # restores the serial order exactly, which is what makes a plain deploy
+        # behave as the app does today.
         call_id = uuid.uuid4().hex
         job_id = str(payload.get("job_id") or "")
         sample_rate = self.engine.sample_rate
@@ -963,6 +970,9 @@ class S2CloneWorker:
                     stats.get("truncated_units") or 0
                 )
             generated_at = time.time()
+            # The serial path (v9) streams nothing, so every section lands here.
+            # In v10 this only fires for a section the streaming callback did not
+            # deliver, which must never cost the book a section.
             missing = [s for s in range(len(slots)) if s not in audio_by_section]
             if missing:
                 # Safety net, not the normal path: an engine that returned

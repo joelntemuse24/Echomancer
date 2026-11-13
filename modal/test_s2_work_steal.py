@@ -18,6 +18,7 @@ CPU with no GPU, no torch and no Modal.
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 
 import pytest
@@ -27,13 +28,23 @@ MODAL_DIR = __import__("pathlib").Path(__file__).parent
 
 @pytest.fixture(scope="module")
 def batch_module():
+    """`s2_batch` imported for the v10 engine.
+
+    Bucketing, work-stealing and the coarse KV buckets are v10 behaviour, so the
+    module has to be imported with that engine selected — it reads its switches
+    once, at import, because they are baked into a GPU snapshot.
+    """
     from test_s2_unit_assembly import _install_stubs
 
+    os.environ["S2C_ENGINE"] = "v10"
     sys.path.insert(0, str(MODAL_DIR))
     _install_stubs()
+    sys.modules.pop("s2_batch", None)
     module = importlib.import_module("s2_batch")
     yield module
+    sys.modules.pop("s2_batch", None)
     sys.path.remove(str(MODAL_DIR))
+    os.environ.pop("S2C_ENGINE", None)
 
 
 class _Codes:
