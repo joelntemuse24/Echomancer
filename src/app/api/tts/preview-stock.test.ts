@@ -24,7 +24,10 @@ describe("stock preview", () => {
     vi.restoreAllMocks();
   });
 
-  it("plays the stored Andrew sample without calling Edge", async () => {
+  it("does not serve Andrew's file for the retired id: a pick lands on Drew", async () => {
+    // Andrew is retired. A stale pick or old client that still says `standard`
+    // is coerced to Drew, and with Drew's endpoint unset there is nothing to
+    // play — an Andrew recording is not substituted for the new narrator.
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -32,13 +35,7 @@ describe("stock preview", () => {
         body: { catalogVoiceId: "standard" },
       })
     );
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toMatch(/audio\/mpeg/);
-    const audio = Buffer.from(await response.arrayBuffer());
-    const recorded = await readFile(
-      path.join(process.cwd(), "public", "voice-previews", "standard.mp3")
-    );
-    expect(audio.equals(recorded)).toBe(true);
+    expect(response.status).toBe(404);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
@@ -65,7 +62,9 @@ describe("stock preview", () => {
     expect(audio.equals(recorded)).toBe(true);
   });
 
-  it("maps an old Randolph preview onto Andrew's recording", async () => {
+  it("maps an old Randolph preview onto Drew, not Andrew", async () => {
+    // Randolph left the pile for Andrew, and Andrew has now left for Drew, so
+    // the two aliases compose. Nothing is synthesized for the retired row.
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -73,12 +72,7 @@ describe("stock preview", () => {
         body: { catalogVoiceId: "randolph-expressive" },
       })
     );
-    expect(response.status).toBe(200);
-    const audio = Buffer.from(await response.arrayBuffer());
-    const recorded = await readFile(
-      path.join(process.cwd(), "public", "voice-previews", "standard.mp3")
-    );
-    expect(audio.equals(recorded)).toBe(true);
+    expect(response.status).toBe(404);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 });
@@ -86,6 +80,15 @@ describe("stock preview", () => {
 describe("voices catalog", () => {
   beforeEach(async () => {
     await resetDatabase();
+    process.env.DREW_ENABLED = "1";
+    process.env.DREW_URL = "https://example.modal.run";
+    process.env.DREW_TOKEN = "token";
+  });
+
+  afterEach(() => {
+    delete process.env.DREW_ENABLED;
+    delete process.env.DREW_URL;
+    delete process.env.DREW_TOKEN;
   });
 
   it("lists each stock voice once and omits an expressive offer", async () => {
@@ -97,17 +100,18 @@ describe("voices catalog", () => {
       voices: { id: string; displayName: string; expressive?: unknown }[];
     };
     expect(body.voices.map((voice) => voice.id)).toEqual([
-      "standard",
+      "drew",
       "echomancer-andrew",
       "ava",
       "libby",
     ]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
-      "Andrew",
+      "Drew",
       "Echomancer Andrew",
       "Ava",
       "Libby",
     ]);
+    expect(body.voices.map((voice) => voice.id)).not.toContain("standard");
     for (const voice of body.voices) {
       expect(voice.expressive).toBeUndefined();
       expect(JSON.stringify(voice)).not.toMatch(/expressive/i);
