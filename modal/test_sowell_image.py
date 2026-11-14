@@ -162,12 +162,14 @@ def test_worker_class_resolves_with_the_declared_fleet() -> None:
     modal.fastapi_endpoint = lambda *a, **k: (lambda fn: fn)
     modal.concurrent = lambda *a, **k: (lambda fn: fn)
     modal.Secret = types.SimpleNamespace(from_name=lambda name: name)
+    prior_modal = sys.modules.get("modal")
     sys.modules["modal"] = modal
 
     # The handler imports `fastapi.Request` at module scope and the response
     # classes inside the call. Only the import-time surface is needed here.
     fastapi = types.ModuleType("fastapi")
     fastapi.Request = object
+    prior_fastapi = sys.modules.get("fastapi")
     sys.modules["fastapi"] = fastapi
 
     sys.path.insert(0, str(ROOT / "modal"))
@@ -177,6 +179,14 @@ def test_worker_class_resolves_with_the_declared_fleet() -> None:
     finally:
         sys.path.remove(str(ROOT / "modal"))
         sys.modules.pop("sowell_worker", None)
+        if prior_fastapi is not None:
+            sys.modules["fastapi"] = prior_fastapi
+        else:
+            sys.modules.pop("fastapi", None)
+        if prior_modal is not None:
+            sys.modules["modal"] = prior_modal
+        else:
+            sys.modules.pop("modal", None)
 
     assert worker.APP_NAME == "echomancer-sowell"
     kwargs = worker.app.cls_kwargs
@@ -271,6 +281,10 @@ def test_bench_app_imports_against_a_fake_modal_client() -> None:
     modal.Volume = _Volume
     modal.enter = lambda *a, **k: (lambda fn: fn)
     modal.method = lambda *a, **k: (lambda fn: fn)
+    # Save the suite's own stub so this file does not leak a narrower `modal`
+    # (or a stub `fastapi`) into the S2 suites.
+    prior_modal = sys.modules.get("modal")
+    prior_bench = sys.modules.get("sowell_bench")
     sys.modules["modal"] = modal
 
     sys.path.insert(0, str(ROOT / "modal"))
@@ -279,6 +293,13 @@ def test_bench_app_imports_against_a_fake_modal_client() -> None:
         bench = importlib.import_module("sowell_bench")
     finally:
         sys.path.remove(str(ROOT / "modal"))
+        sys.modules.pop("sowell_bench", None)
+        if prior_bench is not None:
+            sys.modules["sowell_bench"] = prior_bench
+        if prior_modal is not None:
+            sys.modules["modal"] = prior_modal
+        else:
+            sys.modules.pop("modal", None)
 
     assert bench.APP_NAME == "echomancer-sowell-bench"
     assert bench.app.name == "echomancer-sowell-bench"
