@@ -103,7 +103,7 @@ afterEach(() => {
 });
 
 describe("Kokoro rolling pool", () => {
-  it("keeps six lanes busy over uneven sections and never waits for a pair", async () => {
+  it("keeps sixteen lanes busy over uneven sections and never waits for a pair", async () => {
     await seedKokoroJob();
     // Section 0 is the slow one. A fixed-pair dispatch holds lane 1 idle for
     // its whole duration; a rolling pool claims section 2 as soon as section
@@ -132,10 +132,10 @@ describe("Kokoro rolling pool", () => {
 
     const row = await jobRow(JOB_ID);
     const total = Number(row?.total_sections ?? 0);
-    expect(total).toBeGreaterThanOrEqual(8);
+    expect(total).toBeGreaterThanOrEqual(17);
     expect(fake.calls).toHaveLength(total);
-    // The pool filled the fleet: six renders in flight at once.
-    expect(peak).toBe(6);
+    // The pool filled the fleet: sixteen renders in flight at once.
+    expect(peak).toBe(16);
     // Section 3 started before the slow section 0 returned. With pair
     // batching it could not have.
     expect(startedAt[3]!).toBeLessThan(endedAt[0]!);
@@ -264,7 +264,7 @@ describe("Kokoro rolling pool", () => {
     await seedKokoroJob();
     const held: Array<{ release: () => Promise<void> }> = [];
     const slots = await import("@/lib/tts/provider-slots");
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 16; i++) {
       const slot = await slots.tryAcquireProviderSlot(
         {
           execute: (sql, args) => execute(sql, args),
@@ -272,7 +272,7 @@ describe("Kokoro rolling pool", () => {
         },
         {
           provider: "kokoro",
-          cap: 6,
+          cap: 16,
           ownerToken: "another-worker",
           ttlSeconds: 90,
         }
@@ -324,7 +324,7 @@ describe("Kokoro rolling pool", () => {
     const slots = await import("@/lib/tts/provider-slots");
     // Another worker already holds every Kokoro container.
     const held = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 16; i++) {
       const slot = await slots.tryAcquireProviderSlot(
         {
           execute: (sql, args) => execute(sql, args),
@@ -332,7 +332,7 @@ describe("Kokoro rolling pool", () => {
         },
         {
           provider: "kokoro",
-          cap: 6,
+          cap: 16,
           ownerToken: "another-worker",
           ttlSeconds: 90,
         }
@@ -366,7 +366,7 @@ describe("Kokoro rolling pool", () => {
         execute: (sql, args) => execute(sql, args),
         queryOne: async () => null,
       },
-      { provider: "kokoro", cap: 6, ownerToken: "x", ttlSeconds: 90 }
+      { provider: "kokoro", cap: 16, ownerToken: "x", ttlSeconds: 90 }
     );
     expect(rows).not.toBeNull();
     await held?.release();

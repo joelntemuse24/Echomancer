@@ -119,13 +119,13 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     expect(Number(row?.started_at)).toBe(1_000 + WARM_HOLD_MS);
   });
 
-  it("holds a Kokoro warm for the app's 60s idle window, not five minutes", async () => {
+  it("holds a Kokoro warm for the app's 5s idle window plus the boot, not five minutes", async () => {
     await resetDatabase();
-    // The echomancer-sowell app scales down after 60s. A five-minute hold
-    // would suppress the next legitimate warm for four minutes after the
-    // container was already gone.
+    // The echomancer-sowell app scales down after 5s, so a warmed container
+    // lives about a 20s boot plus that idle. A five-minute hold would
+    // suppress the next legitimate warm long after the container was gone.
     expect(warmHoldMs("kokoro")).toBe(KOKORO_WARM_HOLD_MS);
-    expect(KOKORO_WARM_HOLD_MS).toBe(60_000);
+    expect(KOKORO_WARM_HOLD_MS).toBe(25_000);
     expect(warmHoldMs("cpu")).toBe(WARM_HOLD_MS);
     const first = await claimWarmPool("kokoro", 1_000);
     expect(first.claimed).toBe(true);

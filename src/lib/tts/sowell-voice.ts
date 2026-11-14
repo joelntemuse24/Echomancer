@@ -33,14 +33,14 @@ export const SOWELL_MAX_CHARS = 2000;
 export const SOWELL_PIECE_IN_FLIGHT = 2;
 /**
  * Default lanes for one book. Matches the deployed `max_containers` of the
- * `echomancer-sowell` app (`SOWELL_MAX_CONTAINERS`, also 6).
+ * `echomancer-sowell` app (`SOWELL_MAX_CONTAINERS`, also 16).
  *
- * This is the cap on **one** book. The Modal fleet holds 6 containers, and
+ * This is the cap on **one** book. The Modal fleet holds 16 containers, and
  * the `kokoro` provider-slot rows are the cross-process share of them, so
- * several books from different users cannot open more than six concurrent
+ * several books from different users cannot open more than sixteen concurrent
  * Kokoro calls between them. `SOWELL_BOOK_LANES` overrides this per process.
  */
-export const SOWELL_IN_FLIGHT = 6;
+export const SOWELL_IN_FLIGHT = 16;
 /**
  * Most lanes one book may ask for. One lane is one container call, and a
  * book can use the whole fleet when it is alone. The Modal integer `cpu` and
@@ -55,7 +55,7 @@ export const SOWELL_LANE_HARD_CEILING = 16;
  * reads; this is the worker's copy of it. A 429 from a busy container is
  * still handled, so a mis-set value degrades rather than fails.
  */
-export const SOWELL_FLEET_CONTAINERS_DEFAULT = 6;
+export const SOWELL_FLEET_CONTAINERS_DEFAULT = 16;
 export const SOWELL_FLEET_CONTAINERS_CEILING = 16;
 
 /** Deployed container count. Clamped to 1..{@link SOWELL_FLEET_CONTAINERS_CEILING}. */
@@ -72,8 +72,8 @@ export function sowellFleetContainers(
 
 /**
  * Configured book lanes, clamped to the hard ceiling and to the fleet. Never
- * above what the Modal app can actually run: asking for a seventh lane on a
- * six-container fleet would just take a 429.
+ * above what the Modal app can actually run: asking for a seventeenth lane on
+ * a sixteen-container fleet would just take a 429.
  */
 export function sowellBookLanes(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SOWELL_BOOK_LANES?.trim();

@@ -206,9 +206,9 @@ export async function runRollingRenderPool<T>(
  *
  * The fleet is divided **exactly**, oldest book first:
  *
- *   1 book  → 6 lanes          (alone, a book gets everything)
- *   2 books → 3 + 3
- *   4 books → 2 + 2 + 1 + 1    (the remainder goes to the older books)
+ *   1 book  → 16 lanes         (alone, a book gets everything)
+ *   2 books → 8 + 8
+ *   3 books → 6 + 5 + 5        (the remainder goes to the older books)
  *
  * So the quotas always sum to `fleet` — no container sits idle while a book
  * waits, and no book's plan can over-subscribe the fleet. A book ranked past

@@ -37,16 +37,22 @@ holds a lock, and `@modal.concurrent(max_inputs=1)` plus a 429 keeps a
 second request off that container. Audio is WAV bytes in memory. There
 is no shared `/tmp/sowell.wav`.
 
-The fleet is **6 containers** by default, 2 CPU, 6 GB each
-(`SOWELL_MAX_CONTAINERS`, default 6, clamped to 1..16 at deploy). The
+The fleet is **16 containers** by default, 2 CPU, 6 GB each
+(`SOWELL_MAX_CONTAINERS`, default 16, clamped to 1..16 at deploy). The
 integer `cpu` and `memory=6144` do not change with the lane count; 16
 containers is 16 containers of the same size.
 
 `SOWELL_BOOK_LANES` is how many of those containers one book may use. It
-defaults to 6, is clamped to 16, and is clamped again to the fleet. A book
+defaults to 16, is clamped to 16, and is clamped again to the fleet. A book
 uses one lane per section still to speak and no more than that cap. A
-production deploy can raise `SOWELL_MAX_CONTAINERS` to 16 after a measured
-book; the code default stays 6 until then.
+production deploy can lower `SOWELL_MAX_CONTAINERS` for a smaller fleet; the
+code default stays 16.
+
+Idle scale-down is **5 s** (`SOWELL_SCALEDOWN_SECONDS`, default 5, clamped
+to Modal's 2..1200). The measured book was 15.7k characters: 16 lanes ×
+700-char sections finished in 47 s against 74 s for 6 lanes × 1.4k. The idle
+tail then dominated the cost, so a short idle keeps the total about equal to
+the old shape while the book finishes sooner.
 
 ### Sections: ~700 characters per lane
 
@@ -79,11 +85,11 @@ Several books from different users share the fleet. The worker measures how
 many books are speaking right now (the `kokoro` provider-slot rows) and
 divides the fleet **exactly**, oldest book first (`planKokoroBookLanes`):
 
-- one book alone gets all of it (6 by default, up to 16);
-- two books get 3 + 3 (or 8 + 8 on a 16-container fleet);
-- four books over six containers get 2 + 2 + 1 + 1 — the remainder goes to
-  the older books, so the quotas always sum to the fleet and a container
-  never sits idle while a book waits;
+- one book alone gets all of it (16 by default);
+- two books get 8 + 8;
+- three books get 6 + 5 + 5 — the remainder goes to the older books, so the
+  quotas always sum to the fleet and a container never sits idle while a book
+  waits;
 - a book ranked past the fleet still gets one lane, so nobody is starved.
 
 The budget is re-read before every claim, not once per tick: a book that
@@ -173,18 +179,19 @@ sha256sum voices/sowell/am_sowell_avg.pt
 Create Modal secret `echomancer-sowell` with `SOWELL_TOKEN`. Then:
 
 ```bash
-SOWELL_MAX_CONTAINERS=6 \
-SOWELL_SCALEDOWN_SECONDS=60 \
+SOWELL_MAX_CONTAINERS=16 \
+SOWELL_SCALEDOWN_SECONDS=5 \
 SOWELL_TORCH_THREADS=4 \
 KOKORO_CPU_SECTION_CHARS=700 \
 modal deploy modal/sowell_worker.py
 ```
 
+These are the code defaults, so a redeploy without them keeps the same shape.
 `SOWELL_MAX_CONTAINERS` is read by the Modal class at deploy time and by the
-worker as its shared cap. Raise it to 16 (and `SOWELL_BOOK_LANES` to match)
-only after a measured book shows the fleet is the bottleneck; both are
-clamped at 16. `KOKORO_CPU_SECTION_CHARS` is read by the worker, not by the
-container, so it needs no redeploy — set it on Vercel and the VM worker.
+worker as its shared cap; `SOWELL_BOOK_LANES` matches it. Lower either one
+for a smaller fleet; both are clamped at 16. `KOKORO_CPU_SECTION_CHARS` is
+read by the worker, not by the container, so it needs no redeploy — set it on
+Vercel and the VM worker.
 
 Threads: `SOWELL_TORCH_THREADS` (default **4**) is applied by
 `torch.set_num_threads` in `@modal.enter`, before the first model load.
@@ -225,13 +232,14 @@ This app is `echomancer-sowell`. It does not deploy `echomancer-cpu` or
 `echomancer-s2-clone`. `min_containers` is 0. A create-flow click can POST
 `{"warm": true}` to this endpoint. That starts **one** container, loads Kokoro
 in `@modal.enter`, and returns without audio. It does not call
-`update_autoscaler`, and it does not pre-start the fleet. The cap is 6. Idle
-scale-down is 60 seconds.
+`update_autoscaler`, and it does not pre-start the fleet. The cap is 16. Idle
+scale-down is 5 seconds.
 
-A warm is claimed once per pool for 60 seconds (`KOKORO_WARM_HOLD_MS` in
-`src/lib/capacity/warm.ts`), matching that idle window. A five-minute hold
-would suppress the next legitimate warm for four minutes after the container
-had already gone.
+A warm is claimed once per pool for 25 seconds (`KOKORO_WARM_HOLD_MS` in
+`src/lib/capacity/warm.ts`). A warmed container lives about a 20 s boot plus
+the 5 s idle, so the hold stays close to that lifetime: a warm is only useful
+if generation starts within ~25 s of it. A five-minute hold would suppress
+the next legitimate warm long after the container had gone.
 
 On Vercel, after the endpoint exists:
 

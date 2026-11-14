@@ -1691,11 +1691,11 @@ async function runClaimedTick(
   /** Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
    * different:
    *
-   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (6). It is the
+   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (16). It is the
    *   hard cross-process cap on concurrent Kokoro calls, applied by the
    *   `kokoro` provider-slot rows, so several books from different users can
    *   never open more calls than the fleet can serve.
-   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 6 by
+   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 16 by
    *   default, clamped to 16 and to the fleet).
    *
    * A book's lanes are then its fair share of the fleet among the Kokoro

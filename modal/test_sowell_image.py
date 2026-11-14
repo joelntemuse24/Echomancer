@@ -111,13 +111,17 @@ def test_worker_applies_threads_before_loading_a_model() -> None:
 
 def test_worker_fleet_and_idle_defaults() -> None:
     worker = (ROOT / "modal" / "sowell_worker.py").read_text()
-    # Six containers by default, matching the worker's six book lanes.
-    assert "MAX_CONTAINERS_DEFAULT = 6" in worker
+    # Sixteen containers by default, matching the worker's sixteen book lanes.
+    assert "MAX_CONTAINERS_DEFAULT = 16" in worker
     # The deploy knob is clamped to 1..16, so a typo cannot oversize the app.
     assert "MAX_CONTAINERS_CEILING = 16" in worker
     assert "max_containers=max_containers()" in worker
-    # One minute of idle, not five. Idle time was ~40% of a measured book.
-    assert 'scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60"))' in worker
+    # Five seconds of idle. The measured book's idle tail dominated its cost.
+    assert "SCALEDOWN_DEFAULT = 5" in worker
+    assert "scaledown_window=scaledown_seconds()" in worker
+    # The idle knob is clamped to Modal's allowed 2..1200 range.
+    assert "SCALEDOWN_MIN = 2" in worker
+    assert "SCALEDOWN_MAX = 1200" in worker
     # Scale to zero stays the floor: warming is a click, not a standing fleet.
     assert "min_containers=0" in worker
     assert "memory=6144" in worker
@@ -202,12 +206,13 @@ def _load_worker_with_fake_modal(monkeypatch):
 
 def test_worker_class_resolves_with_the_declared_fleet(monkeypatch) -> None:
     monkeypatch.delenv("SOWELL_MAX_CONTAINERS", raising=False)
+    monkeypatch.delenv("SOWELL_SCALEDOWN_SECONDS", raising=False)
     worker = _load_worker_with_fake_modal(monkeypatch)
 
     assert worker.APP_NAME == "echomancer-sowell"
     kwargs = worker.app.cls_kwargs
-    assert kwargs["max_containers"] == 6
-    assert kwargs["scaledown_window"] == 60
+    assert kwargs["max_containers"] == 16
+    assert kwargs["scaledown_window"] == 5
     assert kwargs["min_containers"] == 0
     assert kwargs["memory"] == 6144
     assert kwargs["cpu"] == 2
@@ -229,7 +234,7 @@ def test_max_containers_env_clamps_above_sixteen(monkeypatch) -> None:
 
 
 def test_max_containers_env_floors_and_ignores_junk(monkeypatch) -> None:
-    for value, expected in (("0", 1), ("-3", 1), ("abc", 6), ("", 6)):
+    for value, expected in (("0", 1), ("-3", 1), ("abc", 16), ("", 16)):
         monkeypatch.setenv("SOWELL_MAX_CONTAINERS", value)
         worker = _load_worker_with_fake_modal(monkeypatch)
         assert worker.app.cls_kwargs["max_containers"] == expected, value
@@ -240,6 +245,21 @@ def test_max_containers_reads_a_respected_fleet_between_one_and_sixteen(monkeypa
         monkeypatch.setenv("SOWELL_MAX_CONTAINERS", str(n))
         worker = _load_worker_with_fake_modal(monkeypatch)
         assert worker.app.cls_kwargs["max_containers"] == n
+
+
+def test_scaledown_env_is_honoured_inside_modal_range(monkeypatch) -> None:
+    for value, expected in (
+        ("30", 30),
+        ("1200", 1200),
+        ("0", 2),
+        ("-5", 2),
+        ("1201", 1200),
+        ("abc", 5),
+        ("", 5),
+    ):
+        monkeypatch.setenv("SOWELL_SCALEDOWN_SECONDS", value)
+        worker = _load_worker_with_fake_modal(monkeypatch)
+        assert worker.app.cls_kwargs["scaledown_window"] == expected, value
 
 
 def test_bench_app_is_cheap_and_gpu_free() -> None:

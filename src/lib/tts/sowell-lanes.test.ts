@@ -9,15 +9,20 @@ import {
 } from "./sowell-voice";
 
 describe("sowell lanes", () => {
-  it("defaults one book to six lanes and refuses a cap past the ceiling", () => {
-    // Six is the deployed fleet (`SOWELL_MAX_CONTAINERS`). The old default of
-    // two left four containers idle on every book.
-    expect(SOWELL_IN_FLIGHT).toBe(6);
-    expect(sowellBookLanes({} as NodeJS.ProcessEnv)).toBe(6);
+  it("defaults one book to sixteen lanes and refuses a cap past the ceiling", () => {
+    // Sixteen is the deployed fleet (`SOWELL_MAX_CONTAINERS`). The old default
+    // of two left fourteen containers idle on every book.
+    expect(SOWELL_IN_FLIGHT).toBe(16);
+    expect(sowellBookLanes({} as NodeJS.ProcessEnv)).toBe(16);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "4" } as NodeJS.ProcessEnv)).toBe(4);
     // A request past the hard ceiling is clamped, and the fleet clamps again.
-    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "100" } as NodeJS.ProcessEnv)).toBe(6);
-    // The hard ceiling is now 16, so a 12-container fleet honours 12 lanes.
+    expect(
+      sowellBookLanes({
+        SOWELL_BOOK_LANES: "100",
+        SOWELL_MAX_CONTAINERS: "6",
+      } as NodeJS.ProcessEnv)
+    ).toBe(6);
+    // The hard ceiling is 16, so a 12-container fleet honours 12 lanes.
     expect(
       sowellBookLanes({
         SOWELL_BOOK_LANES: "100",
@@ -25,12 +30,12 @@ describe("sowell lanes", () => {
       } as NodeJS.ProcessEnv)
     ).toBe(12);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "0" } as NodeJS.ProcessEnv)).toBe(1);
-    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "abc" } as NodeJS.ProcessEnv)).toBe(6);
+    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "abc" } as NodeJS.ProcessEnv)).toBe(16);
   });
 
   it("never asks for more lanes than the fleet has containers", () => {
-    expect(SOWELL_FLEET_CONTAINERS_DEFAULT).toBe(6);
-    expect(sowellFleetContainers({} as NodeJS.ProcessEnv)).toBe(6);
+    expect(SOWELL_FLEET_CONTAINERS_DEFAULT).toBe(16);
+    expect(sowellFleetContainers({} as NodeJS.ProcessEnv)).toBe(16);
     // A ramped-down fleet clamps the book, so a lane is not spent on a 429.
     expect(
       sowellBookLanes({

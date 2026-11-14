@@ -308,21 +308,25 @@ job still needs `FISH_API_KEY` on the account that owns her reference.
 
 **Kokoro CPU lanes (Drew, Walter, George):** all three narrators come from one
 Modal app, `echomancer-sowell` (`modal/sowell_worker.py`, image
-`workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 6,
+`workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 16,
 clamped 1..16 at deploy) containers at 2 CPU and 6 GB each,
-`min_containers=0`, idle `SOWELL_SCALEDOWN_SECONDS` (default 60). One book asks
-for `SOWELL_BOOK_LANES` lanes (default 6, clamped to 16 and to the fleet).
-`planKokoroBookLanes` divides the fleet **exactly** among the running Kokoro
-books, oldest first: alone, a book gets all of it; two books get 3+3; four
-books over six containers get 2+2+1+1, so the quotas sum to the fleet and a
-container never sits idle while a book waits. Every book keeps at least one
-lane, so one long book cannot starve another user. The budget is re-read
+`min_containers=0`, idle `SOWELL_SCALEDOWN_SECONDS` (default 5, clamped to
+Modal's 2..1200). One book asks for `SOWELL_BOOK_LANES` lanes (default 16,
+clamped to 16 and to the fleet). `planKokoroBookLanes` divides the fleet
+**exactly** among the running Kokoro books, oldest first: alone, a book gets
+all of it; two books get 8+8; three books get 6+5+5, so
+the quotas sum to the fleet and a container never sits idle while a book
+waits. Every book keeps at least one lane, so one long book cannot starve
+another user. The budget is re-read
 before every claim (`laneBudget`), so a book that starts mid-wave takes lanes
 as another book's sections finish, and a running book shrinks to its new
 share. The `kokoro` provider-slot rows are the hard cross-process cap, so
 total concurrent Kokoro calls never exceed `SOWELL_MAX_CONTAINERS` even if a
 budget read is stale; a 429 from a busy container is retried with backoff,
-never failed.
+never failed. The 16-lane / 5 s-idle default is measured: on a 15.7k-char
+text, 16 lanes x 700-char sections finished in 47 s against 74 s for 6 lanes
+x 1.4k, and the idle tail dominated cost. A Kokoro warm is held for 25 s
+(`KOKORO_WARM_HOLD_MS`), about a 20 s boot plus the 5 s idle.
 
 Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700**, clamped
 300..2000) with a 400-character opening and a 550-character second section;

@@ -7,11 +7,11 @@
  * start a second one. A busy answer is capacity already: it is not retried.
  *
  * The hold matches each app's idle scale-down window. `echomancer-cpu` idles
- * for 300 s; `echomancer-sowell` idles for 60 s (`SOWELL_SCALEDOWN_SECONDS`),
- * so a Kokoro hold that outlived its container would suppress the next
- * legitimate warm for four minutes. min_containers stays 0, and one hold
- * starts **one** container — a warm never pre-starts the whole six-container
- * fleet.
+ * for 300 s; `echomancer-sowell` idles for 5 s (`SOWELL_SCALEDOWN_SECONDS`),
+ * so a warmed container lives about a 20 s boot plus that idle. A Kokoro hold
+ * that outlived its container would suppress the next legitimate warm for
+ * minutes. min_containers stays 0, and one hold starts **one** container — a
+ * warm never pre-starts the whole sixteen-container fleet.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -21,8 +21,12 @@ import { drewEndpoint, drewReady } from "@/lib/tts/drew-voice";
 import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
 
 export const WARM_HOLD_MS = 300_000;
-/** The Kokoro app scales down after 60 s, so its hold window is 60 s. */
-export const KOKORO_WARM_HOLD_MS = 60_000;
+/**
+ * The Kokoro app scales down after 5 s, so a warmed container lives about a
+ * 20 s boot plus that idle. The hold is 25 s so it does not outlive the
+ * container by much: a warm is useful when generation starts within ~25 s.
+ */
+export const KOKORO_WARM_HOLD_MS = 25_000;
 
 export type WarmPool = "cpu" | "kokoro";
 export type WarmReason = "create" | "voice";
