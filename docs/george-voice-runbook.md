@@ -7,17 +7,21 @@ Ryan stays on Edge and is not spoken again. A custom clone is untouched.
 
 ## One app, not a second fleet
 
-The class has `min_containers=0`, `max_containers` default 6, 2 CPU, 6 GB,
-and 4 Torch threads (`SOWELL_TORCH_THREADS`; benchmarked ~1.5x faster than 2
-on cpu=2 — see `docs/sowell-voice-runbook.md`). `@modal.enter` loads one Kokoro model
+The class has `min_containers=0`, `max_containers` default 6 (clamped 1..16
+at deploy), 2 CPU, 6 GB, and 4 Torch threads (`SOWELL_TORCH_THREADS`;
+benchmarked ~1.5x faster than 2 on cpu=2 — see
+`docs/sowell-voice-runbook.md`). `@modal.enter` loads one Kokoro model
 and two phonemizers: American for the Sowell pack, British (`lang_code='b'`)
 for `bm_george`. Drew is the second resident kmodel when its volume is
 mounted.
 
 George, Walter, and Drew share one six-container fleet. A book's lanes are
-its fair share of that fleet among the Kokoro books running now, and the
-`kokoro` provider-slot rows are the hard cross-process cap, so a George book
-and a Sowell book do not open twelve containers between them.
+its exact share of that fleet among the Kokoro books running now
+(`planKokoroBookLanes`; quotas sum to the fleet and are re-read on every
+claim), and the `kokoro` provider-slot rows are the hard cross-process cap,
+so a George book and a Sowell book do not open twelve containers between
+them. George packs at `KOKORO_CPU_SECTION_CHARS` (default 700) like the other
+two Kokoro-CPU voices.
 
 `GEORGE_URL` is a separate host from `SOWELL_URL` only if Modal prints
 two. On this app both methods are the same `speak` endpoint. Set

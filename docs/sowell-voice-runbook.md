@@ -37,20 +37,67 @@ holds a lock, and `@modal.concurrent(max_inputs=1)` plus a 429 keeps a
 second request off that container. Audio is WAV bytes in memory. There
 is no shared `/tmp/sowell.wav`.
 
-The fleet is **6 containers**, 2 CPU, 6 GB each (`SOWELL_MAX_CONTAINERS`,
-default 6). `SOWELL_BOOK_LANES` is how many of those containers one book may
-use. It defaults to 6, is clamped to 8, and is clamped again to the fleet.
-A book uses one lane per section still to speak and no more than that cap.
-The 1,480-character acceptance book had two sections, so it still uses two
-lanes.
+The fleet is **6 containers** by default, 2 CPU, 6 GB each
+(`SOWELL_MAX_CONTAINERS`, default 6, clamped to 1..16 at deploy). The
+integer `cpu` and `memory=6144` do not change with the lane count; 16
+containers is 16 containers of the same size.
 
-Several books from different users share the fleet. The worker counts the
-other Kokoro books that are running and gives each one its fair share
-(`planKokoroBookLanes`): alone, a book gets six lanes; two books get three
-each; every book keeps at least one lane, so a long book cannot starve
-another user's. The `kokoro` provider-slot rows are the hard cross-process
-cap, so the fleet is never over-subscribed even if the per-book maths says
-otherwise. A 429 from a busy container is retried in place.
+`SOWELL_BOOK_LANES` is how many of those containers one book may use. It
+defaults to 6, is clamped to 16, and is clamped again to the fleet. A book
+uses one lane per section still to speak and no more than that cap. A
+production deploy can raise `SOWELL_MAX_CONTAINERS` to 16 after a measured
+book; the code default stays 6 until then.
+
+### Sections: ~700 characters per lane
+
+Each section is one HTTP call to one container, so section length sets both
+the per-call latency and the tail of a book. Kokoro-CPU books (Drew, Walter,
+George) pack at `KOKORO_CPU_SECTION_CHARS` — **default 700**, clamped
+300..2000. The opening two sections stay shorter (400 and 550 characters), so
+first audio lands fast, and the packer still closes on a sentence. At ~2x
+realtime a 700-character section is ~30 s of audio and 8-15 s of wall,
+against ~90 s of audio and 22-47 s of wall at 2,000. That shortens the last
+wave and gives a lane that frees late work it can finish.
+
+The container's own request cap stays 2,000 (`MAX_CHARS` in
+`modal/sowell_worker.py`), and `engine.py` still splits at 510 phonemes.
+Nothing else about the call changed: same voice, same 429 retry, same audio
+guard.
+
+The inter-section pause is unchanged. Mastered sections join with the usual
+delivery crossfade — **80 ms** for a book under 4,000 characters, **120 ms**
+otherwise, resolved by `resolveDeliverySettings` — with edge silence trimmed
+to 40 ms of keep before the fade. A mid-paragraph cut uses a 12 ms micro
+fade. More sections means more of those 80/120 ms joins; each is a
+crossfade, not an added silence, so the pause at a boundary stays natural.
+Every section is verified to be more than four seconds of audio
+(`COPY_JOIN_MIN_SECONDS`) so the copy-join never re-encodes a stub.
+
+### Sharing the fleet
+
+Several books from different users share the fleet. The worker measures how
+many books are speaking right now (the `kokoro` provider-slot rows) and
+divides the fleet **exactly**, oldest book first (`planKokoroBookLanes`):
+
+- one book alone gets all of it (6 by default, up to 16);
+- two books get 3 + 3 (or 8 + 8 on a 16-container fleet);
+- four books over six containers get 2 + 2 + 1 + 1 — the remainder goes to
+  the older books, so the quotas always sum to the fleet and a container
+  never sits idle while a book waits;
+- a book ranked past the fleet still gets one lane, so nobody is starved.
+
+The budget is re-read before every claim, not once per tick: a book that
+starts mid-wave gets lanes as another book's sections finish, and a running
+book shrinks to its new share instead of holding the fleet for its whole
+book. The `kokoro` provider-slot rows remain the hard cross-process cap, so
+the total concurrent Kokoro calls across books never exceeds
+`SOWELL_MAX_CONTAINERS` even if a budget read is stale or fails. A 429 from a
+busy container is retried in place with backoff, never failed.
+
+The warm path starts **one** container (`KOKORO_WARM_CONTAINERS`), never the
+whole lane plan; `min_containers` stays 0. `kokoroWarmLimit` caps a warm loop
+at `min(fleet, SOWELL_BOOK_LANES, sectionCount)`, so a click cannot stand up
+more than the book will use.
 
 ## Why the pool is rolling
 
@@ -80,14 +127,15 @@ and, after the Sowell image is deployed, `inferMs`, `loadMs`, and
 
 `CPU_DISPATCH_BUSY_MS` (default 8s) is how long a master or concat
 keeps posting after a container answers 429, so the second section
-does not wait until the first master has exited. Zero posts once. A section may be up to 2,000
-characters. Kokoro then splits that text on its own 510-phoneme
-boundary. A run of 511 still comes out (`en_tokenize` does not guarantee
-the cap, and Kokoro's own generator would truncate it). The engine splits
-that run and keeps every phoneme character; it still refuses a piece that
-would have to drop text. A 2,699-character prose probe made 6 runs, none
-over 510 phonemes, and the word list matched. The old 280-character
-section cap is not used.
+does not wait until the first master has exited. Zero posts once. A section is
+packed to `KOKORO_CPU_SECTION_CHARS` (default 700; the container still
+refuses anything over 2,000). Kokoro then splits that text on its own
+510-phoneme boundary. A run of 511 still comes out (`en_tokenize` does not
+guarantee the cap, and Kokoro's own generator would truncate it). The engine
+splits that run and keeps every phoneme character; it still refuses a piece
+that would have to drop text. A 2,699-character prose probe made 6 runs, none
+over 510 phonemes, and the word list matched. The old 280-character section
+cap is not used.
 
 A 429 is retried a few times so the other container can take the
 section. A 500 fails the take. Nothing is concatenated from a failed
@@ -128,8 +176,15 @@ Create Modal secret `echomancer-sowell` with `SOWELL_TOKEN`. Then:
 SOWELL_MAX_CONTAINERS=6 \
 SOWELL_SCALEDOWN_SECONDS=60 \
 SOWELL_TORCH_THREADS=4 \
+KOKORO_CPU_SECTION_CHARS=700 \
 modal deploy modal/sowell_worker.py
 ```
+
+`SOWELL_MAX_CONTAINERS` is read by the Modal class at deploy time and by the
+worker as its shared cap. Raise it to 16 (and `SOWELL_BOOK_LANES` to match)
+only after a measured book shows the fleet is the bottleneck; both are
+clamped at 16. `KOKORO_CPU_SECTION_CHARS` is read by the worker, not by the
+container, so it needs no redeploy — set it on Vercel and the VM worker.
 
 Threads: `SOWELL_TORCH_THREADS` (default **4**) is applied by
 `torch.set_num_threads` in `@modal.enter`, before the first model load.
@@ -243,6 +298,28 @@ in 18.4 s instead of 33.9 s.
 
 `python3 scripts/sowell/bench_threads.py /path/to/am_sowell_avg.pt`
 repeats the thread comparison. It does not call Modal.
+
+## Load-test sections (production-identical)
+
+A load test is only meaningful when its requests are shaped like production's.
+`scripts/sowell/split_for_loadtest.ts` runs the **production** splitter with a
+Kokoro-CPU voice, so the section count, the ~700-character target, the short
+opening, and the heading threshold are exactly what a book gets:
+
+```bash
+# JSON array of {index, chars, text}
+npx tsx scripts/sowell/split_for_loadtest.ts book.txt drew
+
+# A bare JSON array of section strings, for a request loop
+npx tsx scripts/sowell/split_for_loadtest.ts book.txt drew --texts-only
+
+# Vary the target without touching the worker env (clamped 300..2000)
+npx tsx scripts/sowell/split_for_loadtest.ts book.txt sowell 900
+KOKORO_CPU_SECTION_CHARS=1200 npx tsx scripts/sowell/split_for_loadtest.ts book.txt george
+```
+
+The voice is `drew` (default), `sowell` (Walter), or `george`. It reads the
+file and prints; it never calls Modal, and it does not need any secret.
 
 ## Smoke
 

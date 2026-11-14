@@ -296,4 +296,210 @@ describe("kokoro book lanes", () => {
       })
     ).toBe(2);
   });
+
+  it("splits the fleet exactly, oldest book first, so quotas sum to the fleet", () => {
+    const quota = (books: number, rank: number, fleet = 6) =>
+      planKokoroBookLanes({
+        configured: 16,
+        fleet,
+        activeBooks: books,
+        remainingSections: 99,
+        rank,
+      });
+    // Alone: the whole fleet.
+    expect(quota(1, 0)).toBe(6);
+    // Two books: 3 + 3.
+    expect([quota(2, 0), quota(2, 1)]).toEqual([3, 3]);
+    // Four books over six containers: the remainder goes to the older books.
+    const four = [0, 1, 2, 3].map((rank) => quota(4, rank));
+    expect(four).toEqual([2, 2, 1, 1]);
+    expect(four.reduce((a, b) => a + b, 0)).toBe(6);
+    // Eight books over six containers: six get one, two are serialised by the
+    // slot rows but still get a lane so they are never starved.
+    const eight = Array.from({ length: 8 }, (_, rank) => quota(8, rank));
+    expect(eight).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(eight.every((n) => n >= 1)).toBe(true);
+  });
+
+  it("sums every book's quota to the fleet when books fit inside it", () => {
+    for (const fleet of [6, 8, 12, 16]) {
+      for (let books = 1; books <= fleet; books++) {
+        const quotas = Array.from({ length: books }, (_, rank) =>
+          planKokoroBookLanes({
+            configured: fleet,
+            fleet,
+            activeBooks: books,
+            remainingSections: 99,
+            rank,
+          })
+        );
+        expect(quotas.reduce((a, b) => a + b, 0)).toBe(fleet);
+      }
+    }
+  });
+
+  it("honours a 16-lane fleet for one book and a 16-lane per-book cap", () => {
+    expect(
+      planKokoroBookLanes({
+        configured: 16,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: 40,
+      })
+    ).toBe(16);
+    // Two books over 16 containers get 8 each.
+    expect([
+      planKokoroBookLanes({ configured: 16, fleet: 16, activeBooks: 2, remainingSections: 40, rank: 0 }),
+      planKokoroBookLanes({ configured: 16, fleet: 16, activeBooks: 2, remainingSections: 40, rank: 1 }),
+    ]).toEqual([8, 8]);
+    // The per-book cap still binds below the split.
+    expect(
+      planKokoroBookLanes({
+        configured: 6,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: 40,
+      })
+    ).toBe(6);
+  });
+
+  it("shrinks a running book to its share when another book joins", async () => {
+    // One book starts alone (6 lanes). A second book joins mid-wave, so the
+    // first must stop claiming past its new 3-lane share: its already-open
+    // renders finish, then it runs three at a time and leaves the rest of the
+    // fleet to the newcomer.
+    let budget = 6;
+    let changedAt = Number.POSITIVE_INFINITY;
+    let inFlight = 0;
+    let peakBefore = 0;
+    let peakAfter = 0;
+    const start = Date.now();
+    const now = () => Date.now() - start;
+    let next = 0;
+
+    const pool = runRollingRenderPool({
+      lanes: 6,
+      laneBudget: async () => budget,
+      claimNext: async () => (next < 60 ? next++ : null),
+      render: async () => {
+        inFlight += 1;
+        // One render is 20 ms. Ignore the renders that were already open when
+        // the budget changed; those cannot be recalled.
+        if (now() < changedAt) peakBefore = Math.max(peakBefore, inFlight);
+        else if (now() > changedAt + 25) peakAfter = Math.max(peakAfter, inFlight);
+        await sleep(20);
+        inFlight -= 1;
+        return 0;
+      },
+      afterRender: async () => {},
+    });
+
+    await sleep(50);
+    budget = 3;
+    changedAt = now();
+    await pool;
+
+    expect(peakBefore).toBe(6);
+    expect(peakAfter).toBeGreaterThan(0);
+    expect(peakAfter).toBeLessThanOrEqual(3);
+  });
+
+  it("gives a joining book its own lanes while the running book keeps speaking", async () => {
+    // Two real pools share one budget of six. The second starts mid-way, and
+    // both must render concurrently instead of one waiting out the other.
+    let books = 1;
+    let joinedAt = Number.POSITIVE_INFINITY;
+    const starts: Array<{ book: string; at: number }> = [];
+    let inFlightA = 0;
+    let inFlightB = 0;
+    let peakA = 0;
+    let peakB = 0;
+    const start = Date.now();
+    const now = () => Date.now() - start;
+
+    const runBook = async (book: string, total: number) => {
+      let next = 0;
+      await runRollingRenderPool({
+        lanes: 6,
+        laneBudget: async () => Math.max(1, Math.floor(6 / books)),
+        claimNext: async () => (next < total ? next++ : null),
+        render: async () => {
+          starts.push({ book, at: now() });
+          if (book === "a") {
+            inFlightA += 1;
+            if (now() > joinedAt + 25) peakA = Math.max(peakA, inFlightA);
+          } else {
+            inFlightB += 1;
+            peakB = Math.max(peakB, inFlightB);
+          }
+          await sleep(20);
+          if (book === "a") inFlightA -= 1;
+          else inFlightB -= 1;
+          return 0;
+        },
+        afterRender: async () => {},
+      });
+    };
+
+    const bookA = runBook("a", 30);
+    await sleep(50);
+    books = 2;
+    joinedAt = now();
+    const bookB = runBook("b", 6);
+    await Promise.all([bookA, bookB]);
+
+    // B rendered, and A was still rendering after B joined.
+    expect(starts.filter((s) => s.book === "b")).toHaveLength(6);
+    expect(starts.filter((s) => s.book === "a" && s.at > joinedAt).length).toBeGreaterThan(0);
+    // Each book stayed inside its three-lane share once the join settled, and
+    // together they never held more than the six-container fleet.
+    expect(peakA).toBeLessThanOrEqual(3);
+    expect(peakA).toBeGreaterThan(0);
+    expect(peakB).toBeLessThanOrEqual(3);
+    expect(peakB).toBeGreaterThan(0);
+    expect(peakA + peakB).toBeLessThanOrEqual(6);
+  });
+
+  it("never lets a shared pool exceed its budget while another book is active", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const budget = 3;
+    let next = 0;
+    await runRollingRenderPool({
+      lanes: 6,
+      laneBudget: async () => budget,
+      claimNext: async () => (next < 20 ? next++ : null),
+      render: async (index) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await sleep(5);
+        inFlight -= 1;
+        return index;
+      },
+      afterRender: async () => {},
+    });
+    expect(peak).toBe(budget);
+    expect(peak).toBeLessThanOrEqual(6);
+  });
+
+  it("falls back to the planned lanes when the shared budget read fails", async () => {
+    let next = 0;
+    let renders = 0;
+    await runRollingRenderPool({
+      lanes: 4,
+      laneBudget: async () => {
+        throw new Error("turso is down");
+      },
+      claimNext: async () => (next < 9 ? next++ : null),
+      render: async (index) => {
+        renders += 1;
+        await sleep(1);
+        return index;
+      },
+      afterRender: async () => {},
+    });
+    // A broken counter does not stall the book; the shared permit is still
+    // the hard cap.
+    expect(renders).toBe(9);
+  });
 });

@@ -42,11 +42,12 @@ export const SOWELL_PIECE_IN_FLIGHT = 2;
  */
 export const SOWELL_IN_FLIGHT = 6;
 /**
- * Most lanes one book may ask for. The Modal integer `cpu` and the memory
- * ceiling do not change with lanes; this stays below the 8-section claim
- * ceiling the rest of the take-home path uses.
+ * Most lanes one book may ask for. One lane is one container call, and a
+ * book can use the whole fleet when it is alone. The Modal integer `cpu` and
+ * the memory ceiling do not change with lanes; this stays below the
+ * 8-section claim ceiling the rest of the take-home path uses.
  */
-export const SOWELL_LANE_HARD_CEILING = 8;
+export const SOWELL_LANE_HARD_CEILING = 16;
 /**
  * Fleet-wide ceiling on concurrent Kokoro calls, shared by every worker
  * process. It is the deployed `max_containers`, so the fleet is not
@@ -55,7 +56,7 @@ export const SOWELL_LANE_HARD_CEILING = 8;
  * still handled, so a mis-set value degrades rather than fails.
  */
 export const SOWELL_FLEET_CONTAINERS_DEFAULT = 6;
-export const SOWELL_FLEET_CONTAINERS_CEILING = 32;
+export const SOWELL_FLEET_CONTAINERS_CEILING = 16;
 
 /** Deployed container count. Clamped to 1..{@link SOWELL_FLEET_CONTAINERS_CEILING}. */
 export function sowellFleetContainers(

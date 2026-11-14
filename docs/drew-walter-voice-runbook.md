@@ -71,27 +71,47 @@ not change with the lane count: six lanes are six containers of the same
 size. CPU (2), `min_containers` (0) and `@modal.concurrent(max_inputs=1)` are
 unchanged.
 
-`max_containers` is now **6** (was 2) and `scaledown_window` is **60 s** (was
-300 s). Five idle minutes per container was about 40% of a measured book's
-cost, and the next section of a book arrives seconds later, not minutes.
+`max_containers` is now **6** by default (was 2) and `scaledown_window` is
+**60 s** (was 300 s). Five idle minutes per container was about 40% of a
+measured book's cost, and the next section of a book arrives seconds later,
+not minutes. `SOWELL_MAX_CONTAINERS` is read at deploy time and clamped to
+1..16, so a production deploy can raise it to 16 after a measured book.
+
+## Sections
+
+Kokoro-CPU books (Drew, Walter, George) pack at `KOKORO_CPU_SECTION_CHARS`
+(**default 700**, clamped 300..2000) with a 400-character opening and a
+550-character second section. One section is one container call, so a shorter
+section means a shorter tail: ~30 s of audio and 8-15 s of wall per section
+against ~90 s and 22-47 s at 2,000. Other engines are unchanged. The
+container still refuses a request over 2,000 characters and splits at 510
+phonemes internally. To load-test with production-identical sections:
+
+```bash
+npx tsx scripts/sowell/split_for_loadtest.ts book.txt drew --texts-only
+```
 
 ## Lanes and the shared fleet
 
-One Modal fleet serves all three narrators. Two numbers decide concurrency:
+One Modal fleet serves all three narrators. These numbers decide concurrency:
 
 | Env | Default | Meaning |
 |--|--|--|
-| `SOWELL_MAX_CONTAINERS` | 6 | Fleet cap. Also read by the worker as its cross-process cap, so several books cannot open more concurrent Kokoro calls than the fleet. |
-| `SOWELL_BOOK_LANES` | 6 | Lanes one book may ask for. Clamped to 8 and to the fleet. |
+| `SOWELL_MAX_CONTAINERS` | 6 | Fleet cap, clamped 1..16 at deploy. Also read by the worker as its cross-process cap, so several books cannot open more concurrent Kokoro calls than the fleet. |
+| `SOWELL_BOOK_LANES` | 6 | Lanes one book may ask for. Clamped to 16 and to the fleet. |
+| `KOKORO_CPU_SECTION_CHARS` | 700 | Section target for the three Kokoro-CPU voices, clamped 300..2000. Read by the worker, so no redeploy. |
 | `SOWELL_SCALEDOWN_SECONDS` | 60 | Idle time before a container goes away. |
 | `SOWELL_TORCH_THREADS` | 4 | Torch intra-op threads, applied in `@modal.enter`. Benchmarked ~1.5× faster than 2 on cpu=2. |
 | `SOWELL_TORCH_INTEROP_THREADS` | 1 | Torch inter-op threads, same place. |
 
-A book's lanes are then its fair share of the fleet among the Kokoro books
-running right now (`planKokoroBookLanes`): one book alone gets all six, two
-books get three each, and every book keeps at least one lane so a long book
-cannot starve another user's. The `kokoro` provider-slot rows are the hard
-cross-process cap; a 429 from a busy container is retried, never a failed
+A book's lanes are its exact share of the fleet among the Kokoro books
+running right now (`planKokoroBookLanes`): one book alone gets all six (or all
+16), two books get 3 + 3, four books over six containers get 2 + 2 + 1 + 1.
+The quotas sum to the fleet, so a container never sits idle while a book
+waits, and every book keeps at least one lane. The budget is re-read before
+every claim, so a book that starts mid-wave takes lanes as another book's
+sections finish. The `kokoro` provider-slot rows are the hard cross-process
+cap; a 429 from a busy container is retried with backoff, never a failed
 take.
 
 ## Deploy
@@ -102,6 +122,7 @@ take.
 SOWELL_MAX_CONTAINERS=6 \
 SOWELL_SCALEDOWN_SECONDS=60 \
 SOWELL_TORCH_THREADS=4 \
+KOKORO_CPU_SECTION_CHARS=700 \
 modal deploy modal/sowell_worker.py
 
 # Re-measure thread counts on the same image (CPU only, no GPU):

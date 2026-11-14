@@ -17,12 +17,13 @@ describe("sowell lanes", () => {
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "4" } as NodeJS.ProcessEnv)).toBe(4);
     // A request past the hard ceiling is clamped, and the fleet clamps again.
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "100" } as NodeJS.ProcessEnv)).toBe(6);
+    // The hard ceiling is now 16, so a 12-container fleet honours 12 lanes.
     expect(
       sowellBookLanes({
         SOWELL_BOOK_LANES: "100",
         SOWELL_MAX_CONTAINERS: "12",
       } as NodeJS.ProcessEnv)
-    ).toBe(SOWELL_LANE_HARD_CEILING);
+    ).toBe(12);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "0" } as NodeJS.ProcessEnv)).toBe(1);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "abc" } as NodeJS.ProcessEnv)).toBe(6);
   });
@@ -37,17 +38,26 @@ describe("sowell lanes", () => {
         SOWELL_MAX_CONTAINERS: "3",
       } as NodeJS.ProcessEnv)
     ).toBe(3);
-    // The hard ceiling still wins over an over-large fleet.
+    // Sixteen is the hard ceiling and also the fleet ceiling.
+    expect(SOWELL_LANE_HARD_CEILING).toBe(16);
     expect(
       sowellBookLanes({
         SOWELL_BOOK_LANES: "16",
         SOWELL_MAX_CONTAINERS: "12",
       } as NodeJS.ProcessEnv)
-    ).toBe(SOWELL_LANE_HARD_CEILING);
+    ).toBe(12);
+    expect(
+      sowellBookLanes({
+        SOWELL_BOOK_LANES: "16",
+        SOWELL_MAX_CONTAINERS: "16",
+      } as NodeJS.ProcessEnv)
+    ).toBe(16);
+    // A lone book can hold the whole 16-container fleet.
+    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "100", SOWELL_MAX_CONTAINERS: "20" } as NodeJS.ProcessEnv)).toBe(16);
     expect(sowellFleetContainers({ SOWELL_MAX_CONTAINERS: "0" } as NodeJS.ProcessEnv)).toBe(1);
     expect(
       sowellFleetContainers({ SOWELL_MAX_CONTAINERS: "999" } as NodeJS.ProcessEnv)
-    ).toBe(32);
+    ).toBe(16);
   });
 });
 

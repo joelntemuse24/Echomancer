@@ -12,12 +12,20 @@ runtime until idle scale-down. ``min_containers`` is 0. One request at a
 time per container, because the model is not reentrant. A second request
 gets 429 so the caller can use another container in the fleet.
 
-Fleet. ``SOWELL_MAX_CONTAINERS`` (default 6) is the cap. The worker's
-``SOWELL_BOOK_LANES`` (also default 6, clamped to 8 and to the fleet) is how
-many of those one book may hold; the ``kokoro`` provider-slot rows are the
-cross-process share, so several books cannot open more calls than the fleet.
-Six containers keep ``memory=6144`` per container, which is unchanged: lanes
-are containers, not extra memory.
+Fleet. ``SOWELL_MAX_CONTAINERS`` (default 6, clamped to 1..16) is the cap.
+The worker's ``SOWELL_BOOK_LANES`` (also default 6, clamped to 16 and to the
+fleet) is how many of those one book may hold; the ``kokoro`` provider-slot
+rows are the cross-process share, so several books cannot open more calls than
+the fleet. A book alone gets the whole fleet; concurrent books split it so the
+quotas sum to the fleet and a new book takes lanes as other books' sections
+finish. Containers keep ``memory=6144`` each: lanes are containers, not extra
+memory.
+
+Sections. The worker packs a Kokoro-CPU book at ``KOKORO_CPU_SECTION_CHARS``
+(default 700, clamped 300..2000), with a shorter first section so first audio
+arrives fast. Each section is one call to whichever container holds a lane,
+so a smaller target shortens the tail. The container still caps a request at
+``MAX_CHARS`` (2,000) and splits internally at 510 phonemes.
 
 Idle. ``SOWELL_SCALEDOWN_SECONDS`` is 60. Five minutes of idle container time
 was about 40% of a measured book's cost, and the next section of a book
@@ -84,6 +92,22 @@ TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "4")
 PACK = os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt")
 MANIFEST = os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json")
 
+#: Fleet ceiling. `SOWELL_MAX_CONTAINERS` is read at deploy time, clamped to
+#: 1..16 so a typo cannot ask Modal for a roster this app was not sized for.
+#: The worker's `SOWELL_FLEET_CONTAINERS_CEILING` is the same number.
+MAX_CONTAINERS_CEILING = 16
+MAX_CONTAINERS_DEFAULT = 6
+
+
+def max_containers(env: dict | None = None) -> int:
+    """Deploy-time `max_containers`, clamped to 1..16. Default 6."""
+    raw = (env or os.environ).get("SOWELL_MAX_CONTAINERS", "")
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        n = MAX_CONTAINERS_DEFAULT
+    return max(1, min(MAX_CONTAINERS_CEILING, n))
+
 drew_volume = modal.Volume.from_name(DREW_VOLUME_NAME, create_if_missing=True)
 
 
@@ -102,7 +126,7 @@ def _authorized(request: Request) -> bool:
     memory=6144,
     timeout=180,
     min_containers=0,
-    max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6")),
+    max_containers=max_containers(),
     scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60")),
     secrets=[modal.Secret.from_name("echomancer-sowell")],
     volumes={DREW_VOLUME_MOUNT: drew_volume},

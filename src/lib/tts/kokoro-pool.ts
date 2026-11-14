@@ -40,6 +40,18 @@ export interface RollingRenderPoolOptions<T> {
    * **not awaited by the lane**, so the next section renders concurrently.
    */
   afterRender: (index: number, value: T) => Promise<void>;
+  /**
+   * Lanes this book may hold **right now**, re-read before every claim.
+   *
+   * A book alone gets the whole fleet; two books split it; a book that joins
+   * later is counted on the next claim, so it gets lanes as other books'
+   * sections finish instead of waiting for their whole wave. A lane above the
+   * budget parks until another book's section frees a container (or the book
+   * runs out of work), so a shrinking share never idles a container and the
+   * whole fleet is never held by one book. Omit this for an unshared pool
+   * (Edge, tests).
+   */
+  laneBudget?: () => Promise<number>;
   /** Checked before every claim so a tick can stop near its deadline. */
   shouldStop?: () => boolean;
   /** Test seam. Production passes nothing. */
@@ -77,6 +89,28 @@ export async function runRollingRenderPool<T>(
   let rendered = 0;
   let peakRenders = 0;
   let stopping = false;
+  /** Lanes currently holding (or claiming) a container. */
+  let activeLanes = 0;
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * How many lanes this book may hold now.
+   *
+   * Read at claim time only (once per lane per section, not per poll), so the
+   * split follows books starting and finishing without a cache. A failed read
+   * falls back to the planned lane count — a broken counter must not stall
+   * the book — and the shared `kokoro` permit is still the hard cap.
+   */
+  async function currentBudget(): Promise<number> {
+    if (!opts.laneBudget) return lanes;
+    try {
+      const next = Math.floor(await opts.laneBudget());
+      return Number.isFinite(next) && next >= 1 ? Math.min(next, lanes) : lanes;
+    } catch {
+      return lanes;
+    }
+  }
 
   async function drainBackground(): Promise<void> {
     while (background.size > 0) {
@@ -85,48 +119,68 @@ export async function runRollingRenderPool<T>(
   }
 
   async function lane(): Promise<void> {
+    let waitMs = 100;
     while (!stopping) {
       if (opts.shouldStop?.()) {
         stopping = true;
         break;
       }
-      const index = await opts.claimNext();
-      if (index === null) {
-        stopping = true;
-        break;
+      // Read the budget, then check and take the slot with no await between
+      // them, so two lanes cannot both pass a budget with room for one.
+      const budget = await currentBudget();
+      if (activeLanes >= budget) {
+        // The whole fleet is shared with other books right now. Wait instead
+        // of exiting: another book's section may finish and give this book a
+        // lane back without waiting for this tick to end. A book with no work
+        // left sets `stopping` on the lane that claims `null`, so these
+        // waiters exit too.
+        await sleep(waitMs);
+        waitMs = Math.min(1_000, waitMs * 2);
+        continue;
       }
-      rendered += 1;
-      peakRenders = Math.max(peakRenders, rendered);
-      emit({ type: "render-start", index, at: now() });
-      let value: T;
+      waitMs = 100;
+      activeLanes += 1;
       try {
-        value = await opts.render(index);
-        results.set(index, value);
-      } finally {
-        rendered -= 1;
-        emit({ type: "render-end", index, at: now() });
-      }
-      // The lane is free now. Mastering runs on its own promise, and its
-      // rejection is kept for the caller instead of surfacing as an
-      // unhandled rejection in the middle of the next render. A failed
-      // store — a lost lease, a refused CPU placement — also stops new
-      // claims, so the pool does not keep speaking sections whose rows can
-      // no longer be written.
-      const master: Promise<void> = (async () => {
-        emit({ type: "master-start", index, at: now() });
-        let ok = false;
-        try {
-          await opts.afterRender(index, value);
-          ok = true;
-        } catch (err) {
-          masterErrors.push(err);
+        const index = await opts.claimNext();
+        if (index === null) {
           stopping = true;
-        } finally {
-          emit({ type: "master-end", index, at: now(), ok });
+          break;
         }
-      })();
-      const tracked = master.finally(() => background.delete(tracked));
-      background.add(tracked);
+        rendered += 1;
+        peakRenders = Math.max(peakRenders, rendered);
+        emit({ type: "render-start", index, at: now() });
+        let value: T;
+        try {
+          value = await opts.render(index);
+          results.set(index, value);
+        } finally {
+          rendered -= 1;
+          emit({ type: "render-end", index, at: now() });
+        }
+        // The lane is free now. Mastering runs on its own promise, and its
+        // rejection is kept for the caller instead of surfacing as an
+        // unhandled rejection in the middle of the next render. A failed
+        // store — a lost lease, a refused CPU placement — also stops new
+        // claims, so the pool does not keep speaking sections whose rows can
+        // no longer be written.
+        const master: Promise<void> = (async () => {
+          emit({ type: "master-start", index, at: now() });
+          let ok = false;
+          try {
+            await opts.afterRender(index, value);
+            ok = true;
+          } catch (err) {
+            masterErrors.push(err);
+            stopping = true;
+          } finally {
+            emit({ type: "master-end", index, at: now(), ok });
+          }
+        })();
+        const tracked = master.finally(() => background.delete(tracked));
+        background.add(tracked);
+      } finally {
+        activeLanes -= 1;
+      }
     }
   }
 
@@ -146,23 +200,38 @@ export async function runRollingRenderPool<T>(
 /**
  * Lanes one Kokoro book may use, given how many Kokoro books are running.
  *
- * `fleet` is the deployed `max_containers`. The `kokoro` provider-slot rows
- * are the hard cross-process cap; this is what keeps a single book from
- * taking every slot for the whole of its wave while another book waits.
- * A later book still gets at least one lane, so it makes progress and is not
- * starved indefinitely.
+ * `fleet` is the shared budget: the deployed `max_containers`. The `kokoro`
+ * provider-slot rows are the hard cross-process cap; this split is what keeps
+ * one book from holding every container for the whole of its wave.
+ *
+ * The fleet is divided **exactly**, oldest book first:
+ *
+ *   1 book  → 6 lanes          (alone, a book gets everything)
+ *   2 books → 3 + 3
+ *   4 books → 2 + 2 + 1 + 1    (the remainder goes to the older books)
+ *
+ * So the quotas always sum to `fleet` — no container sits idle while a book
+ * waits, and no book's plan can over-subscribe the fleet. A book ranked past
+ * the fleet still gets one lane; the slot rows then serialise the overflow,
+ * so nobody is starved forever. `configured` (`SOWELL_BOOK_LANES`) is a
+ * per-book ceiling below the split, and `remainingSections` a floor on waste.
  */
 export function planKokoroBookLanes(input: {
   configured: number;
   fleet: number;
   activeBooks: number;
   remainingSections: number;
+  /** Zero-based rank among the active books, oldest first. Defaults to 0. */
+  rank?: number;
 }): number {
   const configured = Math.max(1, Math.floor(input.configured) || 1);
   const fleet = Math.max(1, Math.floor(input.fleet) || 1);
   const books = Math.max(1, Math.floor(input.activeBooks) || 1);
   const sections = Math.max(0, Math.floor(input.remainingSections) || 0);
+  const rank = Math.max(0, Math.floor(input.rank ?? 0) || 0);
   if (sections < 1) return 1;
-  const fairShare = Math.max(1, Math.ceil(fleet / books));
-  return Math.max(1, Math.min(configured, fairShare, sections));
+  const base = Math.floor(fleet / books);
+  const remainder = fleet % books;
+  const quota = base + (rank < remainder ? 1 : 0);
+  return Math.max(1, Math.min(configured, quota, sections));
 }

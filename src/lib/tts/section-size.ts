@@ -27,8 +27,96 @@ export const FIRST_SECTION_CHARS = 800;
 /**
  * A heading does not open a new section until the open one holds about this
  * much (about 90 seconds). Shorter chapters stay as markers inside it.
+ * A voice packed at a smaller target (Kokoro CPU, ~700 chars) passes its own
+ * target as the packer's `minSectionChars`, so a heading still breaks a
+ * section it can never fill.
  */
 export const MIN_SECTION_CHARS = 1500;
+
+/**
+ * Section target for the Kokoro CPU voices (Drew, Walter, George).
+ *
+ * Each section is one HTTP call to one container on the `echomancer-sowell`
+ * fleet, so section length sets both the tail and the per-call latency. At
+ * ~2x realtime a 2,000-character section is ~90 s of audio and 22-47 s of
+ * wall; a 700-character section is ~30 s of audio and 8-15 s of wall, so the
+ * last wave of a book drains much faster and a lane that frees late still
+ * has small work to claim.
+ *
+ * Kokoro's own ceiling is 2,000 characters (the engine splits at 510
+ * phonemes internally), so this target is clamped to
+ * {@link KOKORO_CPU_SECTION_CHARS_MAX}.
+ */
+export const KOKORO_CPU_SECTION_CHARS_DEFAULT = 700;
+export const KOKORO_CPU_SECTION_CHARS_MIN = 300;
+export const KOKORO_CPU_SECTION_CHARS_MAX = 2000;
+/** Absolute per-request ceiling in the Modal container (`MAX_CHARS`). */
+export const KOKORO_CPU_REQUEST_MAX_CHARS = 2000;
+/** First section: about 15-20 s of audio, so first sound is fast. */
+export const KOKORO_CPU_FIRST_SECTION_CHARS = 400;
+/** Second section: a step up before the steady target. */
+export const KOKORO_CPU_SECOND_SECTION_CHARS = 550;
+
+/** True for the three catalog ids served by the Kokoro CPU fleet. */
+export function isKokoroCpuProvider(provider?: string | null): boolean {
+  const id = provider?.toLowerCase() || "";
+  return id === "sowell" || id === "drew" || id === "george";
+}
+
+/**
+ * Configured Kokoro-CPU section target. `KOKORO_CPU_SECTION_CHARS` sets it;
+ * the default is {@link KOKORO_CPU_SECTION_CHARS_DEFAULT}. Clamped to
+ * 300..2000, so a mis-set env cannot ask for a one-word section or a call the
+ * container would reject.
+ */
+export function kokoroCpuSectionChars(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = env.KOKORO_CPU_SECTION_CHARS?.trim();
+  const parsed = raw ? Number(raw) : KOKORO_CPU_SECTION_CHARS_DEFAULT;
+  const n = Number.isFinite(parsed)
+    ? Math.floor(parsed)
+    : KOKORO_CPU_SECTION_CHARS_DEFAULT;
+  return Math.min(
+    KOKORO_CPU_SECTION_CHARS_MAX,
+    Math.max(KOKORO_CPU_SECTION_CHARS_MIN, n)
+  );
+}
+
+/**
+ * Everything the packer needs for a Kokoro-CPU book: the steady target, the
+ * short opening ramp, and a hard max with the usual overflow slack but never
+ * past the container's 2,000-character request cap.
+ */
+export function kokoroCpuSectionPlan(env: NodeJS.ProcessEnv = process.env): {
+  maxChars: number;
+  firstSectionMaxChars: number;
+  secondSectionMaxChars: number;
+  thirdSectionMaxChars: number;
+  hardMaxChars: number;
+} {
+  const maxChars = kokoroCpuSectionChars(env);
+  const first = Math.min(KOKORO_CPU_FIRST_SECTION_CHARS, maxChars);
+  const second = Math.min(KOKORO_CPU_SECOND_SECTION_CHARS, maxChars);
+  return {
+    maxChars,
+    firstSectionMaxChars: first,
+    secondSectionMaxChars: second,
+    thirdSectionMaxChars: maxChars,
+    // The packer may run 25% past the target to reach a paragraph break, but
+    // a section can never exceed what one container call accepts.
+    hardMaxChars: Math.min(
+      KOKORO_CPU_REQUEST_MAX_CHARS,
+      hardMaxForTargetLocal(maxChars)
+    ),
+  };
+}
+
+/** Same slack as `hardMaxForTarget` in split-text, without the import cycle. */
+function hardMaxForTargetLocal(targetChars: number): number {
+  const slack = Math.max(200, Math.round(targetChars * 0.25));
+  return targetChars + slack;
+}
 
 /**
  * Floor for even Whole-book packing so a tiny book is not sliced into

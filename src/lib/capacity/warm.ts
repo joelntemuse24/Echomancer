@@ -28,6 +28,33 @@ export type WarmPool = "cpu" | "kokoro";
 export type WarmReason = "create" | "voice";
 export type WarmPostResult = "ready" | "unreachable" | "unconfigured";
 
+/**
+ * How many Kokoro containers one warm may start. Always one.
+ *
+ * A click warms the next section's container, not the book's whole lane plan.
+ * A book that later runs at 16 lanes lets Modal place the rest on the first
+ * real call (the app's `max_containers` is the ceiling), so `min_containers`
+ * stays 0 and a stray page view cannot stand up a whole fleet.
+ */
+export const KOKORO_WARM_CONTAINERS = 1;
+
+/**
+ * How many Kokoro containers this book will actually use. The book's lanes
+ * are bounded by the fleet, by `SOWELL_BOOK_LANES`, and by its section count,
+ * so a warm loop never asks for more than one of those. `min_containers`
+ * stays 0; this is only a ceiling for a caller that iterates warms.
+ */
+export function kokoroWarmLimit(input: {
+  fleetContainers: number;
+  bookLanes: number;
+  sectionCount: number;
+}): number {
+  const fleet = Math.max(1, Math.floor(input.fleetContainers) || 1);
+  const lanes = Math.max(1, Math.floor(input.bookLanes) || 1);
+  const sections = Math.max(0, Math.floor(input.sectionCount) || 0);
+  return Math.max(1, Math.min(fleet, lanes, sections || 1));
+}
+
 /** How long a claimed warm suppresses another one for this pool. */
 export function warmHoldMs(pool: WarmPool): number {
   return pool === "kokoro" ? KOKORO_WARM_HOLD_MS : WARM_HOLD_MS;

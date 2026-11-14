@@ -9,6 +9,14 @@ import {
   edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
   hardMaxCharsForModel,
+  isKokoroCpuProvider,
+  KOKORO_CPU_FIRST_SECTION_CHARS,
+  KOKORO_CPU_REQUEST_MAX_CHARS,
+  KOKORO_CPU_SECTION_CHARS_DEFAULT,
+  KOKORO_CPU_SECTION_CHARS_MAX,
+  KOKORO_CPU_SECTION_CHARS_MIN,
+  kokoroCpuSectionChars,
+  kokoroCpuSectionPlan,
   maxCharsForModel,
   streamWindowChars,
 } from "./section-size";
@@ -144,5 +152,87 @@ describe("hardMaxCharsForModel", () => {
     expect(hardMaxCharsForModel({ provider: "edge", catalogMax: 4500 })).toBe(4500);
     expect(hardMaxCharsForModel({ model: "zyphra/zonos-v0.1", target: 1000 })).toBe(350);
     expect(hardMaxCharsForModel({ provider: "openai", target: 800 })).toBe(800);
+  });
+});
+
+describe("Kokoro CPU section sizing", () => {
+  it("targets ~700 characters by default with a short opening", () => {
+    expect(KOKORO_CPU_SECTION_CHARS_DEFAULT).toBe(700);
+    expect(kokoroCpuSectionChars({} as NodeJS.ProcessEnv)).toBe(700);
+    const plan = kokoroCpuSectionPlan({} as NodeJS.ProcessEnv);
+    expect(plan.maxChars).toBe(700);
+    // First audio lands within about 15–20 s of speech, not a full section.
+    expect(plan.firstSectionMaxChars).toBe(KOKORO_CPU_FIRST_SECTION_CHARS);
+    expect(plan.firstSectionMaxChars).toBeLessThan(plan.maxChars);
+    // The second section steps up to the steady target.
+    expect(plan.secondSectionMaxChars).toBeLessThanOrEqual(plan.maxChars);
+    expect(plan.thirdSectionMaxChars).toBe(plan.maxChars);
+    // Overflow slack, but never past the container's per-request cap.
+    expect(plan.hardMaxChars).toBeGreaterThan(plan.maxChars);
+    expect(plan.hardMaxChars).toBeLessThanOrEqual(KOKORO_CPU_REQUEST_MAX_CHARS);
+    // Same slack the packer itself uses (target + max(200, 25%)), so the
+    // local copy cannot drift from `hardMaxForTarget`.
+    expect(plan.hardMaxChars).toBe(Math.min(2000, 700 + Math.max(200, Math.round(700 * 0.25))));
+  });
+
+  it("honours KOKORO_CPU_SECTION_CHARS and clamps it to 300..2000", () => {
+    expect(
+      kokoroCpuSectionChars({ KOKORO_CPU_SECTION_CHARS: "900" } as NodeJS.ProcessEnv)
+    ).toBe(900);
+    expect(
+      kokoroCpuSectionChars({ KOKORO_CPU_SECTION_CHARS: "100" } as NodeJS.ProcessEnv)
+    ).toBe(KOKORO_CPU_SECTION_CHARS_MIN);
+    expect(
+      kokoroCpuSectionChars({ KOKORO_CPU_SECTION_CHARS: "9999" } as NodeJS.ProcessEnv)
+    ).toBe(KOKORO_CPU_SECTION_CHARS_MAX);
+    expect(
+      kokoroCpuSectionChars({ KOKORO_CPU_SECTION_CHARS: "abc" } as NodeJS.ProcessEnv)
+    ).toBe(KOKORO_CPU_SECTION_CHARS_DEFAULT);
+    expect(
+      kokoroCpuSectionChars({ KOKORO_CPU_SECTION_CHARS: "  " } as NodeJS.ProcessEnv)
+    ).toBe(KOKORO_CPU_SECTION_CHARS_DEFAULT);
+    // A 2,000-char override leaves no overflow room; the hard max is the cap.
+    const plan = kokoroCpuSectionPlan({
+      KOKORO_CPU_SECTION_CHARS: "2000",
+    } as NodeJS.ProcessEnv);
+    expect(plan.maxChars).toBe(2000);
+    expect(plan.hardMaxChars).toBe(2000);
+  });
+
+  it("keeps the opening shorter than the target for every legal override", () => {
+    for (const value of ["300", "450", "700", "1200", "2000"]) {
+      const plan = kokoroCpuSectionPlan({
+        KOKORO_CPU_SECTION_CHARS: value,
+      } as NodeJS.ProcessEnv);
+      expect(plan.firstSectionMaxChars).toBeLessThanOrEqual(plan.maxChars);
+      expect(plan.secondSectionMaxChars).toBeLessThanOrEqual(plan.maxChars);
+      expect(plan.hardMaxChars).toBeGreaterThanOrEqual(plan.maxChars);
+      expect(plan.hardMaxChars).toBeLessThanOrEqual(KOKORO_CPU_REQUEST_MAX_CHARS);
+    }
+  });
+
+  it("identifies only the Kokoro CPU providers", () => {
+    expect(isKokoroCpuProvider("drew")).toBe(true);
+    expect(isKokoroCpuProvider("sowell")).toBe(true);
+    expect(isKokoroCpuProvider("george")).toBe(true);
+    expect(isKokoroCpuProvider("DREW")).toBe(true);
+    // Every other engine keeps its own packing.
+    for (const other of ["edge", "google", "fish", "paradee", "gemini", "grok", "openrouter", ""]) {
+      expect(isKokoroCpuProvider(other)).toBe(false);
+    }
+    expect(isKokoroCpuProvider(null)).toBe(false);
+    expect(isKokoroCpuProvider(undefined)).toBe(false);
+  });
+
+  it("leaves every other engine's request ceiling untouched", () => {
+    expect(maxCharsForModel({ provider: "edge" })).toBe(2000);
+    expect(maxCharsForModel({ provider: "fish" })).toBe(FISH_TARGET_CHARS);
+    expect(maxCharsForModel({ provider: "paradee" })).toBe(2000);
+    expect(hardMaxCharsForModel({ provider: "fish" })).toBe(FISH_HARD_MAX_CHARS);
+    // The Kokoro ceiling is still the request cap, independent of the target.
+    expect(maxCharsForModel({ provider: "drew" })).toBe(2000);
+    expect(hardMaxCharsForModel({ provider: "drew" })).toBe(2000);
+    expect(hardMaxCharsForModel({ provider: "sowell" })).toBe(2000);
+    expect(hardMaxCharsForModel({ provider: "george" })).toBe(2000);
   });
 });

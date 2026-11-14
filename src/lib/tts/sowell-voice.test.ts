@@ -240,9 +240,11 @@ describe("sowell voice", () => {
     const source = readFileSync(path.join(process.cwd(), "modal/sowell_worker.py"), "utf8");
     expect(source).toContain("@modal.enter()");
     expect(source).toContain("min_containers=0");
-    // Six containers: the fleet the worker's six book lanes share. Idle scale
-    // down is 60s, not 300s: five idle minutes were ~40% of a book's cost.
-    expect(source).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6"))');
+    // Six containers by default: the fleet the worker's book lanes share.
+    // Idle scale down is 60s, not 300s: five idle minutes were ~40% of a
+    // book's cost.
+    expect(source).toContain("max_containers=max_containers()");
+    expect(source).toContain("MAX_CONTAINERS_CEILING = 16");
     expect(source).toContain('scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60"))');
     // Threads are a redeploy-time knob, applied before the model load.
     // Default 4: benchmarked ~1.5x faster than 2 on Modal's 2 cores.

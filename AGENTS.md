@@ -308,13 +308,28 @@ job still needs `FISH_API_KEY` on the account that owns her reference.
 
 **Kokoro CPU lanes (Drew, Walter, George):** all three narrators come from one
 Modal app, `echomancer-sowell` (`modal/sowell_worker.py`, image
-`workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 6)
-containers at 2 CPU and 6 GB each, `min_containers=0`, idle
-`SOWELL_SCALEDOWN_SECONDS` (default 60). One book asks for
-`SOWELL_BOOK_LANES` lanes (default 6, clamped to 8 and to the fleet), and
-`planKokoroBookLanes` cuts that to its fair share of the fleet among the
-running Kokoro books, never below 1, so one long book cannot starve another
-user. The `kokoro` provider-slot rows are the hard cross-process cap.
+`workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 6,
+clamped 1..16 at deploy) containers at 2 CPU and 6 GB each,
+`min_containers=0`, idle `SOWELL_SCALEDOWN_SECONDS` (default 60). One book asks
+for `SOWELL_BOOK_LANES` lanes (default 6, clamped to 16 and to the fleet).
+`planKokoroBookLanes` divides the fleet **exactly** among the running Kokoro
+books, oldest first: alone, a book gets all of it; two books get 3+3; four
+books over six containers get 2+2+1+1, so the quotas sum to the fleet and a
+container never sits idle while a book waits. Every book keeps at least one
+lane, so one long book cannot starve another user. The budget is re-read
+before every claim (`laneBudget`), so a book that starts mid-wave takes lanes
+as another book's sections finish, and a running book shrinks to its new
+share. The `kokoro` provider-slot rows are the hard cross-process cap, so
+total concurrent Kokoro calls never exceed `SOWELL_MAX_CONTAINERS` even if a
+budget read is stale; a 429 from a busy container is retried with backoff,
+never failed.
+
+Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700**, clamped
+300..2000) with a 400-character opening and a 550-character second section;
+one section is one container call, so the smaller target shortens the tail.
+The container still refuses over 2,000 characters and splits at 510 phonemes
+internally. Other engines keep their own packing. `scripts/sowell/split_for_loadtest.ts`
+prints the production sections for a given text, voice, and target.
 
 The take-home tick drives those lanes with a **rolling pool**
 (`src/lib/tts/kokoro-pool.ts` → `runRollingRenderPool`): a lane claims the

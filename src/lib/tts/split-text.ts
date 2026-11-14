@@ -88,6 +88,13 @@ export type SplitTextOptions = {
    * source line. Below that, heading detection runs as before.
    */
   chapters?: { match: string; title: string }[];
+  /**
+   * How much an open section must hold before a heading opens a new one.
+   * Defaults to {@link MIN_SECTION_CHARS}. A voice packed at a smaller target
+   * (Kokoro CPU, ~700 chars) passes its own target so a heading is not
+   * absorbed into a section that can never reach 1,500.
+   */
+  minSectionChars?: number;
 };
 
 export function hardMaxForTarget(targetChars: number): number {
@@ -517,6 +524,15 @@ export function packSpeakableSections(
   const measure: SizeFn = opts?.measure ?? ((s) => s.length);
   const hardMax = opts?.hardMaxChars ?? hardMaxForTarget(maxChars);
   maxChars = Math.min(maxChars, hardMax);
+  // A voice packed below the default heading threshold still ends sections on
+  // headings once the open one is near its own target; otherwise every short
+  // chapter would be swallowed into a run far past `maxChars`. Callers that
+  // pack above the threshold leave this unset and keep 1,500.
+  const requestedMin = opts?.minSectionChars;
+  const minSectionChars =
+    typeof requestedMin === "number" && requestedMin >= 10
+      ? Math.min(requestedMin, maxChars)
+      : MIN_SECTION_CHARS;
   const requestedFirst = opts?.firstSectionMaxChars;
   const firstTarget =
     typeof requestedFirst === "number" && requestedFirst >= 10
@@ -673,7 +689,9 @@ export function packSpeakableSections(
       const title = unit.title ?? unit.text;
       const absorbing = open;
       const breakAt =
-        finished.length === 0 ? Math.min(firstTarget, MIN_SECTION_CHARS) : MIN_SECTION_CHARS;
+        finished.length === 0
+          ? Math.min(firstTarget, minSectionChars)
+          : minSectionChars;
       if (absorbing !== null) {
         const held: OpenSection = absorbing;
         const body = openSectionText(held);

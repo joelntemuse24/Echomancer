@@ -263,7 +263,7 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain("modal.Volume.from_name");
     expect(worker).toContain('"andrew-distill"');
     expect(worker).toContain("min_containers=0");
-    expect(worker).toContain("max_containers=int(os.environ.get(");
+    expect(worker).toContain("max_containers=max_containers()");
     // Two kmodels need more than the Walter/George 4 GB.
     expect(worker).toContain("memory=6144");
     expect(worker).toContain("@modal.concurrent(max_inputs=1)");

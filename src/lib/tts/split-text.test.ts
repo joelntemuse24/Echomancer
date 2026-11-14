@@ -554,6 +554,28 @@ describe("front matter and minimum section size", () => {
     expect(chapter2).toBeTruthy();
     expect(chapter2!.text).not.toContain("Chapter 1");
   });
+
+  it("moves the heading threshold with the target for a small-section voice", () => {
+    // A ~700-character voice cannot reach the 1,500-character default, so a
+    // heading must break once the open section is near its own target.
+    const para = "The harbor was quiet after the rain and the gulls turned. ".repeat(12).trim();
+    const text = ["Chapter 1", para, "Chapter 2", para, "Chapter 3", para].join("\n\n");
+    // Default threshold: each 695-char body is under 1,500, so Chapter 2 and
+    // Chapter 3 are absorbed as chapter marks inside a section.
+    const wide = packSpeakableSections(text, 700);
+    expect(wide.some((section) => (section.chapterMarks ?? []).length > 0)).toBe(true);
+    // Threshold at the target: each chapter opens its own section.
+    const tight = packSpeakableSections(text, 700, { minSectionChars: 700 });
+    expect(tight.every((section) => (section.chapterMarks ?? []).length === 0)).toBe(true);
+    expect(tight.map((section) => section.text.slice(0, 9))).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+    ]);
+    for (const section of tight) {
+      expect(section.text.length).toBeLessThanOrEqual(900);
+    }
+  });
 });
 
 describe("oversized run boundaries", () => {
