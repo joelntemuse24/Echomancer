@@ -1156,9 +1156,9 @@ for that one recovery.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Echomancer Andrew (`echomancer-andrew`), Ava, Libby, Ryan; clones merged in the voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Drew (`drew`), Echomancer Andrew (`echomancer-andrew`), Ava, Libby, George, then Walter (`sowell`) when its endpoint is set; clones merged in the voices API. Andrew (`standard`) and Ryan are unlisted but still resolve for stored books |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
-| `getDefaultCatalogVoice()` | Standard (`standard`) |
+| `getDefaultCatalogVoice()` | Drew (`drew`); Ava while Drew's endpoint is unconfigured |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
 
 ### Fish voice cloning + live HTTP stream

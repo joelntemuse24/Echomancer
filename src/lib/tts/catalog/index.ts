@@ -15,9 +15,10 @@ import {
   isFishCloneCatalogId,
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
-import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import { AVA_CATALOG_VOICE_ID, SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
+import { DREW_CATALOG_VOICE_ID, drewReady } from "@/lib/tts/drew-voice";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
@@ -31,6 +32,7 @@ const catalogVoiceSchema = z.object({
     "paradee",
     "sowell",
     "george",
+    "drew",
     "research",
   ]),
   providerVoiceId: z.string(),
@@ -58,8 +60,8 @@ const staticVoices: CatalogVoice[] = z
   .array(catalogVoiceSchema)
   .parse(rawVoices);
 
-/** App default stock narrator — Standard (en-US-AndrewNeural). */
-export const DEFAULT_VOICE_ID = "standard";
+/** App default stock narrator — Drew (fine-tuned Kokoro-82M). */
+export const DEFAULT_VOICE_ID = DREW_CATALOG_VOICE_ID;
 /** Legacy slim-catalog id. Still resolved for in-flight jobs. */
 export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
@@ -82,12 +84,17 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
 }
 
 /**
- * Product catalog is four stock narrators + user clones:
- *   - Andrew (`standard` → en-US-AndrewNeural, default)
+ * Product catalog is five stock narrators + user clones:
+ *   - Drew (`drew`, the default, fine-tuned Kokoro-82M on the CPU app)
+ *   - Echomancer Andrew (`echomancer-andrew` → self-hosted Paradee)
  *   - Ava (`ava` → en-US-AvaNeural)
  *   - Libby (`libby` → en-GB-LibbyNeural)
- *   - Ryan (`ryan` → en-GB-RyanNeural)
+ *   - George (`george` → Kokoro `bm_george`, only when configured)
+ *   - Plus Walter (`sowell`, Kokoro pack) when its endpoint is up
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
+ *
+ * Retired ids are not listed: Andrew (`standard`, Edge), Ryan, Michelle,
+ * Clara, Randolph. `getCatalogVoice` still resolves each for a stored job.
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
  * resolves legacy `fish-narrator` / `or:` / `research:` / `gemini-*` ids for
@@ -99,11 +106,13 @@ function listSlimDefaultCatalogVoices(): CatalogVoice[] {
   ).filter((v): v is CatalogVoice => {
     if (!v) return false;
     if (v.id === GEORGE_CATALOG_VOICE_ID && !georgeReady()) return false;
+    if (v.id === DREW_CATALOG_VOICE_ID && !drewReady()) return false;
     return true;
   });
-  if (!sowellReady()) return slim;
-  const sowell = staticVoices.find((v) => v.id === SOWELL_CATALOG_VOICE_ID);
-  return sowell ? [...slim, sowell] : slim;
+  const walter = sowellReady()
+    ? staticVoices.find((v) => v.id === SOWELL_CATALOG_VOICE_ID)
+    : undefined;
+  return walter ? [...slim, walter] : slim;
 }
 
 function applyFilters(
@@ -119,6 +128,7 @@ function applyFilters(
         voice.provider === "paradee" ||
         voice.provider === "sowell" ||
         voice.provider === "george" ||
+        voice.provider === "drew" ||
         isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
@@ -221,8 +231,19 @@ export async function getCatalogVoice(
   ) {
     return undefined;
   }
-  if (voice.id === SOWELL_CATALOG_VOICE_ID && !sowellReady()) return undefined;
-  if (voice.id === GEORGE_CATALOG_VOICE_ID && !georgeReady()) return undefined;
+  if (
+    voice.id === SOWELL_CATALOG_VOICE_ID ||
+    voice.id === GEORGE_CATALOG_VOICE_ID ||
+    voice.id === DREW_CATALOG_VOICE_ID
+  ) {
+    const ready =
+      voice.id === SOWELL_CATALOG_VOICE_ID
+        ? sowellReady()
+        : voice.id === GEORGE_CATALOG_VOICE_ID
+          ? georgeReady()
+          : drewReady();
+    if (!ready) return undefined;
+  }
   return publishCatalogVoice(voice);
 }
 
@@ -230,10 +251,20 @@ function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   return enrichCatalogVoices([voice])[0]!;
 }
 
-/** Fallback narrator when a request names no voice — always Standard. */
+/**
+ * Fallback narrator when a request names no voice — Drew.
+ *
+ * Drew is the product default, but it lives on our own CPU app, so the card
+ * (and this default) only exists while `DREW_ENABLED`, `DREW_URL` and
+ * `DREW_TOKEN` are set. Before that deploy the fallback is Ava, the Edge voice
+ * that needs no configuration: a no-voice request must never be stored
+ * pointing at an endpoint that cannot speak.
+ */
 export function getDefaultCatalogVoice(): CatalogVoice {
-  const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  if (standard) return publishCatalogVoice(standard);
-  const base = staticVoices[0]!;
-  return publishCatalogVoice(base);
+  const preferred = drewReady()
+    ? staticVoices.find((v) => v.id === DEFAULT_VOICE_ID)
+    : staticVoices.find((v) => v.id === AVA_CATALOG_VOICE_ID);
+  const chosen =
+    preferred ?? staticVoices.find((v) => v.id === DEFAULT_VOICE_ID) ?? staticVoices[0]!;
+  return publishCatalogVoice(chosen);
 }

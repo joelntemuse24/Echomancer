@@ -307,6 +307,9 @@ describe("take-home generation", () => {
     const created = await createJob({
       userId: USER_A,
       pdfStoragePath: upload.body.storagePath,
+      // Drew is the default narrator, but it needs its CPU endpoint. Name an
+      // Edge voice here so the pipeline test does not depend on that config.
+      catalogVoiceId: "ava",
     });
     expect(created.response.status).toBe(200);
     expect(created.body.status).toBe("queued");
@@ -318,9 +321,9 @@ describe("take-home generation", () => {
 
     const jobId = created.body.jobId as string;
     const queued = await jobRow(jobId);
-    expect(queued?.catalog_voice_id).toBe("standard");
+    expect(queued?.catalog_voice_id).toBe("ava");
     expect(queued?.tts_provider).toBe("edge");
-    expect(queued?.provider_voice_id).toBe("en-US-AndrewNeural");
+    expect(queued?.provider_voice_id).toBe("en-US-AvaNeural");
     expect((await runWorker(jobId)).status).toBe(200);
 
     const finished = await jobRow(jobId);

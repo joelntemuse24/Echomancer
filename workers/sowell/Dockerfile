@@ -1,11 +1,15 @@
-# Sowell CPU image. Official Python, not Debian apt python, so later
-# `python -m pip` layers are not blocked by PEP 668. Do not apt-install
-# python3. Do not query pip's config. The voice pack is a build input
-# and is not part of the Next.js bundle.
+# Kokoro CPU image for Drew, Walter, and George. Official Python, not Debian
+# apt python, so later `python -m pip` layers are not blocked by PEP 668.
+# Do not apt-install python3. Do not query pip's config. The voice pack is a
+# build input and is not part of the Next.js bundle.
 #
 #   docker build -f workers/sowell/Dockerfile .
 # Place voices/sowell/am_sowell_avg.pt (gitignored) before building.
 # The pack check fails the image if the hash or layout is wrong.
+#
+# Drew's kmodel and pack are NOT baked here: they are private, ~313 MB, and
+# come from the `andrew-distill` Modal Volume at runtime. See
+# modal/sowell_worker.py and scripts/sowell/drew.py.
 
 FROM python:3.11-slim-bookworm
 
@@ -32,6 +36,10 @@ RUN python -c "import hashlib,os,shutil; from pathlib import Path; from huggingf
 
 ENV SOWELL_PACK=/opt/sowell/voices/am_sowell_avg.pt
 ENV SOWELL_MANIFEST=/opt/sowell/voices/manifest.json
+# Drew's files are on a Modal Volume, not in the image.
+ENV DREW_VOLUME_MOUNT=/andrew-distill
+ENV DREW_KMODEL_RELATIVE_PATH=/kokoro/retrain_v3/stageA/step00900_kmodel.pth
+ENV DREW_VOICE_RELATIVE_PATH=/kokoro/retrain_v3/stageA/step00900_voice.pt
 ENV SOWELL_CPU_THREADS=2
 ENV OMP_NUM_THREADS=2
 ENV OPENBLAS_NUM_THREADS=2

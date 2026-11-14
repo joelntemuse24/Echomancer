@@ -30,7 +30,8 @@ describe("george voice", () => {
     const listed = (await listCatalogVoices()).map((voice) => voice.id);
     expect(listed).not.toContain("george");
     expect(listed).not.toContain("ryan");
-    expect(listed).toEqual(["standard", "echomancer-andrew", "ava", "libby"]);
+    // Drew is the default and is absent too unless its own endpoint is set.
+    expect(listed).toEqual(["echomancer-andrew", "ava", "libby"]);
   });
 
   it("lists George on the Kokoro CPU adapter and does not call OpenRouter", async () => {
@@ -46,6 +47,7 @@ describe("george voice", () => {
     expect(takehomeCacheVariant("george", "george")).toBe(GEORGE_CACHE_VARIANT);
     expect(takehomeCacheVariant("edge", "ryan")).not.toBe(GEORGE_CACHE_VARIANT);
     expect(takehomeCacheVariant("sowell", "sowell")).not.toBe(GEORGE_CACHE_VARIANT);
+    expect(takehomeCacheVariant("drew", "drew")).not.toBe(GEORGE_CACHE_VARIANT);
     expect(hardMaxCharsForModel({ provider: "george", model: "kokoro/bm_george" })).toBe(2000);
 
     let posted = "";

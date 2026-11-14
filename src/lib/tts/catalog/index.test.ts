@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogVoice } from "@/lib/tts/types";
 
 const mocks = vi.hoisted(() => ({
@@ -68,9 +68,26 @@ describe("Standard slim catalog", () => {
     vi.resetAllMocks();
     mocks.isResearchPreviewConfigured.mockReturnValue(false);
     mocks.listResearchPreviewVoices.mockReturnValue([]);
+    // Drew is the default and lives on our own CPU app, so the listed catalog
+    // (and the default) only include it while its endpoint is configured.
+    process.env.DREW_ENABLED = "1";
+    process.env.DREW_URL = "https://example.modal.run";
+    process.env.DREW_TOKEN = "token";
+    delete process.env.SOWELL_ENABLED;
+    delete process.env.SOWELL_URL;
+    delete process.env.SOWELL_TOKEN;
+    delete process.env.GEORGE_ENABLED;
+    delete process.env.GEORGE_URL;
+    delete process.env.GEORGE_TOKEN;
   });
 
-  it("lists Andrew, Ava, and Libby, and keeps Ryan off the list", async () => {
+  afterEach(() => {
+    delete process.env.DREW_ENABLED;
+    delete process.env.DREW_URL;
+    delete process.env.DREW_TOKEN;
+  });
+
+  it("lists Drew, Ava, and Libby, and keeps Andrew and Ryan off the list", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
@@ -79,14 +96,16 @@ describe("Standard slim catalog", () => {
       "libby",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
-      "Andrew",
+      "Drew",
       "Echomancer Andrew",
       "Ava",
       "Libby",
     ]);
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
-    expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
+    expect(voices.map((v) => v.id)).not.toContain("standard");
+    expect(voices[0]!.provider).toBe("drew");
+    expect(voices[0]!.providerVoiceId).toBe("drew");
     expect(voices[1]!.provider).toBe("paradee");
     expect(voices[1]!.model).toBe("paradee/paradee-v1.1-int8");
     expect(voices[2]!.providerVoiceId).toBe("en-US-AvaNeural");
@@ -94,6 +113,11 @@ describe("Standard slim catalog", () => {
     expect(voices[3]!.provider).toBe("edge");
     expect(voices.map((v) => v.id)).not.toContain("ryan");
     expect(voices.map((v) => v.id)).not.toContain("george");
+    expect(voices.map((v) => v.id)).not.toContain("standard");
+    // Drew replaces the retired Edge male; the Paradee student stays listed
+    // under its own self-hosted name.
+    expect(voices.map((v) => v.displayName)).toContain("Drew");
+    expect(voices.map((v) => v.displayName)).not.toContain("Andrew");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
         /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
@@ -117,17 +141,54 @@ describe("Standard slim catalog", () => {
     }
   });
 
-  it("defaults to Standard → en-US-AndrewNeural", () => {
+  it("defaults to Drew, the fine-tuned Kokoro narrator", () => {
     const def = getDefaultCatalogVoice();
     expect(def.id).toBe(DEFAULT_VOICE_ID);
-    expect(def.provider).toBe("edge");
-    expect(def.providerVoiceId).toBe("en-US-AndrewNeural");
+    expect(def.provider).toBe("drew");
+    expect(def.providerVoiceId).toBe("drew");
     expect(def.usdPerMillionChars).toBe(0);
+  });
+
+  it("lists Walter under its new name and never lists the retired Andrew row", async () => {
+    process.env.SOWELL_ENABLED = "1";
+    process.env.SOWELL_URL = "https://example.modal.run";
+    process.env.SOWELL_TOKEN = "token";
+    try {
+      const voices = await listCatalogVoices();
+      const walter = voices.find((v) => v.id === "sowell");
+      expect(walter?.displayName).toBe("Walter");
+      expect(walter?.friendlyName).toBe("Walter");
+      // `echomancer-andrew` is a different, still-listed voice (Paradee). The
+      // retired Edge `standard` row is the one that must be gone.
+      expect(voices.map((v) => v.id)).not.toContain("standard");
+      expect(voices.map((v) => v.id)).not.toContain("ryan");
+      expect(voices.map((v) => v.displayName)).not.toContain("Sowell");
+      expect(voices.map((v) => v.displayName)).not.toContain("Andrew");
+    } finally {
+      delete process.env.SOWELL_ENABLED;
+      delete process.env.SOWELL_URL;
+      delete process.env.SOWELL_TOKEN;
+    }
+  });
+
+  it("falls back to Ava when Drew's endpoint is not configured", () => {
+    delete process.env.DREW_ENABLED;
+    const def = getDefaultCatalogVoice();
+    expect(def.id).toBe("ava");
+    expect(def.provider).toBe("edge");
   });
 
   it("resolves the default voice by id", async () => {
     const found = await getCatalogVoice(DEFAULT_VOICE_ID);
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
+  });
+
+  it("still resolves the retired Andrew row for a stored book", async () => {
+    await expect(getCatalogVoice("standard")).resolves.toMatchObject({
+      id: "standard",
+      provider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
   });
 
   it("resolves Ava and Clara by id and drops Randolph", async () => {

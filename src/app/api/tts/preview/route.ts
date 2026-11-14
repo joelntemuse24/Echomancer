@@ -13,7 +13,7 @@ import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { readStockPreview } from "@/lib/tts/stock-preview-file";
 import {
   coercePlainCatalogVoiceId,
-  STANDARD_CATALOG_VOICE_ID,
+  DREW_CATALOG_VOICE_ID,
 } from "@/lib/tts/standard-voice";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { inferAccent } from "@/lib/tts/voice-persona";
@@ -86,8 +86,11 @@ export async function POST(request: NextRequest) {
       hdEnabled: true,
       userId,
     });
+    // A leftover Expressive request is Drew now, not the retired Andrew row.
+    // With Drew's endpoint unset there is no sample, and the route says so
+    // instead of synthesizing a narrator that is no longer offered.
     if (!catalog && /expressive/i.test(requestedId)) {
-      catalog = await getCatalogVoice(STANDARD_CATALOG_VOICE_ID, {
+      catalog = await getCatalogVoice(DREW_CATALOG_VOICE_ID, {
         hdEnabled: true,
         userId,
       });

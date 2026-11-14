@@ -1,11 +1,17 @@
 # Echomancer v2 — Agent Guide
 
-> Documents → audiobook. Shipped stock voices are **Andrew**
-> (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
-> not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan**
-> (Edge `en-GB-RyanNeural`). Clara and Michelle are unlisted and still
+> Documents → audiobook. Shipped stock voices are **Drew** (catalog id
+> `drew`, a fine-tuned Kokoro-82M on our own CPU app, the app default),
+> **Ava** (`en-US-AvaNeural`, not Dragon HD), **Libby** (Edge
+> `en-GB-LibbyNeural`), **George** (Kokoro `bm_george`), and **Walter**
+> (listed name for the `sowell` Kokoro pack). **Andrew is retired**: catalog
+> id `standard` (Edge `en-US-AndrewNeural`) is unlisted and still resolves,
+> so a book already made with Andrew keeps playing and is not re-spoken; a
+> new request or saved pick that names Andrew lands on Drew. Ryan is
+> unlisted for the same reason and a new request that names him uses
+> George. Clara and Michelle are unlisted and still
 > resolve for books already made with them. A new request that names Clara
-> uses Libby. One that names Randolph or Google uses Andrew. A book already
+> uses Libby. One that names Randolph or Google uses Drew. A book already
 > stored as Randolph keeps its audio and is not spoken again. Do not add rejected
 > Edge females (Jenny, Sonia, Aria) or Ava
 > Dragon HD. **Fish voice cloning** trains on the direct Fish API
@@ -265,29 +271,50 @@ Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
+**Default slim catalog:** **Drew** (`drew` → a fine-tuned Kokoro-82M with its
+own kmodel weights and voice pack, on the shared Modal CPU app; the app
+default, listed only when `DREW_ENABLED`, `DREW_URL`, and `DREW_TOKEN` are set),
 **Echomancer Andrew** (`echomancer-andrew` → self-hosted Paradee),
 **Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
 `en-GB-LibbyNeural`), **George** (`george` → Kokoro `bm_george` on the
-same Modal CPU app as Sowell, British phonemes, listed only when
-`GEORGE_ENABLED`, `GEORGE_URL`, and `GEORGE_TOKEN` are set) plus user
-clones. Ryan is not listed. A book already stored as Ryan stays on Edge
-and is not spoken again. A new request that names Ryan uses George, or
-503 `GEORGE_NOT_CONFIGURED` when that endpoint is unset. No Gemini / MiniMax / rejected Edge
-females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
-not listed. `SLIM_STOCK_VOICE_IDS` lists Andrew, Echomancer Andrew, Ava,
-Libby, and George. The customer UI renders George only when the voices
-response includes provider `george`, then a Sowell card only when it
-includes provider `sowell`. Sowell's sample is the committed
-`am_sowell` MP3 of the standard preview line; the play control is
-separate from the selection and does not synthesize. George's sample
-is the committed `bm_george` MP3. When the response omits either card it
-is absent, and a saved pick of that voice does not highlight Andrew.
+same Modal CPU app, British phonemes, listed only when
+`GEORGE_ENABLED`, `GEORGE_URL`, and `GEORGE_TOKEN` are set), and **Walter**
+(the listed name for the `sowell` Kokoro pack, listed only when
+`SOWELL_ENABLED`, `SOWELL_URL`, and `SOWELL_TOKEN` are set) plus user
+clones. **Andrew is retired.** Catalog id `standard` (Edge
+`en-US-AndrewNeural`) is unlisted and still resolves, so a book already
+made with Andrew keeps playing and downloading that audio and is never
+re-spoken; a new request or saved pick that names Andrew/`standard` is
+coerced to Drew by `coercePlainCatalogVoiceId`. A new request that names
+Randolph or a Google Cloud voice is also Drew. Ryan is not listed, and a
+new request that names him uses George, or 503 `GEORGE_NOT_CONFIGURED`
+when that endpoint is unset. A request naming Drew with its endpoint unset
+is 503 `DREW_NOT_CONFIGURED`. No Gemini / MiniMax / rejected Edge females
+(Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are not
+listed. `SLIM_STOCK_VOICE_IDS` lists Drew, Echomancer Andrew, Ava, Libby,
+and George. The customer UI renders George only when the voices response
+includes provider `george`, Drew only when it includes provider `drew`, and
+a Walter card only when it includes provider `sowell`. Walter's id is still
+`sowell`, so stored books and `public/voice-previews/sowell.mp3` are
+unchanged. Drew has no committed sample yet: it renders once through
+`POST /api/tts/preview`. When the response omits a card it is absent, and a
+saved pick of that voice does not highlight Drew.
 Picker samples for the listed stock voices are committed recordings at
-`public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
-`libby`, `george`, `sowell`). `ryan.mp3` remains for a stored Ryan book. Re-record
-them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
+`public/voice-previews/<id>.mp3` (`echomancer-andrew`, `ava`,
+`libby`, `george`, `sowell`). `standard.mp3` and `ryan.mp3` remain for a
+stored Andrew or Ryan book. Re-record them when `PREVIEW_TEXT` changes.
+Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
+
+**Drew speed:** Drew renders at Kokoro speed **0.88**, which is real
+Andrew's natural 1x. That 0.88 is applied **once**, in the container
+(`scripts/sowell/drew.py` → `drew_speed`), by multiplying the app's own
+speed. The app therefore sends 1.0 for natural pace and never
+calibrates Drew down: `initialNarrationSpeed` returns 1.0 for Drew, and the
+per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
+(the same exemption Paradee has). Do not apply 0.88 in TypeScript as well —
+`drewKokoroSpeed` exists for tests and documentation, not as a second
+multiplier on the request.
 
 **Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,

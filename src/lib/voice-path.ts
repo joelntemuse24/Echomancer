@@ -1,5 +1,6 @@
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
+import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import {
   isBaselineStockCatalogId,
@@ -33,17 +34,28 @@ export function isUserCloneVoice(voice: PathVoice): boolean {
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));
 }
 
-/** The server included Sowell. A same id on another provider is not this voice. */
-export function isListedSowellVoice(voice: PathVoice): boolean {
+/**
+ * The server included Walter. A same id on another provider is not this voice.
+ * The catalog id is still `sowell`; the listed name is Walter.
+ */
+export function isListedWalterVoice(voice: PathVoice): boolean {
   return voice.id === SOWELL_CATALOG_VOICE_ID && voice.provider === "sowell";
 }
 
+/** Back-compat alias for the pre-rename name. */
+export const isListedSowellVoice = isListedWalterVoice;
+
 /**
  * A tap on the standard pile that should survive the upload step.
- * Sowell is remembered only by its own id. It is not one of the five slim ids.
+ * Walter is remembered only by its own id. It is not one of the five slim ids.
  */
 export function isListedGeorgeVoice(voice: PathVoice): boolean {
   return voice.id === GEORGE_CATALOG_VOICE_ID && voice.provider === "george";
+}
+
+/** Drew is listed as one of the slim ids, but only when the server sent it. */
+export function isListedDrewVoice(voice: PathVoice): boolean {
+  return voice.id === DREW_CATALOG_VOICE_ID && voice.provider === "drew";
 }
 
 export function isPersistableStandardVoiceId(id?: string | null): boolean {
@@ -55,29 +67,41 @@ export function isPersistableStandardVoiceId(id?: string | null): boolean {
 }
 
 /**
- * Sowell's sample is a static file. Play is a separate control from the
+ * Walter's sample is a static file. Play is a separate control from the
  * selection, and a tap on play does not ask the server to synthesize.
  */
 export function stockCardAudition(
   voice: PathVoice
 ): "play" | "select-only" | "static" {
-  return isListedSowellVoice(voice) ? "static" : "play";
+  return isListedWalterVoice(voice) ? "static" : "play";
 }
 
-/** Standard = slim stock in picker order, then Sowell when the server listed it. */
+/**
+ * Standard = slim stock in picker order, then Walter when the server listed it.
+ *
+ * A listed card must come from the provider that speaks it. Drew and George
+ * are on the Kokoro CPU app, so an `edge` row carrying their id is not that
+ * voice and is dropped — the same rule Walter already had. The provider check
+ * runs **before** the id map is built, so a stray row with a duplicated id
+ * cannot mask the card the server actually sent.
+ */
 export function voicesForPath<T extends PathVoice>(
   voices: T[],
   path: VoicePath
 ): T[] {
   if (path === "standard") {
-    const byId = new Map(voices.map((voice) => [voice.id, voice]));
-    const slim = SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter((voice): voice is T => {
-      if (!voice) return false;
-      if (voice.id === GEORGE_CATALOG_VOICE_ID && !isListedGeorgeVoice(voice)) return false;
+    const trusted = voices.filter((voice) => {
+      if (voice.id === GEORGE_CATALOG_VOICE_ID) return isListedGeorgeVoice(voice);
+      if (voice.id === DREW_CATALOG_VOICE_ID) return isListedDrewVoice(voice);
+      if (voice.id === SOWELL_CATALOG_VOICE_ID) return isListedWalterVoice(voice);
       return true;
     });
-    const sowell = voices.find((voice) => isListedSowellVoice(voice));
-    return sowell ? [...slim, sowell] : slim;
+    const byId = new Map(trusted.map((voice) => [voice.id, voice]));
+    const slim = SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter(
+      (voice): voice is T => Boolean(voice)
+    );
+    const walter = trusted.find((voice) => isListedWalterVoice(voice));
+    return walter ? [...slim, walter] : slim;
   }
   return voices.filter((voice) => isUserCloneVoice(voice));
 }

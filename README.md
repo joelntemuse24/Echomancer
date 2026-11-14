@@ -1,7 +1,8 @@
 # Echomancer v2
 
-Transform documents into audiobooks with stock narrators — **Andrew**
-(default), **Ava**, **Libby**, and **Ryan** — plus optional voice cloning.
+Transform documents into audiobooks with stock narrators — **Drew**
+(default), **Ava**, **Libby**, **George**, and **Walter** — plus optional
+voice cloning.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -24,7 +25,8 @@ Ready sections can play while the rest of the book generates.
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Andrew / Ava / Libby / Ryan = Edge; user clones optional
+TTS          Drew = self-hosted Kokoro-82M (default); Ava / Libby = Edge;
+             George / Walter = shared Kokoro CPU app; user clones optional
 Hosting      Vercel + always-on VPS worker (Whole book)
 ```
 
@@ -57,8 +59,11 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 - Node.js 20+
 - Turso database
 - Optional: Fish API key (voice cloning, and a book already stored as Clara)
-- Edge stock (Andrew / Ava / Libby / Ryan) needs no Fish or Azure key
-- A book already stored as Randolph still plays and downloads. New requests use Andrew.
+- Edge stock (Ava / Libby) needs no Fish or Azure key
+- Optional: Drew, George, and Walter need the shared Kokoro CPU endpoint
+  (`DREW_*`, `GEORGE_*`, `SOWELL_*`); without it the default falls back to Ava
+- A book already stored as Andrew keeps its audio and downloads. New requests
+  use Drew. A book already stored as Randolph still plays and downloads.
 - Optional: R2 for production storage
 
 ### Install

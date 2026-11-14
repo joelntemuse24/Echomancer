@@ -1,6 +1,7 @@
 /**
- * Stock TTS types — slim catalog (Andrew / Ava / Libby / Ryan) +
- * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
+ * Stock TTS types — slim catalog (Drew / Echomancer Andrew / Ava / Libby /
+ * George, plus Walter when configured) + Fish clones + optional OpenRouter /
+ * direct adapters. Premium HD models stay gated.
  */
 
 export type StockProvider =
@@ -10,7 +11,7 @@ export type StockProvider =
   | "openrouter"
   /** Direct Fish Audio — cloned voices (requires FISH_API_KEY) */
   | "fish"
-  /** Microsoft Edge online TTS — default Standard (en-US-AndrewNeural) */
+  /** Microsoft Edge online TTS — Ava / Libby, and stored Andrew / Ryan rows */
   | "edge"
   /**
    * Self-hosted Paradee v1.1 int8 ONNX student distilled for Echomancer.
@@ -18,13 +19,18 @@ export type StockProvider =
    */
   | "paradee"
   /**
-   * Sowell, a Kokoro-82M voice pack. Modal CPU, scale to zero.
-   * Not the Contabo worker and not an OpenRouter voice.
+   * Walter (internal id `sowell`), a Kokoro-82M voice pack. Modal CPU,
+   * scale to zero. Not the Contabo worker and not an OpenRouter voice.
    */
   | "sowell"
   /**
-   * George, Kokoro-82M bm_george on the same Modal CPU app as Sowell.
-   * British phonemes. Not OpenRouter and not the Sowell pack.
+   * Drew, a fine-tuned Kokoro-82M with its own kmodel. Modal CPU, scale to zero.
+   * Not the Sowell/Walter pack, not stock Kokoro, and not Edge Andrew.
+   */
+  | "drew"
+  /**
+   * George, Kokoro-82M bm_george on the same Modal CPU app as Drew and Walter.
+   * British phonemes. Not OpenRouter and not the Walter pack.
    */
   | "george"
   /** Internal research preview only — MiniMax Free API reverse proxy */

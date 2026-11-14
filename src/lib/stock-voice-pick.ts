@@ -4,6 +4,7 @@
  */
 
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
+import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
 
@@ -35,7 +36,8 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    // Michelle left the pile for Ava. Clara left it for Libby.
+    // Michelle left the pile for Ava. Clara left it for Libby. Andrew is
+    // retired, so a saved "standard" pick lands on Drew — `coerce` does that.
     let catalogVoiceId = coercePlainCatalogVoiceId(parsed.catalogVoiceId);
     if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
     return { catalogVoiceId, delivery: "standard" };
@@ -70,11 +72,12 @@ export function resolveStockSelection(input: {
 }): string | null {
   const available = new Set(input.availableIds);
   if (input.explicitId && available.has(input.explicitId)) return input.explicitId;
-  // A saved Sowell pick stays Sowell's. When the endpoint is off the card
-  // is gone, and Andrew is not substituted for it.
+  // A saved Walter or George pick stays theirs. When the endpoint is off the
+  // card is gone, and Drew is not substituted for it.
   if (
     input.explicitId === SOWELL_CATALOG_VOICE_ID ||
-    input.explicitId === GEORGE_CATALOG_VOICE_ID
+    input.explicitId === GEORGE_CATALOG_VOICE_ID ||
+    input.explicitId === DREW_CATALOG_VOICE_ID
   ) {
     return null;
   }

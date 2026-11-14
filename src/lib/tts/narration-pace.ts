@@ -7,7 +7,10 @@
  */
 
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
-import { ECHOMANCER_ANDREW_CATALOG_VOICE_ID } from "@/lib/tts/standard-voice";
+import {
+  DREW_CATALOG_VOICE_ID,
+  ECHOMANCER_ANDREW_CATALOG_VOICE_ID,
+} from "@/lib/tts/standard-voice";
 import { splitSentences } from "@/lib/tts/speakable-text";
 
 /** Target long-form narration rate (words per minute of speech). */
@@ -19,6 +22,15 @@ export const DEFAULT_NARRATION_SPEED = 1.0;
 /** Fish `prosody.speed` clamp — 0.75 reaches ~152 speech WPM from ~194. */
 export const FISH_SPEED_MIN = 0.75;
 export const FISH_SPEED_MAX = 1.0;
+
+/**
+ * Drew's app-speed range. 1.0 is Drew's own natural pace, which the container
+ * renders at Kokoro speed 0.88 — so this is a multiplier on that baseline,
+ * not a second slowdown. Widening it past 1.0 makes Drew speak faster than
+ * Andrew did, which the product does not offer.
+ */
+export const DREW_APP_SPEED_MIN = 0.75;
+export const DREW_APP_SPEED_MAX = 1.0;
 
 /**
  * First-section start for clones and dense academic (0.82–0.88).
@@ -107,6 +119,11 @@ export function isDenseAcademicText(text: string): boolean {
  *
  * Echomancer Andrew stays at 1.0: Paradee was distilled from Edge Andrew at
  * 1.0x (~150 WPM), so the Fish academic heuristic would only slow it down.
+ *
+ * Drew stays at 1.0 too, and for a stronger reason. Its container renders 1.0
+ * at Kokoro speed 0.88, which already **is** real Andrew's natural pace. This
+ * is the module whose calibration drifted Andrew's later sections down to
+ * ~0.85; Drew must not inherit that. 1.0 here means "Drew at his own pace".
  */
 export function initialNarrationSpeed(input: {
   catalogVoiceId?: string | null;
@@ -115,10 +132,34 @@ export function initialNarrationSpeed(input: {
   if (input.catalogVoiceId === ECHOMANCER_ANDREW_CATALOG_VOICE_ID) {
     return DEFAULT_NARRATION_SPEED;
   }
+  if (input.catalogVoiceId === DREW_CATALOG_VOICE_ID) {
+    return DEFAULT_NARRATION_SPEED;
+  }
   const clone = isFishCloneCatalogId(input.catalogVoiceId);
   const academic = input.text ? isDenseAcademicText(input.text) : false;
   if (clone || academic) return INITIAL_SLOW_SPEED;
   return DEFAULT_NARRATION_SPEED;
+}
+
+/**
+ * True for a voice whose pace is fixed by its own engine and must not be
+ * re-calibrated from a measured duration. Paradee and Drew both take their
+ * speed in their own native units, and a later measurement would move the
+ * take away from the pace the voice was built for.
+ */
+export function keepsOwnPace(catalogVoiceId?: string | null): boolean {
+  return (
+    catalogVoiceId === DREW_CATALOG_VOICE_ID ||
+    catalogVoiceId === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
+  );
+}
+
+/** Drew's app speed, clamped. 1.0 is his native pace; the worker applies 0.88. */
+export function drewSpeedForRequest(speed?: number): number {
+  if (typeof speed !== "number" || !Number.isFinite(speed)) {
+    return 1;
+  }
+  return clamp(roundSpeed(speed), DREW_APP_SPEED_MIN, DREW_APP_SPEED_MAX);
 }
 
 /** Omit default 1.0 so Fish does not get an empty `prosody` object. */

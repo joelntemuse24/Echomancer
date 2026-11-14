@@ -26,12 +26,13 @@ describe("stock voice pick", () => {
       catalogVoiceId: "ava",
       delivery: "standard",
     });
+    // Andrew is retired: a saved Andrew/Randolph/standard pick lands on Drew.
     storage.setItem(
       "ec_stock_voice_pick",
       JSON.stringify({ catalogVoiceId: "randolph", delivery: "expressive" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "standard",
+      catalogVoiceId: "drew",
       delivery: "standard",
     });
     storage.setItem(
@@ -39,7 +40,15 @@ describe("stock voice pick", () => {
       JSON.stringify({ catalogVoiceId: "standard-expressive", delivery: "expressive" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "standard",
+      catalogVoiceId: "drew",
+      delivery: "standard",
+    });
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "andrew", delivery: "standard" })
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "drew",
       delivery: "standard",
     });
   });
@@ -77,7 +86,7 @@ describe("stock voice pick", () => {
     expect(readStockVoicePick(storage)).toBeNull();
   });
 
-  it("remembers a Sowell pick and does not replace a missing one with Andrew", () => {
+  it("remembers a Walter pick and never replaces a missing one with Drew", () => {
     const storage = memoryStore();
     writeStockVoicePick(
       { catalogVoiceId: "sowell", delivery: "standard" },
@@ -89,27 +98,35 @@ describe("stock voice pick", () => {
     });
     expect(
       resolveStockSelection({
-        availableIds: ["standard", "echomancer-andrew", "ava", "libby", "ryan", "sowell"],
+        availableIds: ["drew", "echomancer-andrew", "ava", "libby", "ryan", "sowell"],
         explicitId: "sowell",
-        suggestedId: "standard",
+        suggestedId: "drew",
       })
     ).toBe("sowell");
     expect(
       resolveStockSelection({
-        availableIds: ["standard", "ava", "libby", "ryan"],
+        availableIds: ["drew", "ava", "libby", "ryan"],
         explicitId: "sowell",
-        suggestedId: "standard",
+        suggestedId: "drew",
+      })
+    ).toBeNull();
+    // The same rule holds for a Drew pick when its endpoint is down.
+    expect(
+      resolveStockSelection({
+        availableIds: ["echomancer-andrew", "ava", "libby"],
+        explicitId: "drew",
+        suggestedId: "ava",
       })
     ).toBeNull();
   });
 
   it("keeps an explicit pick ahead of the narrator suggestion", () => {
-    const availableIds = ["standard", "ava", "clara", "randolph"];
+    const availableIds = ["drew", "ava", "clara", "randolph"];
     expect(
       resolveStockSelection({
         availableIds,
         explicitId: "randolph",
-        suggestedId: "standard",
+        suggestedId: "drew",
       })
     ).toBe("randolph");
     expect(
@@ -125,6 +142,6 @@ describe("stock voice pick", () => {
         explicitId: null,
         suggestedId: null,
       })
-    ).toBe("standard");
+    ).toBe("drew");
   });
 });

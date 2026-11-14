@@ -116,7 +116,13 @@ export function hardMaxCharsForModel(opts: {
   if (provider === "google" || model.startsWith("google/en-")) {
     return GOOGLE_SSML_HARD_MAX_BYTES;
   }
-  if (provider === "sowell" || provider === "george") return Math.min(target, 2000);
+  if (
+    provider === "sowell" ||
+    provider === "george" ||
+    provider === "drew"
+  ) {
+    return Math.min(target, 2000);
+  }
   return Math.min(target, maxCharsForModel(opts));
 }
 
@@ -142,7 +148,9 @@ export function maxCharsForModel(opts: {
   model?: string | null;
   catalogMax?: number | null;
 }): number {
-  if (opts.provider === "sowell" || opts.provider === "george") return 2000;
+  if (opts.provider === "sowell" || opts.provider === "george" || opts.provider === "drew") {
+    return 2000;
+  }
   if (opts.catalogMax && opts.catalogMax > 0) return opts.catalogMax;
 
   const model = opts.model?.toLowerCase() || "";

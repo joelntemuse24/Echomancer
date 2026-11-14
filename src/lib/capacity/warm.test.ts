@@ -20,6 +20,9 @@ const ENV_KEYS = [
   "GEORGE_ENABLED",
   "GEORGE_URL",
   "GEORGE_TOKEN",
+  "DREW_ENABLED",
+  "DREW_URL",
+  "DREW_TOKEN",
   "WORKER_URL",
   "WORKER_SECRET",
   "WORKER",
@@ -44,12 +47,17 @@ describe("shared capacity warm", () => {
     else process.env[key] = value;
   }
 
-  it("warms general CPU for Andrew and adds Kokoro only for Sowell or George", () => {
-    expect(poolsForWarm({ reason: "create", voiceId: "standard" })).toEqual(["cpu"]);
+  it("warms general CPU for an Edge voice and adds Kokoro for Drew, Walter, or George", () => {
     expect(poolsForWarm({ reason: "create", voiceId: "ava" })).toEqual(["cpu"]);
     expect(poolsForWarm({ reason: "create", voiceId: "libby" })).toEqual(["cpu"]);
     expect(poolsForWarm({ reason: "create", voiceId: "clone:abc" })).toEqual(["cpu"]);
     expect(poolsForWarm({ reason: "create", voiceId: null })).toEqual(["cpu"]);
+    // A retired Edge id is not a Kokoro voice, whatever a new pick maps it to.
+    expect(poolsForWarm({ reason: "create", voiceId: "standard" })).toEqual(["cpu"]);
+    expect(poolsForWarm({ reason: "create", voiceId: "drew" })).toEqual([
+      "cpu",
+      "kokoro",
+    ]);
     expect(poolsForWarm({ reason: "create", voiceId: "sowell" })).toEqual([
       "cpu",
       "kokoro",
@@ -58,8 +66,29 @@ describe("shared capacity warm", () => {
       "cpu",
       "kokoro",
     ]);
+    expect(poolsForWarm({ reason: "voice", voiceId: "drew" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "sowell" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "ava" })).toEqual([]);
+  });
+
+  it("points the Kokoro pool at Drew's endpoint first, then Walter's", () => {
+    setEnv("DREW_ENABLED", "1");
+    setEnv("DREW_URL", "https://drew.example.modal.run");
+    setEnv("DREW_TOKEN", "drew-token");
+    setEnv("SOWELL_ENABLED", "1");
+    setEnv("SOWELL_URL", "https://sowell.example.modal.run");
+    setEnv("SOWELL_TOKEN", "sowell-token");
+    setEnv("MODAL_CPU_URL", "https://cpu.example.modal.run");
+    setEnv("MODAL_CPU_TOKEN", "cpu-token");
+    expect(warmTarget("cpu")?.url).toBe("https://cpu.example.modal.run");
+    // Drew is the default narrator, so an unconfigured create flow must wake
+    // the app that speaks it.
+    expect(warmTarget("kokoro")?.url).toBe("https://drew.example.modal.run");
+    expect(warmTarget("kokoro")?.token).toBe("drew-token");
+    expect(warmTarget("kokoro")?.url).not.toContain("s2");
+    setEnv("DREW_ENABLED", undefined);
+    setEnv("DREW_URL", undefined);
+    expect(warmTarget("kokoro")?.url).toBe("https://sowell.example.modal.run");
   });
 
   it("does not point Kokoro at the GPU clone app", () => {

@@ -6,6 +6,7 @@ import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   isListedSowellVoice,
+  isListedWalterVoice,
   isPersistableStandardVoiceId,
   isUserCloneVoice,
   parseVoicePath,
@@ -32,6 +33,7 @@ describe("voicesForPath", () => {
     { id: "ryan", provider: "edge" as const, tags: [] },
     { id: "randolph", provider: "google" as const, tags: [] },
     { id: "standard", provider: "edge" as const, tags: [] },
+    { id: "drew", provider: "drew" as const, tags: ["stock"] },
     { id: "echomancer-andrew", provider: "paradee" as const, tags: [] },
     { id: "libby", provider: "edge" as const, tags: ["stock"] },
     { id: "clara", provider: "fish" as const, tags: ["stock"] },
@@ -44,22 +46,46 @@ describe("voicesForPath", () => {
     expect(voicesForPath(voices, "standard").map((v) => v.id)).toEqual([
       ...SLIM_STOCK_VOICE_IDS,
     ]);
+    // The retired Andrew row is never in the pile even though it is present.
+    expect(voicesForPath(voices, "standard").map((v) => v.id)).not.toContain(
+      "standard"
+    );
   });
 
-  it("adds a Sowell card after the five when the server listed that provider", () => {
-    const sowell = {
+  it("drops a Kokoro id that arrived on the wrong provider", () => {
+    const wrongDrew = { id: "drew", provider: "edge" as const, tags: [] };
+    const wrongGeorge = { id: "george", provider: "edge" as const, tags: [] };
+    // A lone wrong-provider row is the only source for that id here, so the
+    // card must be absent rather than served by something that cannot speak it.
+    expect(
+      voicesForPath([wrongDrew, wrongGeorge], "standard").map((v) => v.id)
+    ).toEqual([]);
+    // The right-provider rows still list, wherever the stray rows sit: a row
+    // with a duplicated id cannot mask the card the server actually sent.
+    expect(
+      voicesForPath([...voices, wrongDrew, wrongGeorge], "standard").map((v) => v.id)
+    ).toEqual([...SLIM_STOCK_VOICE_IDS]);
+    expect(
+      voicesForPath([wrongDrew, wrongGeorge, ...voices], "standard").map((v) => v.id)
+    ).toEqual([...SLIM_STOCK_VOICE_IDS]);
+  });
+
+  it("adds a Walter card after the five when the server listed that provider", () => {
+    const walter = {
       id: "sowell",
       provider: "sowell" as const,
       tags: ["sowell"],
-      displayName: "Sowell",
+      // The listed name is Walter; the internal id is unchanged.
+      displayName: "Walter",
     };
-    const listed = voicesForPath([...voices, sowell], "standard");
+    const listed = voicesForPath([...voices, walter], "standard");
     expect(listed.map((voice) => voice.id)).toEqual([
       ...SLIM_STOCK_VOICE_IDS,
       "sowell",
     ]);
-    expect(listed.at(-1)?.displayName).toBe("Sowell");
-    expect(stockCardAudition(sowell)).toBe("static");
+    expect(listed.at(-1)?.displayName).toBe("Walter");
+    expect(stockCardAudition(walter)).toBe("static");
+    // The committed file keeps the internal id, so only the label moved.
     expect(stockPreviewUrl("sowell")).toBe("/voice-previews/sowell.mp3");
     expect(existsSync(path.join(process.cwd(), "public/voice-previews/sowell.mp3"))).toBe(
       true
@@ -69,7 +95,9 @@ describe("voicesForPath", () => {
       true
     );
     expect(isPersistableStandardVoiceId("sowell")).toBe(true);
-    expect(isListedSowellVoice(sowell)).toBe(true);
+    expect(isPersistableStandardVoiceId("drew")).toBe(true);
+    expect(isListedWalterVoice(walter)).toBe(true);
+    expect(isListedSowellVoice(walter)).toBe(true);
     const probe = spawnSync(
       "ffprobe",
       [
@@ -89,7 +117,7 @@ describe("voicesForPath", () => {
     expect(duration).toBeLessThan(15);
   });
 
-  it("hides Sowell when the server omitted it and ignores another provider on that id", () => {
+  it("hides Walter when the server omitted it and ignores another provider on that id", () => {
     expect(voicesForPath(voices, "standard").map((voice) => voice.id)).toEqual([
       ...SLIM_STOCK_VOICE_IDS,
     ]);

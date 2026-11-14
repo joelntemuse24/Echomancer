@@ -126,6 +126,7 @@ import {
 import {
   DEFAULT_NARRATION_SPEED,
   calibrateNarrationSpeed,
+  drewSpeedForRequest,
   fishSpeedForRequest,
   initialNarrationSpeed,
   wordCount,
@@ -139,6 +140,7 @@ import {
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
+import { DREW_CACHE_VARIANT } from "@/lib/tts/drew-voice";
 import {
   planSowellLanes,
   SOWELL_CACHE_VARIANT,
@@ -508,6 +510,7 @@ export function takehomeCacheVariant(
   if (providerId === "paradee") return "paradee-paragraph-v1";
   if (providerId === "sowell") return SOWELL_CACHE_VARIANT;
   if (providerId === "george") return GEORGE_CACHE_VARIANT;
+  if (providerId === "drew") return DREW_CACHE_VARIANT;
   return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
 }
 
@@ -1609,7 +1612,8 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneColdSafeRowChars(), MODAL_CLONE_SECTION_CHARS_MAX)
     : maxChars;
-  const kokoroBook = providerId === "sowell" || providerId === "george";
+  const kokoroBook =
+    providerId === "sowell" || providerId === "george" || providerId === "drew";
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
     kokoroBook
@@ -2058,6 +2062,7 @@ async function runClaimedTick(
           // so the next section pays for the same audio again.
           clonePin !== "modal" &&
           provider.id !== "paradee" &&
+          provider.id !== "drew" &&
           synthesized.durationHintSeconds &&
           synthesized.durationHintSeconds > 0
         ) {
@@ -3567,10 +3572,15 @@ async function synthesizeSection(args: {
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
     // Paradee takes speed in its own 1.0-native units, not Fish prosody.
+    // Drew takes the app speed and multiplies it by 0.88 in the container, so
+    // 1.0 here is Drew's natural pace — `drewSpeedForRequest` only clamps it
+    // and keeps it out of the unset-Fish-prosody path.
     const speed =
       args.provider.id === "paradee"
         ? undefined
-        : fishSpeedForRequest(ttsOptions.narrationSpeed);
+        : args.provider.id === "drew"
+          ? drewSpeedForRequest(ttsOptions.narrationSpeed)
+          : fishSpeedForRequest(ttsOptions.narrationSpeed);
     const cacheKey = takehomeSectionCacheKey({
       text: args.frozen?.text ?? sectionText,
       voiceId: args.voiceId,

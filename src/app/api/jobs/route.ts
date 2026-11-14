@@ -14,12 +14,13 @@ import {
   coercePlainCatalogVoiceId,
   plainStockLock,
   RYAN_NEURAL_VOICE_ID,
-  STANDARD_CATALOG_VOICE_ID,
+  DREW_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
+import { drewReady } from "@/lib/tts/drew-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs, pollSweepDue } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -135,21 +136,38 @@ export async function POST(request: NextRequest) {
         )) ||
         namesGoogle)
     ) {
-      catalog = await getCatalogVoice(STANDARD_CATALOG_VOICE_ID, {
+      catalog = await getCatalogVoice(DREW_CATALOG_VOICE_ID, {
         hdEnabled: true,
         userId: session.userId,
       });
     }
 
+    // Drew is the product default and lives on our own CPU app. A request
+    // that names it (or the retired Andrew/`standard` id, which coerce maps
+    // here) fails closed when the endpoint is unset, rather than inserting a
+    // row nothing can speak.
+    const drewRequest =
+      requestedVoiceId === DREW_CATALOG_VOICE_ID ||
+      coercedVoiceId === DREW_CATALOG_VOICE_ID ||
+      parsed.providerVoiceId === "drew" ||
+      catalog?.id === DREW_CATALOG_VOICE_ID;
+    if (drewRequest && !drewReady()) {
+      throw new AppError(
+        "DREW_NOT_CONFIGURED",
+        "Drew is not configured.",
+        503
+      );
+    }
+
     // Andrew / Ava / Libby / Ryan / Michelle ignore a caller-supplied provider.
-    // A request that still names Randolph or Google uses Andrew.
+    // A request that still names Randolph or Google uses Drew.
     const sowellRequest =
       requestedVoiceId === SOWELL_CATALOG_VOICE_ID ||
       catalog?.id === SOWELL_CATALOG_VOICE_ID;
     if (sowellRequest && !sowellReady()) {
       throw new AppError(
         "SOWELL_NOT_CONFIGURED",
-        "Sowell is not configured.",
+        "Walter is not configured.",
         503
       );
     }
@@ -165,26 +183,34 @@ export async function POST(request: NextRequest) {
       );
     }
     const georgeRequest = namesRyan && georgeReady();
-    const lock = georgeRequest ? null : plainStockLock(catalog?.id);
-    const ttsProvider = sowellRequest
-      ? "sowell"
+    const lock = georgeRequest || drewRequest ? null : plainStockLock(catalog?.id);
+    const ttsProvider = drewRequest
+      ? "drew"
+      : sowellRequest
+        ? "sowell"
+        : georgeRequest
+          ? "george"
+          : lock
+            ? lock.provider
+            : parsed.ttsProvider ||
+              catalog?.provider ||
+              getDefaultCatalogVoice().provider;
+    const providerVoiceId = drewRequest
+      ? "drew"
+      : sowellRequest
+        ? "am_sowell_avg"
+        : georgeRequest
+          ? "bm_george"
+          : lock
+            ? lock.providerVoiceId
+            : parsed.providerVoiceId ||
+              catalog?.providerVoiceId ||
+              getDefaultCatalogVoice().providerVoiceId;
+    const catalogVoiceId = drewRequest
+      ? DREW_CATALOG_VOICE_ID
       : georgeRequest
-        ? "george"
-        : lock
-        ? lock.provider
-        : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
-    const providerVoiceId = sowellRequest
-      ? "am_sowell_avg"
-      : georgeRequest
-        ? "bm_george"
-        : lock
-        ? lock.providerVoiceId
-        : parsed.providerVoiceId ||
-          catalog?.providerVoiceId ||
-          getDefaultCatalogVoice().providerVoiceId;
-    const catalogVoiceId = georgeRequest
-      ? GEORGE_CATALOG_VOICE_ID
-      : catalog?.id || coercedVoiceId || null;
+        ? GEORGE_CATALOG_VOICE_ID
+        : catalog?.id || coercedVoiceId || null;
     let requestedName = stripExpressiveLabel(parsed.voiceName || "");
     if (
       catalog?.id === LIBBY_CATALOG_VOICE_ID &&
@@ -192,9 +218,12 @@ export async function POST(request: NextRequest) {
     ) {
       requestedName = "";
     }
+    // A book stored as Andrew keeps that name; a new request that named him
+    // is Drew now, so the old label is not carried onto the new row.
     if (
-      catalog?.id === STANDARD_CATALOG_VOICE_ID &&
-      /^randolph$/i.test(requestedName)
+      (catalog?.id === DREW_CATALOG_VOICE_ID ||
+        catalogVoiceId === DREW_CATALOG_VOICE_ID) &&
+      /^(?:randolph|andrew|standard)$/i.test(requestedName)
     ) {
       requestedName = "";
     }
@@ -217,13 +246,15 @@ export async function POST(request: NextRequest) {
           })
         : undefined) ||
       getDefaultCatalogVoice();
-    const resolvedModel = sowellRequest
-      ? "sowell/am_sowell_avg"
-      : georgeRequest
-        ? "kokoro/bm_george"
-        : lock
-        ? lock.model
-        : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+    const resolvedModel = drewRequest
+      ? "kokoro/drew"
+      : sowellRequest
+        ? "sowell/am_sowell_avg"
+        : georgeRequest
+          ? "kokoro/bm_george"
+          : lock
+            ? lock.model
+            : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&

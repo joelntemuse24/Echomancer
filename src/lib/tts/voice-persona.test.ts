@@ -25,23 +25,41 @@ function voice(partial: Partial<CatalogVoice> & Pick<CatalogVoice, "id" | "provi
 }
 
 describe("voice-persona", () => {
-  it("names the default stock voice Andrew", () => {
+  it("names the default stock voice Drew", () => {
     const enriched = enrichCatalogVoice(
       voice({
-        id: "standard",
-        provider: "edge",
-        providerVoiceId: "en-US-AndrewNeural",
-        displayName: "Standard",
+        id: "drew",
+        provider: "drew",
+        providerVoiceId: "drew",
+        displayName: "Drew",
         gender: "male",
-        model: "edge/en-US-AndrewNeural",
+        model: "kokoro/drew",
         accentHint: "american",
       })
     );
-    expect(enriched.friendlyName).toBe("Andrew");
-    expect(enriched.displayName).toBe("Andrew");
-    expect(enriched.friendlyName).not.toMatch(/microsoft|fish|neural/i);
-    expect(isListenFriendly(enriched)).toBe(true);
+    expect(enriched.friendlyName).toBe("Drew");
+    expect(enriched.displayName).toBe("Drew");
+    expect(enriched.friendlyName).not.toMatch(/microsoft|fish|neural|kokoro/i);
+    // Kokoro is take-home only, like Walter: there is no native live stream.
     expect(isTakehomeFriendly(enriched)).toBe(true);
+  });
+
+  it("lists the renamed Walter pack under its new name, not Sowell", () => {
+    const walter = enrichCatalogVoice(
+      voice({
+        id: "sowell",
+        provider: "sowell",
+        providerVoiceId: "am_sowell_avg",
+        displayName: "Sowell",
+        gender: "male",
+        model: "sowell/am_sowell_avg",
+        accentHint: "american",
+      })
+    );
+    expect(walter.friendlyName).toBe("Walter");
+    expect(walter.displayName).toBe("Walter");
+    expect(walter.displayName).not.toMatch(/sowell/i);
+    expect(isTakehomeFriendly(walter)).toBe(true);
   });
 
   it("pins Ava, Clara, and Randolph without vendor jargon", () => {

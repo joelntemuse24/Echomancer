@@ -7,12 +7,14 @@
  * Accent is steered via Gemini input direction / soft stylePrompt instead.
  * (Embedding accent claims + aggressive prompts returned empty Gemini audio.)
  *
- * Andrew, Ava, Libby, George, and Sowell ship a recording of this line at
+ * Drew, Ava, Libby, George, and Walter ship a recording of this line at
  * `public/voice-previews/<catalog id>.mp3`. George is a local Kokoro
- * `bm_george` take. Sowell is a local Kokoro `am_sowell` take of the
- * same words. Change the words and re-record those files together.
- * Ryan's file stays for books that already use it; the picker does not
- * play it.
+ * `bm_george` take. Walter (catalog id `sowell`) is a local Kokoro
+ * `am_sowell` take of the same words. Drew's committed file is still
+ * outstanding — see the TODO in `stock-preview.ts`. Change the words and
+ * re-record those files together.
+ * Ryan's and Andrew's files stay for books that already use them; the
+ * picker plays neither.
  */
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";

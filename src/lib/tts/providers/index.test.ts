@@ -19,6 +19,29 @@ describe("resolveStockAdapter", () => {
     }
   });
 
+  it("keeps a stored Andrew book on Edge and never moves it to Drew", () => {
+    // The migration contract: `standard` is the stored row for a book already
+    // made with Edge Andrew. Retiring the picker card must not change the
+    // engine that finishes or replays that book.
+    expect(
+      resolveStockAdapter({
+        provider: "edge",
+        model: "edge/en-US-AndrewNeural",
+        catalogVoiceId: "standard",
+      }).id
+    ).toBe("edge");
+    expect(
+      resolveStockAdapter({
+        provider: "edge",
+        model: "edge/en-US-AndrewNeural",
+      }).id
+    ).toBe("edge");
+    // A Drew request uses the Drew adapter, but only when it names Drew.
+    expect(
+      resolveStockAdapter({ provider: "drew", catalogVoiceId: "drew" }).id
+    ).toBe("drew");
+  });
+
   it("routes Ava to Edge and Clara to Fish even when OpenRouter is configured", () => {
     const previousOr = process.env.OPENROUTER_API_KEY;
     const previousFish = process.env.FISH_API_KEY;
