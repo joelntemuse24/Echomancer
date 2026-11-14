@@ -11,12 +11,9 @@ export const STOCK_PREVIEW_PUBLIC_DIR = "voice-previews";
 /**
  * Ids that actually have a committed file at `public/voice-previews/<id>.mp3`.
  *
- * **TODO (owner/bot):** Drew has no committed take yet. Render
- * `PREVIEW_TEXT` with the Drew checkpoint (`step00900_kmodel.pth` +
- * `step00900_voice.pt`, Kokoro speed 0.88, 24 kHz mono) and commit it as
- * `public/voice-previews/drew.mp3`, then add `"drew"` here. Until then the
- * picker falls through to `POST /api/tts/preview`, which renders Drew once
- * on the CPU app instead of playing a missing static file.
+ * Drew's take is `PREVIEW_TEXT` rendered with the stage A checkpoint
+ * (`step00900_kmodel.pth` + `step00900_voice.pt`) at app speed 1.0 (Kokoro
+ * 0.88), 24 kHz mono.
  *
  * Walter keeps the id `sowell`, so its file keeps the old name. Only the
  * listed label changed.
@@ -24,7 +21,7 @@ export const STOCK_PREVIEW_PUBLIC_DIR = "voice-previews";
 export const COMMITTED_PREVIEW_IDS: readonly string[] = [
   ...SLIM_STOCK_VOICE_IDS,
   SOWELL_CATALOG_VOICE_ID,
-].filter((id) => id !== "drew");
+];
 
 /**
  * Public URL for a listed stock narrator's sample.
