@@ -2349,7 +2349,7 @@ start the file already listed. A later 401, 403, or 404 clears that row
 and shows the error. A network or 5xx failure keeps the row and shows a
 notice. The detail request still loads chapters. The player reads its id
 from the pathname, so it does not suspend on `use(params)` into a spinner.
-The circled plus is a prefetched `Link` to `/` and is not rendered on Home.
+The plus is a prefetched `Link` to `/` and is not rendered on Home.
 Library rows use the default prefetch. Voices and the player do not use
 `useSearchParams` around the whole screen, which had suspended into a
 spinner. The query string is read on the client (`useSyncExternalStore`).
@@ -2365,11 +2365,26 @@ header. That helper no longer runs the jobs schema migrator first. The
 viewer revalidates on focus and when the tab becomes visible, and a
 BroadcastChannel message asks other tabs to do the same.
 
+The page ground is the root background (`src/app/globals.css` on `body`).
+A seamless SVG tile — `public/patterns/hatch-dots-dark.svg` in the default
+dark theme, `public/patterns/hatch-dots-light.svg` under `.light` — repeats
+a sparse field of hand-hatched dots. Light mode draws them in a cool
+grey-blue a little darker than the cream; dark mode draws them a little
+lighter than the near-black, both at a low opacity so the field stays quiet.
+The tile is 800px square. Below 768px it is drawn at 640px, so the dots are
+slightly smaller. It does not animate. `forced-colors` drops the image.
+Full-page shells are transparent so the tile shows on every route. Cards
+(`bg-card`), the landing composer, the sticky header, the mobile tab bar,
+menus, player sheets, and the read-along overlay keep an opaque fill, so
+type on those surfaces is unchanged.
+
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.
-Signed-out home shows Voices and Library, plus `PRIVACY.intro`. It does not
-show a cookie or “books will move” sentence, or the circled plus. That plus
+Signed-out home shows Voices and Library on a wide screen, plus `PRIVACY.intro`.
+On a phone the bar does not show those two. Sign in opens a menu that lists
+them, and a signed-in name opens the same destinations. Home does not
+show a cookie or “books will move” sentence, or the plus. That plus
 stays in the dashboard chrome (Library, Voices, player). `/sign-in` is the
 title and the Google / email controls, with no password or cookie explanation.
 Those cookie facts stay on `/privacy` only. Library, Voices, and the emailed

@@ -165,10 +165,37 @@
   }
 }
 
+html {
+  background-color: var(--background);
+}
+
+/* Quiet wallpaper: a seamless tile of hand-hatched dots. Static on purpose,
+   including for prefers-reduced-motion. Page shells stay transparent so the
+   tile shows through; cards, the composer, chrome, and overlays paint an
+   opaque fill of their own. */
 body {
-  background: var(--background);
+  background-color: var(--background);
+  background-image: url("/patterns/hatch-dots-dark.svg");
+  background-repeat: repeat;
+  background-size: 800px 800px;
   color: var(--foreground);
   font-family: var(--font-serif), serif;
+}
+
+.light body {
+  background-image: url("/patterns/hatch-dots-light.svg");
+}
+
+@media (max-width: 767px) {
+  body {
+    background-size: 640px 640px;
+  }
+}
+
+@media (forced-colors: active) {
+  body {
+    background-image: none;
+  }
 }
 
 /* Editorial utility classes */

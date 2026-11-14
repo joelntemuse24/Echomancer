@@ -220,7 +220,7 @@ function HeaderMenu({
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-40 mt-3 min-w-[11rem] border border-border/40 bg-background/95 py-2 backdrop-blur"
+          className="absolute right-0 top-full z-40 mt-3 min-w-[11rem] border border-border/40 bg-background py-2"
         >
           {children(() => setOpen(false))}
         </div>

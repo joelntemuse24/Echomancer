@@ -44,8 +44,8 @@ export function DashboardChrome({
   }, []);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col font-sans">
-      <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
+    <div className="min-h-screen flex flex-col font-sans">
+      <header className="sticky top-0 z-50 bg-background">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
             <Link
@@ -86,7 +86,7 @@ export function DashboardChrome({
                 prefetch={PREFETCH_SCREEN}
                 aria-label="New audiobook"
                 onClick={() => prepareNewAudiobook()}
-                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-foreground/15 text-muted-foreground transition-colors hover:text-foreground"
+                className="inline-flex h-11 w-11 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
               </Link>

@@ -212,25 +212,31 @@ export function LandingPage() {
     : LANDING.createCta;
 
   return (
-    <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
+    <div className="min-h-screen text-foreground font-serif flex flex-col">
       <nav className="flex items-center justify-end gap-6 px-8 py-8 font-sans">
         <Link
           href={VOICES_HREF}
           prefetch={PREFETCH_SCREEN}
           onMouseEnter={() => warmVoices()}
           onFocus={() => warmVoices()}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
         >
           {NAV.voices}
         </Link>
         <Link
           href={LIBRARY_HREF}
           prefetch={PREFETCH_SCREEN}
-          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
         >
           {NAV.library}
         </Link>
-        <AuthControls identity={identity} callbackUrl="/" menu={false} />
+        {/* Phone: Voices and Library live in this menu. Wide screens keep them in the bar, and Sign in stays a link. */}
+        <div className="contents md:hidden">
+          <AuthControls identity={identity} callbackUrl="/" />
+        </div>
+        <div className="hidden md:contents">
+          <AuthControls identity={identity} callbackUrl="/" menu={false} />
+        </div>
       </nav>
 
       <section className="px-8 pb-28 pt-28 sm:pt-36">
@@ -277,7 +283,7 @@ export function LandingPage() {
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
                 className={`group relative cursor-pointer border border-border/40 p-20 transition-colors hover:border-border ${
-                  isDraggingBook ? "border-border bg-accent/30" : ""
+                  isDraggingBook ? "border-border bg-accent" : "bg-background"
                 }`}
               >
                 <input
@@ -335,7 +341,7 @@ export function LandingPage() {
                   onChange={(e) => setPasteTitle(e.target.value)}
                   placeholder="Title"
                   maxLength={200}
-                  className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
+                  className="w-full h-11 px-3 border border-border/40 bg-background text-sm outline-none focus:border-border"
                   aria-label="Title"
                 />
                 {pasteKind === "url" ? (
@@ -354,7 +360,7 @@ export function LandingPage() {
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck={false}
-                      className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
+                      className="w-full h-11 px-3 border border-border/40 bg-background text-sm outline-none focus:border-border"
                       aria-label="Link"
                     />
                     {pasteUrl.trim() && !urlCheck.ok ? (
@@ -370,7 +376,7 @@ export function LandingPage() {
                       onChange={(e) => setPastedText(e.target.value)}
                       placeholder="Paste text"
                       rows={10}
-                      className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
+                      className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-background text-sm leading-relaxed resize-y outline-none focus:border-border"
                       aria-label="Text"
                     />
                     {pasteLen > 0 ? (
@@ -393,7 +399,7 @@ export function LandingPage() {
               type="button"
               onClick={handleSubmit}
               disabled={isUploading || !canSubmit}
-              className="inline-flex min-h-11 min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
             >
               {isUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

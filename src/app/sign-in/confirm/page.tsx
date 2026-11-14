@@ -31,7 +31,7 @@ export default async function ConfirmSignInPage({
   const looksValid = /^[0-9a-f]{64}$/.test(token);
 
   return (
-    <main className="min-h-screen bg-background px-8 py-24 font-serif text-foreground">
+    <main className="min-h-screen px-8 py-24 font-serif text-foreground">
       <div className="mx-auto max-w-sm space-y-12 font-sans">
         <p>
           <Link href="/" className="text-foreground hover:opacity-70">
