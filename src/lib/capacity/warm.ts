@@ -5,8 +5,13 @@
  * One row per pool, not per person. A click inside the hold does not extend
  * it and does not send another request, so it cannot keep a container up or
  * start a second one. A busy answer is capacity already: it is not retried.
- * The hold is five minutes, the same idle window the apps scale down on.
- * min_containers stays 0. This does not create a task, a job, or audio.
+ *
+ * The hold matches each app's idle scale-down window. `echomancer-cpu` idles
+ * for 300 s; `echomancer-sowell` idles for 60 s (`SOWELL_SCALEDOWN_SECONDS`),
+ * so a Kokoro hold that outlived its container would suppress the next
+ * legitimate warm for four minutes. min_containers stays 0, and one hold
+ * starts **one** container — a warm never pre-starts the whole six-container
+ * fleet.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -16,10 +21,17 @@ import { drewEndpoint, drewReady } from "@/lib/tts/drew-voice";
 import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
 
 export const WARM_HOLD_MS = 300_000;
+/** The Kokoro app scales down after 60 s, so its hold window is 60 s. */
+export const KOKORO_WARM_HOLD_MS = 60_000;
 
 export type WarmPool = "cpu" | "kokoro";
 export type WarmReason = "create" | "voice";
 export type WarmPostResult = "ready" | "unreachable" | "unconfigured";
+
+/** How long a claimed warm suppresses another one for this pool. */
+export function warmHoldMs(pool: WarmPool): number {
+  return pool === "kokoro" ? KOKORO_WARM_HOLD_MS : WARM_HOLD_MS;
+}
 
 export function poolsForWarm(input: {
   reason: WarmReason;
@@ -36,9 +48,10 @@ type WarmRow = { started_at: number };
 /** True when this caller owns the hold. A live row is left unchanged. */
 export async function claimWarmPool(
   pool: WarmPool,
-  now: number
+  now: number,
+  holdMs = warmHoldMs(pool)
 ): Promise<{ claimed: boolean; startedAt: number }> {
-  const expiresAt = now + WARM_HOLD_MS;
+  const expiresAt = now + holdMs;
   const row = await queryOne<WarmRow>(
     `INSERT INTO capacity_warms (pool, started_at, expires_at)
      VALUES (?, ?, ?)

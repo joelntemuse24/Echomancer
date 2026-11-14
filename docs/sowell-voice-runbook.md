@@ -37,12 +37,31 @@ holds a lock, and `@modal.concurrent(max_inputs=1)` plus a 429 keeps a
 second request off that container. Audio is WAV bytes in memory. There
 is no shared `/tmp/sowell.wav`.
 
-The fleet stays 2 containers, 2 CPU, 4 GB unless `SOWELL_MAX_CONTAINERS`
-is raised on a later deploy. `SOWELL_BOOK_LANES` is how many of those
-containers one book may use. It defaults to 2 and cannot exceed 8.
-A book uses one lane per section still to speak, and no more than that
-cap. The 1,480-character acceptance book had two sections, so it
-already filled the fleet. A third container would have had no section.
+The fleet is **6 containers**, 2 CPU, 6 GB each (`SOWELL_MAX_CONTAINERS`,
+default 6). `SOWELL_BOOK_LANES` is how many of those containers one book may
+use. It defaults to 6, is clamped to 8, and is clamped again to the fleet.
+A book uses one lane per section still to speak and no more than that cap.
+The 1,480-character acceptance book had two sections, so it still uses two
+lanes.
+
+Several books from different users share the fleet. The worker counts the
+other Kokoro books that are running and gives each one its fair share
+(`planKokoroBookLanes`): alone, a book gets six lanes; two books get three
+each; every book keeps at least one lane, so a long book cannot starve
+another user's. The `kokoro` provider-slot rows are the hard cross-process
+cap, so the fleet is never over-subscribed even if the per-book maths says
+otherwise. A 429 from a busy container is retried in place.
+
+## Why the pool is rolling
+
+The measured book (16,940 characters, 11 sections, Drew) took 9:00 of wall
+for 17:04 of audio. Four causes: only two lanes, fixed-pair dispatch that
+left a lane idle until the slower section of its pair finished, mastering
+that did not overlap speech, and 300 s of billed idle. All four are fixed:
+the pool claims the next section the moment any lane frees (the same shape
+as the Edge path), and mastering runs on its own promise so the lane starts
+speaking again immediately. Ordering is untouched — a section is bound to
+its index before it starts and the final join still walks `0..N-1`.
 
 Job `949891ec` (7 Nov 2026) is the measured book, not a local bench.
 1,480 characters, two sections, 81 seconds of audio. Created to ready
@@ -81,6 +100,20 @@ image. Pip on that image is not externally managed. Do not add a
 `pip config get` check. The build copies the pack and fails if the hash
 or layout is wrong, then installs `kokoro==0.9.4`.
 
+The build also bakes every cold-start download, so `@modal.enter` on a
+scaled-from-zero container only reads local files:
+
+- `en_core_web_sm` **3.8.0**, from its pinned GitHub release wheel. misaki's
+  English G2P otherwise runs `spacy.cli.download` on first use. The layer
+  asserts spaCy is 3.8.x first, so a version drift fails the build instead of
+  shipping a model the installed spaCy cannot load.
+- `hexgrad/Kokoro-82M` `config.json` and `kokoro-v1_0.pth` at
+  `f3ff3571`, plus the `bm_george.pt` voice. They land in `HF_HOME=/opt/hf`,
+  which is set **before** those layers, so the runtime's `hf_hub_download`
+  calls are cache hits.
+- `espeak-ng` is already an apt package (misaki's OOD-word fallback). No nltk
+  data is needed: misaki does not use nltk.
+
 Place the file, then build. Do not commit it.
 
 ```bash
@@ -92,16 +125,45 @@ sha256sum voices/sowell/am_sowell_avg.pt
 Create Modal secret `echomancer-sowell` with `SOWELL_TOKEN`. Then:
 
 ```bash
-SOWELL_MAX_CONTAINERS=2 \
-SOWELL_SCALEDOWN_SECONDS=300 \
+SOWELL_MAX_CONTAINERS=6 \
+SOWELL_SCALEDOWN_SECONDS=60 \
+SOWELL_TORCH_THREADS=2 \
 modal deploy modal/sowell_worker.py
 ```
 
+Threads: `SOWELL_TORCH_THREADS` (default 2) is applied by
+`torch.set_num_threads` in `@modal.enter`, before the first model load.
+`SOWELL_TORCH_INTEROP_THREADS` (default 1) is the same for inter-op. Both are
+read once per container, so changing them needs a redeploy. Torch only
+accepts `set_num_interop_threads` before its pool starts; a second call is
+ignored rather than fatal.
+
+Measure 2 vs 4 on the same image before changing the default. The benchmark is
+CPU-only (no GPU, no GPU image) and reads no `echomancer-sowell` secret:
+
+```bash
+modal run modal/sowell_bench.py --threads 2
+modal run modal/sowell_bench.py --threads 4
+# both in one command, one fresh container per count:
+modal run modal/sowell_bench.py --threads 2 --threads 4 --repeats 3
+```
+
+Each row prints `wallSeconds`, `audioSeconds`, `rtf` (`audio/wall`),
+`charsPerSecond`, `firstAudioSeconds`, and `initCount`. The bench app is
+`echomancer-sowell-bench`: `max_containers=1`, `min_containers=0`,
+`scaledown_window=10`.
+
 This app is `echomancer-sowell`. It does not deploy `echomancer-cpu` or
 `echomancer-s2-clone`. `min_containers` is 0. A create-flow click can POST
-`{"warm": true}` to this endpoint. That starts the container, loads Kokoro
+`{"warm": true}` to this endpoint. That starts **one** container, loads Kokoro
 in `@modal.enter`, and returns without audio. It does not call
-`update_autoscaler`. The cap stays 2. Idle scale-down is 300 seconds.
+`update_autoscaler`, and it does not pre-start the fleet. The cap is 6. Idle
+scale-down is 60 seconds.
+
+A warm is claimed once per pool for 60 seconds (`KOKORO_WARM_HOLD_MS` in
+`src/lib/capacity/warm.ts`), matching that idle window. A five-minute hold
+would suppress the next legitimate warm for four minutes after the container
+had already gone.
 
 On Vercel, after the endpoint exists:
 
@@ -131,10 +193,13 @@ A request over 2,000 characters is refused by the container. Kokoro's
 own splitter still runs inside that cap. The container answers 429
 while its one resident model is speaking.
 
-Torch is pinned to 2 threads (`SOWELL_CPU_THREADS`, `OMP_NUM_THREADS`,
-`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`). The model is `eval()` and
-the render runs under `inference_mode`. A 4-thread pool on a 2-CPU
-set was slower, not faster.
+Torch is pinned to 2 threads by default (`SOWELL_TORCH_THREADS`, with
+`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `MKL_NUM_THREADS` in step).
+An older deployment that only sets `SOWELL_CPU_THREADS` keeps working: it is
+the fallback name. The model is `eval()` and the render runs under
+`inference_mode`. A 4-thread pool on a 2-CPU set was slower in the local
+probe below, which is why 2 is still the default; the Modal benchmark is how
+to re-check that on the deployed image.
 
 Measured here with the real pack and the pinned base. Not a listening
 test. The paragraph is 719 characters, 144 words, 38.125 seconds of

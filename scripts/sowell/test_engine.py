@@ -165,5 +165,67 @@ class DrewSpeedMultiply(unittest.TestCase):
         self.assertEqual(seen, [1.0, 1.0])
 
 
+class ThreadBudget(unittest.TestCase):
+    """`SOWELL_TORCH_THREADS` is the knob; the old name still works."""
+
+    def setUp(self) -> None:
+        self._env = {
+            key: engine_module.os.environ.get(key)
+            for key in (
+                "SOWELL_TORCH_THREADS",
+                "SOWELL_CPU_THREADS",
+                "SOWELL_TORCH_INTEROP_THREADS",
+            )
+        }
+        for key in self._env:
+            engine_module.os.environ.pop(key, None)
+
+    def tearDown(self) -> None:
+        for key, value in self._env.items():
+            if value is None:
+                engine_module.os.environ.pop(key, None)
+            else:
+                engine_module.os.environ[key] = value
+
+    def test_defaults_stay_at_two_threads(self) -> None:
+        self.assertEqual(engine_module.torch_threads(), 2)
+        self.assertEqual(engine_module.torch_interop_threads(), 1)
+
+    def test_reads_the_new_name_first(self) -> None:
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "4"
+        engine_module.os.environ["SOWELL_CPU_THREADS"] = "3"
+        self.assertEqual(engine_module.torch_threads(), 4)
+
+    def test_falls_back_to_the_older_name(self) -> None:
+        engine_module.os.environ["SOWELL_CPU_THREADS"] = "3"
+        self.assertEqual(engine_module.torch_threads(), 3)
+
+    def test_clamps_to_one_and_to_the_cpu_count(self) -> None:
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "0"
+        self.assertEqual(engine_module.torch_threads(), 1)
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "not-a-number"
+        self.assertEqual(engine_module.torch_threads(), 2)
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "9999"
+        self.assertEqual(
+            engine_module.torch_threads(),
+            max(1, min(9999, engine_module.os.cpu_count() or 2)),
+        )
+
+    def test_apply_sets_torch_and_is_idempotent(self) -> None:
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "2"
+        self.assertEqual(engine_module.apply_torch_threads(), 2)
+        self.assertEqual(torch.get_num_threads(), 2)
+        # A second call (a warm container that re-loads) must not raise on the
+        # inter-op pool.
+        self.assertEqual(engine_module.apply_torch_threads(), 2)
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "4"
+        self.assertEqual(engine_module.apply_torch_threads(), 4)
+        self.assertEqual(torch.get_num_threads(), 4)
+
+    def test_legacy_name_delegates(self) -> None:
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "3"
+        self.assertEqual(engine_module.apply_thread_budget(), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

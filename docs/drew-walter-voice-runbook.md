@@ -66,18 +66,47 @@ the Next.js route with `DREW_ENABLED` unset hides the card entirely.
 
 Walter and George share one stock Kokoro kmodel (about 330 MB). Drew is a
 **second** kmodel of its own, so the container ceiling moved **4 GB → 6 GB**
-(`memory=6144` in `modal/sowell_worker.py`). CPU (2), `max_containers` (2),
-`min_containers` (0) and `@modal.concurrent(max_inputs=1)` are unchanged: this
-is the same fleet, one more resident model.
+(`memory=6144` in `modal/sowell_worker.py`). That is per container and does
+not change with the lane count: six lanes are six containers of the same
+size. CPU (2), `min_containers` (0) and `@modal.concurrent(max_inputs=1)` are
+unchanged.
+
+`max_containers` is now **6** (was 2) and `scaledown_window` is **60 s** (was
+300 s). Five idle minutes per container was about 40% of a measured book's
+cost, and the next section of a book arrives seconds later, not minutes.
+
+## Lanes and the shared fleet
+
+One Modal fleet serves all three narrators. Two numbers decide concurrency:
+
+| Env | Default | Meaning |
+|--|--|--|
+| `SOWELL_MAX_CONTAINERS` | 6 | Fleet cap. Also read by the worker as its cross-process cap, so several books cannot open more concurrent Kokoro calls than the fleet. |
+| `SOWELL_BOOK_LANES` | 6 | Lanes one book may ask for. Clamped to 8 and to the fleet. |
+| `SOWELL_SCALEDOWN_SECONDS` | 60 | Idle time before a container goes away. |
+| `SOWELL_TORCH_THREADS` | 2 | Torch intra-op threads, applied in `@modal.enter`. |
+| `SOWELL_TORCH_INTEROP_THREADS` | 1 | Torch inter-op threads, same place. |
+
+A book's lanes are then its fair share of the fleet among the Kokoro books
+running right now (`planKokoroBookLanes`): one book alone gets all six, two
+books get three each, and every book keeps at least one lane so a long book
+cannot starve another user's. The `kokoro` provider-slot rows are the hard
+cross-process cap; a 429 from a busy container is retried, never a failed
+take.
 
 ## Deploy
 
 ```bash
 # Same app as before. This does not deploy echomancer-cpu or
 # echomancer-s2-clone.
-SOWELL_MAX_CONTAINERS=2 \
-SOWELL_SCALEDOWN_SECONDS=300 \
+SOWELL_MAX_CONTAINERS=6 \
+SOWELL_SCALEDOWN_SECONDS=60 \
+SOWELL_TORCH_THREADS=2 \
 modal deploy modal/sowell_worker.py
+
+# Measure 2 vs 4 threads on the same image (CPU only, no GPU):
+modal run modal/sowell_bench.py --threads 2
+modal run modal/sowell_bench.py --threads 4
 ```
 
 Then set the Next.js/worker environment. Drew needs all three:

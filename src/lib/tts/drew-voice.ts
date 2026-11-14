@@ -29,7 +29,11 @@ export const DREW_KOKORO_SPEED_MAX = 2.0;
  * 2,000-character ceiling as the other Kokoro voices.
  */
 export const DREW_MAX_CHARS = 2000;
-/** Same two containers as Sowell/Walter and George. Not a second fleet. */
+/**
+ * Pieces of one over-cap section that may run at once. A section is packed to
+ * {@link DREW_MAX_CHARS}, so this is only reached by a hand-entered row; the
+ * book-level lane count is in `sowell-voice.ts`.
+ */
 export const DREW_IN_FLIGHT = 2;
 
 /**

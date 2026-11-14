@@ -81,14 +81,57 @@ def cpu_threads() -> int:
     return max(1, min(n, os.cpu_count() or 2))
 
 
-def apply_thread_budget() -> int:
-    n = cpu_threads()
-    torch.set_num_threads(n)
+def torch_threads() -> int:
+    """Torch intra-op threads for the container.
+
+    ``SOWELL_TORCH_THREADS`` is the knob the Modal worker sets from
+    ``@modal.enter``. It falls back to ``SOWELL_CPU_THREADS`` so an existing
+    deployment that only sets the older name keeps its current behaviour.
+    The default stays 2: on a 2-CPU set a 4-thread pool measured slower, and
+    the orchestrator benchmarks 2 vs 4 before changing it.
+    """
+    raw = os.environ.get("SOWELL_TORCH_THREADS") or os.environ.get(
+        "SOWELL_CPU_THREADS", "2"
+    )
     try:
-        torch.set_num_interop_threads(1)
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return max(1, min(n, os.cpu_count() or 2))
+
+
+def torch_interop_threads() -> int:
+    """Inter-op threads. One is right for a single model on one CPU set."""
+    raw = os.environ.get("SOWELL_TORCH_INTEROP_THREADS", "1")
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 1
+    return max(1, min(n, os.cpu_count() or 1))
+
+
+def apply_torch_threads() -> int:
+    """Apply the thread budget. Returns the intra-op count that was set.
+
+    Called from ``@modal.enter`` before the first model load, so the pool is
+    built at the requested size. `set_num_interop_threads` may only be called
+    before the inter-op pool starts, so a second call is ignored rather than
+    fatal — a warm container must not fail a request over it.
+    """
+    n = torch_threads()
+    torch.set_num_threads(n)
+    interop = torch_interop_threads()
+    try:
+        torch.set_num_interop_threads(interop)
     except RuntimeError:
         pass
+    os.environ.setdefault("SOWELL_TORCH_THREADS", str(n))
     return n
+
+
+def apply_thread_budget() -> int:
+    """Legacy name kept for callers that imported it. Now delegates."""
+    return apply_torch_threads()
 
 
 def words(text: str) -> list[str]:

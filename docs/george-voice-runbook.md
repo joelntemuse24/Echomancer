@@ -7,11 +7,16 @@ Ryan stays on Edge and is not spoken again. A custom clone is untouched.
 
 ## One app, not a second fleet
 
-The class still has `min_containers=0`, `max_containers` default 2,
-2 CPU, 4 GB, and 2 threads. `@modal.enter` loads one Kokoro model and
-two phonemizers: American for the Sowell pack, British (`lang_code='b'`)
-for `bm_george`. Both voices share the `kokoro` permit of 2, so a George
-book and a Sowell book do not open four containers.
+The class has `min_containers=0`, `max_containers` default 6, 2 CPU, 6 GB,
+and 2 threads (`SOWELL_TORCH_THREADS`). `@modal.enter` loads one Kokoro model
+and two phonemizers: American for the Sowell pack, British (`lang_code='b'`)
+for `bm_george`. Drew is the second resident kmodel when its volume is
+mounted.
+
+George, Walter, and Drew share one six-container fleet. A book's lanes are
+its fair share of that fleet among the Kokoro books running now, and the
+`kokoro` provider-slot rows are the hard cross-process cap, so a George book
+and a Sowell book do not open twelve containers between them.
 
 `GEORGE_URL` is a separate host from `SOWELL_URL` only if Modal prints
 two. On this app both methods are the same `speak` endpoint. Set
@@ -20,8 +25,10 @@ two. On this app both methods are the same `speak` endpoint. Set
 An older app that ignores `voice` does not get to store audio: the
 worker rejects a body with no `bm_george` header.
 
-Do not raise `SOWELL_MAX_CONTAINERS` for George. That would be a second
-approval.
+`SOWELL_MAX_CONTAINERS` is one fleet knob for all three narrators. Raising it
+raises the shared pool for George, Walter, and Drew together; it is not a
+per-voice setting. Keep it at 6 unless a measured book needs more, and note
+that the worker clamps a book's `SOWELL_BOOK_LANES` to it.
 
 ## Deploy
 

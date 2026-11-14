@@ -19,6 +19,7 @@
 
 import { execute, queryOne } from "@/lib/turso";
 import { currentTakehomeLease } from "@/lib/tts/takehome-lease-context";
+import { sowellFleetContainers } from "@/lib/tts/sowell-voice";
 
 export const PROVIDER_SLOT_PROVIDERS = ["fish", "edge", "modal-clone"] as const;
 export type ProviderSlotName = (typeof PROVIDER_SLOT_PROVIDERS)[number];
@@ -257,7 +258,8 @@ export async function holdFishTakehomeSlot(cap: number): Promise<HeldProviderSlo
 
 export async function holdNamedProviderSlot(
   provider: string,
-  cap: number
+  cap: number,
+  maxWaitMs = 0
 ): Promise<HeldProviderSlot> {
   const lease = currentTakehomeLease();
   const held = await holdProviderSlot({
@@ -266,11 +268,23 @@ export async function holdNamedProviderSlot(
     ownerToken: lease?.token ?? `${provider}_${crypto.randomUUID()}`,
     jobId: lease?.jobId ?? null,
     ttlSeconds: 90,
-    maxWaitMs: 0,
+    maxWaitMs,
   });
   if (!held) throw new ProviderSlotBusyError(provider);
   return held;
 }
+
+/**
+ * How long a Kokoro lane waits for one of the fleet's permits before it
+ * defers the book.
+ *
+ * `0` would make the fleet a strict race: a book whose lanes hold every
+ * container would take the permit a finished section frees before another
+ * book's lane, which is already waiting, could see it. A short wait lets the
+ * other book interleave instead of waiting for the first wave to end. It is
+ * bounded, so a genuinely full fleet still defers promptly.
+ */
+export const KOKORO_SLOT_WAIT_MS = 3_000;
 
 /**
  * Edge section cap after a shared 429. A missing or expired row means the
@@ -296,12 +310,20 @@ export async function holdEdgeSectionSlot(cap: number): Promise<HeldProviderSlot
  * One listen, preview, or live-stream request. Fish holds its own permit
  * inside the Fish HTTP call so a take-home that already took one does not
  * take a second. Returns null for Fish.
+ *
+ * Drew, Walter, and George all come from the one `echomancer-sowell` fleet,
+ * so they take a **`kokoro`** permit with the fleet cap, not a per-voice
+ * permit. A preview during a book therefore shares the six containers the
+ * book is using instead of opening a seventh call that would only 429.
  */
 export async function holdListenerSlot(
   providerId: string,
   edgeCap: number
 ): Promise<HeldProviderSlot | null> {
   if (providerId === "fish") return null;
+  if (providerId === "drew" || providerId === "sowell" || providerId === "george") {
+    return holdNamedProviderSlot("kokoro", sowellFleetContainers());
+  }
   if (providerId === "edge" || providerId === "google") {
     return holdEdgeSectionSlot(edgeCap);
   }

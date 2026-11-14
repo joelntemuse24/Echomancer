@@ -12,7 +12,11 @@ export const GEORGE_PROVIDER_VOICE_ID = "bm_george";
 export const GEORGE_KOKORO_REVISION = "f3ff3571791e39611d31c381e3a41a3af07b4987";
 export const GEORGE_CACHE_VARIANT = `kokoro82m-b-${GEORGE_PROVIDER_VOICE_ID}-${GEORGE_KOKORO_REVISION.slice(0, 12)}`;
 export const GEORGE_MAX_CHARS = 2000;
-/** Same two containers as Sowell. Not a second fleet. */
+/**
+ * Pieces of one over-cap section that may run at once. A section is packed to
+ * {@link GEORGE_MAX_CHARS}, so this is only reached by a hand-entered row; the
+ * book-level lane count is in `sowell-voice.ts`.
+ */
 export const GEORGE_IN_FLIGHT = 2;
 
 export function georgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

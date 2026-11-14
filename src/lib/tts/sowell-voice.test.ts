@@ -13,6 +13,7 @@ import { hardMaxCharsForModel } from "@/lib/tts/section-size";
 import {
   SOWELL_CACHE_VARIANT,
   SOWELL_IN_FLIGHT,
+  SOWELL_PIECE_IN_FLIGHT,
   SOWELL_MAX_CHARS,
   SowellNotConfiguredError,
   sowellEndpoint,
@@ -102,7 +103,7 @@ describe("sowell voice", () => {
     expect(takehomeCacheVariant("edge", "standard")).not.toBe(SOWELL_CACHE_VARIANT);
     expect(takehomeCacheVariant("paradee", "echomancer-andrew")).toBe("paradee-paragraph-v1");
     expect(hardMaxCharsForModel({ provider: "sowell", catalogMax: 4000 })).toBe(SOWELL_MAX_CHARS);
-    expect(SOWELL_IN_FLIGHT).toBe(2);
+    expect(SOWELL_IN_FLIGHT).toBe(6);
     expect(SOWELL_MAX_CHARS).toBe(2000);
     const { isTakehomeFriendly } = await import("@/lib/tts/voice-persona");
     expect(isTakehomeFriendly(voice!)).toBe(true);
@@ -217,7 +218,7 @@ describe("sowell voice", () => {
       const audio = await adapter.synthesize({ text, voice: "am_sowell_avg" });
       const pieces = splitSowellText(text);
       expect(pieces.length).toBeGreaterThan(1);
-      expect(peak).toBe(SOWELL_IN_FLIGHT);
+      expect(peak).toBe(SOWELL_PIECE_IN_FLIGHT);
       expect(new Set(seen)).toEqual(new Set(pieces));
       expect(pieces.join(" ")).toBe(text.trim());
       const pcm = audio.audio.subarray(44);
@@ -239,7 +240,13 @@ describe("sowell voice", () => {
     const source = readFileSync(path.join(process.cwd(), "modal/sowell_worker.py"), "utf8");
     expect(source).toContain("@modal.enter()");
     expect(source).toContain("min_containers=0");
-    expect(source).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2"))');
+    // Six containers: the fleet the worker's six book lanes share. Idle scale
+    // down is 60s, not 300s: five idle minutes were ~40% of a book's cost.
+    expect(source).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6"))');
+    expect(source).toContain('scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60"))');
+    // Threads are a redeploy-time knob, applied before the model load.
+    expect(source).toContain('TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "2")');
+    expect(source).toContain("apply_torch_threads()");
     expect(source).toContain("cpu=2");
     // Drew is a second resident kmodel next to stock Kokoro, so the ceiling
     // moved 4 GB → 6 GB. Two workers and three narrators share one app.

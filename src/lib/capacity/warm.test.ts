@@ -3,9 +3,11 @@ import { execute, queryOne } from "@/lib/turso";
 import { resetDatabase } from "@/test/harness";
 import {
   claimWarmPool,
+  KOKORO_WARM_HOLD_MS,
   poolsForWarm,
   postWarm,
   releaseWarmPool,
+  warmHoldMs,
   warmSharedCapacity,
   warmTarget,
   WARM_HOLD_MS,
@@ -28,8 +30,7 @@ const ENV_KEYS = [
   "WORKER",
 ] as const;
 
-describe("shared capacity warm", () => {
-  const prior = new Map<string, string | undefined>();
+describe("shared capacity warm", () => {  const prior = new Map<string, string | undefined>();
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -114,6 +115,26 @@ describe("shared capacity warm", () => {
       `SELECT started_at FROM capacity_warms WHERE pool = 'cpu'`
     );
     expect(Number(row?.started_at)).toBe(1_000 + WARM_HOLD_MS);
+  });
+
+  it("holds a Kokoro warm for the app's 60s idle window, not five minutes", async () => {
+    await resetDatabase();
+    // The echomancer-sowell app scales down after 60s. A five-minute hold
+    // would suppress the next legitimate warm for four minutes after the
+    // container was already gone.
+    expect(warmHoldMs("kokoro")).toBe(KOKORO_WARM_HOLD_MS);
+    expect(KOKORO_WARM_HOLD_MS).toBe(60_000);
+    expect(warmHoldMs("cpu")).toBe(WARM_HOLD_MS);
+    const first = await claimWarmPool("kokoro", 1_000);
+    expect(first.claimed).toBe(true);
+    expect((await claimWarmPool("kokoro", 1_000 + KOKORO_WARM_HOLD_MS - 1)).claimed).toBe(
+      false
+    );
+    expect((await claimWarmPool("kokoro", 1_000 + KOKORO_WARM_HOLD_MS)).claimed).toBe(
+      true
+    );
+    // The two pools keep separate rows, so a CPU hold is not a Kokoro hold.
+    expect((await claimWarmPool("cpu", 1_000)).claimed).toBe(true);
   });
 
   it("lets one of two racing claims win", async () => {

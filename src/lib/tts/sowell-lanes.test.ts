@@ -1,23 +1,53 @@
 import { describe, expect, it } from "vitest";
 import { formatSowellRequestLog, readSowellTimingHeaders } from "./sowell-timing";
-import { planSowellLanes, sowellBookLanes, SOWELL_LANE_HARD_CEILING } from "./sowell-voice";
+import {
+  sowellBookLanes,
+  sowellFleetContainers,
+  SOWELL_FLEET_CONTAINERS_DEFAULT,
+  SOWELL_IN_FLIGHT,
+  SOWELL_LANE_HARD_CEILING,
+} from "./sowell-voice";
 
 describe("sowell lanes", () => {
-  it("keeps the live default at two and refuses a cap past the ceiling", () => {
-    expect(sowellBookLanes({} as NodeJS.ProcessEnv)).toBe(2);
+  it("defaults one book to six lanes and refuses a cap past the ceiling", () => {
+    // Six is the deployed fleet (`SOWELL_MAX_CONTAINERS`). The old default of
+    // two left four containers idle on every book.
+    expect(SOWELL_IN_FLIGHT).toBe(6);
+    expect(sowellBookLanes({} as NodeJS.ProcessEnv)).toBe(6);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "4" } as NodeJS.ProcessEnv)).toBe(4);
-    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "100" } as NodeJS.ProcessEnv)).toBe(
-      SOWELL_LANE_HARD_CEILING
-    );
+    // A request past the hard ceiling is clamped, and the fleet clamps again.
+    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "100" } as NodeJS.ProcessEnv)).toBe(6);
+    expect(
+      sowellBookLanes({
+        SOWELL_BOOK_LANES: "100",
+        SOWELL_MAX_CONTAINERS: "12",
+      } as NodeJS.ProcessEnv)
+    ).toBe(SOWELL_LANE_HARD_CEILING);
     expect(sowellBookLanes({ SOWELL_BOOK_LANES: "0" } as NodeJS.ProcessEnv)).toBe(1);
+    expect(sowellBookLanes({ SOWELL_BOOK_LANES: "abc" } as NodeJS.ProcessEnv)).toBe(6);
   });
 
-  it("uses one lane for one section and two for the 1480-character book", () => {
-    expect(planSowellLanes({ remainingSections: 1, cap: 2 })).toBe(1);
-    expect(planSowellLanes({ remainingSections: 2, cap: 2 })).toBe(2);
-    expect(planSowellLanes({ remainingSections: 10, cap: 2 })).toBe(2);
-    expect(planSowellLanes({ remainingSections: 10, cap: 4 })).toBe(4);
-    expect(planSowellLanes({ remainingSections: 10, cap: 100 })).toBe(8);
+  it("never asks for more lanes than the fleet has containers", () => {
+    expect(SOWELL_FLEET_CONTAINERS_DEFAULT).toBe(6);
+    expect(sowellFleetContainers({} as NodeJS.ProcessEnv)).toBe(6);
+    // A ramped-down fleet clamps the book, so a lane is not spent on a 429.
+    expect(
+      sowellBookLanes({
+        SOWELL_BOOK_LANES: "8",
+        SOWELL_MAX_CONTAINERS: "3",
+      } as NodeJS.ProcessEnv)
+    ).toBe(3);
+    // The hard ceiling still wins over an over-large fleet.
+    expect(
+      sowellBookLanes({
+        SOWELL_BOOK_LANES: "16",
+        SOWELL_MAX_CONTAINERS: "12",
+      } as NodeJS.ProcessEnv)
+    ).toBe(SOWELL_LANE_HARD_CEILING);
+    expect(sowellFleetContainers({ SOWELL_MAX_CONTAINERS: "0" } as NodeJS.ProcessEnv)).toBe(1);
+    expect(
+      sowellFleetContainers({ SOWELL_MAX_CONTAINERS: "999" } as NodeJS.ProcessEnv)
+    ).toBe(32);
   });
 });
 
