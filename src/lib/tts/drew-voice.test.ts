@@ -128,10 +128,9 @@ describe("Drew identity", () => {
     expect(DREW_IN_FLIGHT).toBe(2);
   });
 
-  it("does not pretend a committed preview exists yet", () => {
-    // TODO for the bot: render `public/voice-previews/drew.mp3`, then add
-    // "drew" to COMMITTED_PREVIEW_IDS in stock-preview.ts.
-    expect(stockPreviewUrl("drew")).toBeNull();
+  it("serves a committed Drew preview", () => {
+    expect(stockPreviewUrl("drew")).toBe("/voice-previews/drew.mp3");
+    expect(stockPreviewUrl("standard")).toBe("/voice-previews/drew.mp3");
     expect(stockPreviewUrl("sowell")).toBe("/voice-previews/sowell.mp3");
   });
 });

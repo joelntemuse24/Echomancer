@@ -26,8 +26,8 @@ describe("stock preview", () => {
 
   it("does not serve Andrew's file for the retired id: a pick lands on Drew", async () => {
     // Andrew is retired. A stale pick or old client that still says `standard`
-    // is coerced to Drew, and with Drew's endpoint unset there is nothing to
-    // play — an Andrew recording is not substituted for the new narrator.
+    // is coerced to Drew and served Drew's committed sample — an Andrew
+    // recording is not substituted for the new narrator.
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -35,7 +35,13 @@ describe("stock preview", () => {
         body: { catalogVoiceId: "standard" },
       })
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/audio\/mpeg/);
+    const audio = Buffer.from(await response.arrayBuffer());
+    const recorded = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "drew.mp3")
+    );
+    expect(audio.equals(recorded)).toBe(true);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
@@ -64,7 +70,7 @@ describe("stock preview", () => {
 
   it("maps an old Randolph preview onto Drew, not Andrew", async () => {
     // Randolph left the pile for Andrew, and Andrew has now left for Drew, so
-    // the two aliases compose. Nothing is synthesized for the retired row.
+    // the two aliases compose and the committed Drew sample is served.
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -72,7 +78,12 @@ describe("stock preview", () => {
         body: { catalogVoiceId: "randolph-expressive" },
       })
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
+    const audio = Buffer.from(await response.arrayBuffer());
+    const recorded = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "drew.mp3")
+    );
+    expect(audio.equals(recorded)).toBe(true);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 });

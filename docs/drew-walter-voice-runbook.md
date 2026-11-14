@@ -128,11 +128,10 @@ that is a different model, so its audio must not be found under this key.
 
 ## Preview
 
-`TODO (owner/bot):` render `PREVIEW_TEXT` with Drew at Kokoro speed 0.88
-(24 kHz mono) and commit it as **`public/voice-previews/drew.mp3`**, then add
-`"drew"` to `COMMITTED_PREVIEW_IDS` in `src/lib/tts/stock-preview.ts`. Until
-then the picker falls through to `POST /api/tts/preview`, which renders Drew
-once on the CPU app instead of playing a missing static file.
+The committed sample is **`public/voice-previews/drew.mp3`**: `PREVIEW_TEXT`
+rendered with Drew at app speed 1.0 (Kokoro 0.88, 24 kHz mono). `"drew"` is
+in `COMMITTED_PREVIEW_IDS`. Re-record it when `PREVIEW_TEXT` or the volume
+checkpoint changes.
 
 Walter's sample is unchanged: `public/voice-previews/sowell.mp3`, a local CPU
 take of `PREVIEW_TEXT` with `am_sowell`. Re-record it when `PREVIEW_TEXT`
