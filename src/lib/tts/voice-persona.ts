@@ -5,7 +5,6 @@
 
 import type { CatalogVoice, Gender } from "@/lib/tts/types";
 import {
-  STANDARD_CATALOG_VOICE_ID,
   isEdgeStockVoice,
   isStandardVoice,
   stockDisplayName,
@@ -240,7 +239,13 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
  * Full audiobook voices need decent chunk size and must be on the allowlist.
  */
 export function isTakehomeFriendly(voice: CatalogVoice): boolean {
-  if (voice.provider === "sowell" || voice.provider === "george") return true;
+  if (
+    voice.provider === "sowell" ||
+    voice.provider === "george" ||
+    voice.provider === "drew"
+  ) {
+    return true;
+  }
   if (voice.model.toLowerCase().includes("zonos")) return false;
   if (voice.model.toLowerCase().includes("kokoro")) return false;
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
@@ -261,9 +266,9 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const vibe = inferVibe(voice);
   const baseName = friendlyVoiceName(voice);
   const pinned = stockDisplayName(voice.id);
+  const label = pinned || baseName;
   // Slim stock titles stay first names only — no vendor / Neural / accent suffix.
-  if (pinned || voice.id === STANDARD_CATALOG_VOICE_ID) {
-    const label = pinned || "Andrew";
+  if (pinned) {
     return {
       ...voice,
       accentHint: voice.accentHint ?? accent,

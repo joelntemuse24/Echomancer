@@ -1,7 +1,12 @@
 /**
- * Sowell is a separate Kokoro-82M voice. It is not a stock Edge voice and
- * it is not a Fish clone. The pack is not in the web bundle. Synthesis is
- * an HTTP call to the Modal CPU app. The take-home VM does not run it.
+ * Walter (internal id `sowell`) is a separate Kokoro-82M voice pack. It is
+ * not a stock Edge voice and it is not a Fish clone. The pack is not in the
+ * web bundle. Synthesis is an HTTP call to the Modal CPU app. The take-home
+ * VM does not run it.
+ *
+ * The id stays `sowell` so stored books, saved picks, and
+ * `public/voice-previews/sowell.mp3` keep working; only the listed name moved
+ * to Walter. The customer-facing error strings say Walter for that reason.
  */
 
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
@@ -73,12 +78,12 @@ export class SowellNotConfiguredError extends Error {
 /** The Modal endpoint, or a throw. Loopback is refused on the take-home VM. */
 export function sowellEndpoint(env: NodeJS.ProcessEnv = process.env): string {
   if (!sowellEnabled(env)) {
-    throw new SowellNotConfiguredError("Sowell is not enabled.");
+    throw new SowellNotConfiguredError("Walter is not enabled.");
   }
   const raw = env.SOWELL_URL?.trim() || "";
-  if (!raw) throw new SowellNotConfiguredError("Sowell is not configured (SOWELL_URL).");
+  if (!raw) throw new SowellNotConfiguredError("Walter is not configured (SOWELL_URL).");
   if (!env.SOWELL_TOKEN?.trim()) {
-    throw new SowellNotConfiguredError("Sowell is not configured (SOWELL_TOKEN).");
+    throw new SowellNotConfiguredError("Walter is not configured (SOWELL_TOKEN).");
   }
   let url: URL;
   try {
@@ -98,7 +103,7 @@ export function sowellEndpoint(env: NodeJS.ProcessEnv = process.env): string {
     (host === "localhost" || host === "127.0.0.1" || host === "::1")
   ) {
     throw new SowellNotConfiguredError(
-      "Sowell synthesis on the take-home VM is refused."
+      "Walter synthesis on the take-home VM is refused."
     );
   }
   return url.origin;

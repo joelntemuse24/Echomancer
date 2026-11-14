@@ -98,6 +98,51 @@ describe("claimTakehomeLease", () => {
 });
 
 describe("processTakehomeTick", () => {
+  /**
+   * The Andrew migration contract, executed end to end: a stored book whose
+   * row still says `standard` / `edge` / `en-US-AndrewNeural` must render,
+   * publish and finish on Edge. It must not be re-routed to Drew, and must
+   * not be failed for naming a narrator the picker no longer lists.
+   */
+  it("finishes a stored Andrew book on Edge and never routes it to Drew", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "The lamps were lit along the quay. ".repeat(120),
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+      catalogVoiceId: "standard",
+      model: "edge/en-US-AndrewNeural",
+    });
+    const providers = await import("@/lib/tts/providers");
+    const adapterSpy = vi.spyOn(providers, "resolveStockAdapter");
+    const fake = createFakeProvider();
+    adapterSpy.mockReturnValue(fake);
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID);
+
+    expect(fake.calls.length).toBeGreaterThan(0);
+    // Every call went through the Edge adapter, and the voice id is Andrew's.
+    for (const call of adapterSpy.mock.calls) {
+      expect(call[0]?.provider).toBe("edge");
+      expect(call[0]?.catalogVoiceId).toBe("standard");
+    }
+    expect(fake.calls.every((call) => call.voiceId === "en-US-AndrewNeural")).toBe(
+      true
+    );
+    const row = await jobRow(JOB_ID);
+    // The stored row is untouched: the book keeps its own narrator identity.
+    expect(row?.catalog_voice_id).toBe("standard");
+    expect(row?.tts_provider).toBe("edge");
+    expect(row?.provider_voice_id).toBe("en-US-AndrewNeural");
+  });
+
   it("passes normalized fallback sections within the engine ceiling to synthesis", async () => {
     const pdfPath = await seedUpload({
       id: UPLOAD_ID_A, userId: USER_A,

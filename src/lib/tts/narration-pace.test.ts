@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_NARRATION_SPEED,
+  DREW_APP_SPEED_MAX,
+  DREW_APP_SPEED_MIN,
   FISH_SPEED_MAX,
   FISH_SPEED_MIN,
   TARGET_LONGFORM_WPM,
   calibrateNarrationSpeed,
+  drewSpeedForRequest,
   initialNarrationSpeed,
+  keepsOwnPace,
 } from "./narration-pace";
 
 const ACADEMIC = [
@@ -33,6 +37,50 @@ describe("initialNarrationSpeed", () => {
         text: ACADEMIC,
       })
     ).toBe(1);
+  });
+
+  it("keeps Drew at 1.0 on academic text — 1.0 is already his natural pace", () => {
+    // The container renders 1.0 at Kokoro speed 0.88, so the academic
+    // heuristic here would stack a second slowdown on top of a voice that is
+    // already at Andrew's pace. This is the drift that moved later Andrew
+    // sections to ~0.85.
+    expect(
+      initialNarrationSpeed({ catalogVoiceId: "drew", text: ACADEMIC })
+    ).toBe(1);
+    expect(
+      initialNarrationSpeed({ catalogVoiceId: "drew", text: CONVERSATIONAL })
+    ).toBe(1);
+  });
+
+  it("still starts an unmodelled clone or stock narrator slow on academic text", () => {
+    expect(
+      initialNarrationSpeed({
+        catalogVoiceId: "clone:96a74157-aaaa-4bbb-8ccc-ddddeeeeffff",
+        text: ACADEMIC,
+      })
+    ).toBeLessThan(1);
+    expect(
+      initialNarrationSpeed({ catalogVoiceId: "fish-narrator", text: ACADEMIC })
+    ).toBeLessThan(1);
+  });
+});
+
+describe("Drew pace", () => {
+  it("marks the voices whose pace must not be re-calibrated", () => {
+    expect(keepsOwnPace("drew")).toBe(true);
+    expect(keepsOwnPace("echomancer-andrew")).toBe(true);
+    expect(keepsOwnPace("ava")).toBe(false);
+    expect(keepsOwnPace(null)).toBe(false);
+  });
+
+  it("clamps the app speed and leaves 1.0 exactly at 1.0", () => {
+    // The worker multiplies by 0.88; this only clamps, so 1.0 must survive as
+    // 1.0 or the container would apply 0.88 to an already-scaled number.
+    expect(drewSpeedForRequest(1)).toBe(1);
+    expect(drewSpeedForRequest(undefined)).toBe(1);
+    expect(drewSpeedForRequest(0.5)).toBe(DREW_APP_SPEED_MIN);
+    expect(drewSpeedForRequest(9)).toBe(DREW_APP_SPEED_MAX);
+    expect(drewSpeedForRequest(0.9)).toBe(0.9);
   });
 });
 

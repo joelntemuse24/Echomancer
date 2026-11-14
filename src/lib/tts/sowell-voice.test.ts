@@ -30,9 +30,29 @@ afterEach(() => {
   delete process.env.SOWELL_URL;
   delete process.env.SOWELL_TOKEN;
   delete process.env.WORKER;
+  delete process.env.DREW_ENABLED;
+  delete process.env.DREW_URL;
+  delete process.env.DREW_TOKEN;
 });
 
 describe("sowell voice", () => {
+  beforeEach(() => {
+    // Drew is the default and is only listed with its endpoint configured.
+    process.env.DREW_ENABLED = "1";
+    process.env.DREW_URL = "https://example.modal.run";
+    process.env.DREW_TOKEN = "token";
+  });
+
+  afterEach(() => {
+    delete process.env.DREW_ENABLED;
+    delete process.env.DREW_URL;
+    delete process.env.DREW_TOKEN;
+    delete process.env.SOWELL_ENABLED;
+    delete process.env.SOWELL_URL;
+    delete process.env.SOWELL_TOKEN;
+    delete process.env.WORKER;
+  });
+
   it("stays out of the slim list and fails closed until configured", async () => {
     expect(SLIM_STOCK_VOICE_IDS).not.toContain("sowell");
     expect(sowellReady()).toBe(false);
@@ -40,7 +60,7 @@ describe("sowell voice", () => {
     const listed = await listCatalogVoices();
     expect(listed.map((voice) => voice.id)).not.toContain("sowell");
     expect(voicesForPath(listed, "standard").map((voice) => voice.id)).toEqual([
-      "standard",
+      "drew",
       "echomancer-andrew",
       "ava",
       "libby",
@@ -54,29 +74,30 @@ describe("sowell voice", () => {
     ).rejects.toThrow(/not enabled|not configured/);
   });
 
-  it("lists Sowell only when the endpoint is ready and keeps other voices", async () => {
+  it("lists Walter only when the endpoint is ready and keeps other voices", async () => {
     Object.assign(process.env, readyEnv);
     expect(sowellReady()).toBe(true);
     const voice = await getCatalogVoice("sowell");
+    // The internal id is unchanged; the listed name is Walter.
     expect(voice?.provider).toBe("sowell");
-    expect(voice?.displayName).toMatch(/^Sowell/);
+    expect(voice?.displayName).toMatch(/^Walter/);
     const catalog = await listCatalogVoices();
     const listed = catalog.map((item) => item.id);
     expect(listed.slice(0, 4)).toEqual([
-      "standard",
+      "drew",
       "echomancer-andrew",
       "ava",
       "libby",
     ]);
     expect(listed).toContain("sowell");
     expect(voicesForPath(catalog, "standard").map((voice) => voice.id)).toEqual([
-      "standard",
+      "drew",
       "echomancer-andrew",
       "ava",
       "libby",
       "sowell",
     ]);
-    expect(voicesForPath(catalog, "standard").at(-1)?.displayName).toMatch(/^Sowell/);
+    expect(voicesForPath(catalog, "standard").at(-1)?.displayName).toMatch(/^Walter/);
     expect(takehomeCacheVariant("sowell", "sowell")).toBe(SOWELL_CACHE_VARIANT);
     expect(takehomeCacheVariant("edge", "standard")).not.toBe(SOWELL_CACHE_VARIANT);
     expect(takehomeCacheVariant("paradee", "echomancer-andrew")).toBe("paradee-paragraph-v1");
@@ -220,14 +241,30 @@ describe("sowell voice", () => {
     expect(source).toContain("min_containers=0");
     expect(source).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2"))');
     expect(source).toContain("cpu=2");
-    expect(source).toContain("memory=4096");
+    // Drew is a second resident kmodel next to stock Kokoro, so the ceiling
+    // moved 4 GB → 6 GB. Two workers and three narrators share one app.
+    expect(source).toContain("memory=6144");
     expect(source).toContain("max_inputs=1");
     expect(source).toContain("timing_headers");
     expect(source).not.toContain("subprocess");
     expect(source).not.toContain("/tmp/sowell.wav");
+    // Drew's private weights come from a Volume, never from the image.
+    expect(source).toContain("modal.Volume.from_name");
+    expect(source).toContain('DREW_VOLUME_NAME = os.environ.get("DREW_VOLUME_NAME", "andrew-distill")');
+    expect(source).toContain("load_drew()");
+    // This app must never reach for the S2 clone GPU app.
+    expect(source).not.toContain("s2_clone");
+    expect(source).not.toContain("S2C_");
+    const drew = readFileSync(path.join(process.cwd(), "scripts/sowell/drew.py"), "utf8");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
+    expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_kmodel.pth");
+    expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_voice.pt");
+    expect(drew).toContain("PACK_SHAPE = (510, 1, 256)");
     const engine = readFileSync(path.join(process.cwd(), "scripts/sowell/engine.py"), "utf8");
     expect(engine).toContain("init_count += 1");
     expect(engine).toContain("refusing to drop text");
+    // Drew renders at its own native speed, and 1.0 never means 0.88 twice.
+    expect(engine).toContain("kokoro_speed = drew_speed(speed)");
   });
 
   it("splits a 511-phoneme run when Kokoro is installed", () => {
