@@ -12,21 +12,32 @@ runtime until idle scale-down. ``min_containers`` is 0. One request at a
 time per container, because the model is not reentrant. A second request
 gets 429 so the caller can use another container in the fleet.
 
-Fleet. ``SOWELL_MAX_CONTAINERS`` (default 6) is the cap. The worker's
-``SOWELL_BOOK_LANES`` (also default 6, clamped to 8 and to the fleet) is how
-many of those one book may hold; the ``kokoro`` provider-slot rows are the
-cross-process share, so several books cannot open more calls than the fleet.
-Six containers keep ``memory=6144`` per container, which is unchanged: lanes
-are containers, not extra memory.
+Fleet. ``SOWELL_MAX_CONTAINERS`` (default 16, clamped to 1..16) is the cap.
+The worker's ``SOWELL_BOOK_LANES`` (also default 16, clamped to 16 and to the
+fleet) is how many of those one book may hold; the ``kokoro`` provider-slot
+rows are the cross-process share, so several books cannot open more calls than
+the fleet. A book alone gets the whole fleet; concurrent books split it so the
+quotas sum to the fleet and a new book takes lanes as other books' sections
+finish. Containers keep ``memory=6144`` each: lanes are containers, not extra
+memory.
 
-Idle. ``SOWELL_SCALEDOWN_SECONDS`` is 60. Five minutes of idle container time
-was about 40% of a measured book's cost, and the next section of a book
-arrives in seconds, not minutes.
+Sections. The worker packs a Kokoro-CPU book at ``KOKORO_CPU_SECTION_CHARS``
+(default 700, clamped 300..2000), with a shorter first section so first audio
+arrives fast. Each section is one call to whichever container holds a lane,
+so a smaller target shortens the tail. The container still caps a request at
+``MAX_CHARS`` (2,000) and splits internally at 510 phonemes.
+
+Idle. ``SOWELL_SCALEDOWN_SECONDS`` is 5, clamped to Modal's 2..1200. The idle
+tail dominated the measured book's cost: 16 lanes x 700-char sections finished
+the 15.7k-character text in 47 s against 74 s for 6 lanes x 1.4k, so the fleet
+is bigger and a container's work is shorter. That leaves a 5 s idle keeping
+the cost about equal while the next section of a book still arrives in
+seconds.
 
 Memory. Walter and George share one stock kmodel (~330 MB). Drew is a
 different kmodel of its own (~313 MB), so the ceiling moved 4 GB → 6 GB.
-That is per container and does not grow with the lane count: six lanes are
-six containers of the same size.
+That is per container and does not grow with the lane count: sixteen lanes
+are sixteen containers of the same size.
 
 Threads. Modal ``cpu=2`` is two physical cores, four hardware threads.
 Torch gets ``SOWELL_TORCH_THREADS`` (default 4) via ``torch.set_num_threads``
@@ -84,6 +95,39 @@ TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "4")
 PACK = os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt")
 MANIFEST = os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json")
 
+#: Fleet ceiling. `SOWELL_MAX_CONTAINERS` is read at deploy time, clamped to
+#: 1..16 so a typo cannot ask Modal for a roster this app was not sized for.
+#: The worker's `SOWELL_FLEET_CONTAINERS_CEILING` is the same number.
+MAX_CONTAINERS_CEILING = 16
+MAX_CONTAINERS_DEFAULT = 16
+
+#: Modal's allowed `scaledown_window` range, in seconds.
+SCALEDOWN_MIN = 2
+SCALEDOWN_MAX = 1200
+#: 5 s of idle. The measured book left the idle tail as the dominant cost, so
+#: a container that is done should go away instead of holding a lane.
+SCALEDOWN_DEFAULT = 5
+
+
+def max_containers(env: dict | None = None) -> int:
+    """Deploy-time `max_containers`, clamped to 1..16. Default 16."""
+    raw = (env or os.environ).get("SOWELL_MAX_CONTAINERS", "")
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        n = MAX_CONTAINERS_DEFAULT
+    return max(1, min(MAX_CONTAINERS_CEILING, n))
+
+
+def scaledown_seconds(env: dict | None = None) -> int:
+    """Deploy-time `scaledown_window`, clamped to Modal's 2..1200. Default 5."""
+    raw = (env or os.environ).get("SOWELL_SCALEDOWN_SECONDS", "")
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        n = SCALEDOWN_DEFAULT
+    return max(SCALEDOWN_MIN, min(SCALEDOWN_MAX, n))
+
 drew_volume = modal.Volume.from_name(DREW_VOLUME_NAME, create_if_missing=True)
 
 
@@ -102,8 +146,8 @@ def _authorized(request: Request) -> bool:
     memory=6144,
     timeout=180,
     min_containers=0,
-    max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6")),
-    scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60")),
+    max_containers=max_containers(),
+    scaledown_window=scaledown_seconds(),
     secrets=[modal.Secret.from_name("echomancer-sowell")],
     volumes={DREW_VOLUME_MOUNT: drew_volume},
 )

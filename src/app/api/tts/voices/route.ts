@@ -28,6 +28,7 @@ import { listClonedVoicesForUser } from "@/lib/turso/cloned-voices";
 import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
 import { requestClonePoolPrewarm } from "@/lib/jobs/takehome-worker-client";
 import { usesModalClone } from "@/lib/tts/providers/modal-clone";
+import { isKokoroCpuProvider, kokoroCpuSectionChars } from "@/lib/tts/section-size";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
   priceEstimate: {
@@ -55,11 +56,17 @@ function withPricing(
   return voices.map((v) => {
     const price =
       charCount > 0 ? estimatePriceEur({ charCount, voice: v }) : null;
+    // Kokoro-CPU books pack at the section target (700 by default), not at the
+    // 2,000-character request cap, so the section-count estimate must use the
+    // same number the packer does or it under-reports the book's wall clock.
+    const estimateChunk = isKokoroCpuProvider(v.provider)
+      ? kokoroCpuSectionChars()
+      : v.maxCharsPerRequest;
     const wall =
       charCount > 0
         ? estimateTakehomeWallClockSeconds({
             charCount,
-            maxCharsPerRequest: v.maxCharsPerRequest,
+            maxCharsPerRequest: estimateChunk,
             latencyClass: v.latencyClass,
           })
         : null;

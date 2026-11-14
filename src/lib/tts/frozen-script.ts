@@ -26,6 +26,8 @@ import {
   FISH_HARD_MAX_CHARS,
   edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
+  isKokoroCpuProvider,
+  kokoroCpuSectionPlan,
 } from "@/lib/tts/section-size";
 import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
 import { absorbSmallFanoutRemainder, packSpeakableSections } from "@/lib/tts/split-text";
@@ -86,6 +88,11 @@ export type BuildFrozenScriptInput = {
    * 1.5× buffer. When set, this wins over the fixed second and third caps.
    */
   fitNextSection?: (priorChars: number[]) => number;
+  /**
+   * How much an open section must hold before a heading opens a new one.
+   * Defaults to `MIN_SECTION_CHARS` (1,500) inside the packer.
+   */
+  minSectionChars?: number;
   /**
    * Take-home Fish / clone: even-pack so `fanout` workers
    * get similar-sized slices. Section 0 still uses the fast first-section cap.
@@ -164,6 +171,7 @@ function resolvePackChars(
   fitThirdSection: ((openingChars: number, secondChars: number) => number) | undefined;
   fitNextSection: ((priorChars: number[]) => number) | undefined;
   evenFanout: number | undefined;
+  minSectionChars: number | undefined;
 } {
   if (input.packProvider === "edge" || input.packProvider === "google") {
     return {
@@ -175,6 +183,26 @@ function resolvePackChars(
       fitThirdSection: undefined,
       fitNextSection: undefined,
       evenFanout: 8,
+      minSectionChars: undefined,
+    };
+  }
+  if (isKokoroCpuProvider(input.packProvider)) {
+    // One section is one container call, so the Kokoro CPU voices pack at
+    // `KOKORO_CPU_SECTION_CHARS` (700 by default) with a short opening. The
+    // request cap stays 2,000; the target is a packing decision.
+    const plan = kokoroCpuSectionPlan();
+    return {
+      maxChars: plan.maxChars,
+      firstSectionMaxChars: plan.firstSectionMaxChars,
+      secondSectionMaxChars: plan.secondSectionMaxChars,
+      thirdSectionMaxChars: plan.thirdSectionMaxChars,
+      fitSecondSection: undefined,
+      fitThirdSection: undefined,
+      fitNextSection: undefined,
+      evenFanout: undefined,
+      // A heading ends a section once the open one reaches the target, so a
+      // short chapter is not swallowed by a 1,500-character floor.
+      minSectionChars: plan.maxChars,
     };
   }
   const evenFanout =
@@ -201,6 +229,7 @@ function resolvePackChars(
       fitThirdSection: undefined,
       fitNextSection: undefined,
       evenFanout,
+      minSectionChars: undefined,
     };
   }
   return {
@@ -212,6 +241,7 @@ function resolvePackChars(
     fitThirdSection: input.fitThirdSection,
     fitNextSection: input.fitNextSection,
     evenFanout: undefined,
+    minSectionChars: input.minSectionChars,
   };
 }
 
@@ -240,6 +270,7 @@ function packFromSpeakable(
     fitSecondSection: pack.fitSecondSection,
     fitThirdSection: pack.fitThirdSection,
     fitNextSection: pack.fitNextSection,
+    minSectionChars: pack.minSectionChars,
     measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
     chapters,
   });

@@ -128,4 +128,25 @@ describe("voices catalog", () => {
       expect(JSON.stringify(voice)).not.toMatch(/expressive/i);
     }
   });
+
+  it("estimates an Edge book from its 2,000-char chunk and a Kokoro book from 700", async () => {
+    const response = await voicesGet(
+      await buildRequest("/api/tts/voices?charCount=7000", { userId: USER_A })
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      voices: {
+        id: string;
+        provider: string;
+        generationEta: { sections: number } | null;
+      }[];
+    };
+    // A 7,000-char Edge book at 4,000 chars/section is two sections.
+    const edge = body.voices.find((voice) => voice.id === "ava");
+    expect(edge?.generationEta?.sections).toBe(2);
+    // A Kokoro book packs at ~700, so it is ten sections, not four: the
+    // pre-job estimate must not understate it.
+    const kokoro = body.voices.find((voice) => voice.id === "drew");
+    expect(kokoro?.generationEta?.sections).toBe(10);
+  });
 });

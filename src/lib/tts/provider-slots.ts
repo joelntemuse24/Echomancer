@@ -313,8 +313,9 @@ export async function holdEdgeSectionSlot(cap: number): Promise<HeldProviderSlot
  *
  * Drew, Walter, and George all come from the one `echomancer-sowell` fleet,
  * so they take a **`kokoro`** permit with the fleet cap, not a per-voice
- * permit. A preview during a book therefore shares the six containers the
- * book is using instead of opening a seventh call that would only 429.
+ * permit. A preview during a book therefore shares the fleet the book is
+ * using instead of opening a call beyond `SOWELL_MAX_CONTAINERS` that would
+ * only 429.
  */
 export async function holdListenerSlot(
   providerId: string,

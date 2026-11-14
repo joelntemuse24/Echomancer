@@ -158,6 +158,8 @@ import {
   catalogMaxForStoredProvider,
   FISH_HARD_MAX_CHARS,
   hardMaxCharsForModel,
+  isKokoroCpuProvider,
+  kokoroCpuSectionPlan,
   maxCharsForModel,
 } from "@/lib/tts/section-size";
 import {
@@ -725,8 +727,8 @@ function takehomeMayOverlap(): boolean {
  * How many other take-home books are speaking on the Kokoro CPU fleet now.
  *
  * One fleet serves Drew, Walter, and George. Counting the other books (in
- * this process or another worker) is what lets one book take a fair share of
- * the six containers instead of all of them. A read failure is not a reason
+ * this process or another worker) is what lets one book take its fair share of
+ * the fleet instead of all of it. A read failure is not a reason
  * to fail a book: it just means this book sees itself alone, and the shared
  * `kokoro` provider-slot rows still cap the fleet.
  *
@@ -744,6 +746,36 @@ export async function countOtherKokoroBooks(jobId: string): Promise<number> {
          AND status IN ('queued', 'processing')
          AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())`,
       [jobId]
+    );
+    return Math.max(0, Math.floor(Number(row?.n ?? 0)) || 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Zero-based fairness rank of this book among the Kokoro books running now.
+ *
+ * Older rows rank first, so the remainder of an uneven split goes to the book
+ * that has been waiting longest and a new book never jumps the queue. The
+ * rank only decides *which* book gets the extra lane; the split itself is
+ * `planKokoroBookLanes`. A read failure ranks this book last, which costs it
+ * at most one lane and never fails the book.
+ */
+export async function kokoroFairnessRank(
+  jobId: string,
+  createdAt: number | null | undefined
+): Promise<number> {
+  try {
+    const row = await queryOne<{ n: number | null }>(
+      `SELECT COUNT(*) AS n FROM jobs
+       WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
+         AND tts_provider IN ('sowell', 'drew', 'george')
+         AND status IN ('queued', 'processing')
+         AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())
+         AND (COALESCE(created_at, 0) < ?
+              OR (COALESCE(created_at, 0) = ? AND id < ?))`,
+      [jobId, createdAt ?? 0, createdAt ?? 0, jobId]
     );
     return Math.max(0, Math.floor(Number(row?.n ?? 0)) || 0);
   } catch {
@@ -1644,22 +1676,33 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneColdSafeRowChars(), MODAL_CLONE_SECTION_CHARS_MAX)
     : maxChars;
-  const kokoroBook =
-    providerId === "sowell" || providerId === "george" || providerId === "drew";
+  const kokoroBook = isKokoroCpuProvider(providerId);
   /**
-   * Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
+   * Kokoro CPU section sizing. Each section is one container call, so the
+   * target is deliberately smaller than the 2,000-character request cap: a
+   * ~700-character section is ~30 s of audio, which shortens the tail when
+   * the last few sections leave lanes idle. `KOKORO_CPU_SECTION_CHARS`
+   * overrides it (300..2000). The opening two sections stay shorter still so
+   * first audio lands fast.
+   */
+  const kokoroPlan = kokoroBook ? kokoroCpuSectionPlan() : null;
+  const kokoroPackChars = kokoroPlan?.maxChars ?? packChars;
+  const kokoroHardMax = kokoroPlan?.hardMaxChars ?? hardMaxChars;
+  /** Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
    * different:
    *
-   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (6). It is the
+   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (16). It is the
    *   hard cross-process cap on concurrent Kokoro calls, applied by the
    *   `kokoro` provider-slot rows, so several books from different users can
    *   never open more calls than the fleet can serve.
-   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 6 by
-   *   default, clamped to 8 and to the fleet).
+   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 16 by
+   *   default, clamped to 16 and to the fleet).
    *
    * A book's lanes are then its fair share of the fleet among the Kokoro
    * books running right now, so one long book cannot hold every container for
-   * its whole wave while another user's book waits.
+   * its whole wave while another user's book waits. Because the budget is
+   * re-read before every claim, a book that starts mid-wave takes lanes as
+   * another book's sections finish.
    */
   const kokoroFleetCap = kokoroBook ? sowellFleetContainers() : 0;
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
@@ -1745,12 +1788,20 @@ async function runClaimedTick(
     frozen = await buildAndPersistFrozenScript(jobId, {
       rawText,
       pdfStoragePath: job.pdf_storage_path,
-      maxChars: packChars,
-      hardMaxChars: clonePacked ? packChars : hardMaxChars,
+      maxChars: kokoroPlan ? kokoroPackChars : packChars,
+      hardMaxChars: clonePacked
+        ? packChars
+        : kokoroPlan
+          ? kokoroHardMax
+          : hardMaxChars,
       // Section 0 stays the short opening. Later targets come from the
       // book's length: one call for a short book, a 1–2 minute page then
       // a 5–6 minute page then even steady pages for a long one. The
       // packer still closes on a sentence.
+      //
+      // A Kokoro CPU book's target, opening ramp, and heading threshold come
+      // from `resolvePackChars` (the same place a load-test script gets them),
+      // so only the hard max is passed here.
       ...(clonePacked
         ? {
             firstSectionMaxChars: cloneSchedule[0] ?? MODAL_CLONE_OPENING_SECTION_CHARS,
@@ -1784,17 +1835,29 @@ async function runClaimedTick(
   const packed = frozen.sections;
   const sections = packed.map((s) => s.text);
   const total = packed.length;
+  /**
+   * Kokoro lanes: the split among the books running now, re-derived on every
+   * claim so a book that starts mid-wave gets lanes as another book's
+   * sections finish.
+   */
+  const kokoroRank = kokoroBook
+    ? await kokoroFairnessRank(jobId, job.created_at)
+    : 0;
+  const kokoroLaneBudget = async (): Promise<number> => {
+    const others = await countOtherKokoroBooks(jobId);
+    return planKokoroBookLanes({
+      configured: sowellCap,
+      fleet: kokoroFleetCap,
+      activeBooks: others + 1,
+      remainingSections: total,
+      rank: kokoroRank,
+    });
+  };
   if (kokoroBook) {
     // Lanes for this book: the configured per-book cap, its fair share of the
     // fleet among the Kokoro books running now, and never more than it has
     // sections left to speak.
-    const otherKokoroBooks = await countOtherKokoroBooks(jobId);
-    fanout = planKokoroBookLanes({
-      configured: sowellCap,
-      fleet: kokoroFleetCap,
-      activeBooks: otherKokoroBooks + 1,
-      remainingSections: total,
-    });
+    fanout = await kokoroLaneBudget();
   }
 
   if (total === 0) {
@@ -1882,6 +1945,14 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
+  /**
+   * Explicit `TTS_SECTIONS_PER_TICK` only. Kokoro lanes must not fall back to
+   * the planned fair share: that share is re-read per claim, and capping the
+   * tick at the share it saw at start would freeze the book there.
+   */
+  const explicitPerTick = process.env.TTS_SECTIONS_PER_TICK?.trim()
+    ? Number(process.env.TTS_SECTIONS_PER_TICK)
+    : Number.NaN;
   const clonePath = usesModalClone(job.catalog_voice_id);
   /**
    * How many sections one tick may claim.
@@ -1896,12 +1967,24 @@ async function runClaimedTick(
    * An explicit `sectionsPerTick` still wins: a tight-budget wave uses it to
    * synthesize one section at a time so the caller can answer, and a test uses
    * it to pin a tick to one section.
+   *
+   * Kokoro CPU books plan their lanes dynamically (`kokoroLaneBudget`), so a
+   * tick opens the whole per-book ceiling and lets the budget gate each claim.
+   * A book that starts mid-wave then takes lanes as another book finishes
+   * sections instead of being stuck at the share it saw at tick start.
    */
   const claimDefault = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
-    : Number.isFinite(envPerTick)
-      ? envPerTick
-      : fanout;
+    : kokoroBook
+      ? // Open the whole per-book ceiling; `kokoroLaneBudget` gates each
+        // claim. An explicit `TTS_SECTIONS_PER_TICK` still caps the total.
+        Math.min(
+          sowellCap,
+          Number.isFinite(explicitPerTick) ? explicitPerTick : sowellCap
+        )
+      : Number.isFinite(envPerTick)
+        ? envPerTick
+        : fanout;
   const claimRequest = opts?.sectionsPerTick ?? claimDefault;
   // Non-clone paths keep the account/fan-out ceiling they always had. The
   // clone path is the one place `batch` — not `lanes` — is the useful unit,
@@ -1917,7 +2000,9 @@ async function runClaimedTick(
         : FISH_ACCOUNT_CONCURRENCY;
   const maxClaim = clonePath
     ? Math.min(claimRequest, claimCeiling)
-    : Math.min(claimRequest, fanout, claimCeiling);
+    : kokoroBook
+      ? Math.min(claimRequest, sowellCap, Math.max(1, total))
+      : Math.min(claimRequest, fanout, claimCeiling);
   const stopAt = opts?.deadlineMs
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
     : undefined;
@@ -2906,10 +2991,12 @@ async function runClaimedTick(
       let claimsLeft = claimsPerTick;
       console.log(
         `[Job ${jobId}] kokoro rolling pool lanes=${maxClaim} fleet=${kokoroFleetCap} ` +
+          `book_cap=${sowellCap} fair_share=${fanout} rank=${kokoroRank} ` +
           `claims_per_tick=${Number.isFinite(claimsPerTick) ? claimsPerTick : "deadline"}`
       );
       await runRollingRenderPool({
         lanes: maxClaim,
+        laneBudget: kokoroLaneBudget,
         shouldStop: () =>
           providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
         claimNext: async () => {

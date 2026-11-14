@@ -103,7 +103,7 @@ afterEach(() => {
 });
 
 describe("Kokoro rolling pool", () => {
-  it("keeps six lanes busy over uneven sections and never waits for a pair", async () => {
+  it("keeps sixteen lanes busy over uneven sections and never waits for a pair", async () => {
     await seedKokoroJob();
     // Section 0 is the slow one. A fixed-pair dispatch holds lane 1 idle for
     // its whole duration; a rolling pool claims section 2 as soon as section
@@ -132,10 +132,10 @@ describe("Kokoro rolling pool", () => {
 
     const row = await jobRow(JOB_ID);
     const total = Number(row?.total_sections ?? 0);
-    expect(total).toBeGreaterThanOrEqual(8);
+    expect(total).toBeGreaterThanOrEqual(17);
     expect(fake.calls).toHaveLength(total);
-    // The pool filled the fleet: six renders in flight at once.
-    expect(peak).toBe(6);
+    // The pool filled the fleet: sixteen renders in flight at once.
+    expect(peak).toBe(16);
     // Section 3 started before the slow section 0 returned. With pair
     // batching it could not have.
     expect(startedAt[3]!).toBeLessThan(endedAt[0]!);
@@ -264,7 +264,7 @@ describe("Kokoro rolling pool", () => {
     await seedKokoroJob();
     const held: Array<{ release: () => Promise<void> }> = [];
     const slots = await import("@/lib/tts/provider-slots");
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 16; i++) {
       const slot = await slots.tryAcquireProviderSlot(
         {
           execute: (sql, args) => execute(sql, args),
@@ -272,7 +272,7 @@ describe("Kokoro rolling pool", () => {
         },
         {
           provider: "kokoro",
-          cap: 6,
+          cap: 16,
           ownerToken: "another-worker",
           ttlSeconds: 90,
         }
@@ -324,7 +324,7 @@ describe("Kokoro rolling pool", () => {
     const slots = await import("@/lib/tts/provider-slots");
     // Another worker already holds every Kokoro container.
     const held = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 16; i++) {
       const slot = await slots.tryAcquireProviderSlot(
         {
           execute: (sql, args) => execute(sql, args),
@@ -332,7 +332,7 @@ describe("Kokoro rolling pool", () => {
         },
         {
           provider: "kokoro",
-          cap: 6,
+          cap: 16,
           ownerToken: "another-worker",
           ttlSeconds: 90,
         }
@@ -366,7 +366,7 @@ describe("Kokoro rolling pool", () => {
         execute: (sql, args) => execute(sql, args),
         queryOne: async () => null,
       },
-      { provider: "kokoro", cap: 6, ownerToken: "x", ttlSeconds: 90 }
+      { provider: "kokoro", cap: 16, ownerToken: "x", ttlSeconds: 90 }
     );
     expect(rows).not.toBeNull();
     await held?.release();
@@ -393,6 +393,18 @@ describe("Kokoro rolling pool", () => {
     expect(await countOtherKokoroBooks(JOB_ID)).toBe(1);
     expect(await countOtherKokoroBooks(OTHER_JOB_ID)).toBe(1);
     expect(fake.calls).toHaveLength(0);
+  });
+
+  it("ranks the older book first so an uneven split never favours a newcomer", async () => {
+    await seedKokoroJob();
+    await seedKokoroJob(OTHER_JOB_ID, USER_B, "george");
+    // Make the ordering explicit and stable, then confirm the rank query
+    // reads it: the older row ranks 0, the newer one 1.
+    await execute(`UPDATE jobs SET created_at = ? WHERE id = ?`, [1_000, JOB_ID]);
+    await execute(`UPDATE jobs SET created_at = ? WHERE id = ?`, [2_000, OTHER_JOB_ID]);
+    const { kokoroFairnessRank } = await import("@/lib/tts/process-job");
+    expect(await kokoroFairnessRank(JOB_ID, 1_000)).toBe(0);
+    expect(await kokoroFairnessRank(OTHER_JOB_ID, 2_000)).toBe(1);
   });
 
   it("retries a silent take instead of storing it", async () => {
@@ -458,5 +470,101 @@ describe("Kokoro rolling pool", () => {
     const total = Number(finalRow?.total_sections ?? 0);
     expect(finalRow?.status).toBe("ready");
     expect(segmentsOf(finalRow)).toHaveLength(total);
+  });
+});
+
+describe("Kokoro CPU section sizing", () => {
+  const SIZING_JOB = "dddddddd-0000-4000-8000-0000000000aa";
+  const SIZING_OTHER = "dddddddd-0000-4000-8000-0000000000bb";
+
+  function charsPerSection(texts: string[]) {
+    return texts.map((text) => text.length);
+  }
+
+  async function sectionsFor(provider: "drew" | "sowell" | "george") {
+    await seedKokoroJob(SIZING_JOB, USER_A, provider);
+    const fake = await useKokoroProvider(async () => ({
+      audio: fakeMp3(),
+      contentType: "audio/mpeg",
+    }));
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const { readFile } = await import("node:fs/promises");
+    const { downloadFile } = await import("@/lib/storage");
+    void readFile;
+    await processTakehomeTick(SIZING_JOB, { sectionsPerTick: 1 });
+    const frozenJson = (
+      await downloadFile(`audiobooks/${SIZING_JOB}/sections.json`)
+    ).toString("utf8");
+    const sections = JSON.parse(frozenJson) as { index: number; text: string }[];
+    return { sections, calls: fake.calls.length };
+  }
+
+  it("packs a Kokoro book at ~700 chars with a short first section", async () => {
+    const { sections } = await sectionsFor("drew");
+    const lengths = charsPerSection(sections.map((section) => section.text));
+    // The measured book is ~15.7k chars. At 2,000 it was 11 sections; at 700
+    // it is roughly three times that, which is the point of the change.
+    expect(sections.length).toBeGreaterThanOrEqual(18);
+    // The opening is short so first audio lands fast, and shorter than the
+    // steady sections that follow it.
+    const steady = lengths.slice(2);
+    const avg = steady.reduce((a, b) => a + b, 0) / steady.length;
+    expect(lengths[0]).toBeLessThanOrEqual(450);
+    expect(lengths[0]).toBeLessThan(avg);
+    // Steady sections sit around the target, and none exceeds the hard max
+    // (target + 200 slack, capped at the container's 2,000). The final
+    // section may be a short remainder.
+    for (const length of steady.slice(0, -1)) {
+      expect(length).toBeLessThanOrEqual(2000);
+      expect(length).toBeGreaterThan(300);
+    }
+    expect(avg).toBeLessThan(800);
+  });
+
+  it("honours KOKORO_CPU_SECTION_CHARS for a Kokoro book", async () => {
+    process.env.KOKORO_CPU_SECTION_CHARS = "1200";
+    try {
+      const { sections } = await sectionsFor("george");
+      const lengths = charsPerSection(sections.map((section) => section.text));
+      const steady = lengths.slice(2);
+      const avg = steady.reduce((a, b) => a + b, 0) / steady.length;
+      expect(avg).toBeGreaterThan(900);
+      expect(avg).toBeLessThan(1300);
+    } finally {
+      delete process.env.KOKORO_CPU_SECTION_CHARS;
+    }
+  });
+
+  it("leaves an Edge book on its own packing", async () => {
+    const pdfPath = await seedUpload({
+      id: SIZING_OTHER,
+      userId: USER_B,
+      text: BOOK_TEXT,
+    });
+    await seedJob({
+      id: SIZING_OTHER,
+      userId: USER_B,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "edge",
+      catalogVoiceId: "ava",
+      providerVoiceId: "en-US-AvaNeural",
+      model: "edge/en-US-AvaNeural",
+    });
+    const providers = await import("@/lib/tts/providers");
+    const fake = createFakeProvider(async () => ({
+      audio: fakeMp3(),
+      contentType: "audio/mpeg",
+    }));
+    fake.id = "edge";
+    vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(fake);
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(SIZING_OTHER, { sectionsPerTick: 1 });
+    const { downloadFile } = await import("@/lib/storage");
+    const sections = JSON.parse(
+      (await downloadFile(`audiobooks/${SIZING_OTHER}/sections.json`)).toString("utf8")
+    ) as { text: string }[];
+    // Edge keeps its ~2,000-char/8-wave packing: far fewer sections than the
+    // Kokoro book made from the same text.
+    expect(sections.length).toBeLessThan(18);
   });
 });

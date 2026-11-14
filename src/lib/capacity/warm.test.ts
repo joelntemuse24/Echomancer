@@ -11,6 +11,8 @@ import {
   warmSharedCapacity,
   warmTarget,
   WARM_HOLD_MS,
+  KOKORO_WARM_CONTAINERS,
+  kokoroWarmLimit,
 } from "@/lib/capacity/warm";
 
 const ENV_KEYS = [
@@ -117,13 +119,13 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     expect(Number(row?.started_at)).toBe(1_000 + WARM_HOLD_MS);
   });
 
-  it("holds a Kokoro warm for the app's 60s idle window, not five minutes", async () => {
+  it("holds a Kokoro warm for the app's 5s idle window plus the boot, not five minutes", async () => {
     await resetDatabase();
-    // The echomancer-sowell app scales down after 60s. A five-minute hold
-    // would suppress the next legitimate warm for four minutes after the
-    // container was already gone.
+    // The echomancer-sowell app scales down after 5s, so a warmed container
+    // lives about a 20s boot plus that idle. A five-minute hold would
+    // suppress the next legitimate warm long after the container was gone.
     expect(warmHoldMs("kokoro")).toBe(KOKORO_WARM_HOLD_MS);
-    expect(KOKORO_WARM_HOLD_MS).toBe(60_000);
+    expect(KOKORO_WARM_HOLD_MS).toBe(25_000);
     expect(warmHoldMs("cpu")).toBe(WARM_HOLD_MS);
     const first = await claimWarmPool("kokoro", 1_000);
     expect(first.claimed).toBe(true);
@@ -321,6 +323,21 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     );
     expect(result).toBe("ready");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("warms one container, never the whole book's lane plan", () => {
+    // A click warms the next section's container. min_containers stays 0, so
+    // a page view cannot stand up a 16-container fleet.
+    expect(KOKORO_WARM_CONTAINERS).toBe(1);
+    // The per-book ceiling for a warm loop follows the same bounds as the
+    // lane plan: fleet, `SOWELL_BOOK_LANES`, and the book's section count.
+    expect(kokoroWarmLimit({ fleetContainers: 6, bookLanes: 6, sectionCount: 41 })).toBe(6);
+    expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 16, sectionCount: 41 })).toBe(16);
+    expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 6, sectionCount: 41 })).toBe(6);
+    // A short book never warms more containers than it has sections.
+    expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 16, sectionCount: 2 })).toBe(2);
+    // A book with no outline still warms one.
+    expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 16, sectionCount: 0 })).toBe(1);
   });
 
   it("releases only the hold that failed", async () => {
