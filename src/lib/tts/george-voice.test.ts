@@ -149,7 +149,7 @@ describe("george voice", () => {
     const worker = readFileSync(path.join(process.cwd(), "modal/sowell_worker.py"), "utf8");
     expect(worker).toContain("canonical_kokoro_voice");
     expect(worker).toContain("x-kokoro-voice");
-    expect(worker).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2"))');
+    expect(worker).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6"))');
     // The allowlist itself runs in the GPU image, which imports torch. Without
     // it there is nothing to run: skipping says so, where a failure used to
     // report a broken allowlist that was never exercised.

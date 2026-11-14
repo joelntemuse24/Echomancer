@@ -10,11 +10,30 @@ a third fleet.
 Each container loads stock Kokoro once in ``@modal.enter`` and reuses that
 runtime until idle scale-down. ``min_containers`` is 0. One request at a
 time per container, because the model is not reentrant. A second request
-gets 429 so the caller can use the other container.
+gets 429 so the caller can use another container in the fleet.
+
+Fleet. ``SOWELL_MAX_CONTAINERS`` (default 6) is the cap. The worker's
+``SOWELL_BOOK_LANES`` (also default 6, clamped to 8 and to the fleet) is how
+many of those one book may hold; the ``kokoro`` provider-slot rows are the
+cross-process share, so several books cannot open more calls than the fleet.
+Six containers keep ``memory=6144`` per container, which is unchanged: lanes
+are containers, not extra memory.
+
+Idle. ``SOWELL_SCALEDOWN_SECONDS`` is 60. Five minutes of idle container time
+was about 40% of a measured book's cost, and the next section of a book
+arrives in seconds, not minutes.
 
 Memory. Walter and George share one stock kmodel (~330 MB). Drew is a
 different kmodel of its own (~313 MB), so the ceiling moved 4 GB → 6 GB.
-The cap stays 2 containers, 2 CPU.
+That is per container and does not grow with the lane count: six lanes are
+six containers of the same size.
+
+Threads. Modal ``cpu=2`` is two physical cores, four hardware threads.
+Torch gets ``SOWELL_TORCH_THREADS`` (default 2, the measured best on a
+2-CPU set) via ``torch.set_num_threads`` in ``@modal.enter``, before the
+first model load. ``SOWELL_TORCH_INTEROP_THREADS`` (default 1) does the same
+for inter-op. Both are read once per container, so changing them needs a
+redeploy. ``modal/sowell_bench.py`` measures 2 vs 4 on the same image.
 
 Volumes. Drew's weights are private and are not in the image. They come from
 the ``andrew-distill`` volume, default mount ``/andrew-distill``:
@@ -53,6 +72,10 @@ DREW_VOLUME_MOUNT = os.environ.get("DREW_VOLUME_MOUNT", "/andrew-distill")
 
 app = modal.App(APP_NAME)
 MAX_CHARS = 2000
+#: Torch intra-op threads. Read once per container in `@modal.enter`, before
+#: the first model load. The default stays 2 (the measured best on 2 CPUs);
+#: `modal/sowell_bench.py` measures 2 vs 4 on this same image.
+TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "2")
 PACK = os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt")
 MANIFEST = os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json")
 
@@ -74,8 +97,8 @@ def _authorized(request: Request) -> bool:
     memory=6144,
     timeout=180,
     min_containers=0,
-    max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2")),
-    scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "300")),
+    max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6")),
+    scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60")),
     secrets=[modal.Secret.from_name("echomancer-sowell")],
     volumes={DREW_VOLUME_MOUNT: drew_volume},
 )
@@ -84,7 +107,12 @@ class Speaker:
     @modal.enter()
     def load(self) -> None:
         sys.path.insert(0, "/opt/sowell/scripts")
-        from engine import SowellEngine
+        from engine import apply_torch_threads, SowellEngine
+
+        # Before the first model load: torch reads the pool size lazily, but a
+        # loaded model can already have started it. Named separately from
+        # `SOWELL_CPU_THREADS` so a benchmark can vary it per call.
+        self.threads = apply_torch_threads()
 
         self.engine = SowellEngine()
         self.engine.load(Path(PACK), Path(MANIFEST))

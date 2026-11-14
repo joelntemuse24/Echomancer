@@ -142,10 +142,11 @@ import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
 import { DREW_CACHE_VARIANT } from "@/lib/tts/drew-voice";
 import {
-  planSowellLanes,
   SOWELL_CACHE_VARIANT,
   sowellBookLanes,
+  sowellFleetContainers,
 } from "@/lib/tts/sowell-voice";
+import { planKokoroBookLanes, runRollingRenderPool } from "@/lib/tts/kokoro-pool";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -208,6 +209,7 @@ import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
 import {
   holdEdgeSectionSlot,
   holdNamedProviderSlot,
+  KOKORO_SLOT_WAIT_MS,
   paradeeSharedCap,
   ProviderSlotBusyError,
   readProviderThrottle,
@@ -717,6 +719,36 @@ function takehomeMayOverlap(): boolean {
   const globalCap = takehomeGlobalActiveCap();
   if (perUser === 1 || globalCap === 1) return false;
   return true;
+}
+
+/**
+ * How many other take-home books are speaking on the Kokoro CPU fleet now.
+ *
+ * One fleet serves Drew, Walter, and George. Counting the other books (in
+ * this process or another worker) is what lets one book take a fair share of
+ * the six containers instead of all of them. A read failure is not a reason
+ * to fail a book: it just means this book sees itself alone, and the shared
+ * `kokoro` provider-slot rows still cap the fleet.
+ *
+ * A book parked `waiting` (its upload is still being extracted) holds no
+ * container, so it is not counted: otherwise one un-read file would halve a
+ * running book's lanes for no gain. A `queued` book with a future
+ * `sched_not_before` is deferred and is not counted either.
+ */
+export async function countOtherKokoroBooks(jobId: string): Promise<number> {
+  try {
+    const row = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM jobs
+       WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
+         AND tts_provider IN ('sowell', 'drew', 'george')
+         AND status IN ('queued', 'processing')
+         AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())`,
+      [jobId]
+    );
+    return Math.max(0, Math.floor(Number(row?.n ?? 0)) || 0);
+  } catch {
+    return 0;
+  }
 }
 
 async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boolean> {
@@ -1614,6 +1646,22 @@ async function runClaimedTick(
     : maxChars;
   const kokoroBook =
     providerId === "sowell" || providerId === "george" || providerId === "drew";
+  /**
+   * Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
+   * different:
+   *
+   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (6). It is the
+   *   hard cross-process cap on concurrent Kokoro calls, applied by the
+   *   `kokoro` provider-slot rows, so several books from different users can
+   *   never open more calls than the fleet can serve.
+   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 6 by
+   *   default, clamped to 8 and to the fleet).
+   *
+   * A book's lanes are then its fair share of the fleet among the Kokoro
+   * books running right now, so one long book cannot hold every container for
+   * its whole wave while another user's book waits.
+   */
+  const kokoroFleetCap = kokoroBook ? sowellFleetContainers() : 0;
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
     kokoroBook
@@ -1737,10 +1785,16 @@ async function runClaimedTick(
   const sections = packed.map((s) => s.text);
   const total = packed.length;
   if (kokoroBook) {
-    // One lane per section still to speak, and no more than the configured
-    // cap. Two sections already fill the live fleet. A third container
-    // would not have had a section on the 1,480-character book.
-    fanout = planSowellLanes({ remainingSections: total, cap: sowellCap });
+    // Lanes for this book: the configured per-book cap, its fair share of the
+    // fleet among the Kokoro books running now, and never more than it has
+    // sections left to speak.
+    const otherKokoroBooks = await countOtherKokoroBooks(jobId);
+    fanout = planKokoroBookLanes({
+      configured: sowellCap,
+      fleet: kokoroFleetCap,
+      activeBooks: otherKokoroBooks + 1,
+      remainingSections: total,
+    });
   }
 
   if (total === 0) {
@@ -1953,11 +2007,24 @@ async function runClaimedTick(
      * rather than fail the book on a section that has spent its retries.
      */
     let cloneProviderFaultSeen: string | null = null;
-    const processSection = async (
+    /**
+     * Speech for one section, up to the moment the provider returns audio.
+     *
+     * The lane is free as soon as this resolves: the container permit is
+     * released here, and mastering / transcript QA / the segment write are
+     * handed back as `store` so a caller **can** run them detached. That is
+     * what lets the Kokoro CPU pool overlap mastering with the next section's
+     * speech, which used to serialise a whole wave.
+     */
+    const renderSection = async (
       index: number,
       nextWriteIndex: () => number,
       sectionOpts?: { skipSectionQa?: boolean }
-    ): Promise<SynthesisSuccess | SynthesisFailure> => {
+    ): Promise<{
+      result: SynthesisSuccess | SynthesisFailure;
+      /** Mastering + the segment row. No-op for a failed take. */
+      store: () => Promise<void>;
+    }> => {
       if (await takehomeLeaseStopped(jobId, lease)) {
         throw new LeaseLostError(jobId);
       }
@@ -1967,7 +2034,11 @@ async function runClaimedTick(
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
             : kokoroBook
-              ? await holdNamedProviderSlot("kokoro", sowellCap)
+              ? await holdNamedProviderSlot(
+                  "kokoro",
+                  kokoroFleetCap,
+                  KOKORO_SLOT_WAIT_MS
+                )
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(
@@ -1985,6 +2056,9 @@ async function runClaimedTick(
         slotReleased = true;
         await capacitySlot?.release();
       };
+      // True when the mastering half now owns the lease cover and the
+      // segment write. The caller must run `store` or the cover leaks.
+      let handedOff = false;
       try {
         const synthesized = await synthesizeChecked(
           {
@@ -2011,7 +2085,7 @@ async function runClaimedTick(
             console.warn(
               `[Job ${jobId}] section ${index} parked — ${synthesized.error}`
             );
-            return synthesized;
+            return { result: synthesized, store: async () => {} };
           }
           if (synthesized.providerFault) {
             // Modal answered with a hard error, not a cold placement. Record it
@@ -2054,7 +2128,7 @@ async function runClaimedTick(
           console.warn(
             `[Job ${jobId}] section ${index} ${synthesized.error} — continuing`
           );
-          return synthesized;
+          return { result: synthesized, store: async () => {} };
         }
         if (
           // Modal never receives narrationSpeed. Calibrating from that
@@ -2077,11 +2151,36 @@ async function runClaimedTick(
           }
         }
 
-        // Speech is finished. Mastering and the final join are separate
-        // CPU placements. Holding this permit through them keeps the next
-        // section from speaking.
+        // Speech is finished. The container permit goes back **now**, so the
+        // next section can speak while this one is mastered. Mastering and
+        // the final join are separate CPU placements.
         await releaseSlot();
         life.mastering();
+        handedOff = true;
+        return {
+          result: synthesized,
+          store: () =>
+            storeSection(index, synthesized, nextWriteIndex, life.end),
+        };
+      } finally {
+        await releaseSlot();
+        if (!handedOff) life.end();
+      }
+    };
+
+    /**
+     * Mastering (or a deferred transcript check) and the segment row.
+     *
+     * `endLife` closes the lease cover that `renderSection` opened, so a
+     * detached mastering keeps the lease alive and a finished one releases it.
+     */
+    const storeSection = async (
+      index: number,
+      synthesized: SynthesisSuccess,
+      nextWriteIndex: () => number,
+      endLife: () => void
+    ): Promise<void> => {
+      try {
         const stored = await commitSectionAudio({
           jobId,
           index,
@@ -2124,7 +2223,7 @@ async function runClaimedTick(
           });
           if (stored.unavailable) throw new CpuProviderUnavailableError();
           if (!stored.regen) cpuBacklog = true;
-          return synthesized;
+          return;
         }
 
         const segment: JobSegment = {
@@ -2164,12 +2263,20 @@ async function runClaimedTick(
           // switch the book to Fish after audio has already published.
           job.clone_wait_started_at = null;
         });
-
-        return synthesized;
       } finally {
-        await releaseSlot();
-        life.end();
+        endLife();
       }
+    };
+
+    /** Render then store, in one call. The non-Kokoro paths use this. */
+    const processSection = async (
+      index: number,
+      nextWriteIndex: () => number,
+      sectionOpts?: { skipSectionQa?: boolean }
+    ): Promise<SynthesisSuccess | SynthesisFailure> => {
+      const rendered = await renderSection(index, nextWriteIndex, sectionOpts);
+      await rendered.store();
+      return rendered.result;
     };
 
     const workSection = async (
@@ -2776,6 +2883,74 @@ async function runClaimedTick(
             index,
             () => lowestUnclaimedAfter(segments, total, [...claimedSet])
           ),
+      });
+    } else if (kokoroBook) {
+      // Rolling pool for Drew / Walter / George.
+      //
+      // The old dispatch claimed sections in fixed pairs and waited for both
+      // before claiming the next pair, so a lane sat idle while the slower
+      // section of its pair finished — more than three of nine minutes on the
+      // measured book. Here a lane claims the next section the moment it
+      // frees, exactly like the Edge pool above. Section 0 is claimed first
+      // (ascending claimable order), so first audio is still early.
+      //
+      // Mastering is detached: `renderSection` releases the container permit
+      // and returns a `store` step, which the pool runs on its own promise.
+      // The next section's speech therefore overlaps the previous section's
+      // ffmpeg pass and segment write. Every finished section still writes the
+      // same `segments_json` row, so a restarted worker resumes from the DB.
+      const claimedSet = new Set<number>();
+      const claimsPerTick = opts?.deadlineMs
+        ? opts.sectionsPerTick ?? Number.POSITIVE_INFINITY
+        : maxClaim;
+      let claimsLeft = claimsPerTick;
+      console.log(
+        `[Job ${jobId}] kokoro rolling pool lanes=${maxClaim} fleet=${kokoroFleetCap} ` +
+          `claims_per_tick=${Number.isFinite(claimsPerTick) ? claimsPerTick : "deadline"}`
+      );
+      await runRollingRenderPool({
+        lanes: maxClaim,
+        shouldStop: () =>
+          providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
+        claimNext: async () => {
+          if (claimsLeft <= 0) return null;
+          if (await takehomeLeaseStopped(jobId, lease)) {
+            throw new LeaseLostError(jobId);
+          }
+          const index = nextClaimableIndex(segments, total, claimedSet);
+          if (index === null) return null;
+          if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
+          claimedSet.add(index);
+          await writeWithLease(
+            jobId,
+            lease,
+            `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+               status = 'processing', updated_at = unixepoch()
+             WHERE id = ? AND processing_lease_token = ?`,
+            [lowestUnclaimedAfter(segments, total, [...claimedSet]), total]
+          );
+          return index;
+        },
+        render: async (index) => {
+          try {
+            return await renderSection(index, () =>
+              lowestUnclaimedAfter(segments, total, [...claimedSet])
+            );
+          } catch (err) {
+            if (!(err instanceof ProviderSlotBusyError)) throw err;
+            // Another process holds the last Kokoro container. Sections that
+            // already hold a permit finish and write; the book is deferred
+            // rather than failed.
+            providerCapFull = true;
+            return {
+              result: { ok: false as const, error: err.message },
+              store: async () => {},
+            };
+          }
+        },
+        afterRender: async (_index, rendered) => {
+          await rendered.store();
+        },
       });
     } else if (!modalPrefetchHandled) {
       const claimed = claimIndexSet({

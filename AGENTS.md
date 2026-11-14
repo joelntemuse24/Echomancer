@@ -306,6 +306,30 @@ stored Andrew or Ryan book. Re-record them when `PREVIEW_TEXT` changes.
 Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
+**Kokoro CPU lanes (Drew, Walter, George):** all three narrators come from one
+Modal app, `echomancer-sowell` (`modal/sowell_worker.py`, image
+`workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 6)
+containers at 2 CPU and 6 GB each, `min_containers=0`, idle
+`SOWELL_SCALEDOWN_SECONDS` (default 60). One book asks for
+`SOWELL_BOOK_LANES` lanes (default 6, clamped to 8 and to the fleet), and
+`planKokoroBookLanes` cuts that to its fair share of the fleet among the
+running Kokoro books, never below 1, so one long book cannot starve another
+user. The `kokoro` provider-slot rows are the hard cross-process cap.
+
+The take-home tick drives those lanes with a **rolling pool**
+(`src/lib/tts/kokoro-pool.ts` → `runRollingRenderPool`): a lane claims the
+next section the moment it frees, and mastering runs on a detached promise so
+the lane starts speaking again immediately. Do not reintroduce fixed-pair or
+fixed-batch dispatch for these voices; the batch version left a lane idle
+until the slower section of its pair finished and serialised mastering behind
+speech. Section order is unaffected: an index is bound before its render
+starts and the join still walks `0..N-1`. Image cold start is baked: spaCy
+`en_core_web_sm` 3.8.0, Kokoro's `config.json` and `kokoro-v1_0.pth` at the
+pinned revision, and `bm_george.pt`; `HF_HOME` is set before those layers.
+Torch threads are `SOWELL_TORCH_THREADS` (default 2), applied in
+`@modal.enter` before the first load; `modal/sowell_bench.py` measures thread
+counts on the same CPU-only image.
+
 **Drew speed:** Drew renders at Kokoro speed **0.88**, which is real
 Andrew's natural 1x. That 0.88 is applied **once**, in the container
 (`scripts/sowell/drew.py` → `drew_speed`), by multiplying the app's own

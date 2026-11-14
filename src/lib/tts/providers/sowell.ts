@@ -2,10 +2,11 @@
  * Sowell talks only to the configured endpoint. There is no local model
  * on the take-home VM and no fallback narrator.
  *
- * Pieces of one call run at most two at a time, which is the container
- * cap, and are concatenated in request order. A 429 is the busy container
- * and is retried so the other container can take it. A hard error throws
- * before any audio is returned.
+ * Pieces of one call run at most two at a time and are concatenated in
+ * request order. A 429 is the busy container and is retried so another
+ * container can take the piece. A hard error throws before any audio is
+ * returned. The book-level lane count lives in `sowell-voice.ts` and is
+ * applied by the take-home pool, not here.
  */
 
 import { mapPool } from "@/lib/async-pool";
@@ -15,8 +16,8 @@ import type {
   TtsProviderAdapter,
 } from "@/lib/tts/types";
 import {
-  SOWELL_IN_FLIGHT,
   SOWELL_MAX_CHARS,
+  SOWELL_PIECE_IN_FLIGHT,
   sowellEndpoint,
 } from "@/lib/tts/sowell-voice";
 import {
@@ -156,7 +157,7 @@ async function synthesizeSowell(input: SynthesizeInput): Promise<SynthesizeResul
   const url = sowellEndpoint();
   const pieces = splitSowellText(input.text);
   if (pieces.length === 0) throw new Error("Sowell received empty text");
-  const buffers = await mapPool(pieces, SOWELL_IN_FLIGHT, (piece) =>
+  const buffers = await mapPool(pieces, SOWELL_PIECE_IN_FLIGHT, (piece) =>
     onePiece(input, piece, url)
   );
   return { audio: concatWav(buffers), contentType: "audio/wav" };
