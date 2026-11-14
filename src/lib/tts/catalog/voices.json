@@ -8,7 +8,7 @@
     "locale": "en-US",
     "gender": "male",
     "style": "narration",
-    "tags": ["default", "standard", "edge", "free", "audiobook"],
+    "tags": ["legacy", "edge", "free", "audiobook"],
     "latencyClass": "balanced",
     "model": "edge/en-US-AndrewNeural",
     "recommendedForLongForm": true,
@@ -16,7 +16,26 @@
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Andrew, the default US male narrator. Live Listen uses browser TTS when the matching neural is available; Whole book uses Edge online TTS."
+    "qualityNotes": "Retired: not listed. Books already made with Andrew keep playing and downloading this Edge audio and are never re-spoken. A new request that names Andrew uses Drew."
+  },
+  {
+    "id": "drew",
+    "provider": "drew",
+    "providerVoiceId": "drew",
+    "displayName": "Drew",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "male",
+    "style": "narration",
+    "tags": ["default", "stock", "kokoro", "self-hosted", "audiobook", "male"],
+    "latencyClass": "balanced",
+    "model": "kokoro/drew",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": false,
+    "maxCharsPerRequest": 2000,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "Drew, a fine-tuned Kokoro-82M narrated on our own CPU app. The default narrator. Listed only when that endpoint is configured."
   },
   {
     "id": "echomancer-andrew",
@@ -117,7 +136,7 @@
     "id": "sowell",
     "provider": "sowell",
     "providerVoiceId": "am_sowell_avg",
-    "displayName": "Sowell",
+    "displayName": "Walter",
     "language": "English",
     "locale": "en-US",
     "gender": "male",
@@ -130,7 +149,7 @@
     "maxCharsPerRequest": 2000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Sowell, a separate Kokoro-82M voice pack. Listed only when the Modal endpoint is configured. It does not replace Andrew, Ava, Libby, Ryan, or a clone."
+    "qualityNotes": "Walter, a separate Kokoro-82M voice pack. Listed only when the Modal endpoint is configured. It does not replace Drew, Ava, Libby, George, or a clone. The internal id is `sowell` so books already made with it keep playing."
   },
   {
     "id": "clara",

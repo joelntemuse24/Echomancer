@@ -71,7 +71,8 @@ export function isAllowedCatalogVoice(voice: {
     voice.provider === "edge" ||
     voice.provider === "paradee" ||
     voice.provider === "sowell" ||
-    voice.provider === "george"
+    voice.provider === "george" ||
+    voice.provider === "drew"
   ) {
     return true;
   }
