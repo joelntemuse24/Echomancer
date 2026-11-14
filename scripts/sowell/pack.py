@@ -22,11 +22,18 @@ GEORGE_VOICE_ID = "bm_george"
 GEORGE_VOICE_FILE = "voices/bm_george.pt"
 GEORGE_VOICE_SHA256 = "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b"
 SOWELL_VOICE_ID = "am_sowell"
+# Drew is its own fine-tuned kmodel, not a pack on stock Kokoro. See drew.py.
+DREW_VOICE_ID = "drew"
 _VOICE_ALIASES = {
     "sowell": SOWELL_VOICE_ID,
+    "walter": SOWELL_VOICE_ID,
     "am_sowell_avg": SOWELL_VOICE_ID,
     "george": GEORGE_VOICE_ID,
+    "andrew": DREW_VOICE_ID,
+    "drew": DREW_VOICE_ID,
 }
+#: Voices the container will speak. A name outside this set is refused.
+VOICE_ALLOWLIST = (SOWELL_VOICE_ID, GEORGE_VOICE_ID, DREW_VOICE_ID)
 
 
 class PackError(Exception):
@@ -37,7 +44,7 @@ def canonical_kokoro_voice(raw: str | None) -> str:
     """Allowlist. A path, a dot, or any other id is refused."""
     name = (raw or SOWELL_VOICE_ID).strip()
     name = _VOICE_ALIASES.get(name, name)
-    if name not in (SOWELL_VOICE_ID, GEORGE_VOICE_ID):
+    if name not in VOICE_ALLOWLIST:
         raise PackError("voice is not allowed")
     if any(ch in name for ch in "/\\."):
         raise PackError("voice is not allowed")

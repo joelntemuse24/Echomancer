@@ -1,8 +1,19 @@
-"""Resident Sowell runtime. One process loads Kokoro once and reuses it.
+"""Resident Kokoro runtime. One process loads its models once and reuses them.
 
 Kokoro's model is not reentrant, so render holds a lock. A second container
 is a second process, not a second thread in this one. Audio is returned as
 WAV bytes. There is no shared temporary file.
+
+Two kmodels stay resident:
+
+* stock `kokoro-v1_0.pth`, which speaks Walter (`am_sowell`) and George
+  (`bm_george`)
+* the Drew checkpoint, which speaks Drew only (see `drew.py`)
+
+Drew's kmodel is loaded lazily, on the first Drew request, so a Walter-only
+deployment still starts with one model in memory. `@modal.enter` still runs
+one warm path for it when the volume is mounted, so the first real Drew
+section is not the one that pays for the load.
 """
 
 from __future__ import annotations
@@ -31,11 +42,33 @@ from pack import (
     load_manifest,
     manifest_path,
 )
+from drew import (
+    DREW_VOICE_ID,
+    DrewPackError,
+    check_drew_assets,
+    drew_speed,
+    load_kmodel,
+    load_voice_pack,
+)
 
 MAX_CHARS = 2000
 PHONEME_CAP = 510
 SAMPLE_RATE = 24_000
 _WORDS = re.compile(r"[A-Za-z0-9']+")
+
+#: Kokoro's pipeline class, imported on first use. Tests replace this name with
+#: a stub so the speed plumbing can run without the package installed.
+KPipeline = None
+
+
+def kpipeline():
+    """The KPipeline class, imported once. `engine.KPipeline` wins if set."""
+    global KPipeline
+    if KPipeline is None:
+        from kokoro import KPipeline as real
+
+        KPipeline = real
+    return KPipeline
 
 
 def cpu_threads() -> int:
@@ -176,6 +209,12 @@ class SowellEngine:
         self._lock = threading.Lock()
         self._pipelines: dict = {}
         self._packs: dict[str, torch.Tensor] = {}
+        # Drew's own model, loaded lazily. `_drew_error` remembers a failed
+        # load so a missing volume fails fast instead of retrying the disk read
+        # on every section.
+        self._drew_pipes: dict | None = None
+        self._drew_pack: torch.Tensor | None = None
+        self._drew_error: str | None = None
 
     def load(self, pack_path: Path, manifest_file: Path | None = None) -> None:
         with self._lock:
@@ -183,25 +222,64 @@ class SowellEngine:
                 return
             self._load_locked(pack_path, manifest_file)
 
+    def load_drew(self) -> bool:
+        """Load Drew's kmodel and pack now. False when the volume is absent.
+
+        The app calls this once from `@modal.enter` so the first Drew request
+        is not the one that pays ~2s of disk. A missing volume is not fatal:
+        Walter and George must still serve from a deployment that has not had
+        the upload yet.
+        """
+        with self._lock:
+            return self._load_drew_locked()
+
+    def _load_drew_locked(self) -> bool:
+        if self._drew_pipes is not None:
+            return True
+        if self._drew_error is not None:
+            return False
+        try:
+            assets = check_drew_assets()
+            model = load_kmodel(assets.kmodel)
+            pack = load_voice_pack(assets.voice)
+            pipeline_cls = kpipeline()
+
+            # Drew speaks American English, like the Andrew it succeeds.
+            self._drew_pipes = {
+                "a": pipeline_cls(lang_code="a", repo_id=PINNED_REPO, model=model),
+            }
+            self._drew_pack = pack
+            self.init_count += 1
+            return True
+        except (DrewPackError, PackError) as err:
+            self._drew_error = str(err)
+            return False
+
     def speak(
         self,
         text: str,
         pack_path: Path,
         manifest_file: Path | None = None,
         voice: str = SOWELL_VOICE_ID,
+        speed: float = 1.0,
     ) -> tuple[bytes, dict]:
         """Load on the first call in this process, then render under the lock."""
-        voice_id = canonical_kokoro_voice(voice)
         started = time.perf_counter()
         with self._lock:
             inits_before = self.init_count
             load_seconds = 0.0
-            if not self._pipelines or voice_id not in self._packs:
-                # load() takes the same lock; call the body inline.
-                load_started = time.perf_counter()
-                self._load_locked(pack_path, manifest_file)
-                load_seconds = time.perf_counter() - load_started
-            audio, spoken, first_audio = self._render_locked(text, voice_id)
+            load_started = time.perf_counter()
+            if voice == DREW_VOICE_ID:
+                if not self._load_drew_locked():
+                    raise DrewPackError(self._drew_error or "Drew is not loaded")
+                voice_id = DREW_VOICE_ID
+            else:
+                voice_id = canonical_kokoro_voice(voice)
+                if not self._pipelines or voice_id not in self._packs:
+                    # load() takes the same lock; call the body inline.
+                    self._load_locked(pack_path, manifest_file)
+            load_seconds = time.perf_counter() - load_started
+            audio, spoken, first_audio = self._render_locked(text, voice_id, speed)
             elapsed = time.perf_counter() - started
         report = {
             "chars": len(" ".join(text.split())),
@@ -215,6 +293,7 @@ class SowellEngine:
             "initializedThisCall": self.init_count > inits_before,
             "spokenWords": len(words(spoken)),
             "voice": voice_id,
+            "speed": drew_speed(speed) if voice_id == DREW_VOICE_ID else 1.0,
         }
         return _wav_bytes(audio), report
 
@@ -262,19 +341,30 @@ class SowellEngine:
         )
         return check_george_voice(downloaded)
 
-    def _render_locked(self, text: str, voice: str = SOWELL_VOICE_ID) -> tuple[torch.Tensor, str, float]:
+    def _render_locked(
+        self,
+        text: str,
+        voice: str = SOWELL_VOICE_ID,
+        speed: float = 1.0,
+    ) -> tuple[torch.Tensor, str, float]:
         cleaned = " ".join(text.split())
         if not cleaned:
             raise PackError("empty text")
         if len(cleaned) > MAX_CHARS:
             raise PackError(f"{len(cleaned)} characters exceeds the {MAX_CHARS} cap")
-        voice_id = canonical_kokoro_voice(voice)
-        lang = "b" if voice_id == GEORGE_VOICE_ID else "a"
-        pipeline = self._pipelines.get(lang)
-        pack = self._packs.get(voice_id)
+        if voice == DREW_VOICE_ID:
+            pipeline = (self._drew_pipes or {}).get("a")
+            pack = self._drew_pack
+            kokoro_speed = drew_speed(speed)
+        else:
+            voice_id = canonical_kokoro_voice(voice)
+            lang = "b" if voice_id == GEORGE_VOICE_ID else "a"
+            pipeline = self._pipelines.get(lang)
+            pack = self._packs.get(voice_id)
+            kokoro_speed = 1.0
         if pipeline is None or pack is None:
             raise PackError("runtime is not loaded")
-        from kokoro import KPipeline
+        pipeline_cls = kpipeline()
 
         _, tokens = pipeline.g2p(cleaned)
         pieces: list[torch.Tensor] = []
@@ -289,7 +379,9 @@ class SowellEngine:
                     raise PackError(
                         f"phoneme run is {len(phonemes)}, over {PHONEME_CAP}; refusing to drop text"
                     )
-                output = KPipeline.infer(pipeline.model, phonemes, pack, 1.0)
+                output = pipeline_cls.infer(
+                    pipeline.model, phonemes, pack, kokoro_speed
+                )
                 audio = getattr(output, "audio", None)
                 if audio is None:
                     raise PackError("Kokoro returned no audio for a chunk")
