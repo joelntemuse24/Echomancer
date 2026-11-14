@@ -1,0 +1,20 @@
+{
+ "kokoro_andrew": {
+  "utmos": 4.46,
+  "wer": 2.94,
+  "spk_sim": 0.986,
+  "n": 6
+ },
+ "edge_andrew_rate0": {
+  "utmos": 4.435,
+  "wer": 2.94,
+  "spk_sim": 0.988,
+  "n": 6
+ },
+ "andrew_pilot": {
+  "utmos": 3.478,
+  "wer": 4.41,
+  "spk_sim": 0.97,
+  "n": 6
+ }
+}
