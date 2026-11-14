@@ -1659,8 +1659,10 @@ unready index, clear error/lease → `queued` → `enqueueTakehomeAdvance`.
 ### `PATCH /api/jobs/[id]` `{ action: "rename", bookTitle }`
 
 Owned (404 otherwise). Collapses whitespace, trims, requires 1–200 chars,
-and writes `jobs.book_title`. Library cards and the player edit it inline
-with a pencil; the download filename follows the new title.
+and writes `jobs.book_title`. The library lists each book as a row, without
+a card. The library and the player keep the pencil hidden until a right-click
+on the title. A cloned voice name selects that voice; a right-click on the
+name shows the same pencil. The download filename follows the new title.
 
 ### `DELETE /api/jobs/[id]`
 

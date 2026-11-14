@@ -100,7 +100,7 @@ export default function QueuePage() {
   const [jobs, setJobs] = useState<Job[]>(cachedJobs?.jobs ?? []);
   const [isLoading, setIsLoading] = useState(!cachedJobs);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  /** One quiet line per card for the last action on that book. */
+  /** One quiet line per row for the last action on that book. */
   const [notices, setNotices] = useState<Record<string, string>>({});
   /** The action in flight per job, so its button can spin and ignore a second tap. */
   const [pending, setPending] = useState<Record<string, LibraryAction>>({});
@@ -415,16 +415,9 @@ export default function QueuePage() {
       ) : null}
 
       {!showPending && !showBlockingError ? (
-      <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
+      <div className="min-w-0 divide-y divide-border/30" aria-live="polite" aria-busy={hasActive}>
         {jobs.map((job) => (
-          <div
-            key={job.id}
-            className={`w-full min-w-0 p-6 rounded-sm border transition-all ${
-              canOpen(job)
-                ? "border-border/50 hover:border-foreground/30 bg-card group"
-                : "border-border/20 bg-accent/20"
-            }`}
-          >
+          <div key={job.id} className="group w-full min-w-0 py-5">
             <div className="flex w-full min-w-0 flex-col justify-between gap-6 md:flex-row md:items-center">
               <div className="w-full min-w-0 flex-1 space-y-1">
                 <div className="flex w-full min-w-0 flex-wrap items-center gap-3">
@@ -437,7 +430,6 @@ export default function QueuePage() {
                       )
                     }
                     inputClassName="text-lg font-serif leading-snug"
-                    buttonClassName="md:-ml-2 md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100"
                   >
                     {canOpen(job) ? (
                       <Link

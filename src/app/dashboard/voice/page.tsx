@@ -7,6 +7,7 @@ import {
   Square,
   Trash2,
   Check,
+  Pencil,
   X,
 } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
@@ -265,8 +266,27 @@ export default function VoiceSelectionPage() {
   /** After a clone, show only that voice until they ask for the rest. */
   const [soloVoiceId, setSoloVoiceId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameOfferId, setRenameOfferId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameCancelRef = useRef(false);
+
+  useEffect(() => {
+    if (!renameOfferId) return;
+    const onPointer = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-rename-offer]")) return;
+      setRenameOfferId(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRenameOfferId(null);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [renameOfferId]);
   const [creating, setCreating] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(
@@ -1284,19 +1304,38 @@ export default function VoiceSelectionPage() {
                   className="min-w-0 flex-1 border-b border-foreground/40 bg-transparent font-serif text-lg outline-none"
                 />
               ) : (
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 truncate text-left"
-                  onClick={() => {
-                    setPinnedVoiceId(voice.id);
-                    setSelectedVoiceId(voice.id);
-                    renameCancelRef.current = false;
-                    setRenameDraft(voiceTitle(voice));
-                    setRenamingId(voice.id);
-                  }}
-                >
-                  {label}
-                </button>
+                <span className="flex min-w-0 flex-1 items-center" data-rename-offer="">
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 truncate text-left"
+                    onClick={() => {
+                      setPinnedVoiceId(voice.id);
+                      setSelectedVoiceId(voice.id);
+                      setRenameOfferId(null);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setRenameOfferId(voice.id);
+                    }}
+                  >
+                    {label}
+                  </button>
+                  {renameOfferId === voice.id ? (
+                    <button
+                      type="button"
+                      aria-label={`Rename ${label}`}
+                      onClick={() => {
+                        renameCancelRef.current = false;
+                        setRenameDraft(voiceTitle(voice));
+                        setRenamingId(voice.id);
+                        setRenameOfferId(null);
+                      }}
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                    >
+                      <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </span>
               )}
               {isSelected ? (
                 <Check

@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, Pencil } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const MAX_TITLE_CHARS = 200;
@@ -18,8 +18,8 @@ async function renameBook(jobId: string, title: string): Promise<string> {
 }
 
 /**
- * A book title with a quiet pencil. Enter or blur saves, Escape cancels.
- * Errors stay inline under the field.
+ * A book title. The pencil stays hidden until a right-click on the title.
+ * Enter or blur saves, Escape cancels. Errors stay inline under the field.
  */
 export function EditableBookTitle({
   jobId,
@@ -38,15 +38,34 @@ export function EditableBookTitle({
   buttonClassName?: string;
 }) {
   const [editing, setEditing] = useState(false);
+  const [offer, setOffer] = useState(false);
   const [draft, setDraft] = useState(title);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancelledRef = useRef(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!offer) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOffer(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOffer(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [offer]);
 
   const start = () => {
     cancelledRef.current = false;
     setDraft(title);
     setError(null);
+    setOffer(false);
     setEditing(true);
   };
 
@@ -114,19 +133,28 @@ export function EditableBookTitle({
   }
 
   return (
-    <>
+    <span
+      ref={rootRef}
+      className="contents"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setOffer(true);
+      }}
+    >
       {children}
-      <button
-        type="button"
-        onClick={start}
-        aria-label={`Rename ${title}`}
-        className={cn(
-          "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
-          buttonClassName
-        )}
-      >
-        <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
-      </button>
-    </>
+      {offer ? (
+        <button
+          type="button"
+          onClick={start}
+          aria-label={`Rename ${title}`}
+          className={cn(
+            "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+            buttonClassName
+          )}
+        >
+          <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </span>
   );
 }
