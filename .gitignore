@@ -89,3 +89,7 @@ src/app/dashboard/player-preview/
 
 # Sowell voice pack. The repo is public. The hash lives in voices/sowell/manifest.json.
 /voices/sowell/*.pt
+
+# Pinned fish-speech source for the Modal numeric tests
+# (scripts/s2/fetch-fish-source.sh; not vendored, not shipped)
+.fish-speech-src/

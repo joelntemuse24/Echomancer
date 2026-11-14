@@ -21,6 +21,8 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from s2_contract import resolve_app_name
+
 TERMINAL_STATUSES = frozenset(
     {
         "success",
@@ -192,7 +194,11 @@ def assert_no_unfinished_inputs(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    app = os.environ.get("S2C_APP_NAME") or os.environ.get("MODAL_S2_APP_NAME") or "echomancer-s2-clone"
+    # Same resolver as the service and the warm script, so a warm cannot inspect
+    # a different app from the one being warmed. `--app` still wins: this script
+    # is also used to look at an app nobody is deploying, and an explicit flag is
+    # a deliberate act in a way an inherited variable is not.
+    app = resolve_app_name(os.environ)
     cls = "S2CloneWorker"
     tail = DEFAULT_TAIL
     i = 0

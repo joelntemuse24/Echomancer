@@ -65,6 +65,7 @@ from s2_contract import (
     ReferenceClipError,
     ReferenceTextError,
     placement_kind,
+    resolve_app_name,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
@@ -79,9 +80,12 @@ RPC_COMPILE_TIMEOUT_S = 1200
 # from this file. The worker lives in s2_clone_service.py.
 app = modal.App("echomancer-s2-clone-warm")
 
-#: Match the service's default, but allow a staging app to be warmed without
-#: touching production: `S2C_APP_NAME=echomancer-s2-clone-staging modal run …`.
-APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
+#: Which app to warm. `s2_contract.resolve_app_name` is the same rule the service
+#: and `check-input-queue.py` use, so a warm cannot land on a different app from
+#: the one that was just deployed — and production needs `S2C_ALLOW_PRODUCTION=1`
+#: to be named, because warming is not harmless: it can start a compile, and the
+#: deploy that precedes it already invalidated that app's snapshots.
+APP_NAME = resolve_app_name(os.environ)
 CLASS_NAME = "S2CloneWorker"
 
 

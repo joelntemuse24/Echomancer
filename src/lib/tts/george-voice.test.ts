@@ -148,6 +148,17 @@ describe("george voice", () => {
     expect(worker).toContain("canonical_kokoro_voice");
     expect(worker).toContain("x-kokoro-voice");
     expect(worker).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "2"))');
+    // The allowlist itself runs in the GPU image, which imports torch. Without
+    // it there is nothing to run: skipping says so, where a failure used to
+    // report a broken allowlist that was never exercised.
+    const torch = spawnSync("python3", ["-c", "import torch"], { encoding: "utf8" });
+    if (torch.status !== 0) {
+      console.warn(
+        "skipping the voice-allowlist execution check: python3 has no torch " +
+          "(the GPU image installs it; a bare CI runner does not)"
+      );
+      return;
+    }
     const run = spawnSync(
       "python3",
       [path.join(process.cwd(), "scripts/sowell/test_voice_allowlist.py")],

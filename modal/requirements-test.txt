@@ -1,0 +1,28 @@
+# Python packages the Modal test suites need, CPU only.
+#
+# Run by .github/workflows/modal-tests.yml and referenced by
+# scripts/s2/check-test-prereqs.py. Nothing here is a product dependency: the
+# app itself is TypeScript, and these exist so `python3 -m pytest modal` can
+# compare this branch's decode maths against the pinned upstream package.
+#
+# Why each one:
+#   pytest          the runner
+#   numpy           `fish_speech.models.text2semantic.llama` imports it, and the
+#                   codec-probe tests use it
+#   einops, loguru  upstream fish-speech's own dependencies. `llama.py` imports
+#                   both at module scope. Installing torch does NOT bring them,
+#                   which is how the first CI run failed before pytest started.
+#
+# torch is pinned separately with `--index-url https://download.pytorch.org/whl/cpu`
+# so the download is ~200 MB of CPU wheels instead of ~2 GB of CUDA ones. Keep
+# that line in the workflow; putting torch here would pull the default index's
+# CUDA build.
+#
+# Versions are the ones the suite was last green against. They are deliberately
+# exact: a floating minor on torch can change bf16 rounding and turn a
+# bit-identity assertion into a mystery, and these tests exist to make small
+# numerical differences visible.
+pytest==9.2.0
+numpy==1.26.4
+einops==0.8.2
+loguru==0.8.0

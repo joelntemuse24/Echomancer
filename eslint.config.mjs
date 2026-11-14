@@ -14,6 +14,10 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "workers/**",
     "scripts/oracle/**/*.cjs",
+    // The pinned upstream checkout that the Modal numeric tests compare
+    // against (`scripts/s2/fetch-fish-source.sh`). It is third-party code that
+    // is not part of this project; linting it reports its own config as errors.
+    ".fish-speech-src/**",
   ]),
 ]);
 

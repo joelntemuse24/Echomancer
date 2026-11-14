@@ -53,10 +53,36 @@ def _install_torch_stub() -> None:
     if existing is not None and hasattr(existing, "no_grad"):
         return  # a real torch is installed; use it
     torch = existing if existing is not None else types.ModuleType("torch")
+    # Every dtype `s2_batch` reads off `torch` must exist here, or the stub
+    # fails on an attribute a real torch always has and the probe tests fail for
+    # a reason that has nothing to do with the probe. `bfloat16` was missing,
+    # which made these tests pass alone and fail whenever a real torch was
+    # imported first — the worst kind of failure, since it depends on file order.
     torch.long = "torch.long"
     torch.float32 = "torch.float32"
+    torch.bfloat16 = "torch.bfloat16"
+    torch.int64 = "torch.int64"
+    torch.float16 = "torch.float16"
 
     def zeros(shape, device=None, dtype=None):
+        return _Tensor(tuple(shape))
+
+    def full(shape, fill_value, device=None, dtype=None):
+        # `_warm_kv_buckets` and `_replay_decode_shapes` position every row at a
+        # prefix length; the stub only needs the shape.
+        return _Tensor(tuple(shape))
+
+    def arange(*args, **kwargs):
+        if len(args) == 1:
+            (end,) = args
+            return _Tensor((int(end),))
+        start, end = args[0], args[1]
+        return _Tensor((int(end) - int(start),))
+
+    def tensor(data, **kwargs):
+        return _Tensor(tuple(data) if hasattr(data, "__len__") else (1,))
+
+    def rand(*shape, **kwargs):
         return _Tensor(tuple(shape))
 
     def mm(a, b):
@@ -108,9 +134,13 @@ def _install_torch_stub() -> None:
             setattr(cuda, method, getattr(existing_cuda, method))
     torch.cuda = cuda
     torch.zeros = zeros
+    torch.full = full
+    torch.arange = arange
+    torch.tensor = tensor
+    torch.rand = rand
     torch.mm = mm
     torch.manual_seed = manual_seed
-    for name in ("long", "float32"):
+    for name in ("long", "float32", "bfloat16", "int64", "float16"):
         if not hasattr(torch, name):
             setattr(torch, name, name)
     sys.modules["torch"] = torch
@@ -161,12 +191,16 @@ def test_decode_codes_contract_matches_what_selftest_provides(batch_module):
     """`decode_codes` slices `c.shape[1]` and stacks, so a unit is 2-D."""
     import inspect
 
-    source = inspect.getsource(batch_module._BatchEngine.decode_codes)
+    source = inspect.getsource(batch_module._BatchEngine._decode_group_to_device)
     # It reads the time axis from shape[1] and pads along the last dim; a 1-D
     # unit would raise IndexError there instead of in torch.cat.
     assert "c.shape[1]" in source
     # And it expects a list of units, which is why selftest wraps its probe.
-    assert "for i in range(0, len(code_list), micro_batch)" in source
+    # The grouping walks the length-sorted order in micro-batch steps.
+    assert "range(0, len(order), micro_batch)" in source
+    # `decode_codes` is still the entry point callers and selftest use.
+    entry = inspect.getsource(batch_module._BatchEngine.decode_codes)
+    assert "_decode_group_to_device" in entry
 
 
 # ── the real selftest, executed ────────────────────────────────────────────
@@ -199,13 +233,41 @@ class _ProbeEngine:
     """
 
     def __init__(self, num_codebooks: int = 10, hidden: int = 32) -> None:
-        self.device = "cuda"
-        self.dtype = "bf16"
+        # A real torch without CUDA (a CPU test machine) rejects `device="cuda"`
+        # before `selftest` gets to the shapes these tests are about.
+        _torch = sys.modules["torch"]
+        usable = _torch.cuda.is_available() if hasattr(_torch, "cuda") else False
+        self.device = "cuda" if usable else "cpu"
+        # Whichever `torch` is in play — the stub (`bfloat16 == "bf16"`) or a
+        # real one installed for another suite — `selftest` must be handed a
+        # dtype object that module accepts.
+        self.dtype = sys.modules["torch"].bfloat16
         self.device_name = "stub-gpu"
         self.cfg = types.SimpleNamespace(num_codebooks=num_codebooks)
         self.model = types.SimpleNamespace(layers=[_Layer(hidden)])
         self.decode_calls: list[list[_Tensor]] = []
         self._hidden = hidden
+        # `selftest` also proves the compiled decode step and the side codec
+        # stream. Both live on `_BatchEngine`, so a partial engine must provide
+        # them or every probe test fails for a reason unrelated to the probe.
+        self.codec_stream = None
+        self.decoded_shapes: list[tuple[int, int]] = []
+
+    # ── the pieces `selftest` calls that are not the codec probe ───────────
+    def _warm_widths(self) -> tuple[int, ...]:
+        return (1, 4)
+
+    def _replay_decode_shapes(self) -> int:
+        """Stand-in for the compiled-step replay; records the widths it saw."""
+        for width in self._warm_widths():
+            self.decoded_shapes.append((width, 512))
+        return len(self.decoded_shapes)
+
+    def submit_decode(self, code_list, micro_batch=None):
+        return {"codes": list(code_list), "micro_batch": micro_batch, "output": None}
+
+    def collect_decode(self, handle):
+        return []
 
     def decode_codes(self, code_list, micro_batch: int = 8):
         self.decode_calls.append(code_list)
@@ -258,9 +320,9 @@ def test_selftest_hands_decode_codes_one_correctly_shaped_unit(batch_module):
     engine = _ProbeEngine(num_codebooks=10)
     engine.selftest()
 
-    assert len(engine.decode_calls) == 1, "selftest should probe the codec once"
+    assert len(engine.decode_calls) == 2, "selftest probes the codec twice"
     units = engine.decode_calls[0]
-    assert len(units) == 1, "the probe is a single unit, wrapped in a list"
+    assert len(units) == 1, "the shape probe is a single unit, wrapped in a list"
     unit = units[0]
     assert unit.shape[0] == 10, (
         f"code unit must be (num_codebooks, T); got {unit.shape}"
@@ -268,6 +330,12 @@ def test_selftest_hands_decode_codes_one_correctly_shaped_unit(batch_module):
     assert unit.shape[1] >= 1, "a unit needs at least one frame"
     # The channel dim is what the codec consumes, so prove it survived stacking.
     assert unit.shape != (1, 10)
+    # The second call is the uneven-length pair: one short unit and one three
+    # times longer, which is what exercises sort + right-pad on one micro-batch.
+    pair = engine.decode_calls[1]
+    assert len(pair) == 2
+    assert pair[0].shape[1] < pair[1].shape[1]
+    assert all(unit.shape[0] == 10 for unit in pair)
 
 
 @pytest.mark.parametrize("num_codebooks", [1, 8, 10, 16])

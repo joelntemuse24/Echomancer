@@ -434,7 +434,7 @@ class _RecordingEngine:
         self._note("transcribe_reference")
         return "transcribed words"
 
-    def render(self, slots, ref, sampling):
+    def render(self, slots, ref, sampling, on_section=None):
         self._note("render")
         return {
             "codes": [[object() for _ in units] for units in slots],
@@ -444,8 +444,12 @@ class _RecordingEngine:
             "truncated_units": 0,
         }
 
-    def decode_slots(self, codes, slots):
+    def decode_slots(self, codes, slots, *, audio_by_section=None):
         self._note("decode_slots")
+        # `audio_by_section` is what a streamed `render` already decoded; the
+        # single-section path passes it through so the codec is not run twice.
+        # This engine streams nothing, so it arrives empty.
+        assert audio_by_section in (None, {}), audio_by_section
         # `_master` and `duration_s` only need a sized sequence.
         return [[0.0] * 1000 for _ in slots]
 
@@ -497,11 +501,17 @@ def stub_master(monkeypatch):
     """Replace the ffmpeg mastering pass with bytes; it is not what we assert."""
     import s2_clone_service as service_module
 
+    mp3 = b"\xff\xfb" + b"\x01" * 2000
+
     def fake_master(samples, sample_rate, out_path):
         with open(out_path, "wb") as fh:
-            fh.write(b"\xff\xfb" + b"\x01" * 2000)
+            fh.write(mp3)
 
     monkeypatch.setattr(service_module, "_master", fake_master)
+    # The pipelined path calls `_master_pcm` with 16-bit PCM on stdin, so it
+    # needs the same stub or the test would shell out to ffmpeg.
+    monkeypatch.setattr(service_module, "_master_pcm", lambda pcm, rate: mp3)
+    monkeypatch.setattr(service_module, "_master_bytes", lambda samples, rate: mp3)
 
 
 def test_batch_handler_runs_every_gpu_call_on_the_owner_thread(

@@ -7,6 +7,8 @@
  * character budget, and a take that is long enough for the text.
  */
 
+import { modalCloneBatchRowsForTransport } from "@/lib/tts/providers/modal-clone-transport";
+
 /** Product narration rate. `CHARS_PER_AUDIO_HOUR` (54_000) is 900 × 60. */
 export const CLONE_CHARS_PER_AUDIO_MINUTE = 900;
 
@@ -270,8 +272,24 @@ export function modalCloneLanes(env: NodeJS.ProcessEnv = process.env): number {
 export const MODAL_CLONE_BATCH_DEFAULT = 24;
 export const MODAL_CLONE_BATCH_MAX = 32;
 
+/**
+ * Rows one call may carry.
+ *
+ * An explicit `MODAL_S2_BATCH_SIZE` wins. Without it the width follows what the
+ * container has actually proven: 32 only once `/ready` reports an `r2`
+ * transport **and** `max_batch_items >= 32`, and 24 otherwise. That is what lets
+ * the worker deploy before the Modal app: a worker that planned 32 rows against
+ * the live v9 container would get `422 batch_too_large` on every full page.
+ */
 export function modalCloneBatchItems(env: NodeJS.ProcessEnv = process.env): number {
-  return clampInt(env.MODAL_S2_BATCH_SIZE, MODAL_CLONE_BATCH_DEFAULT, 1, MODAL_CLONE_BATCH_MAX);
+  const raw = env.MODAL_S2_BATCH_SIZE;
+  if (raw !== undefined && String(raw).trim() !== "") {
+    return clampInt(raw, MODAL_CLONE_BATCH_DEFAULT, 1, MODAL_CLONE_BATCH_MAX);
+  }
+  return Math.min(
+    MODAL_CLONE_BATCH_MAX,
+    modalCloneBatchRowsForTransport(env)
+  );
 }
 
 /**

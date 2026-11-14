@@ -249,7 +249,9 @@ src/
   test/{harness,setup-env}.ts
 modal/                         # S2-Pro clone service, contract, warm/cover
 scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
-scripts/s2/                    # Staging HTTP smoke (synthetic clip only)
+scripts/s2/                    # Staging smoke, A/B bench, quality compare,
+                               # and staging-env.sh (S2C_ENGINE=v10 on a
+                               # separate app)
 workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
 docker-compose.yml             # Optional Docker path (pm2 is primary)
@@ -1340,6 +1342,174 @@ still use `GET /api/tts/live`.
 
 `CatalogVoice`, `SynthesizeInput/Result`, `TtsProviderAdapter`, `JobSegment`,
 `PriceEstimate`, `JobKind`, `StockProvider`.
+
+### The clone GPU engine (`modal/`), and the `S2C_ENGINE` switch
+
+`S2C_ENGINE` selects which decode path a container runs, and it defaults to
+**`v9`** — the behaviour the deployed app has today. A plain `modal deploy`
+therefore changes nothing about how a book sounds; `v10` is opt-in and is what
+`scripts/s2/staging-env.sh` sets on the staging app.
+
+It is read **at import**, pinned into the container env (`_BUILD_ENV`, hence
+`S2C_BUILD`), and never re-read per request: a snapshot has to be built for the
+exact kernels it will run, so a runtime override that disagreed with the
+snapshot would hand a restored container a path it never compiled.
+
+| v10 change | v9 behaviour (`S2C_ENGINE` unset) | Switch to isolate |
+|---|---|---|
+| Active batch width bucketed to `(1,4,8,16,24,32)` from the parallel unit count | steps `S2B_BATCH` rows, dummies included | `S2B_BUCKET=0` |
+| An idle lane steals a later unit of a section whose unit 0 is done | one unit at a time per section | `S2B_WORK_STEAL=0` |
+| Four coarse, pre-warmed CUDA-graph KV buckets | 128-token rounding (32 shapes, a few warmed) | `S2B_KV_BUCKET` |
+| `_fast_step`: no mask, no `repeat_interleave`, no CPU scalar | upstream `forward_generate_fast` | `S2B_FAST_DECODE=0` |
+| `masked_fill` instead of `torch.where(…, float("-inf"), …)` | upstream `logits_to_probs` | `S2B_FAST_DECODE=0` |
+| Codec decoded per finished section during AR, then encoded and uploaded | all AR, then all codec, then all encode, then all upload | `S2B_PIPELINE_CODEC=0` |
+| `weight_norm` frozen, codec mask cached, micro-batch 16, length-sorted | parametrized convs, mask rebuilt per call, micro-batch 8 | `S2B_CODEC_TUNING=0` |
+| The opening wave's prompts prefilled in one right-padded causal pass | one serial prefill per lane | `S2B_BATCHED_PREFILL=0` |
+
+**v9 is a separate loop, not a set of flags.** `_render_legacy` is PR 283's
+decode loop transcribed: lane `r` owns `slots[r]` for the whole call, units run in
+index order, nothing is work-stolen. That pinning decides the audio — the sampler
+draws from one batched RNG stream, so a lane assignment that differs (say
+"longest remaining section first") consumes different random numbers and renders
+different tokens for any book whose sections differ in length. `_embed` and
+`_fast_step` likewise keep their deployed bodies (a scalar `torch.where`, a CUDA
+`fast_pos` slice) under `LEGACY_RENDER`, because the v10 rewrite is equal in exact
+arithmetic and not bitwise in bfloat16.
+`modal/test_s2_legacy_identity.py` imports the base branch's module out of git and
+compares embeddings, sampling and the loop's statements directly.
+
+| `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
+| Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
+| Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
+
+**A bare `modal deploy` targets staging, and the production name is not enough.**
+A deploy invalidates every GPU snapshot for its app, so a branch under review
+must not be able to evict production's. One resolver decides the target for the
+service, `modal/s2_clone_warm.py` and `scripts/s2/check-input-queue.py`
+(`s2_contract.resolve_app_name`), with `s2_contract.heartbeat_dict_name` following
+the same name:
+
+| `S2C_APP_NAME` (or legacy `MODAL_S2_APP_NAME`) | `S2C_ALLOW_PRODUCTION` | target |
+|---|---|---|
+| `echomancer-s2-clone` | `1` | production |
+| `echomancer-s2-clone` | unset | **staging** |
+| any other name | either | that app |
+| unset | `1` | production |
+| unset | unset | staging |
+
+Spelling the production name out is **not** an opt-in: typing a name is not a
+decision about snapshots, and deploy commands get copy-pasted from docs. The
+worker's prewarm (`src/lib/tts/providers/modal-clone-warm.ts`) therefore exports
+`S2C_ALLOW_PRODUCTION=1` for its own `modal run …::cover` child, because that
+cover is the production path. `scripts/s2/cancel-unstarted-pending.py` keeps a
+production default on purpose — it cancels a pending input, and an unnamed
+invocation there means the live app.
+
+Why `v9` is the default: the worker and the Modal app ship separately, and the
+app is a ~15-minute snapshot rebuild, so there is always a window where one has
+changed and the other has not. A `modal deploy` with no new env vars must
+reproduce today's audio, and `modal/test_s2_engine_switch.py` asserts it does —
+down to the 128-token KV rounding and the upstream fast-transformer call.
+
+**What is bit-identical and what is not.** Freezing `weight_norm`, caching the
+codec mask, length-sorting the codec micro-batch, `EOS_CHECK_EVERY`, the coarse
+KV buckets and the streaming order change no sample, and each has a test that
+says so (`modal/test_s2_codec_tuning.py`, `modal/test_s2_numerics.py`). The
+fast-transformer rewrite and the batched prefill are numerically equal to
+upstream's step and to the single-row prefill in fp32 —
+asserted against the pinned upstream source, which is how two real bugs were
+found: the fast loop must write fast-KV position 0 from the **slow** hidden
+state (its logits are discarded, but every later codebook step attends it), and
+each fast layer's attention reads its *normalised* input.
+
+**The step must *compile*, and that is tested.** Every earlier numeric test
+bypassed `torch.compile` (the CPU harness set `engine.step = engine._decode_step`),
+so two production boot bugs lived in that gap:
+
+- the v9 path called `globals().get("logits_to_probs")`, and
+  `torch.compile(fullgraph=True)` refuses to trace the `globals` builtin — the
+  **default** engine failed to compile before a single section could render;
+- a `float` attribute read inside the step (`self.codebook_inv_scale`, every
+  `RMSNorm.eps`) was wrapped by Dynamo as a 0-D CPU `float64` placeholder, which
+  Inductor reports as `skipping cudagraphs due to cpu device (arg10_1)`.
+
+`modal/test_s2_compile.py` now traces the **real** `_decode_step` through
+`torch.compile(fullgraph=True, dynamic=True)` for both engines (at two widths,
+against eager) **and** through `aot_autograd` + Inductor decompositions on a
+`meta` model to assert zero surviving CPU tensor placeholders (`arg10_1`). Both
+sampler names are bound inside `gpu_image.imports()` and called directly;
+`torch._dynamo.config.specialize_float` is set before compiling so every float
+attribute becomes a constant; `selftest()` reads
+`torch._dynamo.utils.counters["inductor"]["cudagraph_skips"]` and **raises** on a
+non-zero count under `v10` (`FAST_DECODE=1`), so a skip fails the boot instead of
+quietly halving throughput on every call while keeping the `v9` rollback bootable.
+
+**A CUDA graph needs three calls, not one — and consistent `inference_mode` across all 24 shapes.** Inductor's `CUDAGraphTreeManager`
+warms up on call 1 for a new `(width, kv_len)` key, records on call 2 and replays
+on call 3. `_warm_kv_buckets()` runs `WARM_STEPS_PER_SHAPE` (3) steps per shape,
+feeding the output back into the next step as `render` does, so all 24 shapes are
+recorded inside the snapshot. Every caller of `self.step` on v10
+(`_render_pipelined`, `_warm_kv_buckets`, `_replay_decode_shapes`, `selftest`)
+allocates its step tensors (`x, pos, prev, temp, topp`) inside
+`torch.inference_mode()` so `ADInplaceOrView` never toggles between step 0 and
+step 1; `setup_caches` pads `KVCache` by 8 columns (`4104` vs `MAX_SEQ_LEN=4096`)
+so `kv_len=4096` stays strided like `512/1024/2048` instead of triggering a
+`524288 != 128*kv_len` recompile; `_configure_dynamo_for_step()` raises
+`recompile_limit` / `cache_size_limit` (`>= shapes*2 + 16`, min 64) and
+`accumulated_recompile_limit` (min 512); and `selftest()` asserts
+`compiled_graphs <= len(decode_shapes())`. Bucketing is forced off when
+`S2B_FAST_DECODE=0`, because upstream's `forward_generate_fast` writes a
+`BATCH`-row KVCache that a narrower active batch cannot broadcast into.
+
+**A restore that invalidates the graphs recaptures once.** `cudaGraphExec_t`
+handles are captured before the snapshot, and `cuda-checkpoint` restoring onto a
+different Modal worker variant may invalidate them. `_verify_graphs()` therefore
+calls `engine.recompile_step()` (resetting `cudagraph_trees` and Dynamo and
+re-wrapping `_decode_step` onto a fresh `CUDAGraphTreeManager` backed by
+Inductor's warm disk cache in `/opt/torchinductor`) and re-runs `_warm_kv_buckets()`,
+logs `graphs=recaptured(24)` and only fails on a second failure.
+`check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
+`recaptured(N)`, with `N` equal to `--expect-shapes`.
+
+**The codec's host copy is pinned, and its event is recorded after it.** A D2H
+copy into pageable memory is synchronous on the calling thread — it would stall
+the AR loop inside `submit_decode` and inflate `generate_s`. The copy therefore
+goes into `pin_memory=True` buffers with `non_blocking=True`, the event is
+recorded **after** every copy is enqueued (recording first let `query()` report
+done while the DMA was still writing, which is corrupted section audio), and
+`collect_decode` drops both the device and pinned buffers once the caller has its
+arrays.
+
+**Every decode switch is forwarded into the container.** `@app.cls(env={...})`
+replaces the container's environment rather than extending it, so a switch
+`_BUILD_ENV` omits does not reach the container - and since each is also in
+`snapshot_fingerprint`, the deploy hashed one value locally while the container
+re-hashed another. Every isolation toggle in `staging-env.sh` was a no-op on
+Modal until all of `S2B_*`, `S2C_MAX_BATCH_ITEMS` and `S2C_ENCODE_WORKERS` were
+listed, and `batched_prefill` / `cpu` / `warm_steps` were added to the
+fingerprint.
+
+**One R2 pool for the container's life.** `S2CloneWorker` builds a
+`KeepAlivePool` in `publish()` and closes it in `exit()`; `UploadPool.close()`
+closes a pool it owns. A pool per request paid a handshake per object and left
+its idle sockets to GC.
+
+**Nothing in the worker's planner changed to assume a speedup.**
+`MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at the measured 528, so a v10
+page is *over*-estimated in wall time until staging measures a real rate. The
+24-row baseline is still what a 32-row page is interpolated toward.
+
+**Rollout order for the worker.** A 32-row page needs `/ready` to report both
+`audio_transport: "r2"` and `max_batch_items >= 32`
+(`modalCloneBatchRowsForTransport`). Against the live v9 container the worker
+plans ≤ 24 inline rows, so a worker deployed first cannot collect
+`422 batch_too_large`. Its R2 reads are bounded-concurrent (`mapPool`, 8) and the
+per-object delete is not awaited, so a page does not spend the warm-hold budget
+on round trips.
+
+Staged A/B procedure, gates and cost: `docs/s2-gpu-staging-runbook.md` §9a. The
+tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
+(gate).
 
 ---
 
