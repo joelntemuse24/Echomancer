@@ -79,12 +79,20 @@ ENV DREW_VOICE_RELATIVE_PATH=/kokoro/retrain_v3/stageA/step00900_voice.pt
 # Torch threads. `SOWELL_TORCH_THREADS` is what the container applies in
 # `@modal.enter`; the OMP/BLAS/MKL variables stay in step so a library that
 # reads them at import does not build a wider pool behind torch's back.
-ENV SOWELL_CPU_THREADS=2
-ENV SOWELL_TORCH_THREADS=2
+#
+# 4 threads on Modal's 2 physical cores. Measured on the deployed image
+# (`modal/sowell_bench.py`, Drew, cpu=2, two rounds x 2 repeats): 4 threads is
+# ~1.5x faster than 2. Harbor paragraph, 719 chars, 39.7 s of audio:
+#   2 threads: 25.3-27.1 s wall, RTF 1.46-1.57
+#   4 threads: 16.5-19.3 s wall, RTF 2.06-2.41
+# Prose and the short opening followed the same shape (prose RTF 1.25-1.57 →
+# 1.80-2.47, opening 1.35-1.58 → 1.84-3.07).
+ENV SOWELL_CPU_THREADS=4
+ENV SOWELL_TORCH_THREADS=4
 ENV SOWELL_TORCH_INTEROP_THREADS=1
-ENV OMP_NUM_THREADS=2
-ENV OPENBLAS_NUM_THREADS=2
-ENV MKL_NUM_THREADS=2
+ENV OMP_NUM_THREADS=4
+ENV OPENBLAS_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
 ENV PYTHONPATH=/opt/sowell/scripts
 
 RUN python /opt/sowell/scripts/pack_main.py
