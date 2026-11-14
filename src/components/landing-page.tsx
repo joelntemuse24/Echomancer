@@ -18,9 +18,8 @@ import {
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
-import { LIBRARY_HREF, PREFETCH_SCREEN, VOICES_HREF } from "@/lib/nav/routes";
-import { warmJobs, warmVoices } from "@/lib/nav/screen-cache";
-import { LANDING, NAV, PRIVACY } from "@/lib/ux-copy";
+import { warmJobs } from "@/lib/nav/screen-cache";
+import { LANDING, PRIVACY } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
@@ -214,29 +213,7 @@ export function LandingPage() {
   return (
     <div className="min-h-screen text-foreground font-serif flex flex-col">
       <nav className="flex items-center justify-end gap-6 px-8 py-8 font-sans">
-        <Link
-          href={VOICES_HREF}
-          prefetch={PREFETCH_SCREEN}
-          onMouseEnter={() => warmVoices()}
-          onFocus={() => warmVoices()}
-          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
-        >
-          {NAV.voices}
-        </Link>
-        <Link
-          href={LIBRARY_HREF}
-          prefetch={PREFETCH_SCREEN}
-          className="hidden text-sm text-muted-foreground transition-colors hover:text-foreground md:inline"
-        >
-          {NAV.library}
-        </Link>
-        {/* Phone: Voices and Library live in this menu. Wide screens keep them in the bar, and Sign in stays a link. */}
-        <div className="contents md:hidden">
-          <AuthControls identity={identity} callbackUrl="/" />
-        </div>
-        <div className="hidden md:contents">
-          <AuthControls identity={identity} callbackUrl="/" menu={false} />
-        </div>
+        <AuthControls identity={identity} callbackUrl="/" />
       </nav>
 
       <section className="px-8 pb-28 pt-28 sm:pt-36">

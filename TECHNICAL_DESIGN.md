@@ -2381,9 +2381,9 @@ type on those surfaces is unchanged.
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
 Text / URL, primary CTA. No hero essay, format tip, or feature grid.
-Signed-out home shows Voices and Library on a wide screen, plus `PRIVACY.intro`.
-On a phone the bar does not show those two. Sign in opens a menu that lists
-them, and a signed-in name opens the same destinations. Home does not
+Signed-out home shows `PRIVACY.intro`. Voices and Library are not in the
+bar. Sign in opens a menu that lists them, and a signed-in name opens the
+same destinations. Home does not
 show a cookie or “books will move” sentence, or the plus. That plus
 stays in the dashboard chrome (Library, Voices, player). `/sign-in` is the
 title and the Google / email controls, with no password or cookie explanation.
