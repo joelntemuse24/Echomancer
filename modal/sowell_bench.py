@@ -100,8 +100,8 @@ class Bench:
         sys.path.insert(0, "/opt/sowell/scripts")
         from engine import SowellEngine, apply_torch_threads
 
-        # The container starts with whatever the image defaults to (2). Each
-        # measured call re-applies the requested count before rendering.
+        # The container starts with the image default (4). Each measured call
+        # re-applies the requested count before rendering.
         self.default_threads = apply_torch_threads()
         self.engine = SowellEngine()
         self.engine.load(Path(PACK), Path(MANIFEST))
@@ -110,7 +110,7 @@ class Bench:
         self.drew = self.engine.load_drew()
 
     @modal.method()
-    def measure(self, threads: int = 2, voice: str = "am_sowell", repeats: int = 1) -> dict:
+    def measure(self, threads: int = 4, voice: str = "am_sowell", repeats: int = 1) -> dict:
         import torch
 
         sys.path.insert(0, "/opt/sowell/scripts")
@@ -161,20 +161,20 @@ class Bench:
 
 @app.local_entrypoint()
 def main(
-    threads: str = "2",
+    threads: str = "4",
     voice: str = "am_sowell",
     repeats: int = 1,
 ) -> None:
     """Render the short texts at each thread count and print wall/audio/RTF.
 
     ``--threads 2 --threads 4`` (comma-separated also works) runs one call per
-    count, each on a fresh container. CPU only.
+    count, each on a fresh container. CPU only. The default is the shipped 4.
     """
     import json
 
     counts = [int(part) for part in threads.replace(",", " ").split() if part.strip()]
     if not counts:
-        counts = [2]
+        counts = [4]
     bench = Bench()
     out = []
     for count in counts:

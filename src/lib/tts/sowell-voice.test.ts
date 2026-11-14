@@ -245,7 +245,8 @@ describe("sowell voice", () => {
     expect(source).toContain('max_containers=int(os.environ.get("SOWELL_MAX_CONTAINERS", "6"))');
     expect(source).toContain('scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60"))');
     // Threads are a redeploy-time knob, applied before the model load.
-    expect(source).toContain('TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "2")');
+    // Default 4: benchmarked ~1.5x faster than 2 on Modal's 2 cores.
+    expect(source).toContain('TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "4")');
     expect(source).toContain("apply_torch_threads()");
     expect(source).toContain("cpu=2");
     // Drew is a second resident kmodel next to stock Kokoro, so the ceiling

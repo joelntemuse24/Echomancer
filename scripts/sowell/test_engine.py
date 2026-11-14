@@ -187,8 +187,11 @@ class ThreadBudget(unittest.TestCase):
             else:
                 engine_module.os.environ[key] = value
 
-    def test_defaults_stay_at_two_threads(self) -> None:
-        self.assertEqual(engine_module.torch_threads(), 2)
+    def test_defaults_are_four_io_threads_and_one_interop(self) -> None:
+        # Benchmarked on the deployed image: 4 intra-op threads is ~1.5x faster
+        # than 2 on Modal's 2 physical cores (RTF 2.06-2.41 vs 1.46-1.57).
+        self.assertEqual(engine_module.torch_threads(), 4)
+        self.assertEqual(engine_module.cpu_threads(), 4)
         self.assertEqual(engine_module.torch_interop_threads(), 1)
 
     def test_reads_the_new_name_first(self) -> None:
@@ -204,23 +207,23 @@ class ThreadBudget(unittest.TestCase):
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "0"
         self.assertEqual(engine_module.torch_threads(), 1)
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "not-a-number"
-        self.assertEqual(engine_module.torch_threads(), 2)
+        self.assertEqual(engine_module.torch_threads(), 4)
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "9999"
         self.assertEqual(
             engine_module.torch_threads(),
-            max(1, min(9999, engine_module.os.cpu_count() or 2)),
+            max(1, min(9999, engine_module.os.cpu_count() or 4)),
         )
 
     def test_apply_sets_torch_and_is_idempotent(self) -> None:
-        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "2"
-        self.assertEqual(engine_module.apply_torch_threads(), 2)
-        self.assertEqual(torch.get_num_threads(), 2)
-        # A second call (a warm container that re-loads) must not raise on the
-        # inter-op pool.
-        self.assertEqual(engine_module.apply_torch_threads(), 2)
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "4"
         self.assertEqual(engine_module.apply_torch_threads(), 4)
         self.assertEqual(torch.get_num_threads(), 4)
+        # A second call (a warm container that re-loads) must not raise on the
+        # inter-op pool.
+        self.assertEqual(engine_module.apply_torch_threads(), 4)
+        engine_module.os.environ["SOWELL_TORCH_THREADS"] = "2"
+        self.assertEqual(engine_module.apply_torch_threads(), 2)
+        self.assertEqual(torch.get_num_threads(), 2)
 
     def test_legacy_name_delegates(self) -> None:
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "3"
