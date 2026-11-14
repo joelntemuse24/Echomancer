@@ -109,6 +109,49 @@ describe("clone GPU ceilings", () => {
     ).toEqual({ action: "share", partnerId: "older" });
   });
 
+  it("lets a short book share a warm GPU while the ceiling still has room", () => {
+    const holder: GpuLeaseView = { jobId: "long", userId: "ua", createdAt: 1, charCount: 500_000 };
+    const article: GpuLeaseView = { jobId: "article", userId: "ub", createdAt: 2, charCount: 3_000 };
+    const younger: GpuLeaseView = { jobId: "note", userId: "uc", createdAt: 3, charCount: 4_000 };
+    expect(
+      decideCloneGpuAdmission({
+        ...article,
+        leases: [holder],
+        waiters: [article, younger],
+        globalCap: 20,
+        perUserCap: 5,
+      })
+    ).toEqual({ action: "share", partnerId: "long" });
+    expect(
+      decideCloneGpuAdmission({
+        ...younger,
+        leases: [holder],
+        waiters: [article, younger],
+        globalCap: 20,
+        perUserCap: 5,
+      }).action
+    ).toBe("queue");
+    expect(
+      decideCloneGpuAdmission({
+        ...holder,
+        leases: [holder],
+        waiters: [article],
+        globalCap: 20,
+        perUserCap: 5,
+      })
+    ).toEqual({ action: "share", partnerId: "article" });
+    const novel: GpuLeaseView = { jobId: "novel", userId: "ud", createdAt: 4, charCount: 400_000 };
+    expect(
+      decideCloneGpuAdmission({
+        ...novel,
+        leases: [holder],
+        waiters: [article, novel],
+        globalCap: 20,
+        perUserCap: 5,
+      }).action
+    ).toBe("grant");
+  });
+
   it("shares a sixth book of one user with that user's oldest GPU", () => {
     const leases: GpuLeaseView[] = Array.from({ length: 5 }, (_, index) => ({
       jobId: `held-${index}`,

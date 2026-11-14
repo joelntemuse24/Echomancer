@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ModalCloneColdError,
+  drainTakeCleanup,
   loadCloneReference,
   modalCloneBatchSize,
+  modalClonePoolReady,
   resetModalCloneRuntimeForTests,
+  resetModalCloneStorageForTests,
   synthesizeModalCloneBatch,
 } from "./modal-clone";
+import { modalCloneReportedMaxBatchItems } from "./modal-clone-transport";
 import { queryOne } from "@/lib/turso";
-import { downloadFile } from "@/lib/storage";
+import { deleteFile, downloadFile } from "@/lib/storage";
 import {
   endpointOf,
   stubModalEndpoints,
@@ -17,7 +21,7 @@ vi.mock("@/lib/turso", () => ({
   queryOne: vi.fn(),
   execute: vi.fn(async () => ({ rowsAffected: 1 })),
 }));
-vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
+vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn(), deleteFile: vi.fn() }));
 
 const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0, 1]);
 const items = [
@@ -67,6 +71,9 @@ function setup(rows: Record<string, unknown>[] = [audioRow("0"), audioRow("1")])
 
 afterEach(() => {
   resetModalCloneRuntimeForTests();
+  // The storage module is cached per process, so a mock swapped between cases
+  // must be re-resolved or the next case sees the previous one's function.
+  resetModalCloneStorageForTests();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -89,8 +96,125 @@ describe("modal clone batch", () => {
     expect(out.get("1")!.durationSeconds).toBe(14);
   });
 
-  it("still accepts the legacy audio_base64 name", async () => {
+  it("reads a storage key and leaves a foreign key alone", async () => {
     const fetchMock = setup();
+    vi.mocked(downloadFile).mockImplementation(async (path: string) => {
+      if (String(path).startsWith("s2-takes/")) return Buffer.from(mp3);
+      return Buffer.from("reference audio");
+    });
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(
+        JSON.stringify({
+          items: [
+            { key: "0", storage_key: "s2-takes/job/call/0.mp3", duration_s: 12 },
+          ],
+        })
+      );
+    });
+    const ref = await loadCloneReference("clone:saved-id", "fish-id");
+    const out = await synthesizeModalCloneBatch([items[0]!], ref);
+    expect(out.get("0")!.audio.equals(Buffer.from(mp3))).toBe(true);
+    expect(downloadFile).toHaveBeenCalledWith("s2-takes/job/call/0.mp3");
+
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(
+        JSON.stringify({
+          items: [{ key: "0", storage_key: "audiobooks/other/full.mp3", duration_s: 12 }],
+        })
+      );
+    });
+    await expect(synthesizeModalCloneBatch([items[0]!], ref)).rejects.toThrow(/decodable audio/);
+    expect(downloadFile).not.toHaveBeenCalledWith("audiobooks/other/full.mp3");
+  });
+
+  it("downloads a wide R2 page concurrently and deletes without blocking", async () => {
+    // A 24-row r2 page is 24 separate object reads. Serially that is 24 round
+    // trips of idle GPU time, and an awaited DELETE adds another before the
+    // next batch can post — which is what the warm hold budget is spent on.
+    const fetchMock = setup();
+    const rows = Array.from({ length: 24 }, (_, i) => ({
+      key: String(i),
+      storage_key: `s2-takes/job/call/${i}.mp3`,
+      duration_s: 12,
+    }));
+    let inFlight = 0;
+    let peak = 0;
+    const deletes: string[] = [];
+    vi.mocked(downloadFile).mockImplementation(async (path: string) => {
+      if (!String(path).startsWith("s2-takes/")) return Buffer.from("reference audio");
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return Buffer.from(mp3);
+    });
+    // A delete that is slow enough to be visible if the call awaited it. The
+    // call must return without waiting, but the delete must still happen.
+    vi.mocked(deleteFile).mockImplementation(async (path: string) => {
+      deletes.push(path);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(JSON.stringify({ items: rows }));
+    });
+
+    const ref = await loadCloneReference("clone:saved-id", "fish-id");
+    const wide = Array.from({ length: 24 }, (_, i) => ({
+      key: String(i),
+      text: "A sentence of narration for one section.",
+    }));
+    const out = await synthesizeModalCloneBatch(wide, ref, undefined, "job");
+
+    expect(out.size).toBe(24);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+    // Every staged object still gets its DELETE — just not on the critical path.
+    await drainTakeCleanup();
+    expect(deletes).toHaveLength(24);
+    expect(deletes[0]).toBe("s2-takes/job/call/0.mp3");
+  });
+
+  it("records the batch cap /ready reports so the planner can widen", async () => {
+    const fetchMock = setup();
+    // No explicit page size: the width must follow what /ready proved.
+    vi.stubEnv("MODAL_S2_BATCH_SIZE", "");
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(
+          JSON.stringify({
+            ready: true,
+            warm_containers: 1,
+            audio_transport: "r2",
+            max_batch_items: 32,
+          })
+        );
+      }
+      return new Response(JSON.stringify({ items: [audioRow("0"), audioRow("1")] }));
+    });
+    const probe = await modalClonePoolReady();
+    expect(probe.audioTransport).toBe("r2");
+    expect(modalCloneReportedMaxBatchItems()).toBe(32);
+    expect(modalCloneBatchSize()).toBe(32);
+  });
+
+  it("keeps 24 rows when the container does not advertise a wider page", async () => {
+    const fetchMock = setup();
+    vi.stubEnv("MODAL_S2_BATCH_SIZE", "");
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        // The live v9 container: r2 absent, no row cap field.
+        return new Response(JSON.stringify({ ready: true, warm_containers: 1 }));
+      }
+      return new Response(JSON.stringify({ items: [audioRow("0")] }));
+    });
+    await modalClonePoolReady();
+    expect(modalCloneBatchSize()).toBe(24);
+  });
+
+  it("still accepts the legacy audio_base64 name", async () => {    const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
       if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(

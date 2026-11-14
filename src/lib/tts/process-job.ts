@@ -47,6 +47,7 @@ import {
   modalCloneJobBackoffRemainingMs,
   modalCloneLiveLeases,
   renderModalCloneBatch,
+  modalClonePoolReady,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
 import {
@@ -67,7 +68,9 @@ import {
   modalCloneThirdCallChars,
   modalCloneThirdCallCharsFor,
   modalCloneSectionChars,
+  planCloneSectionChars,
   MODAL_CLONE_OPENING_SECTION_CHARS,
+  MODAL_CLONE_SECTION_CHARS_MAX,
   MODAL_CLONE_ROW_CHARS_PER_SECOND,
   modalLaneCharLimit,
 } from "@/lib/tts/providers/modal-clone-lanes";
@@ -1054,7 +1057,7 @@ export function cloneOutlineRepackKind(
       const cap =
         prior.length === 0
           ? limits.opening + 80
-          : Math.min(limits.coldSafe, modalCloneNextSectionChars(prior) || limits.coldSafe);
+          : limits.coldSafe;
       if (over(section.text, cap)) return true;
       prior.push(section.text.length);
     }
@@ -1604,7 +1607,7 @@ async function runClaimedTick(
    */
   const clonePacked = usesModalClone(job.catalog_voice_id);
   const packChars = clonePacked
-    ? Math.min(maxChars, modalCloneSectionChars())
+    ? Math.min(maxChars, modalCloneColdSafeRowChars(), MODAL_CLONE_SECTION_CHARS_MAX)
     : maxChars;
   const kokoroBook = providerId === "sowell" || providerId === "george";
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
@@ -1686,22 +1689,25 @@ async function runClaimedTick(
       deliveryUserInputFromUnknown(ttsOptions)
     );
     ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
+    const cloneSchedule = clonePacked ? planCloneSectionChars(rawText.length) : [];
     frozen = await buildAndPersistFrozenScript(jobId, {
       rawText,
       pdfStoragePath: job.pdf_storage_path,
       maxChars: packChars,
       hardMaxChars: clonePacked ? packChars : hardMaxChars,
-      // Edge and Fish keep the shared 800-character opening. A clone's
-      // second row is one GPU call, and 2,000 characters of it runs past
-      // that opening. Section 0 is a bit longer; section 1 is capped.
+      // Section 0 stays the short opening. Later targets come from the
+      // book's length: one call for a short book, a 1–2 minute page then
+      // a 5–6 minute page then even steady pages for a long one. The
+      // packer still closes on a sentence.
       ...(clonePacked
         ? {
-            firstSectionMaxChars: MODAL_CLONE_OPENING_SECTION_CHARS,
-            secondSectionMaxChars: modalCloneSecondCallChars(),
-            thirdSectionMaxChars: modalCloneThirdCallChars(),
-            fitSecondSection: modalCloneSecondCallCharsFor,
-            fitThirdSection: modalCloneThirdCallCharsFor,
-            fitNextSection: modalCloneNextSectionChars,
+            firstSectionMaxChars: cloneSchedule[0] ?? MODAL_CLONE_OPENING_SECTION_CHARS,
+            secondSectionMaxChars: cloneSchedule[1],
+            thirdSectionMaxChars: cloneSchedule[2],
+            fitNextSection: (prior: number[]) =>
+              cloneSchedule[prior.length] ??
+              cloneSchedule[cloneSchedule.length - 1] ??
+              modalCloneSectionChars(),
           }
         : {}),
       // Even packing is for parallel Fish workers, where sections only need to
@@ -2305,10 +2311,11 @@ async function runClaimedTick(
           const playback = listenerBufferMs(sections, segments, job.first_section_at, Date.now());
           let gpuIndexes = render;
           let yieldedGpu = false;
-          // Under the GPU ceiling this book keeps its own ramp. Sharing is
-          // only the overflow path, and then one call is the whole tick.
+          // A long book keeps its own GPU under the ceiling. A short book
+          // shares a holder that is already up, and then one call is the tick.
           let oneCall = false;
           let committedShare = false;
+          let reuseWarmGpu = false;
           if (render.length > 0) {
             const admission = await admitModalCloneGpu({
               jobId,
@@ -2316,7 +2323,15 @@ async function runClaimedTick(
               ownerToken: lease,
               createdAt: Number(job.created_at) || 0,
               ttlSeconds: LEASE_TTL_SECONDS,
+              charCount: text.length,
             });
+            if (
+              admission.mode === "share" &&
+              modalCloneJobBackoffRemainingMs(jobId) <= 0
+            ) {
+              const ready = await modalClonePoolReady();
+              reuseWarmGpu = ready.ready && ready.warmContainers > 0;
+            }
             if (admission.mode === "queue") {
               handGpuOff = true;
               yieldedGpu = true;
@@ -2358,7 +2373,8 @@ async function runClaimedTick(
                       firstLight: !otherPlay.started,
                     },
                   ],
-                  poolWarm: await modalCloneBookHasSpareContainer(jobId),
+                  poolWarm:
+                    reuseWarmGpu || (await modalCloneBookHasSpareContainer(jobId)),
                   batch,
                 });
                 if (turn.bookId !== jobId || !turn.call) {
@@ -2417,6 +2433,10 @@ async function runClaimedTick(
                     firstLight: needsFirstLight && gpuIndexes[0] === 0,
                     bookWave: true,
                     jobId,
+                    // A short book sharing a container that is already up
+                    // must not arm the restore budget. An idle spare
+                    // container is detected inside the dispatch probe.
+                    ...(reuseWarmGpu ? { poolWarm: true as const } : {}),
                     bufferedMs: playback.bufferedMs,
                     playbackStarted: playback.started,
                     maxCalls: oneCall ? 1 : undefined,

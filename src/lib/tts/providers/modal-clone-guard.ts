@@ -7,6 +7,8 @@
  * character budget, and a take that is long enough for the text.
  */
 
+import { modalCloneBatchRowsForTransport } from "@/lib/tts/providers/modal-clone-transport";
+
 /** Product narration rate. `CHARS_PER_AUDIO_HOUR` (54_000) is 900 × 60. */
 export const CLONE_CHARS_PER_AUDIO_MINUTE = 900;
 
@@ -270,8 +272,24 @@ export function modalCloneLanes(env: NodeJS.ProcessEnv = process.env): number {
 export const MODAL_CLONE_BATCH_DEFAULT = 24;
 export const MODAL_CLONE_BATCH_MAX = 32;
 
+/**
+ * Rows one call may carry.
+ *
+ * An explicit `MODAL_S2_BATCH_SIZE` wins. Without it the width follows what the
+ * container has actually proven: 32 only once `/ready` reports an `r2`
+ * transport **and** `max_batch_items >= 32`, and 24 otherwise. That is what lets
+ * the worker deploy before the Modal app: a worker that planned 32 rows against
+ * the live v9 container would get `422 batch_too_large` on every full page.
+ */
 export function modalCloneBatchItems(env: NodeJS.ProcessEnv = process.env): number {
-  return clampInt(env.MODAL_S2_BATCH_SIZE, MODAL_CLONE_BATCH_DEFAULT, 1, MODAL_CLONE_BATCH_MAX);
+  const raw = env.MODAL_S2_BATCH_SIZE;
+  if (raw !== undefined && String(raw).trim() !== "") {
+    return clampInt(raw, MODAL_CLONE_BATCH_DEFAULT, 1, MODAL_CLONE_BATCH_MAX);
+  }
+  return Math.min(
+    MODAL_CLONE_BATCH_MAX,
+    modalCloneBatchRowsForTransport(env)
+  );
 }
 
 /**
@@ -381,27 +399,27 @@ export const MODAL_CLONE_WARM_WAIT_DEFAULT_MS = 400_000;
  *
  * Applied with `Function.update_autoscaler(scaledown_window=…)`. It is not
  * the decorator default, and it does not take effect until an operator runs
- * `scripts/s2/set-live-autoscaler.py`. 45s is inside the 30–60s band: the
- * worker posts the next batch as soon as the previous one returns, so a
- * mid-book gap stays under this window, and a finished book no longer pays
- * the old 180s tail (~$0.20 at $3.95/h). A gap longer than 45s costs one
- * restore and a cold-sized call, then the ramp resumes on that container.
+ * `scripts/s2/set-live-autoscaler.py`. The worker posts the next batch as
+ * soon as the previous one returns, so a mid-book gap stays under this
+ * window. 15s is the idle tail after the last call (~$0.016 at $3.95/h),
+ * down from 45s. A gap longer than 15s costs one restore and a cold-sized
+ * call. This constant does not change a deployed container. Restart the
+ * worker before lowering the live window.
  */
-export const MODAL_CLONE_SCALEDOWN_TARGET_S = 45;
+export const MODAL_CLONE_SCALEDOWN_TARGET_S = 15;
 
 /**
  * How long after a successful call this process still treats that book's
  * H100 as restored.
  *
- * Fifteen seconds under {@link MODAL_CLONE_SCALEDOWN_TARGET_S} so a fat
- * batch is not planned after the container can already be gone. Raise
+ * Five seconds under {@link MODAL_CLONE_SCALEDOWN_TARGET_S} so a batch is
+ * not planned after the container can already be gone. Raise
  * `MODAL_S2_WARM_HOLD_MS` only when the live scaledown is longer, and keep
  * it shorter than that window. Restart the worker before lowering the live
- * window, or a 165s hold will plan a warm batch at a container that scaled
- * away at 45s.
+ * window.
  */
 export const MODAL_CLONE_WARM_HOLD_DEFAULT_MS =
-  (MODAL_CLONE_SCALEDOWN_TARGET_S - 15) * 1000;
+  (MODAL_CLONE_SCALEDOWN_TARGET_S - 5) * 1000;
 
 /**
  * What happens when a clone book settles. The GPU lease row is already

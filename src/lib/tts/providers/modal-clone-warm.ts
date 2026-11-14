@@ -238,14 +238,45 @@ function startWarm(
   }
 }
 
+/** The app the prewarm is aimed at when nothing pins one: production. */
+export const MODAL_CLONE_WARM_APP = "echomancer-s2-clone";
+
+/**
+ * The environment for the child `modal run …::cover`.
+ *
+ * Two things matter here, and both are about the cover landing on the app the
+ * **worker** talks to:
+ *
+ * 1. The name. `S2C_APP_NAME` then `MODAL_S2_APP_NAME`, else production. This
+ *    module is the production path: it warms the pool a customer's book will
+ *    call, so it must not inherit a staging name from the ambient environment
+ *    by accident, and it must not default to staging.
+ * 2. The opt-in. `modal/s2_clone_warm.py` resolves its target through
+ *    `s2_contract.resolve_app_name`, which sends anything named
+ *    `echomancer-s2-clone` to staging unless `S2C_ALLOW_PRODUCTION=1`. Without
+ *    this the cover would report "started" and warm the wrong app — the failure
+ *    is silent, because the spawn itself succeeds.
+ *
+ * An explicitly non-production `S2C_APP_NAME` is left alone, opt-in included:
+ * staging runs of the worker exist, and they should warm staging.
+ */
+export function modalCloneWarmChildEnv(
+  env: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const name =
+    env.S2C_APP_NAME?.trim() ||
+    env.MODAL_S2_APP_NAME?.trim() ||
+    MODAL_CLONE_WARM_APP;
+  const child: NodeJS.ProcessEnv = { ...env, S2C_APP_NAME: name };
+  if (name === MODAL_CLONE_WARM_APP) {
+    // Production needs the opt-in, whatever the parent had.
+    child.S2C_ALLOW_PRODUCTION = "1";
+  }
+  return child;
+}
+
 function defaultSpawn(command: string, args: string[], cwd: string): void {
-  const env = {
-    ...process.env,
-    S2C_APP_NAME:
-      process.env.S2C_APP_NAME?.trim() ||
-      process.env.MODAL_S2_APP_NAME?.trim() ||
-      "echomancer-s2-clone",
-  };
+  const env = modalCloneWarmChildEnv(process.env);
   const child =
     args.length === 0
       ? spawn(command, { cwd, env, detached: true, stdio: "ignore", shell: true })

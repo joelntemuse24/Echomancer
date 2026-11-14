@@ -47,15 +47,13 @@ export type SplitTextOptions = {
    */
   firstSectionMaxChars?: number;
   /**
-   * Take-home section 1 on the clone path. The call after section 0 is one
-   * row, and a 2,000-character row runs past the opening audio. Later
-   * sections keep `maxChars`.
+   * Take-home section 1. Clone books pass the steady width here. Other
+   * providers leave it unset and keep `maxChars`.
    */
   secondSectionMaxChars?: number;
   /**
-   * Take-home section 2 on the clone path. The buffer after the second
-   * call still cannot cover a 2,000-character row at 1.5×. Section 3
-   * onward keeps `maxChars`.
+   * Take-home section 2. Clone books pass the same steady width as
+   * section 1. Other providers leave it unset.
    */
   thirdSectionMaxChars?: number;
   /**
@@ -612,9 +610,8 @@ export function packSpeakableSections(
 
   /**
    * Open `piece` as the next section. A piece cut for an earlier, wider
-   * window can be longer than this section's ceiling (section 1 is ~786
-   * characters, section 2 ~984). Take only the sentences that fit and
-   * leave the rest for the following section.
+   * window can be longer than this section's ceiling. Take only the
+   * sentences that fit and leave the rest for the following section.
    */
   const openWithinCeiling = (
     piece: string,
@@ -663,8 +660,7 @@ export function packSpeakableSections(
     if (finished.length === 0) {
       return Math.min(hardMax, target + 80);
     }
-    // Sections on the clone ramp must not grow toward the 2,000-character
-    // steady width. A sentence that does not fit is split, not absorbed.
+    // A section with its own ceiling does not absorb a sentence past it.
     const ramp = nextRampTarget();
     if (ramp != null && ramp < maxChars) return ramp;
     if (finished.length === 1 && secondTarget != null) return secondTarget;

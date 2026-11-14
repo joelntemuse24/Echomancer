@@ -62,6 +62,7 @@ import {
   redactModalAccount,
 } from "@/lib/modal/workspace-disabled";
 import { MODAL_S2_SAMPLING } from "@/lib/tts/providers/s2-sampling";
+import { mapPool } from "@/lib/async-pool";
 import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
@@ -87,6 +88,13 @@ import {
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
 } from "@/lib/tts/providers/modal-clone-warm";
+import {
+  modalCloneAudioTransport,
+  noteModalCloneAudioTransport,
+  noteModalCloneMaxBatchItems,
+  resetModalCloneAudioTransportForTests,
+  type ModalCloneAudioTransport,
+} from "@/lib/tts/providers/modal-clone-transport";
 import {
   cancelAbandonedModalCallsAfterAbort,
   modalCloneCancelConfigured,
@@ -248,6 +256,7 @@ export function resetModalCloneRuntimeForTests(): void {
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
   resetModalCloneCancelForTests();
+  resetModalCloneAudioTransportForTests();
 }
 
 export function noteModalClonePoolAnswered(
@@ -477,6 +486,8 @@ type BatchRow = {
   key: string;
   audio_b64?: string;
   audio_base64?: string;
+  /** MP3 uploaded by the container. Only `s2-takes/.../*.mp3` is fetched. */
+  storage_key?: string;
   duration_s?: number;
   truncated_units?: number;
   error?: string;
@@ -638,26 +649,34 @@ async function renderModalCloneBatchBody(
 
   const body = payload as BatchResponse;
   const out = new Map<string, { audio: Buffer; durationSeconds: number }>();
+  // An R2 page returns keys instead of base64, so every row is a separate
+  // object read. Serially that is 24–32 round trips of idle GPU time before the
+  // next batch can be posted, which is why they overlap here. The bound is
+  // deliberately modest: a burst of reads from one bucket gains nothing beyond
+  // a handful of connections, and the whole page is a few megabytes.
+  const rows = (body.items ?? []).filter((row) => !row.error);
+  const decoded = await mapPool(rows, MODAL_CLONE_AUDIO_READ_CONCURRENCY, (row) =>
+    loadBatchAudio(row, jobId)
+  );
   const undecodable: string[] = [];
-  for (const row of body.items ?? []) {
-    if (row.error) continue;
-    const decoded = decodeBatchAudio(row);
-    if (!decoded) {
+  rows.forEach((row, index) => {
+    const take = decoded[index];
+    if (!take) {
       undecodable.push(String(row.key));
-      continue;
+      return;
     }
     const verdict = cloneTakeIsTruncated({
       text: items.find((item) => item.key === row.key)?.text ?? "",
       durationSeconds: Number(row.duration_s),
       truncatedUnits: Number(row.truncated_units) || 0,
     });
-    if (verdict.truncated) continue;
-    out.set(row.key, decoded);
+    if (verdict.truncated) return;
+    out.set(row.key, take);
     // The decoded buffer is what the next stage reads. Drop the base64
     // copy before the following call allocates another batch.
     row.audio_b64 = undefined;
     row.audio_base64 = undefined;
-  }
+  });
   const parsedRows = (body.items ?? []).length;
   body.items = undefined;
   if (undecodable.length > 0) {
@@ -770,7 +789,7 @@ export async function synthesizeModalClonePreview(
         `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
       );
     }
-    const decoded = decodeBatchAudio(row);
+    const decoded = await loadBatchAudio(row);
     if (!decoded) {
       throw new ModalCloneProviderError(
         "Modal clone returned a row without decodable audio"
@@ -965,10 +984,11 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
   ready: boolean;
   warmContainers: number;
   build: string | null;
+  audioTransport: ModalCloneAudioTransport;
 }> {
   if (!modalCloneReadyProbeEnabled()) {
     // No probe: assume reachable and let the call's own timeout decide.
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   let url: string | null;
   try {
@@ -980,12 +1000,12 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       "[modal-clone] ready probe disabled:",
       err instanceof Error ? err.message : err
     );
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   if (!url) {
     // Only the batch endpoint is configured. There is nothing to probe, so do
     // not invent `${batch}/ready` — that host has no such route.
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
@@ -999,12 +1019,12 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     });
   } catch {
     signal?.throwIfAborted();
-    return { ready: false, warmContainers: 0, build: null };
+    return { ready: false, warmContainers: 0, build: null, audioTransport: modalCloneAudioTransport() };
   }
   if (response.status === 404) {
     // Ready route not deployed: the deploy predates it. Stay optimistic.
     await response.body?.cancel().catch(() => undefined);
-    return { ready: true, warmContainers: -1, build: null };
+    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
   }
   const raw = await response.text().catch(() => "");
   let ready = response.ok;
@@ -1016,15 +1036,39 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
         ready?: boolean;
         warm_containers?: number;
         build?: string;
+        audio_transport?: string;
+        max_batch_items?: number;
       };
       if (body.ready === false) ready = false;
       if (typeof body.warm_containers === "number") warm = body.warm_containers;
       if (typeof body.build === "string") build = body.build;
+      if (Object.prototype.hasOwnProperty.call(body, "audio_transport")) {
+        noteModalCloneAudioTransport(body.audio_transport);
+      } else {
+        // A build from before the field returns the MP3 inline.
+        noteModalCloneAudioTransport("inline");
+      }
+      // The row cap is only meaningful alongside the transport: a 32 here on an
+      // inline build would be a body-size question, not a row question.
+      noteModalCloneMaxBatchItems(body.max_batch_items);
     } catch {
       ready = response.ok;
     }
   }
-  return { ready, warmContainers: warm, build };
+  return { ready, warmContainers: warm, build, audioTransport: modalCloneAudioTransport() };
+}
+
+/**
+ * Read `/ready` so the next plan knows whether a wide page's MP3s come
+ * back as keys. A pinned `MODAL_S2_AUDIO_TRANSPORT` wins and does not
+ * fetch. No probe configured leaves the last note, which starts as inline.
+ */
+export async function refreshModalCloneAudioTransport(): Promise<ModalCloneAudioTransport> {
+  const pinned = (process.env.MODAL_S2_AUDIO_TRANSPORT ?? "").trim();
+  if (pinned === "r2" || pinned === "inline") return pinned;
+  if (!modalCloneReadyProbeEnabled()) return modalCloneAudioTransport();
+  const probe = await modalClonePoolReady();
+  return probe.audioTransport;
 }
 
 /**
@@ -1294,13 +1338,14 @@ function clearModalCloneRenderSeal(jobId: string | undefined): void {
  * `warm_containers > 0` means some container finished restoring. With
  * `max_inputs=1` that container is busy for the book that holds it, so
  * another book's call is placed on a container that still has to restore.
- * Spare warmth is `warm_containers` above the other live GPU leases.
- * A book's first call, and any call before that book has heard its own
- * container, always uses the restore budget. A spare container is still
- * not this book's. Probe unknown (`warmContainers < 0`) is not warmth for
- * an unconfirmed book; a book that already heard its container keeps the
- * warm budget when the probe is missing. A call with no job id keeps the
- * old rule (`warm_containers > 0`).
+ * Spare warmth is `warm_containers` above the other live GPU leases: a
+ * container that finished restoring and is not held by another book. A
+ * book's first call uses that spare container instead of paying a restore.
+ * A container already counted in the leases is busy, and this call is a
+ * new one. Probe unknown (`warmContainers < 0`) is not warmth for a book
+ * that has not heard its own container; a book that already heard its
+ * container keeps the warm budget when the probe is missing. A call with
+ * no job id keeps the old rule (`warm_containers > 0`).
  */
 export function modalCloneKnownWarmForCall(input: {
   warmContainers: number;
@@ -1309,9 +1354,8 @@ export function modalCloneKnownWarmForCall(input: {
   jobScoped: boolean;
 }): boolean {
   if (!input.jobScoped) return input.warmContainers > 0;
-  if (!input.bookContainerWarm) return false;
-  if (input.warmContainers < 0) return true;
   if (!Number.isFinite(input.inflightCalls)) return false;
+  if (input.bookContainerWarm && input.warmContainers < 0) return true;
   return input.warmContainers > input.inflightCalls;
 }
 
@@ -1349,23 +1393,24 @@ async function inflightCloneCallsExcluding(jobId: string): Promise<number> {
 }
 
 /**
- * Whether this book's next call may use the warm ramp.
+ * Whether this book's next call may use the warm budget.
  *
- * The book must have heard its own container, and `warm_containers` must
- * exceed the other live leases. A warm batch flag alone is not enough:
- * that container may be busy with another book.
+ * Spare warmth is `warm_containers` above the other live leases, including
+ * a book that has not heard a container of its own. A container already
+ * counted in the leases is busy. A warm batch flag alone is not enough.
  */
 export async function modalCloneBookHasSpareContainer(
   jobId: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  if (!modalCloneBookContainerWarm(jobId)) return false;
+  if (modalCloneJobBackoffRemainingMs(jobId) > 0) return false;
+  const heard = modalCloneBookContainerWarm(jobId);
   const inflight = await inflightCloneCallsExcluding(jobId);
   const state = await modalClonePoolReady(signal);
   return modalCloneKnownWarmForCall({
     warmContainers: state.ready ? state.warmContainers : 0,
     inflightCalls: inflight,
-    bookContainerWarm: true,
+    bookContainerWarm: heard,
     jobScoped: true,
   });
 }
@@ -1597,7 +1642,7 @@ async function postSynthesize(
       `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
     );
   }
-  const decoded = decodeBatchAudio(row);
+  const decoded = await loadBatchAudio(row, input.jobId);
   if (!decoded) {
     throw new ModalCloneProviderError(
       "Modal clone returned a row without decodable audio"
@@ -1792,6 +1837,106 @@ async function postModal(
 /** Delay the worker should wait before trying a cold pool again. */
 export function modalCloneNextRetryDelayMs(attempt: number): number {
   return modalCloneRetryDelayMs(attempt);
+}
+
+const S2_TAKE_KEY = /^s2-takes\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.mp3$/;
+
+/**
+ * How many row objects a wide page reads at once.
+ *
+ * An `r2` page returns `storage_key` per row, so a 32-row page is 32 separate
+ * object reads. Done one at a time they are 32 round trips of idle GPU time
+ * between one batch returning and the next posting. Eight is enough to hide
+ * the latency without turning one page into a burst the bucket would throttle,
+ * and it matches the bound the extract pipeline already uses.
+ */
+export const MODAL_CLONE_AUDIO_READ_CONCURRENCY = 8;
+
+/** Every delete this process has started and not yet awaited. */
+const pendingTakeDeletes = new Set<Promise<void>>();
+
+/**
+ * The storage module, resolved once.
+ *
+ * `loadBatchAudio` used to `await import("@/lib/storage")` per row. On a wide
+ * R2 page that is one module resolution per object, and it also means the
+ * binding can differ between rows in the same page. One resolution per process
+ * is both faster and the same module the rest of the worker uses.
+ */
+type StorageModule = {
+  downloadFile: (path: string) => Promise<Buffer>;
+  deleteFile?: (path: string) => Promise<void>;
+};
+
+let storageModule: Promise<StorageModule> | null = null;
+
+function loadStorage(): Promise<StorageModule> {
+  if (!storageModule) {
+    storageModule = import("@/lib/storage").then((mod) => mod as StorageModule);
+  }
+  return storageModule;
+}
+
+/** Drop the cached module. Tests call this between cases. */
+export function resetModalCloneStorageForTests(): void {
+  storageModule = null;
+}
+
+/**
+ * Delete a staged take without holding up the caller.
+ *
+ * The take is already in memory, which is all the next stage needs. Waiting for
+ * the DELETE would put a network round trip between one batch and the next, and
+ * that gap is idle GPU time (`MODAL_S2_WARM_HOLD_MS` is 10–30 s, so a page of
+ * slow deletes can cost the warm container). Failures are swallowed on purpose:
+ * an orphaned object is swept by the bucket's `s2-takes/` lifecycle rule, while
+ * a thrown delete would fail a section that is already rendered.
+ */
+export function scheduleTakeCleanup(key: string): void {
+  const run = (async () => {
+    try {
+      const storage = await loadStorage();
+      const remove = storage.deleteFile;
+      if (typeof remove !== "function") return;
+      await Promise.resolve(remove(key)).catch(() => undefined);
+    } catch {
+      // A mock that only exports `downloadFile` must not fail the take.
+    }
+  })();
+  pendingTakeDeletes.add(run);
+  void run.finally(() => pendingTakeDeletes.delete(run));
+}
+
+/** Wait for staged-take deletes still in flight. Tests use this; the worker does not. */
+export async function drainTakeCleanup(): Promise<void> {
+  while (pendingTakeDeletes.size > 0) {
+    await Promise.all([...pendingTakeDeletes]);
+  }
+}
+
+/**
+ * Inline `audio_b64` is the current container. `storage_key` is the
+ * container that uploaded the MP3. Any other key is ignored.
+ */
+async function loadBatchAudio(
+  row: BatchRow,
+  jobId?: string
+): Promise<{ audio: Buffer; durationSeconds: number } | null> {
+  const inline = decodeBatchAudio(row);
+  if (inline) return inline;
+  const key = typeof row.storage_key === "string" ? row.storage_key.trim() : "";
+  if (!S2_TAKE_KEY.test(key)) return null;
+  if (jobId) {
+    const segment = jobId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || "call";
+    if (!key.startsWith(`s2-takes/${segment}/`)) return null;
+  }
+  const storage = await loadStorage();
+  const audio = await storage.downloadFile(key);
+  if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") return null;
+  // Not awaited: the bytes are in memory, and the next GPU call should not wait
+  // on a DELETE round trip.
+  scheduleTakeCleanup(key);
+  return { audio, durationSeconds: Number(row.duration_s) || 0 };
 }
 
 function decodeBatchAudio(row: BatchRow): { audio: Buffer; durationSeconds: number } | null {

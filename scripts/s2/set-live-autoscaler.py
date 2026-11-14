@@ -4,19 +4,20 @@ The decorator baked into the image is not what production uses after step 8c.
 `modal deploy` wipes GPU memory snapshots and resets this override, so run
 this again after any deploy. Do not run it from CI.
 
-Restart the take-home worker first. The worker's default warm hold is 30s,
+Restart the take-home worker first. The worker's default warm hold is 10s,
 which has to stay under this window. Lowering the window while the worker
-still plans 165s of warmth sends a wide batch at a container that is already
-gone.
+still plans a longer hold sends a wide batch at a container that is already
+gone. 15s releases an idle H100 promptly. It does not cancel an in-flight
+enter or compile: scaledown only applies once the container has no input.
 
-    python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 45
+    python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15
 
 `--max-containers` is the worker's MODAL_S2_MAX_GPUS. min_containers stays 0.
 
 `--max-containers 0` (or `--brake`) is a temporary brake: it stops new
 placements without cancelling an in-flight enter or compile. It does not
 drain PENDING inputs. After the compile publishes, restore production with
-`--max-containers 1 --scaledown-window 45`. Never `FunctionCall.cancel()` or
+`--max-containers 1 --scaledown-window 15`. Never `FunctionCall.cancel()` or
 `modal container stop` mid-enter to "save money"; that reschedules leftovers
 and can interrupt snapshot publish.
 """
@@ -45,10 +46,10 @@ def validate_autoscaler_values(
     """
     if max_containers < 0 or max_containers > 64:
         return "max-containers must be 0 (brake) or 1..64"
-    if scaledown_window < 30 or scaledown_window > 60:
+    if scaledown_window < 15 or scaledown_window > 60:
         return (
-            "scaledown-window must be 30..60 seconds "
-            "(the worker warm hold is 15s under 45)"
+            "scaledown-window must be 15..60 seconds "
+            "(the worker warm hold is 10s, five seconds under 15)"
         )
     return None
 
@@ -68,7 +69,7 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
         action="store_true",
         help="Set max_containers=0 to stop new placements without cancelling a compile.",
     )
-    parser.add_argument("--scaledown-window", type=int, default=45)
+    parser.add_argument("--scaledown-window", type=int, default=15)
     ns = parser.parse_args(argv)
     if ns.brake:
         if ns.max_containers not in (None, 0):
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "brake applied: max_containers=0 (no new placements). "
             "This is not a drain and does not cancel in-flight enter/compile. "
-            "Restore with --max-containers 1 --scaledown-window 45 when the "
+            "Restore with --max-containers 1 --scaledown-window 15 when the "
             "compile has published."
         )
     print("live autoscaler now:", settings)

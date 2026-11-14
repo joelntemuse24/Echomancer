@@ -6,7 +6,7 @@
  *
  * | width | who decides | what it bounds |
  * |--|--|--|
- * | row (section) | this app, `MODAL_S2_SECTION_CHARS` (2,000) | one row of one batch call |
+ * | row (section) | this app, `MODAL_S2_SECTION_CHARS` (4,000) | one row of one batch call |
  * | call | this app, `modalLaneCharCap` (8,000) | one HTTP call, i.e. one container |
  * | **unit** | the container, `UNIT_MAX_CHARS` (560) | **one GPU generation** |
  *

@@ -150,7 +150,23 @@ preview renders through the batch contract as a one-row payload, which is correc
 on every deploy. Pointing `MODAL_S2_READY_URL` at the synthesize host is rejected
 loudly, because it is a guaranteed 404.
 
-**Production rule:** never export `S2C_APP_NAME` when deploying production, and
+**Production rule:** a bare `modal deploy` now targets
+`echomancer-s2-clone-staging`, because a deploy *invalidates every GPU snapshot
+for its app* and a branch under review must not be able to evict production's.
+
+**`S2C_ALLOW_PRODUCTION=1` is required, and it is required even when
+`S2C_APP_NAME=echomancer-s2-clone` is spelled out.** Typing a name is not a
+decision about snapshots, and deploy commands get copy-pasted out of docs and PR
+descriptions. Without the opt-in, either form is redirected to staging.
+
+One resolver decides this for **all three** entry points — the service, the warm
+script, and `scripts/s2/check-input-queue.py`
+(`s2_contract.resolve_app_name`) — so a warm cannot land on a different app from
+the one just deployed. The heartbeat registry follows the same name
+(`s2_contract.heartbeat_dict_name`), so staging never reads production's
+containers as warm.
+
+Never export a staging `S2C_APP_NAME` when deploying production, and
 deploy with `S2C_MAX_CONTAINERS` unset (i.e. 1). Keep it at 1 through step 7;
 once step 7 passes and production has been deployed and warmed, the four lanes
 come from the **runtime** `update_autoscaler` call in step 8 — not from a
@@ -720,10 +736,12 @@ than substituting a voice.
 book sends one `synthesize_batch` at a time on its own H100 (see
 `docs/s2-lane-budget.md`). The worker will not start a 21st GPU; the
 autoscaler has to allow the ones it does start. `min_containers` stays 0.
-`scaledown_window` is 45s (`scripts/s2/set-live-autoscaler.py`). The worker
-treats the pool as warm for 30s after the last answer
+`scaledown_window` is 15s (`scripts/s2/set-live-autoscaler.py`). The worker
+treats the pool as warm for 10s after the last answer
 (`MODAL_S2_WARM_HOLD_MS`), which is under that window. Restart the worker
-before lowering the live window. The script does not deploy.
+before lowering the live window. The script does not deploy. A 10s hold is
+safe under a window that is still 45s; the live window stays at its
+previous value until this script is run.
 
 **Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
 already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
@@ -758,7 +776,8 @@ of staging's snapshots.
 
 ```bash
 cd <repo>
-unset S2C_APP_NAME               # production app
+unset S2C_APP_NAME               # production app, named explicitly below
+export S2C_ALLOW_PRODUCTION=1    # required: a bare deploy goes to staging
 unset S2C_MAX_CONTAINERS         # deploy-time env stays 1, deliberately
 modal deploy modal/s2_clone_service.py
 ```
@@ -811,24 +830,26 @@ worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
 settings = worker.update_autoscaler(
     min_containers=0,        # scale to zero when idle; do not leave GPUs up
     max_containers=20,       # MODAL_S2_MAX_GPUS; one H100 per active clone book
-    scaledown_window=45,     # 45 s idle before a container is released
+    scaledown_window=15,     # 15 s idle before a container is released
 )
 print("live autoscaler now:", settings)
 assert settings.max_containers == 20, settings
 assert settings.min_containers == 0, settings
-assert settings.scaledown_window == 45, settings
+assert settings.scaledown_window == 15, settings
 PY
 ```
 
-The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 45`.
-Restart the take-home worker before this, so its 30s warm hold is already
-under 45s. This does not deploy and does not wipe snapshots.
+The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15`.
+Restart the take-home worker before this, so its 10s warm hold is already
+under 15s. This does not deploy and does not wipe snapshots. Scaledown
+applies once the container has no input. It does not cancel a call that is
+still restoring or compiling.
 
 Pass condition: the printed settings show `max_containers` 20 (or whatever
-`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 45, and
+`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 15, and
 `min_containers` 0. A book wave still posts one call. A second book posts
 on a second container. After the last book, the container releases in about
-45s instead of 180s. A gap longer than 45s mid-book costs one restore.
+15s. A gap longer than 15s mid-book costs one restore.
 
 #### Historical — do not run
 
@@ -846,11 +867,10 @@ here so a search for it does not look like the current step. Do not run it.
 Section 0 is the only section the player can start with, so it is rendered
 alone on one lane and published before the rest of the book starts
 (`MODAL_S2_FIRST_LIGHT`, default on). Each later call is the largest prefix
-that finishes before the audio already published runs out, so the batch
-grows (one row, then a few, then 24) instead of jumping to a full batch
-behind one minute of audio. A container still answers every row of a call
-together, which is why the planner counts the whole call as the wait. A
-`warm:24` immediately after section 0 means that ramp is not running. The
+that fits the warm wait, the response body, and the proxy ceiling. It is
+not grown so a 1.5× listener stays ahead. A container still answers every
+row of a call together, which is why the planner counts the whole call as
+the wait. A wide page on the call after section 0 is the schedule. The
 5-section row below is the old one-call measurement, kept as a GPU rate.
 
 | | Budget |
@@ -874,10 +894,9 @@ The in-book ramp plans from those numbers, 15% slower on wide calls. A
 **full batch** is faster because rows run in parallel — not because a row
 gets faster. A call's wall time is set by its longest row, so section size
 is a hard bound, not a tuning preference. Clone section 0 is 1,000
-characters and the next call is capped at 1,300. A piece of about 2.1
-minutes or less, whose rows add no generation beyond that opening, is one
-call. A 5-minute article still ramps, because a 2,000-character row would
-make first audio later than the opening.
+characters. Later sections are 4,000. A piece whose rows add no generation
+beyond that opening is one call. A longer second section waits so first
+audio stays the opening.
 
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 
@@ -976,7 +995,7 @@ POST does not join, and that container then idles for `scaledown_window`.
 Extract, the voice list, and the tick do not start one. The book's
 `/synthesize_batch` is the container. The first call pays about 68s. Later
 calls stay on it while the worker posts them back to back. A gap longer
-than the 45s window costs one restore, then the ramp resumes. Stock-only
+than the 15s window costs one restore, then full batches resume. Stock-only
 accounts never start a GPU. A placement that already missed its restore
 budget still kicks `::cover` off the book path.
 
@@ -995,7 +1014,7 @@ not skip the restore — the 57s smoke was already an HTTP call.
 | Option | What it buys | Cost |
 |--|--|--|
 | No side cover; the synthesize call restores the container | one H100 per book, no spare | the cold first call, about 68s of GPU |
-| `scaledown_window=45` after the last book (runtime `update_autoscaler`, no redeploy) | the idle tail drops from ~180s (~$0.20) to ~45s (~$0.05) | a mid-book gap past 45s pays one more restore |
+| `scaledown_window=15` after the last book (runtime `update_autoscaler`, no redeploy) | the idle tail drops from ~180s (~$0.20) through the previous 45s (~$0.05) to ~15s (~$0.016) | a mid-book gap past 15s pays one more restore |
 | Longer `scaledown_window` (same runtime call, no redeploy) | more room for a stall between batches | about $0.0011 per extra idle second, on the book that was last |
 | `min_containers=1` | the restore is gone for every book, including a fast click | **$3.95/hr**, about $2,840/mo continuous, or ~$870/mo for a 10-hour weekday |
 
@@ -1019,10 +1038,22 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- early `warm:N` grows with the buffer. `warm:24` is only once that
-  buffer covers a full batch. A `warm:24` on the call right after section 0
-  means the ramp is not running. One row per page (`page of 1 rendered 1/1`
-  for every section) is the old round-robin split, not the ramp
+- the calls after section 0 follow the book's length. A short book is
+  one warm call. A long book is a 1–2 minute page, then a 5–6 minute
+  page, then even pages: `warm:24` of about 3,910 characters once
+  `/ready` reports `audio_transport: r2` (the MP3s are objects, the JSON
+  is keys), or `warm:22` of about 2,559 characters until that deploy
+  (the inline 80 MiB body). A book already frozen at 4,000 characters
+  still ramps, then sends the widest even page that body allows
+  (`warm:24` on r2, `warm:13` inline for a 10-hour outline). One row per
+  page (`page of 1 rendered 1/1` for every section) is the old
+  round-robin split. The deploy that adds `audio_transport` wipes GPU
+  snapshots and is a separate step from this worker. The container reads
+  `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
+  `R2_BUCKET_NAME` from the `echomancer-secrets` Modal secret. Without
+  those, `/ready` stays `inline` and the body ceiling stays in force.
+  Do not set `MODAL_S2_AUDIO_TRANSPORT=r2` on the worker before that
+  deploy.
 - `boot=restored` (or `unknown`) says whether that time was a restore or a
   compile. A long first light that reports `unknown` and then succeeds is a
   warm compile; the off-path `::cover` is what prevents it.
@@ -1086,7 +1117,8 @@ deploy without a manual step. Slower and more expensive than 8a–8c, and 8c is
 not needed on this path because the cap is already in the deployment env:
 
 ```bash
-unset S2C_APP_NAME               # production app
+unset S2C_APP_NAME               # production app, named explicitly below
+export S2C_ALLOW_PRODUCTION=1    # required: a bare deploy goes to staging
 export S2C_MAX_CONTAINERS=4
 export S2C_LANES=4
 modal deploy modal/s2_clone_service.py
@@ -1113,6 +1145,247 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 | Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply the runtime override (or redeploy with the env you want). |
 
 A book that is already `ready` is never re-synthesized by any of these.
+
+---
+
+## 9a. The v10 engine: staged A/B, and how to promote it
+
+`S2C_ENGINE` selects the decode path. It defaults to **`v9`**, which is
+byte-for-byte the behaviour of the app running today, so a plain `modal deploy`
+changes nothing about how a book sounds. `v10` is the speedup work in this
+branch, and it is only ever switched on deliberately.
+
+`S2C_ENGINE` is read **at deploy time** and pinned into the container env (it is
+in `_BUILD_ENV`, hence in `S2C_BUILD`). A runtime override cannot move a restored
+container onto a decode path its snapshot never compiled.
+
+```bash
+# 1. Staging app, v10 engine. Separate app, separate heartbeat dict.
+source scripts/s2/staging-env.sh          # S2C_APP_NAME=…-staging, S2C_ENGINE=v10
+python3 scripts/s2/check-input-queue.py --app echomancer-s2-clone-staging
+modal deploy modal/s2_clone_service.py
+modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+python3 scripts/s2/set-live-autoscaler.py --app echomancer-s2-clone-staging \
+  --max-containers 1 --scaledown-window 30
+```
+
+**Never** export `S2C_APP_NAME` for a production deploy, and never set
+`S2C_ENGINE=v10` on production until the numbers below exist.
+
+### A matched A/B, not two different jobs
+
+Run this on the **same staging app**, once per build. The corpus, the seed and
+the widths are fixed, so the only variable is the engine.
+
+```bash
+export MODAL_S2_TTS_URL=<synthesize_batch host>
+export MODAL_S2_READY_URL=<ready host>
+export MODAL_S2_TOKEN=…                  # never echo this
+
+# The r2 build returns keys, so `bench-ab.mjs` has to read the objects back to
+# check them — and `qa-compare.ts` cannot measure r2 audio at all without these.
+# Omit them and every r2 row is recorded as deferred: the timing is still real,
+# the audio gates are not, and `qa-compare.ts` now exits 1 rather than reporting
+# "all gates passed" with nothing measured.
+export R2_ACCOUNT_ID=…
+export R2_ACCESS_KEY_ID=…
+export R2_SECRET_ACCESS_KEY=…
+export R2_BUCKET_NAME=echomancer-audio
+
+# a. the **unmodified PR 283 code**, recorded as the baseline.
+#    Not this branch with S2C_ENGINE=v9: the point of a baseline is that it is
+#    the code running in production, and a branch's "v9 mode" is a claim about
+#    that code, not the code. The identity test below is what backs the claim,
+#    but the recorded numbers should still come from the real thing.
+git checkout origin/cursor/longer-clone-sections-4994 -- modal/
+S2C_APP_NAME=echomancer-s2-clone-staging modal deploy modal/s2_clone_service.py && \
+  S2C_APP_NAME=echomancer-s2-clone-staging \
+  modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+node scripts/s2/bench-ab.mjs --record /tmp/s2-ab/before --reference-audio <clip>
+
+# b. the candidate, back on this branch
+git checkout HEAD -- modal/
+S2C_APP_NAME=echomancer-s2-clone-staging S2C_ENGINE=v10 \
+  modal deploy modal/s2_clone_service.py && \
+  S2C_APP_NAME=echomancer-s2-clone-staging \
+  modal run modal/s2_clone_warm.py::warm --no-verify --no-synth
+# gate the graphs before spending GPU time on the numbers
+S2C_APP_NAME=echomancer-s2-clone-staging \
+  python3 scripts/s2/check-cudagraphs.py --since 20m --expect-shapes 24
+node scripts/s2/bench-ab.mjs --record /tmp/s2-ab/after --reference-audio <clip>
+
+# c. local QA prerequisites, once per machine
+bash scripts/install-reference-quality.sh        # onnxruntime-node + the ONNX models
+python3 -m pip install faster-whisper            # section ASR for the WER gate
+
+# d. latency and audio, side by side. Exits non-zero on a regression **or on any
+#    gate it could not run**; pass --allow-skips only for a latency-only run.
+npx tsx scripts/s2/qa-compare.ts /tmp/s2-ab/before /tmp/s2-ab/after
+```
+
+`bench-ab.mjs` records wall time, the server's own `performance` breakdown, and
+every section's MP3. `qa-compare.ts` prints per-width throughput and gates on
+**deltas against the baseline** — which is what makes a candidate that is
+slightly worse but still above a fixed floor fail:
+
+| Gate | Rule |
+|---|---|
+| Completeness | every section present, decodable, `truncated_units == 0` |
+| Duration | within ±7% of the baseline, per section |
+| Speaker similarity | ≥ baseline − 0.01, and ≥ 0.80 absolute |
+| Intra-section drift | `last 15 s − first 15 s` ≥ −0.05 |
+| DNSMOS SIG / BAK / OVRL | each ≥ baseline − 0.05, and OVRL ≥ 3.0 absolute |
+| Pacing | silence ratio within ±2 points of the baseline |
+| Splice hygiene | no sample step past 40× the take's own p99.9 |
+| ASR | ≤ baseline + 0.5 points, and < 5% absolute; no repeated/missing 6-word run |
+
+`generate_s` in the server's `performance` is **AR only** now; the codec has its
+own `codec_s` and `codec_tail_s` columns, and `generate_and_codec_s` is the sum so
+the two can be checked against each other.
+
+A **placeholder reference tone is not a quality measurement.** Pass
+`--reference-audio <16–20 s public-domain reading>` (with `<path>.txt` beside it)
+for the similarity and WER gates to mean anything. The script says so, and
+`qa-compare.ts` lists every gate it could not run: a run that measured no quality
+must not look like a pass.
+
+### What to expect, and what must be measured
+
+The plan's model is ~45–50x realtime before the AR changes and ~70x+ after, from
+a measured 33x baseline (24 rows, 43,907 characters, 83.18 s). **None of that is
+in the worker's planner yet.** `MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at
+the measured 528, so a page is *over*-estimated in wall time until staging
+replaces it with a number this engine actually produced. Calibrate it, with a
+~15% safety margin, only after the A/B is green.
+
+The two switches that are a measurement rather than a known win are off in v10
+and should be tried on their own:
+
+| Switch | What it changes |
+|---|---|
+| `S2B_SDPA_DECODE=1` | folded-GQA SDPA for the slow decode attention. Wins or loses by KV length; measure at 512/1024/2048/4096 |
+| `S2B_TOPK_FAST_SAMPLE=1` | sample over the top-k block instead of the full vocabulary. Same distribution, different rounding |
+
+And each v10 change can be isolated off, which is what a targeted A/B needs:
+
+| Switch | v9 behaviour it restores |
+|---|---|
+| `S2B_WORK_STEAL=0` | one unit at a time per section |
+| `S2B_BUCKET=0` | step `S2B_BATCH` rows per call |
+| `S2B_PIPELINE_CODEC=0` | serial codec → encode → upload |
+| `S2B_CODEC_TUNING=0` | keep `weight_norm` and rebuild the codec's causal mask |
+| `S2B_FAST_DECODE=0` | call upstream's fast-transformer step and sampler |
+| `S2B_BATCHED_PREFILL=0` | prefill one lane at a time |
+
+### One bucket rule this deploy depends on
+
+An `r2` page writes each section to `s2-takes/<job>/<call>/<key>.mp3`, and the
+worker deletes each object after reading it. That delete is deliberately not
+awaited (an awaited DELETE is a round trip of idle GPU time between batches), so
+a worker that crashes mid-page leaves objects behind, and a failed upload leaves
+one that was never read.
+
+Add a **free** lifecycle rule on the bucket rather than relying on the worker:
+
+```
+Cloudflare dashboard → R2 → echomancer-audio → Settings → Object lifecycle rules
+  Name:        expire-s2-takes
+  Prefix:      s2-takes/
+  Action:      Delete objects after 1 day
+```
+
+One day is far longer than any call (the longest is minutes) and short enough
+that a forgotten staging run cannot accumulate. Nothing else in the bucket uses
+the `s2-takes/` prefix, so the rule cannot touch a book's audio.
+
+Check it took effect by listing a prefix that should have expired:
+
+```bash
+# after a staging run and ~24h
+python3 scripts/s2/check-input-queue.py --app echomancer-s2-clone-staging   # unrelated but cheap
+# then confirm in the dashboard: R2 → echomancer-audio → s2-takes/ is empty
+```
+
+### Hard checks before promoting
+
+One command runs the graph checks, and it **fails** rather than reporting:
+
+```bash
+S2C_APP_NAME=echomancer-s2-clone-staging \
+  python3 scripts/s2/check-cudagraphs.py --since 30m --expect-shapes 24
+```
+
+It exits non-zero on any `skipping cudagraphs` line, any recompilation, any
+missing warm-up record, or a post-restore replay whose count differs from
+`--expect-shapes`. A call still *succeeds* with the graphs skipped — about twice
+as slowly — which is why this has to be a gate and not a symptom anybody would
+notice.
+
+`graphs=ok(24)` is the normal line. `graphs=recaptured(24)` is also a pass: the
+restored container's `cudaGraphExec_t` handles were invalid (a `cuda-checkpoint`
+restore onto a different worker variant can do that), so `publish()` reset the
+graph trees and recaptured over the already-compiled Triton kernels. A second
+failure after the recapture is fatal, and the container does not join the pool.
+
+The warm-up line now reads `warm decode shapes: 24 shapes x 3 steps ... compiled_graphs=2, cudagraph_skips=0`. Three
+steps per shape is required: Inductor warms up on the first call to a shape,
+records on the second and replays on the third, so a one-step warm-up recorded
+nothing. `compiled_graphs` is the count of distinct Dynamo specializations of
+`_decode_step` (`2` on v10: `width==1` and `width>=2`), and `selftest()` refuses
+the boot if it ever exceeds the 24 declared shapes.
+
+Then read the rest of the log for the qualitative facts:
+
+```bash
+modal app logs echomancer-s2-clone-staging --since 20m \
+  | grep -E 'S2B|S2C|Snapshot created'
+```
+
+- `[S2B] warm decode shapes: 24` — six width buckets × four KV buckets. A
+  smaller number means some call will record a graph on the request path;
+- `[S2B] selftest: {... 'ok': True ...}` and
+  `[S2C] ... graphs=ok(N)` — the step replayed after the restore, on the GPU
+  thread, before the first heartbeat;
+- `/ready` reports `version=10`, `audio_transport=r2`, `max_batch_items=32`,
+  and `cpu` (the container's real CPU count — `S2C_CPU=8` on staging);
+- after ~30 s idle, `/ready` returns 503 with `warm_containers: 0`
+  (`min_containers` is still 0). That 503 body also carries
+  `audio_transport` and `max_batch_items`, because the worker sizes its next
+  page from them.
+
+Then the cold-HTTP proof from §5a: a first `POST /synthesize` after
+scale-to-zero must be **200**, not 500 `CUBLAS_STATUS_ALLOC_FAILED`.
+
+### Cost of the v10 A/B
+
+At H100 $0.001097/s plus ~$0.0001/s for 8 vCPU, about **$0.0012/s**. v10 changes
+two things that move this: the snapshot warms **24 decode shapes** (6 width
+buckets × 4 KV buckets) instead of a handful, and every container replays them
+once after a restore before its first heartbeat.
+
+| Phase | What changed vs the v9 estimate | H100-seconds | est. |
+|---|---|---:|---:|
+| Baseline deploy + compile (PR 283 code) | unchanged | ~720 | $0.86 |
+| Baseline 1/4/24-wide capture | unchanged | ~150 | $0.18 |
+| Candidate deploy + compile | 24 warmed shapes: roughly +30–60 s of capture, once | ~820 | $0.98 |
+| Graph gate | free (reads logs) | 0 | — |
+| Cold restore + replay proof | `selftest` replays 6 shapes at boot: a few hundred ms | ~70 | $0.08 |
+| Candidate 1/4/24/32-wide + SDPA A/B | unchanged | ~260 | $0.31 |
+| 2-container fanout smoke | unchanged | ~240–960 | $0.29–1.15 |
+| Contingency redeploy | unchanged | ~840 | $1.01 |
+| **Total** | | **~52–64 H100-min** | **$2.7–$4.6** |
+
+The boot replay is the only recurring cost: a few hundred milliseconds per
+container start, which is far cheaper than one section rendered at half speed
+because a graph was recorded on the request path.
+
+### Order matters for the worker
+
+The worker widens a steady page to 32 rows only once `/ready` reports **both**
+`audio_transport: "r2"` **and** `max_batch_items >= 32`. Against the live v9
+container it plans ≤ 24 inline rows, which is exactly what that container
+accepts. So the worker may be deployed before the Modal app; a worker that
+guessed 32 would collect `422 batch_too_large` on every full page.
 
 ---
 
@@ -1147,7 +1420,7 @@ Production app:     echomancer-s2-clone
 Build id:           __________  (same build validated on staging)
 Deploy env:         S2C_MAX_CONTAINERS unset (1)
 Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
-Runtime override:   update_autoscaler(max_containers=N, scaledown_window=45, min_containers=0)
+Runtime override:   update_autoscaler(max_containers=N, scaledown_window=15, min_containers=0)
 Live cap printed:   max_containers=N (N = MODAL_S2_MAX_GPUS, default 20; not the /ready label)
 Health labels:      /ready max_containers still ____ (deploy-time env; live cap is the 8c printout)
 ```

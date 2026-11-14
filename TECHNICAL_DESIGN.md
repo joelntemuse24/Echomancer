@@ -69,7 +69,7 @@ where the repo can check it:**
   reading. A Modal deployment counter such as "v6" is not a constant in this
   repo.
 - Live autoscaler: `min_containers=0`, `max_containers` equal to
-  `MODAL_S2_MAX_GPUS` (default 20), `scaledown_window=45`. Set with
+  `MODAL_S2_MAX_GPUS` (default 20), `scaledown_window=15`. Set with
   `scripts/s2/set-live-autoscaler.py` after the worker restart. That script
   does not deploy. Code defaults
   are `S2C_MAX_CONTAINERS=1` and `S2C_SCALEDOWN=300` (`container_limits`
@@ -249,7 +249,9 @@ src/
   test/{harness,setup-env}.ts
 modal/                         # S2-Pro clone service, contract, warm/cover
 scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
-scripts/s2/                    # Staging HTTP smoke (synthetic clip only)
+scripts/s2/                    # Staging smoke, A/B bench, quality compare,
+                               # and staging-env.sh (S2C_ENGINE=v10 on a
+                               # separate app)
 workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
 docker-compose.yml             # Optional Docker path (pm2 is primary)
@@ -1168,10 +1170,10 @@ for that one recovery.
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → Modal S2-Pro when `MODAL_S2_TTS_URL` is set, then `fishTtsProvider` with the account `reference_id`. No URL skips Modal. Legacy `fish-narrator`: Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. The GPU class defaults to `max_containers=1` (`S2C_MAX_CONTAINERS`). After every deploy, step 8c of `docs/s2-gpu-staging-runbook.md` runs `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=45)` with N = `MODAL_S2_MAX_GPUS` (default 20) and checks the printed settings, because a plain `modal deploy` resets a previous override and `/ready`/`status()` keep reporting the deploy-time value. `min_containers` stays 0. The deployed class already has `@modal.concurrent(max_inputs=1)`, so a second POST is placed on another container (its own restore) rather than answered 429. A 429 `lane_busy` body stays `ModalCloneLaneBusyError` (busy, not cold). |
+| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → Modal S2-Pro when `MODAL_S2_TTS_URL` is set, then `fishTtsProvider` with the account `reference_id`. No URL skips Modal. Legacy `fish-narrator`: Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. The GPU class defaults to `max_containers=1` (`S2C_MAX_CONTAINERS`). After every deploy, step 8c of `docs/s2-gpu-staging-runbook.md` runs `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)` with N = `MODAL_S2_MAX_GPUS` (default 20) and checks the printed settings, because a plain `modal deploy` resets a previous override and `/ready`/`status()` keep reporting the deploy-time value. `min_containers` stays 0. The deployed class already has `@modal.concurrent(max_inputs=1)`, so a second POST is placed on another container (its own restore) rather than answered 429. A 429 `lane_busy` body stays `ModalCloneLaneBusyError` (busy, not cold). |
 | Clone engine pin | `jobs.provider_pin` (`modal` / `fish`) is written on the first tick that has a clone voice, and every later section uses that engine only. A legacy `drama3` row is re-pinned to `modal` or `fish` (`resolveLegacyDramaPin`) before any section renders, so Drama 3 is never called again and the rest of that book finishes in the real voice. A per-section failure never changes it: the book parks instead (`clone_wait_started_at`, `MODAL_S2_DEFER_MS`, default 25 min), and only when that budget is spent does it switch and write `warning`. A cold pool and a hard provider fault share that clock (`deferForColdClonePool` with `reason: "provider-fault"`), but a provider fault writes `CLONE_PROVIDER_FAULT_WARNING` instead of the cold-timeout warning, so the finished book says the service was broken rather than slow. `MODAL_S2_DEFER_MS=0` skips the park and continues the tick. That branch does not rewrite `provider_pin`. |
-| Clone lanes | One book sends one HTTP batch call at a time on its own H100 (`MODAL_S2_BATCH_SIZE`, default 24, max 32). A second book gets another H100 until `modal_gpu_leases` hits `MODAL_S2_MAX_GPUS` (default 20) or `MODAL_S2_MAX_GPUS_PER_USER` (default 5). `MODAL_S2_SECTION_CONCURRENCY` (default 4, max 8) is only the legacy fan-out claim size (`cloneTakehomeFanoutCap`); a book wave does not take that slot and does not open a second lane. The deploy-time `S2C_MAX_CONTAINERS` stays 1; the live cap is the runbook override. **Rows per call is the throughput knob, not lanes**: a container decodes every row of a call in one batch (measured 2.9x realtime for a one-row call, 35–65x for a full one), so `planModalCloneLanes` fills a call toward `batch` before opening the next and the tick claims up to `batch` sections. The old round-robin split made 5 sections into four 1-row calls, which all landed on one container on `job db10a6d6` and ran at 2.93x (246s of audio in 84s of GPU wall) instead of ~24s. A cold call's character cap is derived from the **wait a call can actually be granted**, not from the steady-state timeout: `modalLaneCharCap` = (`MODAL_S2_COLD_WAIT_MS` − a 70s restore/prep margin) × 100 chars/s, which is **8,000** at production defaults — the same value as the operator's stopgap. That cap is the first call of a book and any call after the container has scaled away. Once the container has answered, `planModalCloneBookWave` does not pace the remainder to the listen buffer. `cloneGenerationMs` uses `MODAL_S2_NARROW_FPS` (default 60, about 2.8× / ~44 chars/s) for one row and `MODAL_S2_WIDE_FPS` (default 190, about 8.8×) at four or more rows. Book `e745d067` measured one row at 2.7–2.9× and a 4-row call at 9.2×; the old 33 chars/s smoke curve is not the planner. A remainder that fits in two proxy-safe batches (that 9-section, ~11.8k-character book) is one wide batch after section 0. A longer book ramps by audio: about 1–2 minutes, then 5–6, then 12–15, then a full batch (default 24) under the ~542s proxy. Cold first light stays one small section. The warm HTTP wait is 400s, under the proxy's ~542s kill. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower that warm cap. The book uses one GPU; `min_containers` stays 0. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a lane. The wait for a given call is sized from that call's own text (`modalLaneWorkMs`), so the packer and the timeout cannot disagree. **A row must fit too**, so clone sections are packed at `MODAL_S2_SECTION_CHARS` (default 2,000): a row renders its paragraph units in sequence at ~50 chars/s, so a 7.7k section needs ~154s of generation and cannot render inside any call budget. Packing at the Fish 8,000 ceiling is what froze the four 7.7k sections on `job 7e4a8b48` (2026-11-06) that stalled for 4m03s and never returned. A clone outline frozen wider than the cap is re-packed once, only while nothing has been published. A multi-section call that misses its budget is retried **one section per call** and never classified as a cold placement; only a single-section miss fires the off-path snapshot warm. Multi-GPU in one container is not used: Modal documents GPU snapshots as generally incompatible with it. **Section 0 is rendered alone first** (`MODAL_S2_FIRST_LIGHT`, default on) because a container answers a whole batch of rows together, so a section 0 batched beside a neighbour is exactly as late as that neighbour. That call's pack abort stays `MODAL_S2_FIRST_LIGHT_WAIT_MS` (default 75s). The HTTP wait is `MODAL_S2_PLACEMENT_BUDGET_MS` (default 360s, ceiling 482s) on the same in-flight request. A container that has started is not cancelled. If section 0 cannot be placed the fan-out is skipped. A clone book also pre-warms the pool at the top of its tick (`prewarmModalCloneSnapshot`), so the restore overlaps extract, packing and the reference download; one cheap RPC, never awaited, and `min_containers=0` still leaves no GPU running. The same RPC starts earlier for an account that already has a trained clone: when the worker accepts the extract (`prewarmClonePoolForUpload`) and when `GET /api/tts/voices` sees that clone (`after` → `POST /clone-prewarm` on the worker, because Vercel has no `MODAL_TOKEN_ID`). A container that finished restoring before section 0 is ~16–20s to first audio. One that is still booting does not take the HTTP call — Modal starts another container — so a fast click stays ~68s. Stock-only accounts never start a GPU. A book-start prewarm is keyed by job id, so a second book is not swallowed by the first book's 3-minute cooldown, and it still refuses when `modal_gpu_leases` is at `MODAL_S2_MAX_GPUS` or that user's cap. Voice-list and extract prewarms stay on the shared 3-minute cooldown and do not stack a second container on one that just started. A client timeout does not re-POST those sections in the same dispatch: the sync handler keeps rendering, and there is no Modal cancel. Warmth for a book is its own container, not `warm_containers > 0` while another book's lease is live. Section 0's publish skips transcript QA (a fresh Whisper process); later sections do not. `loadCloneReference` starts beside packing. |
-| Clone batch contract | `POST /synthesize_batch` returns `items: [{ key, audio_b64, duration_s, units, truncated_units }]` or `{ key, error, error_code }`, plus `build`, `container_id`, `seed`, `reference`, `performance`. The client reads `audio_b64` and still accepts legacy `audio_base64`; a row with neither audio nor an error fails the call rather than staging silence. A `422` naming the reference is a non-retryable `ModalCloneReferenceError`; `502`/`503`/`504` and transport timeouts are `ModalCloneColdError`; any other `5xx` (or a body that is not MP3) is `ModalCloneProviderError` — a hard fault, retried once, then surfaced with the container's own message. It parks on the same defer clock and takes the same documented fallback, so a broken deploy never fails a book with `Section 0: Modal clone already retried` (`job 5f09ee0e`, 2026-11-06). |
+| Clone lanes | One book sends one HTTP batch call at a time on its own H100 (`MODAL_S2_BATCH_SIZE`, default 24, max 32). A second book gets another H100 until `modal_gpu_leases` hits `MODAL_S2_MAX_GPUS` (default 20) or `MODAL_S2_MAX_GPUS_PER_USER` (default 5). `MODAL_S2_SECTION_CONCURRENCY` (default 4, max 8) is only the legacy fan-out claim size (`cloneTakehomeFanoutCap`); a book wave does not take that slot and does not open a second lane. The deploy-time `S2C_MAX_CONTAINERS` stays 1; the live cap is the runbook override. **Rows per call is the throughput knob, not lanes**: a container decodes every row of a call in one batch (measured 2.9x realtime for a one-row call, 35–65x for a full one), so `planModalCloneLanes` fills a call toward `batch` before opening the next and the tick claims up to `batch` sections. The old round-robin split made 5 sections into four 1-row calls, which all landed on one container on `job db10a6d6` and ran at 2.93x (246s of audio in 84s of GPU wall) instead of ~24s. A cold call's character cap is derived from the **wait a call can actually be granted**, not from the steady-state timeout: `modalLaneCharCap` = (`MODAL_S2_COLD_WAIT_MS` − a 70s restore/prep margin) × 100 chars/s, which is **8,000** at production defaults — the same value as the operator's stopgap. That cap is the first call of a book and any call after the container has scaled away. Once the container has answered, `planModalCloneBookWave` does not pace the remainder to the listen buffer. `cloneGenerationMs` uses `MODAL_S2_NARROW_FPS` (default 60, about 2.8× / ~44 chars/s) for one row, `MODAL_S2_WIDE_FPS` (default 190, about 8.8×) at four rows, and the 24-row smoke (528 chars/s, about 33×) at 24 rows, interpolating between four and 24. Book `e745d067` measured one row at 2.7–2.9× and a 4-row call at 9.2×. The old curve that slowed every added row down toward 33 chars/s is not the planner. A remainder that fits in two proxy-safe batches (that 9-section, ~11.8k-character book) is one wide batch after section 0. A longer book sends 24 rows of 4,000 characters once `/ready` reports `audio_transport: r2` (the MP3s are objects; the JSON is keys; about 211s at the 24-row smoke rate). Until that Modal deploy the page is the inline body ceiling: the widest page that fits the body's estimated MP3 bytes. 24 × 4,000 is about 130 MiB of base64 and is not sent to a container that still returns `audio_b64`. Cold first light stays one small section. The warm HTTP wait is 400s, under the proxy's ~542s kill. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower that warm cap. The book uses one GPU; `min_containers` stays 0. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a lane. The wait for a given call is sized from that call's own text (`modalLaneWorkMs`), so the packer and the timeout cannot disagree. **A row must fit too**, so clone sections are packed from the book's length inside 2,500–6,000 characters after the 1,000-character opening (`MODAL_S2_SECTION_CHARS` remains the 4,000 default when there is no total): a row renders its paragraph units in sequence at ~50 chars/s, so a 7.7k section needs ~154s of generation and cannot render inside any call budget. Packing at the Fish 8,000 ceiling is what froze the four 7.7k sections on `job 7e4a8b48` (2026-11-06) that stalled for 4m03s and never returned. A clone outline frozen wider than the cap is re-packed once, only while nothing has been published. A multi-section call that misses its budget is retried **one section per call** and never classified as a cold placement; only a single-section miss fires the off-path snapshot warm. Multi-GPU in one container is not used: Modal documents GPU snapshots as generally incompatible with it. **Section 0 is rendered alone first** (`MODAL_S2_FIRST_LIGHT`, default on) because a container answers a whole batch of rows together, so a section 0 batched beside a neighbour is exactly as late as that neighbour. That call's pack abort stays `MODAL_S2_FIRST_LIGHT_WAIT_MS` (default 75s). The HTTP wait is `MODAL_S2_PLACEMENT_BUDGET_MS` (default 360s, ceiling 482s) on the same in-flight request. A container that has started is not cancelled. If section 0 cannot be placed the fan-out is skipped. A clone book also pre-warms the pool at the top of its tick (`prewarmModalCloneSnapshot`), so the restore overlaps extract, packing and the reference download; one cheap RPC, never awaited, and `min_containers=0` still leaves no GPU running. The same RPC starts earlier for an account that already has a trained clone: when the worker accepts the extract (`prewarmClonePoolForUpload`) and when `GET /api/tts/voices` sees that clone (`after` → `POST /clone-prewarm` on the worker, because Vercel has no `MODAL_TOKEN_ID`). A container that finished restoring before section 0 is ~16–20s to first audio. One that is still booting does not take the HTTP call — Modal starts another container — so a fast click stays ~68s. Stock-only accounts never start a GPU. A book-start prewarm is keyed by job id, so a second book is not swallowed by the first book's 3-minute cooldown, and it still refuses when `modal_gpu_leases` is at `MODAL_S2_MAX_GPUS` or that user's cap. Voice-list and extract prewarms stay on the shared 3-minute cooldown and do not stack a second container on one that just started. A client timeout does not re-POST those sections in the same dispatch: the sync handler keeps rendering, and there is no Modal cancel. Warmth for a book is its own container, not `warm_containers > 0` while another book's lease is live. Section 0's publish skips transcript QA (a fresh Whisper process); later sections do not. `loadCloneReference` starts beside packing. |
+| Clone batch contract | `POST /synthesize_batch` returns `items: [{ key, audio_b64, duration_s, units, truncated_units }]`, `{ key, storage_key, audio_bytes, duration_s, units, truncated_units }` when the container uploaded the MP3, or `{ key, error, error_code }`, plus `build`, `container_id`, `seed`, `reference`, `performance`. The client reads `audio_b64` and still accepts legacy `audio_base64`. A `storage_key` is fetched only when it matches `s2-takes/<job>/<call>/<item>.mp3`. A row with neither audio nor an error fails the call rather than staging silence. `/ready` reports `audio_transport`. A missing field is the inline build. A `422` naming the reference is a non-retryable `ModalCloneReferenceError`; `502`/`503`/`504` and transport timeouts are `ModalCloneColdError`; any other `5xx` (or a body that is not MP3) is `ModalCloneProviderError` — a hard fault, retried once, then surfaced with the container's own message. It parks on the same defer clock and takes the same documented fallback, so a broken deploy never fails a book with `Section 0: Modal clone already retried` (`job 5f09ee0e`, 2026-11-06). |
 | Reference decode | `validate_reference_audio` measures **every** container, not just WAV: `decoded_reference_stats` reports `format: "decoded"` and a real `seconds`/`rms`/`peak` for MP3/M4A/OGG/FLAC/WebM. Decoding is `s2_contract.decode_reference_samples` — standard library for WAV, ffmpeg otherwise — and `reference_float_samples` downmixes and resamples for the codec and for Whisper. `encode_reference` and `transcribe_reference` never touch `torchaudio.load` or `av.open`: on this image those are PyAV-backed, and the PyAV under fish-speech's lockfile predates the `metadata_errors` kwarg current `faster-whisper` passes, so every non-WAV reference raised `TypeError` and answered 500 on all four lanes while a WAV probe still returned 200. `modal/test_s2_reference_decode.py` decodes real fixtures for each container and fails if either library returns to that path. |
 | Clone snapshot | `@modal.enter(snap=True)` starts a `GpuExecutor` thread, loads weights, compiles and runs a text-only **and** a referenced forward pass with a deterministic in-process WAV (`s2_contract.warm_reference_wav`), then `reset_state()` clears the KV cache and last audio so no customer speech and no dead pages enter the snapshot. All CUDA runs on that one thread; request handlers submit via `_run_on_gpu`. A restored snapshot is pinned to the thread that owned the context, and Modal serves a sync `@modal.fastapi_endpoint` on a fresh thread, where the first `cublasCreate` fails with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works — that was the staging 500 on `/synthesize_batch`. `engine.selftest()` runs the same allocator paths at boot. `snap=False` publishes a heartbeat and starts a refresh timer; `@modal.exit()` removes it, so `S2C_HEARTBEAT_TTL` is 90 s (a call-triggered heartbeat alone would need hundreds of seconds and let a scaled-down container inflate `warm_containers`). `/ready` reads only live heartbeats of the current `S2C_BUILD`. `warm_containers` can still exceed `max_containers` for a moment during a replace, which is documented in the runbook. `boot` is `restored` only when the host monotonic clock went **backwards** (proof the image resumed on a different, younger worker); otherwise it is `unknown`. There is no `compiled` value: a container cannot prove it compiled, and pid equality is useless because Modal runs the app as pid 2 both before and after a restore. Modal's log line is the authoritative record, a restore duration is only measurable from outside, and `snapshot_age_s` is an age, not a duration, reported only for a proved restore. "~90 s" is a planning target in the runbook, not a duration this file has measured for every cold start. A measured restore cited for the books in this section is about 57 s. A book waits at most `MODAL_S2_COLD_WAIT_MS` (code default 150 s, hard ceiling 180 s — `modalCloneColdWaitMs` clamps anything longer, so a book cannot be configured to sit through an 8–16 min compile or the proxy's ~542 s kill). Past that budget the call is `ModalCloneColdError` with `scope: "placement"`: the HTTP wait is dropped, dispatch tries the unstaged sections once on another container, and `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` (one RPC `status()`, detached, 20 min cooldown) when `MODAL_TOKEN_ID` or `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables it. A probe miss is `scope: "pool"` and is not retried. `boot=` is not the hard rule (`placement_kind` in `s2_contract.py` classifies wall time: restore ≤ 150 s, compile ≥ 300 s). After a deploy, `::cover` scales to zero between rounds until consecutive wall-clock restores succeed. HTTP still cannot finish a snapshot. |
 | Clone endpoints | Each `@modal.fastapi_endpoint` is served at the root of its own hostname, so there is one absolute URL per endpoint and nothing is appended. `MODAL_S2_TTS_URL` (batch, required), `MODAL_S2_SYNTHESIZE_URL` (single, optional, falls back to the batch host), `MODAL_S2_READY_URL` (probe, optional, never derived). `modal/s2_endpoints.py` and `modal-clone.ts` both reject a URL carrying a path, and reject a ready URL equal to the batch host. A 404 on an endpoint says the configured host is wrong, not that the pool is cold. A 429 is `ModalCloneLaneBusyError` (busy, not cold). The deployed class places a second POST on another container instead of returning 429; the 429 path stays as that backstop. |
@@ -1186,7 +1188,7 @@ for that one recovery.
 | Module | What it decides |
 |--------|-----------------|
 | `tts/providers/modal-clone-guard.ts` | Engine pin parsing, lane/batch/cold-wait/defer knobs, the 900 chars/min truncation rule, and non-blocking `usage_logs` writes (`recordModalCloneUsage`). There is no daily character cap. The old `ensureModalCloneJobAllowed` gate is gone. |
-| `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at about 2.9× realtime against 35–65× for a full one. Those multiples are audio-seconds per wall-second, measured, not a rate the next book is guaranteed to hit. `modalLaneCharCap` is the cold-wait generation budget (`modalCloneColdWaitMs` minus `MODAL_LANE_RESTORE_MARGIN_MS`, 70 s) times `MODAL_LANE_CHARS_PER_SECOND` (100). It is not the steady-state 60 s timeout. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a cold lane. `planModalCloneBookWave` is the book schedule: section 0 alone and cold-sized, except a short piece (about 1,959 characters / ~2.1 minutes) whose whole remaining book adds no generation beyond that section and so goes out as one call, then a ramp while `clonePoolStillWarm` (default hold 30s) — each call is the largest prefix sized from the starting section's audio (about 1–2 minutes, then 5–6, then 12–15, then a full batch) once first light is staged, and one cold-sized call again after that hold. Warm calls plan one row at `MODAL_S2_NARROW_FPS` (default 60) and four or more rows at `MODAL_S2_WIDE_FPS` (default 190), plus transfer at 12s per 43,907 characters, and wait `modalCloneWarmWaitMs` (400s, under the 542s proxy kill). The 1.5× buffer is reported and does not choose the page. `MODAL_LANE_WARM_PACK_CHARS_PER_SECOND` (150) is only the warm character cap. `simulateClonePlayback` plays a 10-hour book at 1× and is what fails if that ramp stalls. `simulateCloneFleet` gives each book that ramp until the GPU ceilings, then one overflow pair. `chooseCloneGpuTurn` is that overflow schedule: the next unstarted book gets one section once every playing listener keeps slack, then each turn is the feeding call with the least silence and the highest characters per wall second. A one-row call does not feed two 1.5× listeners. `simulateCloneListeners` replays that loop for two and three books. `planMixedCloneBatch` packs rows from several books into one call, each with its own reference; the deployed container takes one reference for the call, so `MODAL_S2_MIXED_BOOK_BATCH` stays off and the tick does not send that payload. `modalWarmLaneCharLimit` is the minimum of that time budget and an 80 MiB base64 body estimate; `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower it. `sectionSeedEpoch` turns a retry into a different take. |
+| `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at about 2.9× realtime against 35–65× for a full one. Those multiples are audio-seconds per wall-second, measured, not a rate the next book is guaranteed to hit. `modalLaneCharCap` is the cold-wait generation budget (`modalCloneColdWaitMs` minus `MODAL_LANE_RESTORE_MARGIN_MS`, 70 s) times `MODAL_LANE_CHARS_PER_SECOND` (100). It is not the steady-state 60 s timeout. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a cold lane. `planModalCloneBookWave` is the book schedule: section 0 alone and cold-sized, except a short piece (about 1,959 characters / ~2.1 minutes) whose whole remaining book adds no generation beyond that section and so goes out as one call, then the largest proxy-safe batch while `clonePoolStillWarm` (default hold 10s) — each call after section 0 is the largest prefix that fits the warm character cap, the response body, and the 400s wait, and one cold-sized call again after that hold. It is not sized so playback at 1.5× stays ahead. Warm calls plan one row at `MODAL_S2_NARROW_FPS` (default 60), four rows at `MODAL_S2_WIDE_FPS` (default 190), and a 24-row call at the measured 528 chars/s (~33×), with the widths between four and 24 interpolated. Transfer is 12s per 43,907 characters. The wait is `modalCloneWarmWaitMs` (400s, under the 542s proxy kill). The 1.5× buffer is reported and does not choose the page. A book of 20,000 characters or less shares an already-running GPU even when the ceiling has room. The warm character cap is one batch of the widest section (24 × 6,000), then the warm wait and, while audio is inline, the 80 MiB body. Section width comes from `planCloneSectionChars`: 1,000 for section 0, one call for a book of 20,000 characters or less, then a 1–2 minute page, a 5–6 minute page, and even pages inside 2,500–6,000 characters. While the container returns `audio_b64` the 80 MiB body keeps a 10-hour book at 22-row pages. An `audio_transport: r2` container uploads the MP3s, so that book is 24-row pages. `simulateClonePlayback` plays a 10-hour book at 1× and is what fails if that ramp stalls. `simulateCloneFleet` gives each book that ramp until the GPU ceilings, then one overflow pair. `chooseCloneGpuTurn` is that overflow schedule: the next unstarted book gets one section once every playing listener keeps slack, then each turn is the feeding call with the least silence and the highest characters per wall second. A one-row call does not feed two 1.5× listeners. `simulateCloneListeners` replays that loop for two and three books. `planMixedCloneBatch` packs rows from several books into one call, each with its own reference; the deployed container takes one reference for the call, so `MODAL_S2_MIXED_BOOK_BATCH` stays off and the tick does not send that payload. `modalWarmLaneCharLimit` is the minimum of that batch page, the warm-wait budget at the width's realtime factor, and an 80 MiB base64 body estimate; `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower it. `sectionSeedEpoch` turns a retry into a different take. |
 | `tts/providers/modal-clone-prefetch.ts` | `selectCloneRenderIndexes` fills the batch with cache misses and steps over takes already stored. `selectClonePublishBatch` walks claimable indexes in order and stops at the publish window (8), at an index still on the GPU, and at the first uncached index. |
  | `tts/providers/modal-clone-dispatch.ts` | Runs the lanes and stages every rendered section. `bookWave` forces one lane even when the caller passed a fan-out, does not take the old cap-1 `modal-clone` slot (the durable cap is `modal_gpu_leases`), and pipelines the ramp: the next call starts when the previous returns, and `publishStaged` masters that call's audio without holding the GPU. `firstLight` renders section 0 alone (or the whole short piece, when that one call is no slower), publishes it through the real per-section path, and only then starts the ramp on that same GPU. A container answers a whole batch together, so a section 0 batched beside a neighbour is exactly as late as that neighbour, and a 24-row call behind one minute of audio stalls the listener. If section 0 cannot be placed the ramp is skipped. A gateway miss on a warm call is retried as one cold section and does not kick `::cover`. A gateway miss (502/503/504) that misses the restore budget is retried once on another container; a pool that is already empty is not. A client timeout (`clientAborted`) is not retried in the same dispatch: the sync handler keeps rendering those sections, and the book parks. A warm-budget call parks for the warm HTTP wait (400s). A first-light HTTP wait is `MODAL_S2_PLACEMENT_BUDGET_MS` (default 360s, capped at 482s). The 75s figure stays the pack abort only. A timeout after that budget parks for the rest of the restore plus opening generation at the narrow rate (~98s), inside the 180s scaledown. A started container is not aborted and is not cancelled. An unstarted pending call is cancelled and the job is sealed so the retry does not open a second GPU. A backoff that posted nothing parks only for the remaining 30s. A positive hold leaves the row `processing` with a lease token this process does not hold, expiring with that hold, because a claim that lists `queued` rows and does not read `sched_not_before` would take a queued park early; the VM claim waits for the same lease. That park starts `clone_wait_started_at` when unset and switches to Fish once `MODAL_S2_DEFER_MS` is spent. A published section clears the stored clock and the in-memory copy, so a later timeout in the same tick does not switch a book that already published. `cold` is set when nothing was staged, so the tick can park instead of switching. A missed placement also kicks the off-path RPC warm. `committedCall` posts the indexes `chooseCloneGpuTurn` already sized, so a growth call wider than the buffer is not re-planned down to one row. |
  | `tts/providers/modal-clone-warm.ts` | `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` after a placement misses the restore budget (20 min cooldown, off the book path, may sit through a compile). `prewarmModalCloneSnapshot` does not spawn: a side cover is a second container under `max_inputs=1` and the book's `/synthesize_batch` does not join it. `MODAL_S2_WARM_HOOK=0` disables the kick. |
@@ -1200,7 +1202,7 @@ for that one recovery.
 | `modal/s2_endpoints.py` | One absolute URL per Modal endpoint. Rejects a URL that carries a path, and a ready URL that points at the batch host, because each `@modal.fastapi_endpoint` is its own hostname. |
 | `modal/test_s2_contract.py` | Offline proof of those rules (`python3 -m pytest modal -q`). |
 | `scripts/s2/staging-smoke.mjs` | HTTP acceptance against a deployed endpoint: ready, per-lane batch rows, distinct containers, one build, scale-to-zero. Synthetic text and a generated clip only. |
-| `docs/s2-gpu-staging-runbook.md` | The GPU steps this repo cannot run: staging deploy, direct snapshot build, restore coverage, four-lane fanout, synthetic end-to-end, promotion and rollback. Step 8 sets the live cap to `MODAL_S2_MAX_GPUS` (default 20): deploy, warm the new snapshots, then `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=45)` and check the printed cap. `min_containers` stays 0. The deployed image already has `@modal.concurrent(max_inputs=1)`, so a second book is placed on its own container. A redeploy is not required for that and would wipe GPU snapshots. |
+| `docs/s2-gpu-staging-runbook.md` | The GPU steps this repo cannot run: staging deploy, direct snapshot build, restore coverage, four-lane fanout, synthetic end-to-end, promotion and rollback. Step 8 sets the live cap to `MODAL_S2_MAX_GPUS` (default 20): deploy, warm the new snapshots, then `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)` and check the printed cap. `min_containers` stays 0. The deployed image already has `@modal.concurrent(max_inputs=1)`, so a second book is placed on its own container. A redeploy is not required for that and would wipe GPU snapshots. |
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
@@ -1340,6 +1342,174 @@ still use `GET /api/tts/live`.
 
 `CatalogVoice`, `SynthesizeInput/Result`, `TtsProviderAdapter`, `JobSegment`,
 `PriceEstimate`, `JobKind`, `StockProvider`.
+
+### The clone GPU engine (`modal/`), and the `S2C_ENGINE` switch
+
+`S2C_ENGINE` selects which decode path a container runs, and it defaults to
+**`v9`** — the behaviour the deployed app has today. A plain `modal deploy`
+therefore changes nothing about how a book sounds; `v10` is opt-in and is what
+`scripts/s2/staging-env.sh` sets on the staging app.
+
+It is read **at import**, pinned into the container env (`_BUILD_ENV`, hence
+`S2C_BUILD`), and never re-read per request: a snapshot has to be built for the
+exact kernels it will run, so a runtime override that disagreed with the
+snapshot would hand a restored container a path it never compiled.
+
+| v10 change | v9 behaviour (`S2C_ENGINE` unset) | Switch to isolate |
+|---|---|---|
+| Active batch width bucketed to `(1,4,8,16,24,32)` from the parallel unit count | steps `S2B_BATCH` rows, dummies included | `S2B_BUCKET=0` |
+| An idle lane steals a later unit of a section whose unit 0 is done | one unit at a time per section | `S2B_WORK_STEAL=0` |
+| Four coarse, pre-warmed CUDA-graph KV buckets | 128-token rounding (32 shapes, a few warmed) | `S2B_KV_BUCKET` |
+| `_fast_step`: no mask, no `repeat_interleave`, no CPU scalar | upstream `forward_generate_fast` | `S2B_FAST_DECODE=0` |
+| `masked_fill` instead of `torch.where(…, float("-inf"), …)` | upstream `logits_to_probs` | `S2B_FAST_DECODE=0` |
+| Codec decoded per finished section during AR, then encoded and uploaded | all AR, then all codec, then all encode, then all upload | `S2B_PIPELINE_CODEC=0` |
+| `weight_norm` frozen, codec mask cached, micro-batch 16, length-sorted | parametrized convs, mask rebuilt per call, micro-batch 8 | `S2B_CODEC_TUNING=0` |
+| The opening wave's prompts prefilled in one right-padded causal pass | one serial prefill per lane | `S2B_BATCHED_PREFILL=0` |
+
+**v9 is a separate loop, not a set of flags.** `_render_legacy` is PR 283's
+decode loop transcribed: lane `r` owns `slots[r]` for the whole call, units run in
+index order, nothing is work-stolen. That pinning decides the audio — the sampler
+draws from one batched RNG stream, so a lane assignment that differs (say
+"longest remaining section first") consumes different random numbers and renders
+different tokens for any book whose sections differ in length. `_embed` and
+`_fast_step` likewise keep their deployed bodies (a scalar `torch.where`, a CUDA
+`fast_pos` slice) under `LEGACY_RENDER`, because the v10 rewrite is equal in exact
+arithmetic and not bitwise in bfloat16.
+`modal/test_s2_legacy_identity.py` imports the base branch's module out of git and
+compares embeddings, sampling and the loop's statements directly.
+
+| `EOS_CHECK_EVERY=16` | 8 | `S2B_EOS_CHECK_EVERY` |
+| Folded-GQA SDPA decode attention | handwritten compiled path | `S2B_SDPA_DECODE=1` (off by default) |
+| Top-k-block sampling | full-vocabulary sort | `S2B_TOPK_FAST_SAMPLE=1` (off by default) |
+
+**A bare `modal deploy` targets staging, and the production name is not enough.**
+A deploy invalidates every GPU snapshot for its app, so a branch under review
+must not be able to evict production's. One resolver decides the target for the
+service, `modal/s2_clone_warm.py` and `scripts/s2/check-input-queue.py`
+(`s2_contract.resolve_app_name`), with `s2_contract.heartbeat_dict_name` following
+the same name:
+
+| `S2C_APP_NAME` (or legacy `MODAL_S2_APP_NAME`) | `S2C_ALLOW_PRODUCTION` | target |
+|---|---|---|
+| `echomancer-s2-clone` | `1` | production |
+| `echomancer-s2-clone` | unset | **staging** |
+| any other name | either | that app |
+| unset | `1` | production |
+| unset | unset | staging |
+
+Spelling the production name out is **not** an opt-in: typing a name is not a
+decision about snapshots, and deploy commands get copy-pasted from docs. The
+worker's prewarm (`src/lib/tts/providers/modal-clone-warm.ts`) therefore exports
+`S2C_ALLOW_PRODUCTION=1` for its own `modal run …::cover` child, because that
+cover is the production path. `scripts/s2/cancel-unstarted-pending.py` keeps a
+production default on purpose — it cancels a pending input, and an unnamed
+invocation there means the live app.
+
+Why `v9` is the default: the worker and the Modal app ship separately, and the
+app is a ~15-minute snapshot rebuild, so there is always a window where one has
+changed and the other has not. A `modal deploy` with no new env vars must
+reproduce today's audio, and `modal/test_s2_engine_switch.py` asserts it does —
+down to the 128-token KV rounding and the upstream fast-transformer call.
+
+**What is bit-identical and what is not.** Freezing `weight_norm`, caching the
+codec mask, length-sorting the codec micro-batch, `EOS_CHECK_EVERY`, the coarse
+KV buckets and the streaming order change no sample, and each has a test that
+says so (`modal/test_s2_codec_tuning.py`, `modal/test_s2_numerics.py`). The
+fast-transformer rewrite and the batched prefill are numerically equal to
+upstream's step and to the single-row prefill in fp32 —
+asserted against the pinned upstream source, which is how two real bugs were
+found: the fast loop must write fast-KV position 0 from the **slow** hidden
+state (its logits are discarded, but every later codebook step attends it), and
+each fast layer's attention reads its *normalised* input.
+
+**The step must *compile*, and that is tested.** Every earlier numeric test
+bypassed `torch.compile` (the CPU harness set `engine.step = engine._decode_step`),
+so two production boot bugs lived in that gap:
+
+- the v9 path called `globals().get("logits_to_probs")`, and
+  `torch.compile(fullgraph=True)` refuses to trace the `globals` builtin — the
+  **default** engine failed to compile before a single section could render;
+- a `float` attribute read inside the step (`self.codebook_inv_scale`, every
+  `RMSNorm.eps`) was wrapped by Dynamo as a 0-D CPU `float64` placeholder, which
+  Inductor reports as `skipping cudagraphs due to cpu device (arg10_1)`.
+
+`modal/test_s2_compile.py` now traces the **real** `_decode_step` through
+`torch.compile(fullgraph=True, dynamic=True)` for both engines (at two widths,
+against eager) **and** through `aot_autograd` + Inductor decompositions on a
+`meta` model to assert zero surviving CPU tensor placeholders (`arg10_1`). Both
+sampler names are bound inside `gpu_image.imports()` and called directly;
+`torch._dynamo.config.specialize_float` is set before compiling so every float
+attribute becomes a constant; `selftest()` reads
+`torch._dynamo.utils.counters["inductor"]["cudagraph_skips"]` and **raises** on a
+non-zero count under `v10` (`FAST_DECODE=1`), so a skip fails the boot instead of
+quietly halving throughput on every call while keeping the `v9` rollback bootable.
+
+**A CUDA graph needs three calls, not one — and consistent `inference_mode` across all 24 shapes.** Inductor's `CUDAGraphTreeManager`
+warms up on call 1 for a new `(width, kv_len)` key, records on call 2 and replays
+on call 3. `_warm_kv_buckets()` runs `WARM_STEPS_PER_SHAPE` (3) steps per shape,
+feeding the output back into the next step as `render` does, so all 24 shapes are
+recorded inside the snapshot. Every caller of `self.step` on v10
+(`_render_pipelined`, `_warm_kv_buckets`, `_replay_decode_shapes`, `selftest`)
+allocates its step tensors (`x, pos, prev, temp, topp`) inside
+`torch.inference_mode()` so `ADInplaceOrView` never toggles between step 0 and
+step 1; `setup_caches` pads `KVCache` by 8 columns (`4104` vs `MAX_SEQ_LEN=4096`)
+so `kv_len=4096` stays strided like `512/1024/2048` instead of triggering a
+`524288 != 128*kv_len` recompile; `_configure_dynamo_for_step()` raises
+`recompile_limit` / `cache_size_limit` (`>= shapes*2 + 16`, min 64) and
+`accumulated_recompile_limit` (min 512); and `selftest()` asserts
+`compiled_graphs <= len(decode_shapes())`. Bucketing is forced off when
+`S2B_FAST_DECODE=0`, because upstream's `forward_generate_fast` writes a
+`BATCH`-row KVCache that a narrower active batch cannot broadcast into.
+
+**A restore that invalidates the graphs recaptures once.** `cudaGraphExec_t`
+handles are captured before the snapshot, and `cuda-checkpoint` restoring onto a
+different Modal worker variant may invalidate them. `_verify_graphs()` therefore
+calls `engine.recompile_step()` (resetting `cudagraph_trees` and Dynamo and
+re-wrapping `_decode_step` onto a fresh `CUDAGraphTreeManager` backed by
+Inductor's warm disk cache in `/opt/torchinductor`) and re-runs `_warm_kv_buckets()`,
+logs `graphs=recaptured(24)` and only fails on a second failure.
+`check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
+`recaptured(N)`, with `N` equal to `--expect-shapes`.
+
+**The codec's host copy is pinned, and its event is recorded after it.** A D2H
+copy into pageable memory is synchronous on the calling thread — it would stall
+the AR loop inside `submit_decode` and inflate `generate_s`. The copy therefore
+goes into `pin_memory=True` buffers with `non_blocking=True`, the event is
+recorded **after** every copy is enqueued (recording first let `query()` report
+done while the DMA was still writing, which is corrupted section audio), and
+`collect_decode` drops both the device and pinned buffers once the caller has its
+arrays.
+
+**Every decode switch is forwarded into the container.** `@app.cls(env={...})`
+replaces the container's environment rather than extending it, so a switch
+`_BUILD_ENV` omits does not reach the container - and since each is also in
+`snapshot_fingerprint`, the deploy hashed one value locally while the container
+re-hashed another. Every isolation toggle in `staging-env.sh` was a no-op on
+Modal until all of `S2B_*`, `S2C_MAX_BATCH_ITEMS` and `S2C_ENCODE_WORKERS` were
+listed, and `batched_prefill` / `cpu` / `warm_steps` were added to the
+fingerprint.
+
+**One R2 pool for the container's life.** `S2CloneWorker` builds a
+`KeepAlivePool` in `publish()` and closes it in `exit()`; `UploadPool.close()`
+closes a pool it owns. A pool per request paid a handshake per object and left
+its idle sockets to GC.
+
+**Nothing in the worker's planner changed to assume a speedup.**
+`MODAL_CLONE_FULL_BATCH_CHARS_PER_SECOND` stays at the measured 528, so a v10
+page is *over*-estimated in wall time until staging measures a real rate. The
+24-row baseline is still what a 32-row page is interpolated toward.
+
+**Rollout order for the worker.** A 32-row page needs `/ready` to report both
+`audio_transport: "r2"` and `max_batch_items >= 32`
+(`modalCloneBatchRowsForTransport`). Against the live v9 container the worker
+plans ≤ 24 inline rows, so a worker deployed first cannot collect
+`422 batch_too_large`. Its R2 reads are bounded-concurrent (`mapPool`, 8) and the
+per-object delete is not awaited, so a page does not spend the warm-hold budget
+on round trips.
+
+Staged A/B procedure, gates and cost: `docs/s2-gpu-staging-runbook.md` §9a. The
+tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
+(gate).
 
 ---
 
@@ -1651,15 +1821,20 @@ A short tail after a full wave of 5 is folded into the previous section when
 it is the same chapter and still under the hard max. Clone books do **not**
 even-pack. `evenFanout` is set only for `providerId === "fish"` when the
 voice is not a Modal clone. Clone section width is
-`min(model max, modalCloneSectionChars())`, code default **2,000**
-(`MODAL_S2_SECTION_CHARS`). A row renders its units in sequence, so a ~7,700
+`planCloneSectionChars(rawText.length)`: section 0 stays 1,000, a short
+book puts the rest in one call, and a long book uses 2,500–6,000
+characters so the steady pages approach 24 rows and about 3.5 minutes.
+The pack ceiling is the cold-safe row (6,000). `modalCloneSectionChars`
+remains the 4,000 default when a caller has no total
+(`MODAL_S2_SECTION_CHARS`).
+A row renders its units in sequence, so a ~7,700
 character section does not fit the placement budget. That is what froze
 `job 7e4a8b48`. Edge stays on catalog character limits and
 `edgeGoogleTakehomeTargetChars` (`ceil(chars / 8)`, floor 1,500, cap the
 catalog max). Section 0 is capped near 800 characters for every provider,
 including even packing, so the first audio is about a minute (Live Listen
 still uses ~480-character windows). Later sections stay near the even target
-on the Fish path, and near the 2,000-character cap on the clone path.
+on the Fish path, and on the clone schedule (1,000, then the length plan) on the clone path.
 A chapter heading does not close a section until the open one holds about
 1,500 characters; a shorter heading is a `chapterMarks` offset inside the
 section, and finalize times it from that offset. A leading copyright,

@@ -77,9 +77,49 @@ lane cap          = 80s x 100 chars/s
 - `modalLaneWorkMs` — the wait handed to the HTTP call, derived from that call's
   own text at the worse of the aggregate and single-row rates. The packer and
   the timeout therefore cannot disagree.
-- `modalCloneSectionChars` — **2,000** characters per clone section (~40s as a
-  row). Four of them still fit one cold call. A warm call carries up to 24,
-  and only once the listener's buffer covers that call.
+- `planCloneSectionChars` — section width from the book's length. Section 0
+  stays **1,000**. Later sections sit in **2,500–6,000** (one cold row of
+  6,000 still fits the 180s abort; 6,400 does not). A book of 20,000
+  characters or less is one call after the opening. A longer book takes a
+  1–2 minute page, then a 5–6 minute page, then even pages. Each full page
+  wants 24 rows and about 3.5 minutes, with 60s of margin under the 400s
+  wait and the 542s proxy. While the container returns `audio_b64` the
+  80 MiB body binds first, so a 10-hour book is 22-row pages of about
+  2,559 characters (about 133s, about 76 MiB). Once `/ready` reports
+  `audio_transport: r2` the same book is 24-row pages of about 3,910
+  characters (about 206s); the JSON is keys. That report needs a Modal
+  deploy. The page is not sized so playback at 1.5× stays ahead.
+  `modalCloneSectionChars` remains the 4,000 default for a caller that
+  has no total.
+
+## Current schedule
+
+Section 0 is one quick section, sent alone. A short book skips the ramp
+and uses one call for the rest. A long book then sends about 1–2 minutes,
+then about 5–6 minutes, then the steady pages, and those pages differ by
+at most one row. A book of 20,000 characters or less shares an
+already-running H100, one call at a time, even when the GPU ceiling still
+has room. An idle restored container (`warm_containers` above the other
+live leases) is a warm start for the next book. The worker's warm hold is
+10s. The live autoscaler target is `scaledown_window=15`, set by
+`scripts/s2/set-live-autoscaler.py` after the worker that holds for 10s is
+restarted. That script does not deploy. Until it is run, production stays
+at the previous 45s window; a 10s hold is safe under that longer window.
+
+Dollars in `modal-clone-short-book-cost.test.ts` use this planner curve
+plus restore and idle at $3.95/h. They are estimates. The curve is ~2.8×
+for one row, ~8.8× at four rows, and the 24-row smoke (~33×, 528 chars/s)
+at 24 rows. Widths between four and 24 are interpolated. A page that is
+not 1, 4, or 24 rows has not been measured on its own. Cold, with 15s of
+idle: a 2-page article is $0.1126 either way (`[1, 1]`); an 11-minute book
+is $0.1889 (`[1, 3]`); a 1-hour book is $0.4045 (`[1, 1, 1, 19]`); a
+10-hour book is $1.725 inline (`[1, 1, 1]` then ten 22-row calls) and
+$1.619 once the MP3s are stored (`[1, 1, 1]` then six 24-row calls).
+
+## The previous ramp, kept as the measurement it was
+
+The numbers below are the schedule this file described before the
+4,000-character width. They are not the current plan.
 
 ## The ramp, after the container has answered
 
@@ -230,15 +270,16 @@ pm2 logs echomancer-takehome --lines 300 \
 
 Healthy:
 
-- `pack evenFanout=… target=2000` — the clone width, not 7797
-- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:1 then warm:12`
-  on the first claim of a book that has the GPU to itself, then `warm:24`
-  once the buffer is deep. A second runnable book stops the tick after one
-  call, and once both buffers are deep that line is `warm:24`, not `warm:1`.
-  A `warm:24` on the call immediately after section 0 means the ramp is not running.
+- `pack evenFanout=… target=4000` — the clone width after section 0, not 7797
+- `S2 lanes=1 batch=24 …` and `book wave pool=warm cold:1 then warm:N`
+  on the first claim, where N is the largest proxy-safe page (24 rows of
+  4,000 characters once `/ready` reports `audio_transport: r2`; 14 rows
+  until that deploy). A second runnable book stops the
+  tick after one call. A wide page on the call immediately after section 0
+  is the schedule.
   A `cold:` page stays **at or under 8,000** characters. A `warm:` page
-  stays at or under `modalWarmLaneCharLimit` (57,000 at the defaults)
-  and at or under 24 rows.
+  stays at or under `modalWarmLaneCharLimit` and at or under 24 rows.
+  The JSON of an R2 page is keys. An inline page stays under 80 MiB.
 - no `multi-section call missed its budget` line
 - `first=0:staged@Ns` for the first audio
 

@@ -283,14 +283,14 @@ describe("clone containers", () => {
   });
 
   it("lets the last finished book go by scaledown and does not spawn", () => {
-    expect(modalCloneWarmHoldMs({} as NodeJS.ProcessEnv)).toBeLessThan(45_000);
+    expect(modalCloneWarmHoldMs({} as NodeJS.ProcessEnv)).toBeLessThan(15_000);
     expect(modalCloneWarmHoldMs({} as NodeJS.ProcessEnv)).toBeGreaterThan(0);
     const idle = cloneIdleScaledown({ bookSettled: true, otherLiveGpuLeases: 0 });
     expect(idle).toEqual({
       releaseContainer: true,
       spawn: false,
       mechanism: "scaledown_window",
-      scaledownSeconds: 45,
+      scaledownSeconds: 15,
     });
     expect(
       cloneIdleScaledown({ bookSettled: true, otherLiveGpuLeases: 1 }).releaseContainer
