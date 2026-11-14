@@ -29,11 +29,16 @@ That is per container and does not grow with the lane count: six lanes are
 six containers of the same size.
 
 Threads. Modal ``cpu=2`` is two physical cores, four hardware threads.
-Torch gets ``SOWELL_TORCH_THREADS`` (default 2, the measured best on a
-2-CPU set) via ``torch.set_num_threads`` in ``@modal.enter``, before the
-first model load. ``SOWELL_TORCH_INTEROP_THREADS`` (default 1) does the same
-for inter-op. Both are read once per container, so changing them needs a
-redeploy. ``modal/sowell_bench.py`` measures 2 vs 4 on the same image.
+Torch gets ``SOWELL_TORCH_THREADS`` (default 4) via ``torch.set_num_threads``
+in ``@modal.enter``, before the first model load.
+``SOWELL_TORCH_INTEROP_THREADS`` (default 1) does the same for inter-op. Both
+are read once per container, so changing them needs a redeploy.
+
+The default is 4 because it was measured on this image
+(``modal/sowell_bench.py``, Drew, cpu=2, two rounds x 2 repeats). The
+719-character harbor paragraph is 39.7 s of audio: 2 threads took 25.3-27.1 s
+wall (RTF 1.46-1.57), 4 threads took 16.5-19.3 s (RTF 2.06-2.41) — about
+1.5x faster at the same container cost.
 
 Volumes. Drew's weights are private and are not in the image. They come from
 the ``andrew-distill`` volume, default mount ``/andrew-distill``:
@@ -73,9 +78,9 @@ DREW_VOLUME_MOUNT = os.environ.get("DREW_VOLUME_MOUNT", "/andrew-distill")
 app = modal.App(APP_NAME)
 MAX_CHARS = 2000
 #: Torch intra-op threads. Read once per container in `@modal.enter`, before
-#: the first model load. The default stays 2 (the measured best on 2 CPUs);
-#: `modal/sowell_bench.py` measures 2 vs 4 on this same image.
-TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "2")
+#: the first model load. Default 4: benchmarked ~1.5x faster than 2 on cpu=2
+#: (RTF 2.06-2.41 vs 1.46-1.57). `modal/sowell_bench.py` re-measures it.
+TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "4")
 PACK = os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt")
 MANIFEST = os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json")
 

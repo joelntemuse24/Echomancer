@@ -8,7 +8,8 @@ Ryan stays on Edge and is not spoken again. A custom clone is untouched.
 ## One app, not a second fleet
 
 The class has `min_containers=0`, `max_containers` default 6, 2 CPU, 6 GB,
-and 2 threads (`SOWELL_TORCH_THREADS`). `@modal.enter` loads one Kokoro model
+and 4 Torch threads (`SOWELL_TORCH_THREADS`; benchmarked ~1.5x faster than 2
+on cpu=2 — see `docs/sowell-voice-runbook.md`). `@modal.enter` loads one Kokoro model
 and two phonemizers: American for the Sowell pack, British (`lang_code='b'`)
 for `bm_george`. Drew is the second resident kmodel when its volume is
 mounted.

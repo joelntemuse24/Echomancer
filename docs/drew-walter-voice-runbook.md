@@ -84,7 +84,7 @@ One Modal fleet serves all three narrators. Two numbers decide concurrency:
 | `SOWELL_MAX_CONTAINERS` | 6 | Fleet cap. Also read by the worker as its cross-process cap, so several books cannot open more concurrent Kokoro calls than the fleet. |
 | `SOWELL_BOOK_LANES` | 6 | Lanes one book may ask for. Clamped to 8 and to the fleet. |
 | `SOWELL_SCALEDOWN_SECONDS` | 60 | Idle time before a container goes away. |
-| `SOWELL_TORCH_THREADS` | 2 | Torch intra-op threads, applied in `@modal.enter`. |
+| `SOWELL_TORCH_THREADS` | 4 | Torch intra-op threads, applied in `@modal.enter`. Benchmarked ~1.5× faster than 2 on cpu=2. |
 | `SOWELL_TORCH_INTEROP_THREADS` | 1 | Torch inter-op threads, same place. |
 
 A book's lanes are then its fair share of the fleet among the Kokoro books
@@ -101,13 +101,28 @@ take.
 # echomancer-s2-clone.
 SOWELL_MAX_CONTAINERS=6 \
 SOWELL_SCALEDOWN_SECONDS=60 \
-SOWELL_TORCH_THREADS=2 \
+SOWELL_TORCH_THREADS=4 \
 modal deploy modal/sowell_worker.py
 
-# Measure 2 vs 4 threads on the same image (CPU only, no GPU):
+# Re-measure thread counts on the same image (CPU only, no GPU):
 modal run modal/sowell_bench.py --threads 2
 modal run modal/sowell_bench.py --threads 4
 ```
+
+`SOWELL_TORCH_THREADS=4` is the default for a measured reason. On
+`echomancer-sowell` (Drew, `cpu=2`, two rounds × 2 repeats,
+`modal/sowell_bench.py`), the 719-character harbor paragraph is 39.7 s of
+audio:
+
+| Threads | Wall | RTF |
+|--|--|--|
+| 2 | 25.3–27.1 s | 1.46–1.57 |
+| 4 | 16.5–19.3 s | 2.06–2.41 |
+
+Prose (1.25–1.57 → 1.80–2.47) and the short opening (1.35–1.58 → 1.84–3.07)
+followed the same shape. 4 threads is about **1.5× faster** at the same
+container cost, so it is the default; `min(n, os.cpu_count() or 4)` only
+clamps a smaller host.
 
 Then set the Next.js/worker environment. Drew needs all three:
 

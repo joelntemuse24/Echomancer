@@ -72,32 +72,38 @@ def kpipeline():
 
 
 def cpu_threads() -> int:
-    """Default is the container's 2 CPUs. A higher value is only for a local probe."""
-    raw = os.environ.get("SOWELL_CPU_THREADS", "2")
+    """Threads for the container's 2 physical cores. Default 4.
+
+    Measured on the deployed image (`modal/sowell_bench.py`, Drew, cpu=2):
+    4 threads is about 1.5x faster than 2 (harbor RTF 2.06-2.41 vs 1.46-1.57).
+    The clamp is the local CPU count so a smaller host does not over-subscribe.
+    """
+    raw = os.environ.get("SOWELL_CPU_THREADS", "4")
     try:
         n = int(raw)
     except ValueError:
-        n = 2
-    return max(1, min(n, os.cpu_count() or 2))
+        n = 4
+    return max(1, min(n, os.cpu_count() or 4))
 
 
 def torch_threads() -> int:
     """Torch intra-op threads for the container.
 
     ``SOWELL_TORCH_THREADS`` is the knob the Modal worker sets from
-    ``@modal.enter``. It falls back to ``SOWELL_CPU_THREADS`` so an existing
-    deployment that only sets the older name keeps its current behaviour.
-    The default stays 2: on a 2-CPU set a 4-thread pool measured slower, and
-    the orchestrator benchmarks 2 vs 4 before changing it.
+    ``@modal.enter``. It falls back to ``SOWELL_CPU_THREADS`` so a deployment
+    that only sets the older name keeps working.
+
+    Default 4, measured on the deployed image: 2 threads gave RTF 1.46-1.57 on
+    the 719-character harbor paragraph, 4 gave 2.06-2.41 (~1.5x faster).
     """
     raw = os.environ.get("SOWELL_TORCH_THREADS") or os.environ.get(
-        "SOWELL_CPU_THREADS", "2"
+        "SOWELL_CPU_THREADS", "4"
     )
     try:
         n = int(raw)
     except ValueError:
-        n = 2
-    return max(1, min(n, os.cpu_count() or 2))
+        n = 4
+    return max(1, min(n, os.cpu_count() or 4))
 
 
 def torch_interop_threads() -> int:

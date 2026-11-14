@@ -127,18 +127,31 @@ Create Modal secret `echomancer-sowell` with `SOWELL_TOKEN`. Then:
 ```bash
 SOWELL_MAX_CONTAINERS=6 \
 SOWELL_SCALEDOWN_SECONDS=60 \
-SOWELL_TORCH_THREADS=2 \
+SOWELL_TORCH_THREADS=4 \
 modal deploy modal/sowell_worker.py
 ```
 
-Threads: `SOWELL_TORCH_THREADS` (default 2) is applied by
+Threads: `SOWELL_TORCH_THREADS` (default **4**) is applied by
 `torch.set_num_threads` in `@modal.enter`, before the first model load.
 `SOWELL_TORCH_INTEROP_THREADS` (default 1) is the same for inter-op. Both are
 read once per container, so changing them needs a redeploy. Torch only
 accepts `set_num_interop_threads` before its pool starts; a second call is
 ignored rather than fatal.
 
-Measure 2 vs 4 on the same image before changing the default. The benchmark is
+4 is the default because it was measured on the deployed image, not inferred
+from a local probe:
+
+| Text | Chars | Audio | 2 threads wall | 2 threads RTF | 4 threads wall | 4 threads RTF |
+|--|--|--|--|--|--|--|
+| harbor | 719 | 39.7 s | 25.3–27.1 s | 1.46–1.57 | 16.5–19.3 s | 2.06–2.41 |
+| prose | — | — | — | 1.25–1.57 | — | 1.80–2.47 |
+| opening | — | — | — | 1.35–1.58 | — | 1.84–3.07 |
+
+Two rounds × 2 repeats, Drew, `cpu=2`, `modal/sowell_bench.py`. 4 threads is
+about **1.5× faster** at the same container cost, so 4 is the default;
+`min(n, os.cpu_count() or 4)` only clamps a smaller host.
+
+Re-measure on the same image before changing it again. The benchmark is
 CPU-only (no GPU, no GPU image) and reads no `echomancer-sowell` secret:
 
 ```bash
@@ -193,13 +206,16 @@ A request over 2,000 characters is refused by the container. Kokoro's
 own splitter still runs inside that cap. The container answers 429
 while its one resident model is speaking.
 
-Torch is pinned to 2 threads by default (`SOWELL_TORCH_THREADS`, with
-`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and `MKL_NUM_THREADS` in step).
-An older deployment that only sets `SOWELL_CPU_THREADS` keeps working: it is
-the fallback name. The model is `eval()` and the render runs under
-`inference_mode`. A 4-thread pool on a 2-CPU set was slower in the local
-probe below, which is why 2 is still the default; the Modal benchmark is how
-to re-check that on the deployed image.
+Torch runs 4 threads (`SOWELL_TORCH_THREADS`, with `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, and `MKL_NUM_THREADS` in step). An older deployment
+that only sets `SOWELL_CPU_THREADS` keeps working: it is the fallback name.
+The model is `eval()` and the render runs under `inference_mode`.
+
+The local table below is the older probe, kept for the audio figures. Its
+2-CPU 4-thread row (27.594 s) is a **local** result that disagreed because the
+probe pinned `taskset -c 0,1` on a busy desktop, not Modal's 2 dedicated
+cores. The deployed measurement above supersedes it: on `echomancer-sowell`
+4 threads is ~1.5× faster than 2, and 4 is now the default.
 
 Measured here with the real pack and the pinned base. Not a listening
 test. The paragraph is 719 characters, 144 words, 38.125 seconds of

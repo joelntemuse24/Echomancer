@@ -82,16 +82,23 @@ def test_espeak_and_ffmpeg_are_present_and_no_second_python_is_installed() -> No
     assert not any("nltk" in line.lower() for line in instruction_lines(text))
 
 
-def test_torch_threads_are_an_env_knob_with_two_as_the_default() -> None:
+def test_torch_threads_are_an_env_knob_with_four_as_the_default() -> None:
     text = dockerfile()
-    assert "ENV SOWELL_TORCH_THREADS=2" in text
+    # 4 threads on Modal's 2 physical cores: benchmarked ~1.5x faster than 2
+    # on the deployed image (RTF 2.06-2.41 vs 1.46-1.57 on the harbor
+    # paragraph). The OMP/BLAS/MKL variables stay in step.
+    assert "ENV SOWELL_TORCH_THREADS=4" in text
+    assert "ENV SOWELL_CPU_THREADS=4" in text
     assert "ENV SOWELL_TORCH_INTEROP_THREADS=1" in text
-    # The BLAS/OMP variables stay in step with torch's own pool.
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-        assert f"ENV {name}=2" in text
+        assert f"ENV {name}=4" in text
     engine = (ROOT / "scripts" / "sowell" / "engine.py").read_text()
     assert "def apply_torch_threads() -> int:" in engine
     assert "torch.set_num_threads(n)" in engine
+    # The fallback default is 4 in both readers, clamped to the local CPU count.
+    assert 'os.environ.get("SOWELL_CPU_THREADS", "4")' in engine
+    assert '"SOWELL_CPU_THREADS", "4"' in engine
+    assert "os.cpu_count() or 4" in engine
 
 
 def test_worker_applies_threads_before_loading_a_model() -> None:
@@ -196,7 +203,7 @@ def test_worker_class_resolves_with_the_declared_fleet() -> None:
     assert kwargs["memory"] == 6144
     assert kwargs["cpu"] == 2
     assert "gpu" not in kwargs
-    assert worker.TORCH_THREADS == "2"
+    assert worker.TORCH_THREADS == "4"
 
 
 def test_bench_app_is_cheap_and_gpu_free() -> None:

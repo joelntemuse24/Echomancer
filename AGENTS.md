@@ -326,9 +326,13 @@ speech. Section order is unaffected: an index is bound before its render
 starts and the join still walks `0..N-1`. Image cold start is baked: spaCy
 `en_core_web_sm` 3.8.0, Kokoro's `config.json` and `kokoro-v1_0.pth` at the
 pinned revision, and `bm_george.pt`; `HF_HOME` is set before those layers.
-Torch threads are `SOWELL_TORCH_THREADS` (default 2), applied in
-`@modal.enter` before the first load; `modal/sowell_bench.py` measures thread
-counts on the same CPU-only image.
+Torch threads are `SOWELL_TORCH_THREADS` (default **4**), applied in
+`@modal.enter` before the first load. 4 is measured, not guessed: on
+`echomancer-sowell` (Drew, `cpu=2`, two rounds x 2 repeats) the 719-character
+harbor paragraph is 39.7 s of audio and took 25.3-27.1 s at 2 threads
+(RTF 1.46-1.57) versus 16.5-19.3 s at 4 (RTF 2.06-2.41) — about 1.5x faster
+at the same container cost. `modal/sowell_bench.py` re-measures it on the
+same CPU-only image.
 
 **Drew speed:** Drew renders at Kokoro speed **0.88**, which is real
 Andrew's natural 1x. That 0.88 is applied **once**, in the container
