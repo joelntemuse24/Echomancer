@@ -116,7 +116,7 @@ export function userFriendlyError(rawError: string | null): string {
   )
     return "Too fast. Wait a minute.";
   if (lower.includes("hd voices") || lower.includes("premium"))
-    return "Pick Andrew, Ava, Libby, or Ryan.";
+    return "Pick Drew, Ava, Libby, or George.";
   if (lower.includes("no audio sections") || lower.includes("no valid audio") || lower.includes("no text to synthesize"))
     return "Nothing was spoken. The file may be empty.";
   if (lower.includes("cancelled by user"))

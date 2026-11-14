@@ -1,5 +1,6 @@
 /**
- * Shared cold-start for the general CPU app and the Sowell/George Kokoro app.
+ * Shared cold-start for the general CPU app and the Kokoro CPU app that
+ * serves Drew, Walter, and George.
  *
  * One row per pool, not per person. A click inside the hold does not extend
  * it and does not send another request, so it cannot keep a container up or
@@ -11,6 +12,8 @@
 import { execute, queryOne } from "@/lib/turso";
 import { georgeEndpoint, georgeReady } from "@/lib/tts/george-voice";
 import { sowellEndpoint, sowellReady } from "@/lib/tts/sowell-voice";
+import { drewEndpoint, drewReady } from "@/lib/tts/drew-voice";
+import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
 
 export const WARM_HOLD_MS = 300_000;
 
@@ -18,14 +21,12 @@ export type WarmPool = "cpu" | "kokoro";
 export type WarmReason = "create" | "voice";
 export type WarmPostResult = "ready" | "unreachable" | "unconfigured";
 
-const KOKORO_VOICES = new Set(["sowell", "george"]);
-
 export function poolsForWarm(input: {
   reason: WarmReason;
   voiceId?: string | null;
 }): WarmPool[] {
   const voice = (input.voiceId ?? "").trim();
-  const kokoro = KOKORO_VOICES.has(voice);
+  const kokoro = isKokoroCpuVoiceId(voice);
   if (input.reason === "voice") return kokoro ? ["kokoro"] : [];
   return kokoro ? ["cpu", "kokoro"] : ["cpu"];
 }
@@ -74,6 +75,15 @@ function hostUrl(raw: string | undefined): string | null {
 }
 
 function kokoroTarget(env: NodeJS.ProcessEnv): { url: string; token: string } | null {
+  // Drew first: it is the default narrator, so its endpoint is the one a
+  // create-flow warm must reach when more than one is configured.
+  try {
+    if (drewReady(env)) {
+      return { url: drewEndpoint(env), token: env.DREW_TOKEN?.trim() || "" };
+    }
+  } catch {
+    /* the next configured voice is the same app. */
+  }
   try {
     if (sowellReady(env)) {
       return { url: sowellEndpoint(env), token: env.SOWELL_TOKEN?.trim() || "" };

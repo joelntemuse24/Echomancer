@@ -81,6 +81,7 @@ import {
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import { duplicateCloneDateLabel } from "@/lib/clone-list-label";
+import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
 import { ECHOMANCER_ANDREW_CATALOG_VOICE_ID } from "@/lib/tts/standard-voice";
 import { voiceIdAfterPathChange } from "@/lib/voice-path-selection";
 import {
@@ -623,7 +624,8 @@ export default function VoiceSelectionPage() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
-    if (id === "sowell" || id === "george") {
+    // Drew, Walter, and George all live on the Kokoro CPU app.
+    if (isKokoroCpuVoiceId(id)) {
       requestCapacityWarm({ voiceId: id, reason: "voice" });
     }
     if (activePath === "clone") setVoicePath(null);
@@ -1209,7 +1211,7 @@ export default function VoiceSelectionPage() {
     );
     const voiceNote =
       voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
-        ? "Same delivery as Andrew, generated on our own machine."
+        ? "Warm US male delivery, generated on our own machine."
         : duplicateCloneDateLabel(cloneVoices, voice);
     const previewBusyElsewhere =
       (!!previewLoading && previewLoading !== voice.id) ||
