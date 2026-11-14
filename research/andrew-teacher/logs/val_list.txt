@@ -1,0 +1,60 @@
+/vol/dataset_edge/wavs/edge_10642.wav|ɪn lˈAt ʤˈun, wˌɛn ɪnvˈAʒən wʌz bˈiɪŋ dəsˈIdᵻd, hi hæd ɹˈʌʃt lə mˈA tə wˈɔʃɪŋtən tə wˈɜɹk ðə nˈʌmbəɹz.|0
+/vol/dataset_edge/wavs/edge_08870.wav|lˈIk fˈɛɹmˌiz ænd ˈændəɹsᵊnz pɹˈiviəs ɪkspˈɛɹəmənt, ðə nˈu pɹˈɑʤˌɛkt ɪnvˈɑlvd mˈɛʒəɹɪŋ nˈutɹˌɑn pɹədˈʌkʃən ɪn ɐ tˈæŋk ʌv lˈɪkwəd.|0
+/vol/dataset_edge/wavs/edge_02682.wav|bˌI tˈAkɪŋ həɡˈAliən θˈɔt tə ɐ mˈɔɹ ɹˈædəkᵊl lˈɛvᵊl, hi ɹəvˈild ɪts wˈiknəsᵻz.|0
+/vol/dataset_edge/wavs/edge_07522.wav|sˌO mI kˈɑmˌɛnt wɪl bi bɹˈif.|0
+/vol/dataset_edge/wavs/edge_00238.wav|wˌɛn hi fˈɪltəɹd ðə kɹˈɪstᵊlz fɹʌm ðə səlˈuʃən ðə ɹˌAdiOæktˈɪvəTi wˈɛnt wɪð ðə mˈæŋɡənˌiz, mˈʌʧ æz ðə ɹˌAdiOæktˈɪvəTi ðə ʤˈOliətkˈʌɹiz hæd ɪndˈust ɪn əlˈumənəm wˈɛnt ˈɔf wɪð ðə hˈIdɹəʤᵊn ɡˈæs.|0
+/vol/dataset_edge/wavs/edge_04856.wav|wˌɪʧ wʌz wˌʌt bˈOəɹz θˈɜɹd ɡɹˈæf dˈɛmənstɹˌATᵻd: ðə pɹˈɑbəbli kəntˈɪnjəwəs fˈɪʃən kɹˈɔs sˈɛkʃən ʌv jˈu tˈu θˈɜɹTi fˈIv.|0
+/vol/dataset_edge/wavs/edge_04363.wav|dˈɑnᵊld flˈændəɹz, tˈɔl ænd bˈɪɹdᵻd, nˈOn æz mˈɑl, kˌɑmpjətˈAʃən ɡɹˈup lˈidəɹ ɪn ðə θˌiəɹˈɛTəkᵊl dəvˈɪʒən, ɹˈOt ɐ kˈɑmɪk bælˈA, sˈækəɹ dˈu mˈAsə, sˈɛt tə ʤˈɔɹʤ ʤˈɜɹʃwɪn mjˈuzɪk.|0
+/vol/dataset_edge/wavs/edge_06070.wav|bˌisˈi: sˌO ðə ɹˈul ʌv ʧˈɛɹəTi ɪz ði ˈʌltəmət ɹˈikˌɔɹs?|0
+/vol/dataset_edge/wavs/edge_00712.wav|ˌɪt kˈAm ˈWt ɪn ˌAtˈin ˈO sˈɛvən, ðə jˈɪɹ ˈæftəɹ ðə pɹˈʌʃənz wɜɹ dəfˈiTᵻd bI nəpˈOliən.|0
+/vol/dataset_edge/wavs/edge_08205.wav|pˈipᵊl ətˈɛndᵻd bəkˈʌz ðA wɜɹ ˈɪntɹəstᵻd.|0
+/vol/dataset_edge/wavs/edge_05975.wav|hˈɜɹldəɹlˌɪn wʌz ði ˈOnli wˈʌn æt ðə tˈIm ʌv hˈɛʤᵊl ænd klˈɔswɪts tə hæv ˌʌndəɹstˈʊd ðə dˈAnʤəɹ ʌv pɹɑksˈɪməTi əmˈʌŋ hjˈumənz.|0
+/vol/dataset_edge/wavs/edge_03045.wav|məskˈiTOz ænd flˈIz, skwˈɜɹᵊlz, fˈæmᵊli pˈɛts kɹˈækᵊld ænd wɜɹ ɡˈɔn.|0
+/vol/dataset_edge/wavs/edge_05663.wav|ˌɪf ði ˈɛləmənts wɜɹ bˈɪlt ˌʌp fɹʌm hˈIdɹəʤᵊn ˈæTəmz, wˌI dˈɪd ðə hˈIdɹəʤᵊn ˈæTəm ɪtsˈɛlf, ði ˌɛləmˈɛntᵊl bˈɪldɪŋ blˈɑk, wˈA wˈʌn pYnt zˈɪɹO zˈɪɹO ˈAt əlˈOn?|0
+/vol/dataset_edge/wavs/edge_08983.wav|Iɹˈɑnəkᵊli, hi fˈɪɹd ðæt ˈɛɹiə bˈɑmɪŋ wʊd slˈækən hɪz kɹˈuz hˈɑɹdwˌʌn skˈɪlz.|0
+/vol/dataset_edge/wavs/edge_01793.wav|ɪn ðə ʃɪkˈɑɡO pɹˈɑʤˌɛkt ðə məɹˈæl ʌv ðə sˈIəntɪsts kʊd ˈɔlmOst bi plˈɑTᵻd ɪn ɐ ɡɹˈæf bI kˈWntɪŋ ðə nˈʌmbəɹ ʌv lˈIts bˈɜɹnɪŋ ˈæftəɹ dˈɪnəɹ ɪn ði ˈɔfəsᵻz ɪn ˈɛkhɑɹt hˈɔl.|0
+/vol/dataset_edge/wavs/edge_08330.wav|ðˌɛɹ wʌz nˈO “dəzˈIəɹ fɔɹ ɹˌɛkəɡnˈɪʃən” bətwˈin ðə tˈutsiz ænd hˈutˌuz, bˌʌt ɐ twˌɪnlˈIk ɹˈIvəlɹi ðæt wˈɛnt tʊ ɪkstɹˈimz ænd dəʤˈɛnəɹˌATᵻd ˈɪntu ʤˈɛnəsˌId.|0
+/vol/dataset_edge/wavs/edge_04181.wav|ðˈɛn hi tˈɛlz ˌʌs ðæt hˈæf ɐn ˈWəɹ lˈATəɹ ɪt ɪz ˈɔl ˈOvəɹ, ðɛɹ ɪz nˈO mˈɔɹ hˌɛzətˈAʃən, wi hæv kɹˈɔst ðə lˈIn, wi hæv səɹvˈIvd ði ɔɹdˈil.|0
+/vol/dataset_edge/wavs/edge_05054.wav|ðˌɪs ɪz ɪndˈid ði ˌɛskəlˈAʃən tˈɔɹdz ʌndˌɪfəɹɹˌɛnʃɪˈAʃən ðæt klˈɔswɪts ɡlˈɪmpst bəhˈInd ðə lˈɔ ʌv ðə dˈuəl.|0
+/vol/dataset_edge/wavs/edge_06818.wav|sˈi ðə kɹətˈik ʌv pjˈʊɹ ɹˈizᵊn, ˌIˌIˈI, sˈɛkʃən ɪlˈɛvən pˈæsˌɪm.|0
+/vol/dataset_edge/wavs/edge_00273.wav|ˌɪt wʌz, hWˈɛvəɹ, kwˈIt ɐ ʧˈælənʤ tə dˈil wɪð hˌɪm, sˈɪns hi kʊd nˈiðəɹ ɹˈid nˈɔɹ spˈik ˈɪŋɡlɪʃ.|0
+/vol/dataset_edge/wavs/edge_10311.wav|wəTˈɛvəɹ ɪts ˈɔɹəʤᵊnz, nˈiʧəz mˈædnəs sˈɜɹtnli dəɹˈIvz fɹʌm ðə kˈɑnstᵊnt, ɪnkɹˈisɪŋli əksˈɛləɹˌATᵻd swˈɪʧɪŋ fɹʌm “ðə kɹˈusᵻfˌId” tə dˌIənˈɪsiəs ænd fɹʌm ɑɹkˈAɪk ɹəlˈɪʤᵊn tə kɹˌɪsʧiˈænəTi.|0
+/vol/dataset_edge/wavs/edge_09197.wav|wˌi kəntˈɪnju tə θˈɪŋk əbˈWt ði əksˌɛləɹˈAʃən ʌv kəntˈɛmpəɹˌɛɹi kˈɑnflˌɪkts æz ɪf ðA fˈɑlOd ðə sˈAm ɹˈulz ʌv lˈɑʤɪk æz ðA dˈɪd ɪn ðə pˈæst.|0
+/vol/dataset_edge/wavs/edge_00475.wav|ðˌɛɹ ɪz ɐn ɪmplˈækəbᵊl hˈɪndu vjˈu ˌɔn ðɪs pɹisˈIsli bəkˈʌz ðˈæt kˈʌlʧəɹ dˈʌz nˌɑt fˈɪɹ tʊ əknˈɑləʤ ðæt hjˈumən æktˈɪvəTi əsˈɛnʧəli kˈʌmz ˈʌndəɹ ðə kˈæTəɡˌɔɹi ʌv wˈɔɹ.|0
+/vol/dataset_edge/wavs/edge_04471.wav|mˈɛn lˈIk tə ɹəkˈɔl, ɪn lˈATəɹ jˈɪɹz, wˌʌt ðA sˈɛd æt sˌʌm ɪmpˈɔɹtᵊnt ɔɹ pˈɑsəbli hɪstˈɔɹɪk mˈOmᵊnt ɪn ðɛɹ lˈIvz. . . .|0
+/vol/dataset_edge/wavs/edge_05670.wav|hˌi pɹədˈust ɪt nˈW ɪn ɐ bɹˈWn pˈApəɹ bˈæɡ ænd pɹizˈɛntᵻd ɪt tə fˈɛɹmˌi.|0
+/vol/dataset_edge/wavs/edge_02399.wav|wˌi nˈiðəɹ kæn nˈɔɹ wˈɑnt tə sˈi vˈIᵊləns æz ɪt ɪz.|0
+/vol/dataset_edge/wavs/edge_06788.wav|ði ˈɔɹ wʌz stˈɔɹd ɪn ði ˈOpᵊn ɪn tˈu θˈWzᵊnd stˈil dɹˈʌmz æt pˈɔɹt ɹˈɪʧmənd ˌɔn stˈAtn ˈIlənd.|0
+/vol/dataset_edge/wavs/edge_03761.wav|ˈIɹin hæd səksˈidᵻd hɜɹ mˈʌðəɹ æz dəɹˈɛktəɹ ʌv ðə ɹˈAdiəm ˈɪnstətˌut ɪn nˌIntˈin θˈɜɹTi tˈu: ðə lˌɔŋwˈɪdOd pˌIənˈɪɹ wʌz mˈɔɹTəli ˈɪl wɪð lukˈimiə ɪndˈust bI tˈu mˈɛni jˈɪɹz ʌv ɪkspˈOʒəɹ tə ɹˌAdiˈAʃən.|0
+/vol/dataset_edge/wavs/edge_09325.wav|ˈInstInz nˌIntˈin ˈO fˈIv wˈɜɹk ˌɔn ðə fˌOTOəlˈɛktɹɪk əfˈɛkt hæd dˈɛmənstɹˌATᵻd ðæt lˈIt sˈʌmtˌImz bəhˈAvz æz ɪf ɪt kənsˈɪsts nˌɑt ʌv wˈAvz bˌʌt ʌv pˈɑɹTəkᵊlz.|0
+/vol/dataset_edge/wavs/edge_06386.wav|“hˌæfwˈA dˌWn wi sˈITᵻd ˌWəɹ əbʤˈɛktɪv fɔɹ ðə fˈɜɹst tˈIm, bəlˈO ˌʌs ˌɔn ði ˈʌðəɹ sˈId.|0
+/vol/dataset_edge/wavs/edge_07737.wav|ˌɪt ˈɔt tʊ ˈɛnd bI ðə dəfˈit ʌv ðə sˈɛntɹəl pˈWəɹz, ðˈæt ɪz ðə ˈɔstɹOhʌŋɡˈɛɹiən mˈɑnəɹki ænd ʤˈɜɹməni, ænd ˈɔlsO ˈɛnd bI ðə dəfˈit ʌv ɹˈʌʃə.|0
+/vol/dataset_edge/wavs/edge_08978.wav|wˌi . . . pɹˈɑpt ðə dˈɔɹ ˈOpᵊn sˌO ɪt wˈʊdᵊnt pˈɪnʧ ði ɪkstˈɛnʃᵊn kˈɔɹdz (ənˈʌðəɹ sˈAfti vˌIəlˈAʃən).|0
+/vol/dataset_edge/wavs/edge_07945.wav|ðˌA wɜɹ θˌɜɹtˈin, pəɹhˈæps fˌɔɹtˈin jˈɪɹz ˈOld.|0
+/vol/dataset_edge/wavs/edge_08841.wav|tə lˈɛs ɪnspˈIəɹd mˌɛkənˈɪʃənz ðə skˈæTəɹɪŋ pɹˈɑbləm lˈʊkt ˌɪnsəɹmˈWntəbᵊl. mˈɜɹᵊl tˈuv wʌz skˈɛptəkᵊl.|0
+/vol/dataset_edge/wavs/edge_00150.wav|wˌi dˈim ɪt mˌɛsiˈænɪk θˈɔt, ɪn ðə sˈɛns ðæt ɪt ɪz θɹu ðə tɹˈIᵊlz ʌv hˈɪstəɹi ænd θɹu ðɛɹ mˈuvmᵊnts ðæt ðə hˈOp ʌv fɹətˈɜɹnəTi ʃˈInz.|0
+/vol/dataset_edge/wavs/edge_09626.wav|nəpˈOliən tˈʊk kˈɛɹ ʌv pɹəkjˈʊɹɪŋ ðˈæt fɔɹ hˌɪm.|0
+/vol/dataset_edge/wavs/edge_07174.wav|ðˌɛɹ ɪz nˈʌθɪŋ nˌIəlˈɪstɪk əbˈWt ði əpˌɑkəlˈɪptɪk spˈɪɹət: ɪt kæn mˌAk sˈɛns ʌv ðə tɹˈɛnd tˈɔɹd ðə wˈɜɹst ˈOnli fɹʌm wɪðˈɪn ðə fɹˈAmwˌɜɹk ʌv vˈɛɹi pɹəfˈWnd hˈOp.|0
+/vol/dataset_edge/wavs/edge_01638.wav|ʧˈædwɪk hæd ɪmpɹˈuvd sˌɪntəlˈAʃən kˈWntɪŋ bI dəvˈɛləpɪŋ ɐ mˈIkɹəskˌOp ðæt ɡˈæðəɹd mˈɔɹ lˈIt ænd bI tˈItnɪŋ ˌʌp pɹəsˈiʤəɹz.|0
+/vol/dataset_edge/wavs/edge_04401.wav|wˌɛn ðA fˈInᵊli stˈɑpt hˌɪm ɪn ðə pɹˈʌʃən pɹˈɑvᵊnsᵻz ʌv ɹˈInlˌænd, ðə hˈOl pˈɑɹTi wʌz sˈɜɹʧt.|0
+/vol/dataset_edge/wavs/edge_08117.wav|əpˈɛɹəntli hi wʌz lˈɜɹnɪŋ tə stˈɪɹ bI ðˈæt ɡɹˈʌʤɪŋ ˌɪnkɹədˈuləTi æz bˈOəɹ stˈɪɹd bI ðə mˈædnəs ʌv ɐ tɹˈuli əɹˈɪʤənᵊl Idˈiə.|0
+/vol/dataset_edge/wavs/edge_00034.wav|wˌʌt dəsˈIdᵻd hˌɪm (ˈɔlmOst ˌɪnvˈɛɹiəbli) wʌz ɐ kˈɑlɪʤ pɹˈɑʤˌɛkt ɪn wˌɪʧ hi hæd əkˈAʒᵊn tə dˈu sˌʌm ˌɪndəpˈɛndənt ɹˈisˌɜɹʧ—tə fˈInd ˈWt θˈɪŋz fɔɹ hɪmsˈɛlf.|0
+/vol/dataset_edge/wavs/edge_05643.wav|fˈIv jˈɪɹz ʌv ɪkspˈɛnsɪv lˈændfˌɪl ænd kənstɹˈʌkʃən kˈʌlmənˌATᵻd ðˈæt jˈɪɹ ɪn ði ˈOpᵊnɪŋ ʌv jˈuʤɪnə hˈɑɹbəɹ, ɐ ɹˌɛkləmˈAʃən pɹˈɑʤˌɛkt ðæt əstˈæblɪʃt hˌɪɹOʃˈimə æz ɐ mˈAʤəɹ kəmˈɜɹʃəl pˈɔɹt.|0
+/vol/dataset_edge/wavs/edge_07449.wav|klˈɔswɪts θˈɪŋks ˈOvəɹ əɡˈɛnst nəpˈOliən; hi ðˈʌs tɹˈIz tə kənstɹˈʌkt ɐ kˈWntəɹmˌɑdᵊl, ænd fɔɹ ðˈæt hi lˈʊks tə ðə mˈɪθəkᵊl fˈɪɡjəɹ ʌv fɹˈɛdɹɪk ðə ɡɹˈAt.|0
+/vol/dataset_edge/wavs/edge_10891.wav|ðə stˈAt dəpˈɑɹtmənt hæd ənˈWnst ðˈæt mˈɔɹnɪŋ ðæt tˈu mˈɪljᵊn ʤˈuz hæd pˈɛɹɪʃt ɪn jˈʊɹəp ænd fˈIv mˈɪljᵊn mˈɔɹ wɜɹ ɪn dˈAnʤəɹ.|0
+/vol/dataset_edge/wavs/edge_01931.wav|ˌɪt wʌz ðˈʌs ðə fɹˈɛnʧ dəzˈIəɹ fɔɹ pˈis ðæt kˈɔzd ðə nˈu tɹˈɛnd tʊ ɪkstɹˈimz.|0
+/vol/dataset_edge/wavs/edge_00093.wav|tə ɹəpˈɔɹt ðə ɹˌiˌɔɹɡənəzˈAʃən kˈɑmptᵊn kˈɔld ðə ʤˈun twˈɛnti sˈɛvən mˈiTɪŋ ʌv hɪz ɡɹˈup lˈidəɹz ænd plˈænɪŋ bˈɔɹd.|0
+/vol/dataset_edge/wavs/edge_06896.wav|ʃˌi hæz əɡˈɛnst hɜɹ nˌɑt ˈOnli ði ˌæŋɡlOəmˈɛɹəkᵊn fˈɔɹsᵻz bˌʌt ðə ɹˈIzɪŋ fˈɔɹsᵻz ʌv ʧˈInə ænd ði ˈɑmənəs θɹˈɛt ʌv ɹˈʌʃə.|0
+/vol/dataset_edge/wavs/edge_07421.wav|“ðə wˈɔɹ dəpˈɑɹtmənt kənsˈɪdəɹz ðə pɹˈɑʤˌɛkt ɪmpˈɔɹtᵊnt,” sˈibɔɹɡ pˈɛɹəfɹˌAzᵻz ɡɹˈOvz fˈɔɹmjələ, wˌɪʧ ðA wʊd ˈɔl lˈɜɹn bI hˈɑɹt.|0
+/vol/dataset_edge/wavs/edge_05111.wav|smˈɪθ, lˈYd pˈi, ˈɛt ˈæl nˌIntˈin fˈɔɹTi sˈɛvən. ˌɔn ðə sˌɛpəɹˈAʃən ʌv ˈIsətˌOps ɪn kwˈɑntəTi bI əlˌɛktɹəmˌæɡnˈɛTɪk mˈinz.|0
+/vol/dataset_edge/wavs/edge_10620.wav|ˈɔɡʌst kˈɑntz fˈɔɹmədəbᵊl nˌæivɪtˈA ɪz ɐ klˈɪɹ sˈɪmptəm ʌv ðˈɪs.|0
+/vol/dataset_edge/wavs/edge_10073.wav|ðˈɛn wi wˈɛnt ˌɔn tə bəɹlˈɪn ænd sˈɔ ˈæbsəlˌut ɹˈuˌɪn. hˈɪtləɹz fˈɑli. hˌi ˌOvəɹɹˈiʧt hɪmsˈɛlf bI tɹˈIɪŋ tə tˈAk ˈɪn tˈu mˈʌʧ tˈɛɹətˌɔɹi.|0
+/vol/dataset_edge/wavs/edge_01781.wav|sˈibɔɹɡ lˈʊkt ɪnstˈɛd fɔɹ ɐ wˈA tə mˌAk mˈɔɹ plutˈOniəm wɪðˈWt ɐ pˈIl ænd ɐ wˈA tə wˈɜɹk wɪð kˈɑnsəntɹˌATᵻd səlˈuʃənz ʌv ðə lˈɪTᵊl hi mˌIt mˌAk.|0
+/vol/dataset_edge/wavs/edge_04747.wav|ɪn ðə lˈæst ənˈæləsɪs, hˌu dəsˈIdᵻd wˌʌt wʌz sˌIəntˈɪfəkᵊli “tɹˈu”? ˈɑɹmd wɪð ðiz kwˈɛsʧᵊnz, pˈɑlənˌɪi ðˈɛn stˈɛpt bˈæk ænd lˈʊkt æt sˈIəns fɹʌm ˌWtsˈId.|0
+/vol/dataset_edge/wavs/edge_06915.wav|hˌi ɹˌikənvˈind wɪð nˈɑbuʤi ˌɔn nOvˈɛmbəɹ sˌɛvəntˈin, nˌIntˈin fˈɔɹTi fˈɔɹ, tə ɹəpˈɔɹt ðæt “sˈɪns fˈɛbjəwˌɛɹi ʌv ðɪs jˈɪɹ ðɛɹ hæz nˌɑt bɪn ɐ ɡɹˈAt dˈil ʌv pɹˈɑɡɹəs.|0
+/vol/dataset_edge/wavs/edge_06333.wav|ˌI hˈOp ðə bˈʊk wɪl fˈInd ɐ wˈId ɹˈidəɹʃˌɪp.”|0
+/vol/dataset_edge/wavs/edge_00201.wav|ðˌA wɜɹ əsˈInd ɐn əpˈɑɹtmənt; ðə stˈInwA nˈɪɹli fˈɪld ðə lˈɪvɪŋ ɹˈum.|0
+/vol/dataset_edge/wavs/edge_03977.wav|ˌI hæd ɐ fˈilɪŋ wˈɔɹ wʌz kˈʌmɪŋ.|0
+/vol/dataset_edge/wavs/edge_07297.wav|ˌI kənˈɑt mˈuv tˈɔɹdz ɐn ˈɑbʤəkt wɪðˈWt mˈuvɪŋ tˈɔɹdz ðə mˈidiˌATəɹ, hˌu ɪnˈɛvəTəbli kəmpˈits wɪð mˌi fɔɹ ɪt.|0
+/vol/dataset_edge/wavs/edge_04655.wav|mˈOst sˈʌbstənsᵻz ɑɹ mˈɔɹ sˈɑljəbᵊl æt ɐ hˈI tˈɛmpɹəʧəɹ ðən ɐ lˈO.|0
+/vol/dataset_edge/wavs/edge_08357.wav|hˌi dˈɪd nˌɑt jˈɛt nˈO ðæt sˌipˈi wˈʌn hæd ɡɔn kɹˈɪTəkᵊl ʤˈʌst wˈʌn mˈʌnθ bəfˈɔɹ hɪz ɹəpˈɔɹt.|0

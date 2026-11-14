@@ -1,0 +1,88 @@
+The following values were not passed to `accelerate launch` and had defaults used instead:
+	`--num_machines` was set to a value of `1`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+[RANK 0] Detected kernel version 4.19.0, which is below the recommended minimum of 5.5.0; this can cause the process to hang. It is recommended to upgrade the kernel to the minimum version or higher.
+bert loaded
+bert_encoder loaded
+predictor loaded
+decoder loaded
+text_encoder loaded
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+warning: audio amplitude out of range, auto clipped.
+Epoch [1/3], Step [10/307], Mel Loss: 0.59886, Gen Loss: 5.54633, Disc Loss: 5.44972, Mono Loss: 0.02653, S2S Loss: 4.14209, SLM Loss: 2.03592
+Time elasped: 24.87559747695923
+Epoch [1/3], Step [20/307], Mel Loss: 0.48142, Gen Loss: 4.92911, Disc Loss: 5.31753, Mono Loss: 0.02829, S2S Loss: 4.15154, SLM Loss: 1.88022
+Time elasped: 36.00730276107788
+Epoch [1/3], Step [30/307], Mel Loss: 0.46856, Gen Loss: 4.90142, Disc Loss: 4.82273, Mono Loss: 0.03098, S2S Loss: 3.48954, SLM Loss: 1.88055
+Time elasped: 46.54663109779358
+Epoch [1/3], Step [40/307], Mel Loss: 0.44875, Gen Loss: 4.12911, Disc Loss: 4.39283, Mono Loss: 0.04479, S2S Loss: 3.54079, SLM Loss: 2.00112
+Time elasped: 57.102054595947266
+Epoch [1/3], Step [50/307], Mel Loss: 0.43726, Gen Loss: 3.83353, Disc Loss: 4.18289, Mono Loss: 0.04252, S2S Loss: 3.57835, SLM Loss: 2.08323
+Time elasped: 67.5093367099762
+Epoch [1/3], Step [60/307], Mel Loss: 0.43419, Gen Loss: 3.52015, Disc Loss: 4.03467, Mono Loss: 0.03563, S2S Loss: 3.18713, SLM Loss: 1.99011
+Time elasped: 78.1219391822815
+Epoch [1/3], Step [70/307], Mel Loss: 0.40721, Gen Loss: 3.29625, Disc Loss: 4.03533, Mono Loss: 0.03603, S2S Loss: 3.00661, SLM Loss: 1.79746
+Time elasped: 88.70526027679443
+Epoch [1/3], Step [80/307], Mel Loss: 0.39954, Gen Loss: 3.39343, Disc Loss: 4.01045, Mono Loss: 0.03525, S2S Loss: 2.96389, SLM Loss: 1.63539
+Time elasped: 98.36730885505676
+Epoch [1/3], Step [90/307], Mel Loss: 0.39218, Gen Loss: 3.41012, Disc Loss: 4.01103, Mono Loss: 0.04382, S2S Loss: 2.82405, SLM Loss: 1.73916
+Time elasped: 108.28796482086182
+Epoch [1/3], Step [100/307], Mel Loss: 0.39137, Gen Loss: 3.44684, Disc Loss: 3.98883, Mono Loss: 0.03304, S2S Loss: 2.54505, SLM Loss: 1.80794
+Time elasped: 118.67795705795288
+Epoch [1/3], Step [110/307], Mel Loss: 0.40894, Gen Loss: 3.40750, Disc Loss: 3.98691, Mono Loss: 0.02732, S2S Loss: 2.53487, SLM Loss: 1.68582
+Time elasped: 128.99252605438232
+Epoch [1/3], Step [120/307], Mel Loss: 0.39060, Gen Loss: 3.40186, Disc Loss: 4.00734, Mono Loss: 0.03292, S2S Loss: 2.51678, SLM Loss: 1.79123
+Time elasped: 138.86309933662415
+Epoch [1/3], Step [130/307], Mel Loss: 0.39679, Gen Loss: 3.38654, Disc Loss: 4.00054, Mono Loss: 0.02819, S2S Loss: 2.60557, SLM Loss: 1.64886
+Time elasped: 149.10194611549377
+Epoch [1/3], Step [140/307], Mel Loss: 0.38016, Gen Loss: 3.37346, Disc Loss: 3.98370, Mono Loss: 0.03105, S2S Loss: 2.64816, SLM Loss: 1.62272
+Time elasped: 159.75180292129517
+Epoch [1/3], Step [150/307], Mel Loss: 0.37836, Gen Loss: 3.36430, Disc Loss: 3.98467, Mono Loss: 0.03190, S2S Loss: 2.74394, SLM Loss: 1.80722
+Time elasped: 169.9494869709015
+Epoch [1/3], Step [160/307], Mel Loss: 0.38729, Gen Loss: 3.51891, Disc Loss: 3.99659, Mono Loss: 0.03542, S2S Loss: 2.56098, SLM Loss: 1.91656
+Time elasped: 181.06208753585815
+Epoch [1/3], Step [170/307], Mel Loss: 0.36583, Gen Loss: 3.32027, Disc Loss: 4.03456, Mono Loss: 0.02449, S2S Loss: 2.71102, SLM Loss: 1.58912
+Time elasped: 191.4093599319458
+Epoch [1/3], Step [180/307], Mel Loss: 0.37567, Gen Loss: 3.33706, Disc Loss: 3.99494, Mono Loss: 0.02709, S2S Loss: 2.43937, SLM Loss: 1.62374
+Time elasped: 201.47264432907104
+Epoch [1/3], Step [190/307], Mel Loss: 0.37472, Gen Loss: 3.44636, Disc Loss: 4.01797, Mono Loss: 0.03307, S2S Loss: 2.40406, SLM Loss: 1.62893
+Time elasped: 212.259948015213
+Epoch [1/3], Step [200/307], Mel Loss: 0.35879, Gen Loss: 3.35671, Disc Loss: 4.01727, Mono Loss: 0.03391, S2S Loss: 2.26861, SLM Loss: 1.49643
+Time elasped: 223.06962776184082
+Epoch [1/3], Step [210/307], Mel Loss: 0.36330, Gen Loss: 3.36426, Disc Loss: 3.97941, Mono Loss: 0.04276, S2S Loss: 2.54428, SLM Loss: 1.65172
+Time elasped: 233.39798021316528
+Epoch [1/3], Step [220/307], Mel Loss: 0.35297, Gen Loss: 3.30914, Disc Loss: 3.97839, Mono Loss: 0.03563, S2S Loss: 2.22065, SLM Loss: 1.45123
+Time elasped: 243.3994812965393
+Epoch [1/3], Step [230/307], Mel Loss: 0.37100, Gen Loss: 3.56040, Disc Loss: 3.99657, Mono Loss: 0.04410, S2S Loss: 2.23821, SLM Loss: 1.72404
+Time elasped: 253.20500302314758
+Epoch [1/3], Step [240/307], Mel Loss: 0.36971, Gen Loss: 3.48535, Disc Loss: 3.99979, Mono Loss: 0.04062, S2S Loss: 2.26147, SLM Loss: 1.80991
+Time elasped: 263.7891118526459
+Epoch [1/3], Step [250/307], Mel Loss: 0.36644, Gen Loss: 3.36575, Disc Loss: 3.97545, Mono Loss: 0.02883, S2S Loss: 2.11395, SLM Loss: 1.66402
+Time elasped: 274.6250021457672
+Epoch [1/3], Step [260/307], Mel Loss: 0.35392, Gen Loss: 3.39820, Disc Loss: 3.97048, Mono Loss: 0.03300, S2S Loss: 2.04484, SLM Loss: 1.53057
+Time elasped: 285.83558773994446
+Epoch [1/3], Step [270/307], Mel Loss: 0.35193, Gen Loss: 3.57619, Disc Loss: 3.93177, Mono Loss: 0.02796, S2S Loss: 1.90575, SLM Loss: 1.66096
+Time elasped: 296.296418428421
+Epoch [1/3], Step [280/307], Mel Loss: 0.34623, Gen Loss: 3.45103, Disc Loss: 4.00833, Mono Loss: 0.02808, S2S Loss: 1.85416, SLM Loss: 1.50025
+Time elasped: 306.86182832717896
+Epoch [1/3], Step [290/307], Mel Loss: 0.34904, Gen Loss: 3.42702, Disc Loss: 3.97774, Mono Loss: 0.04697, S2S Loss: 1.99189, SLM Loss: 1.68744
+Time elasped: 316.9325122833252
+Epoch [1/3], Step [300/307], Mel Loss: 0.35153, Gen Loss: 3.27095, Disc Loss: 3.97834, Mono Loss: 0.03198, S2S Loss: 1.97869, SLM Loss: 1.48570
+Time elasped: 327.01273250579834
+Epochs: 1
+Validation loss: 0.340
+
+
+
+
+
+
+
+
+Saving..
