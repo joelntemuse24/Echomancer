@@ -280,6 +280,21 @@ CREATE TABLE IF NOT EXISTS youtube_clips (
 CREATE INDEX IF NOT EXISTS idx_youtube_clips_queue ON youtube_clips (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_youtube_clips_user_day ON youtube_clips (user_id, created_at);
 
+-- ==================== BOOKMARKS ====================
+-- One playhead mark per tap. label is a snippet, not a note.
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  position_seconds REAL NOT NULL,
+  section_index INTEGER,
+  label TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job
+  ON bookmarks (user_id, job_id, section_index, position_seconds);
+
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.
 CREATE TABLE IF NOT EXISTS rate_limits (

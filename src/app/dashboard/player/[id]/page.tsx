@@ -65,7 +65,14 @@ import {
 } from "@/components/player-chapter-sheet";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import { ReadAlongFocus } from "@/components/read-along-focus";
+import { PlayerBookmarks } from "@/components/player-bookmarks";
 import { useReadAlongFocus } from "@/hooks/use-read-along-focus";
+import { useJobBookmarks } from "@/hooks/use-job-bookmarks";
+import {
+  bookmarkLabel,
+  passageSnippet,
+  type JobBookmark,
+} from "@/lib/player/bookmarks";
 import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import type { ReadAlongDocument, ReadAlongMode, ReadAlongPosition } from "@/lib/player/read-along";
 
@@ -216,6 +223,7 @@ function PlayerPageInner({ id }: { id: string }) {
   const [showTranscript, setShowTranscript] = useState(false);
   /** Read-along fills the viewport with its own slim player bar. */
   const { focus: focusTranscript, setFocus: setFocusTranscript } = useReadAlongFocus();
+  const jobBookmarks = useJobBookmarks(id);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState(false);
@@ -1176,6 +1184,79 @@ function PlayerPageInner({ id }: { id: string }) {
     job ?? { id: "", eta_seconds: null, eta_label: null, eta_state: null }
   );
 
+  const saveBookmark = () => {
+    if (!audioUrl || isStreamMode) return;
+    const audio = audioRef.current;
+    const positionSeconds =
+      audio && Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime;
+    const source = streamClock ?? transcript;
+    const passage = source
+      ? passageSnippet(source.blocks, charIndexForPlayback(source, readAlongPosition))
+      : null;
+    void jobBookmarks.save({
+      positionSeconds,
+      sectionIndex: readAlongMode === "section" ? segmentIndex : null,
+      label: bookmarkLabel({ passage, chapterTitle: view.dragLabel }),
+    });
+  };
+
+  const jumpToBookmark = (bookmark: JobBookmark) => {
+    if (isStreamMode) return;
+    const seconds = Math.max(0, bookmark.positionSeconds);
+    if (bookmark.sectionIndex != null) {
+      const seg = readyByIndex(job?.segments).get(bookmark.sectionIndex);
+      if (!seg) return;
+      const onSection =
+        Boolean(audioUrl?.includes("/sections/")) && segmentIndex === bookmark.sectionIndex;
+      const audio = audioRef.current;
+      if (onSection && audio && audio.readyState >= 1) {
+        pendingChapterSeekRef.current = null;
+        lastRequestedSeekRef.current = seconds;
+        audio.currentTime = seconds;
+        setCurrentTime(seconds);
+        if (audio.paused) audio.play().catch(() => {});
+        return;
+      }
+      pendingChapterSeekRef.current = { seconds, fraction: 0 };
+      playAfterLoadRef.current = true;
+      setSegmentIndex(bookmark.sectionIndex);
+      setCurrentTime(seconds);
+      setAudioUrl(`/api/storage/${seg.path}`);
+      return;
+    }
+    const full = job?.audio_url ? versionedAudioUrl(job.audio_url, job.updated_at) : null;
+    if (!full) return;
+    const onFull = audioUrl != null && !audioUrl.includes("/sections/");
+    const audio = audioRef.current;
+    if (!onFull || !audio || audio.readyState < 1) {
+      pendingChapterSeekRef.current = { seconds, fraction: 0 };
+      playAfterLoadRef.current = true;
+      setCurrentTime(seconds);
+      if (!onFull) setAudioUrl(full);
+      return;
+    }
+    pendingChapterSeekRef.current = null;
+    lastRequestedSeekRef.current = seconds;
+    audio.currentTime = seconds;
+    setCurrentTime(seconds);
+    if (!audio.error) setNotice(null);
+    if (audio.paused) audio.play().catch(() => {});
+  };
+
+  const bookmarkControl = (
+    <PlayerBookmarks
+      bookmarks={jobBookmarks.bookmarks}
+      disabled={isStreamMode || !audioUrl}
+      pending={jobBookmarks.pending}
+      notice={jobBookmarks.notice}
+      onSave={saveBookmark}
+      onJump={jumpToBookmark}
+      onRemove={(bookmarkId) => {
+        void jobBookmarks.remove(bookmarkId);
+      }}
+    />
+  );
+
   if (error) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
@@ -1341,10 +1422,13 @@ function PlayerPageInner({ id }: { id: string }) {
               onScrubCommit={handleScrubCommit}
               onScrubActiveChange={setIsDragging}
             />
-            <PlayerSpeedControl
-              speed={speed}
-              onSpeedChange={applySpeed}
-            />
+            <div className="flex items-center justify-center gap-1">
+              {focusTranscript && transcript ? null : bookmarkControl}
+              <PlayerSpeedControl
+                speed={speed}
+                onSpeedChange={applySpeed}
+              />
+            </div>
           </>
         ) : null}
         <button
@@ -1419,6 +1503,7 @@ function PlayerPageInner({ id }: { id: string }) {
           onScrubCommit={handleScrubCommit}
           onScrubActiveChange={setIsDragging}
           onSpeedChange={applySpeed}
+          bookmarkControl={bookmarkControl}
         />
       ) : null}
 

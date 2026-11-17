@@ -1489,7 +1489,7 @@ STORAGE_PATH=./data/storage # Dev only — ignored when R2 is configured
 
 `src/lib/tts/schema-migrate.ts` → `ensureTtsJobColumns()` runs on request paths
 and is **additive only** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`).
-It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `modal_gpu_leases`. `migrate-turso.sql` is
+It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `modal_gpu_leases`, `bookmarks`. `migrate-turso.sql` is
 the same schema for a fresh database and is also non-destructive — add new
 columns to the `JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
 

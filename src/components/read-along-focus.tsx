@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
@@ -86,6 +86,7 @@ export function ReadAlongFocus({
   onScrubCommit,
   onScrubActiveChange,
   onSpeedChange,
+  bookmarkControl,
 }: {
   document: ReadAlongDocument;
   position: ReadAlongPosition;
@@ -104,6 +105,7 @@ export function ReadAlongFocus({
   onScrubCommit: (seconds: number) => void;
   onScrubActiveChange: (dragging: boolean) => void;
   onSpeedChange: (next: number) => void;
+  bookmarkControl?: ReactNode;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
   /** The same remembered preference the inline player bar uses. */
@@ -152,7 +154,7 @@ export function ReadAlongFocus({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (shellRef.current?.querySelector('[role="listbox"]')) return;
+      if (shellRef.current?.querySelector('[role="listbox"], [data-bookmark-list]')) return;
       onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
@@ -210,6 +212,9 @@ export function ReadAlongFocus({
             onScrubCommit={onScrubCommit}
             onScrubActiveChange={onScrubActiveChange}
           />
+          {bookmarkControl ? (
+            <div className="flex items-center justify-center">{bookmarkControl}</div>
+          ) : null}
           <div className="flex items-center justify-between gap-2 pb-1">
             <div className="flex items-center">
               <button

@@ -373,6 +373,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_due ON jobs (job_kind, status, sched_not_before)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_active ON jobs (job_kind, status, lease_expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job ON bookmarks (user_id, job_id, section_index, position_seconds)`,
 ];
 
 const CREATE_TAKEHOME_CREATE_KEYS_SQL = `
@@ -449,6 +450,21 @@ CREATE TABLE IF NOT EXISTS remote_brake (
   updated_at INTEGER NOT NULL
 )`;
 
+/**
+ * One playhead mark per tap, owned by the same user id as the book.
+ * `label` is a chapter or transcript snippet captured at save time, not a note.
+ */
+const CREATE_BOOKMARKS_SQL = `
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  position_seconds REAL NOT NULL,
+  section_index INTEGER,
+  label TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+)`;
+
 const CREATE_CPU_TASKS_SQL = `
 CREATE TABLE IF NOT EXISTS cpu_tasks (
   id TEXT PRIMARY KEY,
@@ -489,7 +505,7 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
     'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases',
-    'remote_calls', 'remote_brake'
+    'remote_calls', 'remote_brake', 'bookmarks'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -499,7 +515,8 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices')
     WHERE name IN (${CLONE_COLUMN_NAMES_SQL})) AS clones_col,
   (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN (${CLIP_COLUMN_NAMES_SQL})) AS clips_phase,
-  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
+  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx,
+  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_bookmarks_user_job') AS bookmarks_idx
 `;
 
 /**
@@ -635,18 +652,20 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       clones_col: number;
       clips_phase: number;
       users_idx: number;
+      bookmarks_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     const jobsDdl = await queryOne<{ sql: string | null }>(
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 19 &&
+      Number(row?.tables_ok || 0) >= 20 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= CLONED_VOICE_COLUMNS.length &&
       Number(row?.clips_phase || 0) >= CLIP_COLUMNS.length &&
       Number(row?.users_idx || 0) >= 1 &&
+      Number(row?.bookmarks_idx || 0) >= 1 &&
       jobsStatusCheckAllows(jobsDdl?.sql)
     );
   } catch {
@@ -684,6 +703,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_CAPACITY_WARMS_SQL },
         { sql: CREATE_REMOTE_CALLS_SQL },
         { sql: CREATE_REMOTE_BRAKE_SQL },
+        { sql: CREATE_BOOKMARKS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -705,6 +725,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_CAPACITY_WARMS_SQL);
       await execute(CREATE_REMOTE_CALLS_SQL);
       await execute(CREATE_REMOTE_BRAKE_SQL);
+      await execute(CREATE_BOOKMARKS_SQL);
     }
 
     await execute(`ALTER TABLE remote_calls ADD COLUMN call_tag TEXT`).catch(() => {});

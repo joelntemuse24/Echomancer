@@ -113,6 +113,16 @@ describe("completeGoogleSignIn", () => {
       contentType: "audio/mpeg",
       byteSize: 16_384,
     });
+    await execute(
+      `INSERT INTO bookmarks (id, user_id, job_id, position_seconds, section_index, label, created_at)
+       VALUES ('bm-a', ?, ?, 12.5, NULL, 'Harbor', 1)`,
+      [USER_A, JOB_A]
+    );
+    await execute(
+      `INSERT INTO bookmarks (id, user_id, job_id, position_seconds, section_index, label, created_at)
+       VALUES ('bm-b', ?, ?, 4, 1, NULL, 1)`,
+      [USER_B, JOB_B]
+    );
 
     const { user } = await completeGoogleSignIn({
       googleSub: GOOGLE_SUB,
@@ -149,6 +159,14 @@ describe("completeGoogleSignIn", () => {
     expect(cloneUploads).toEqual([
       { id: "clone-upload-a", user_id: user.id },
       { id: "clone-upload-b", user_id: USER_B },
+    ]);
+
+    const bookmarks = await query<{ id: string; user_id: string }>(
+      `SELECT id, user_id FROM bookmarks ORDER BY id`
+    );
+    expect(bookmarks).toEqual([
+      { id: "bm-a", user_id: user.id },
+      { id: "bm-b", user_id: USER_B },
     ]);
   });
 
