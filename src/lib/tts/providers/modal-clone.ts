@@ -114,7 +114,12 @@ import {
   setFlightCallId,
   resetRemoteLayerForTests,
 } from "@/lib/remote/layer";
-import { submitThenPoll } from "@/lib/tts/providers/modal-clone-call";
+import {
+  resetS2ControlForTests,
+  s2BookTransport,
+  s2IdempotencyKey,
+  submitThenPoll,
+} from "@/lib/tts/providers/modal-clone-call";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -291,6 +296,7 @@ export function resetModalCloneRuntimeForTests(): void {
   resetModalCloneWarmForTests();
   resetModalCloneCancelForTests();
   resetModalCloneAudioTransportForTests();
+  resetS2ControlForTests();
 }
 
 export function noteModalClonePoolAnswered(
@@ -724,6 +730,15 @@ async function renderModalCloneBatchBody(
       sampling: MODAL_S2_SAMPLING,
       ...(jobId ? { job_id: jobId } : {}),
       seed_epoch: Math.max(0, Math.floor(opts?.seedEpoch ?? 0)),
+      ...(jobId
+        ? {
+            idempotency_key: s2IdempotencyKey(
+              jobId,
+              items.map((item) => item.key),
+              opts?.seedEpoch ?? 0
+            ),
+          }
+        : {}),
     },
     signal,
     wait
@@ -1843,19 +1858,24 @@ async function postModal(
   const tracked = modalFlightKey(wait?.jobId, body);
   if (tracked) {
     bindFlightAbort(tracked.key, () => controller.abort());
-    // The long timer is the single-section probe. A book polls by the stored
-    // call id instead, so that probe must not abort the submit.
-    clearTimer();
   }
   const headers = {
     ...authHeaders(requireToken()),
     "Content-Type": "application/json",
   };
+  // The CPU control endpoint is optional. Until it answers the protocol
+  // probe, this post is the synchronous GPU render and keeps the long wait.
+  const transport = tracked ? await s2BookTransport(controller.signal) : "sync";
+  if (tracked && transport === "submit-poll") {
+    // The long timer is the single-section probe. A book polls by the stored
+    // call id instead, so that probe must not abort the submit.
+    clearTimer();
+  }
   let response: Response;
   try {
-    if (tracked) {
+    if (tracked && transport === "submit-poll") {
       response = await submitThenPoll({
-        url,
+        url: new URL(process.env.MODAL_S2_CONTROL_URL!.trim()).origin,
         body,
         headers,
         signal: controller.signal,

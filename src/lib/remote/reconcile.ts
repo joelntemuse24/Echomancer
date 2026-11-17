@@ -20,9 +20,11 @@ import {
   remoteFlights,
   setRemoteEventSink,
   setRemoteFlightStamp,
+  settleFlightCall,
   takeDrainRequests,
 } from "@/lib/remote/layer";
 import { runModalCli } from "@/lib/remote/modal-cli";
+import { isTerminalS2Status, pollS2Call } from "@/lib/tts/providers/modal-clone-call";
 import {
   clearActiveBrake,
   hydrateOpenRemoteCalls,
@@ -126,6 +128,47 @@ export async function healStuckBrakes(): Promise<number> {
   return healed;
 }
 
+const STORED_ID_POLL_LIMIT = 8;
+
+function outcomeForTerminalStatus(status: string): "success" | "cancelled" | "failure" {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "success") return "success";
+  if (normalized === "cancelled" || normalized === "canceled") return "cancelled";
+  return "failure";
+}
+
+/**
+ * One short read of each stored id that is still open.
+ *
+ * Startup and the hourly pass both call this. A transport problem stays
+ * `unknown` and the flight stays live. `expired` and `not_found` are
+ * terminal, so the next tick may submit again. The cap is one pass, not
+ * a loop, so a stuck id cannot pin this process to the control endpoint.
+ */
+export async function pollStoredS2Calls(limit = STORED_ID_POLL_LIMIT): Promise<number> {
+  const open = remoteFlights().filter(
+    (flight) =>
+      flight.provider === "s2-clone" &&
+      (flight.status === "running" || flight.status === "still_live") &&
+      Boolean(flight.callId)
+  );
+  let settled = 0;
+  for (const flight of open.slice(0, Math.max(0, limit))) {
+    const callId = flight.callId;
+    if (!callId) continue;
+    let status = "unknown";
+    try {
+      status = (await pollS2Call(callId)).status;
+    } catch {
+      status = "unknown";
+    }
+    if (!isTerminalS2Status(status)) continue;
+    settleFlightCall(callId, outcomeForTerminalStatus(status));
+    settled += 1;
+  }
+  return settled;
+}
+
 export async function reconcileRemoteCalls(): Promise<void> {
   setRemoteEventSink((event) => {
     void persistRemoteEvent(event);
@@ -134,6 +177,12 @@ export async function reconcileRemoteCalls(): Promise<void> {
     void stampOpenRemoteCall(flight);
   });
   await hydrateOpenRemoteCalls();
+  await pollStoredS2Calls().catch((err) => {
+    console.warn(
+      "[remote] stored call poll failed",
+      err instanceof Error ? err.message : err
+    );
+  });
   await healStuckBrakes();
   for (const jobId of takeDrainRequests()) {
     await drainBookCalls(jobId, "drain").catch((err) => {

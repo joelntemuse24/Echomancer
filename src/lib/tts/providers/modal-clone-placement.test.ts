@@ -50,7 +50,7 @@ function setup(opts?: {
   /** The id is stored and every status stays pending. */
   hangStatus?: boolean;
 }) {
-  stubModalEndpoints(vi.stubEnv);
+  stubModalEndpoints(vi.stubEnv, { control: true });
   vi.stubEnv("MODAL_S2_TOKEN", "test-token");
   vi.stubEnv("MODAL_S2_READY", "0");
   vi.mocked(queryOne).mockResolvedValue(null);
@@ -75,7 +75,11 @@ function setup(opts?: {
     const payload = JSON.parse(String(init?.body ?? "{}")) as {
       items?: unknown;
       call_id?: string;
+      probe?: boolean;
     };
+    if (payload.probe) {
+      return jsonResponse({ protocol: "s2-submit-poll", protocol_version: 1, status: "ok" });
+    }
     const signal = init?.signal;
     if (payload.items) {
       submits += 1;

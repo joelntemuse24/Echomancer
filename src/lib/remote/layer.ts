@@ -660,6 +660,8 @@ const CANCEL_TERMINAL = new Set([
   "init failure",
   "cancelled",
   "canceled",
+  "expired",
+  "not_found",
   "1",
   "2",
   "3",
@@ -668,14 +670,17 @@ const CANCEL_TERMINAL = new Set([
 ]);
 
 export function interpretCancelResult(obs: CancelObservation): CancelVerdict {
-  const thrown = (obs.threw ?? "").toLowerCase();
-  if (thrown.includes("notfound") || thrown.includes("not found")) return "still_live";
   const status = String(obs.status ?? "")
     .trim()
     .toLowerCase()
     .replace(/^inputstatus\./, "");
+  // An explicit terminal status wins, including a miss the server re-read
+  // after cancel. A thrown NotFound with no terminal status is still live:
+  // the input may not have been published yet.
+  if (status && CANCEL_TERMINAL.has(status)) return "terminal";
+  const thrown = (obs.threw ?? "").toLowerCase();
+  if (thrown.includes("notfound") || thrown.includes("not found")) return "still_live";
   if (!status) return "still_live";
-  if (CANCEL_TERMINAL.has(status)) return "terminal";
   return "still_live";
 }
 

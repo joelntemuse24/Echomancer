@@ -783,10 +783,13 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `min_containers` stays 0. A placement that already missed its restore
   budget does not kick `::cover` for that book while its flight is `running`
   or `still_live`. Once the flight has a function-call id, that call also
-  blocks cover for every other book. The book path is submit-then-poll:
-  the web endpoint spawns the GPU render and returns the FunctionCall id
-  before any waiting, and Stop cancels that id on the same endpoint. Deploy
-  the Modal app before the worker.
+  blocks cover for every other book. The book path is submit-then-poll on
+  the CPU endpoint `s2_control` (`MODAL_S2_CONTROL_URL`): it spawns the H100
+  `render_batch`, returns the FunctionCall id before any waiting, and Stop
+  cancels that id on the same CPU host. Poll and cancel never enter the GPU
+  class. A worker that starts before that endpoint is deployed probes it,
+  misses the protocol, and posts the book to `/synthesize_batch` with the
+  long timeout. Deploy the Modal app, run `::cover`, then the worker.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2
@@ -829,10 +832,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   runbook rather than hidden.
 - **Each Modal endpoint is its own hostname.** `@modal.fastapi_endpoint` serves
   at the root of `https://<workspace>--<app>-<fn>.modal.run`, so there is no base
-  to append paths to. Configure `MODAL_S2_TTS_URL` (batch),
-  `MODAL_S2_SYNTHESIZE_URL` (single, optional), and `MODAL_S2_READY_URL`
-  (probe, optional). A URL with a path is rejected by both the client and
-  `scripts/s2/staging-smoke.mjs`; `ready` is never derived from the batch URL.
+  to append paths to. Configure `MODAL_S2_TTS_URL` (batch, the GPU render),
+  `MODAL_S2_CONTROL_URL` (CPU submit/poll/cancel, optional until the app
+  that serves `s2_control` is deployed), `MODAL_S2_SYNTHESIZE_URL` (single,
+  optional), and `MODAL_S2_READY_URL` (probe, optional). A URL with a path
+  is rejected by both the client and `scripts/s2/staging-smoke.mjs`; `ready`
+  and `s2_control` are never derived from the batch URL.
 - **History re-anchors to the row's first take, not the previous one.**
   `job 12534aaa` (2026-11-06, VDH clone) drifted *inside* every section and
   reset at each boundary: similarity to the reference fell 0.93 → 0.70 over

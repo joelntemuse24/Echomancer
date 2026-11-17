@@ -1199,7 +1199,7 @@ for that one recovery.
 | Unit width and pauses | Two rounds of tuning blamed the wrong thing. `job 1f0137a1` (first post-#244 book) had 7–13 gaps ≥ 0.35 s per minute against ~6.5 before, so #244 set `UNIT_TARGET_CHARS=200` and #245 moved it to 300 with a 0.22/0.40/0.96 pause ladder. Joel still reported *"it stops and starts every time"*. The cause was never the gap **width**: a unit boundary is a hard splice (each take's own trailing silence is trimmed and a fixed pause inserted), and the **target** — not the ceiling — decided how many there were, so lowering one while the other still forced sentence-sized pieces changed almost nothing audible. There is now **one** width authority, `UNIT_MAX_CHARS = 560`, and no packing target. A paragraph under the ceiling is one generation, so the model places every breath inside it; a longer one is cut into the fewest, most even sentence-aligned takes (`_balanced_pack`: greedy count for the minimum, DP to minimise *and* even out the longest unit, so a paragraph never ends in a one-sentence stub). Measured on two ~17,100-char books: 78/74 units and 68/67 splices at #244, 57/55 and 47/48 at #245, **43/40 and 33/33** now; forced mid-sentence breaks 30/13 → 8/3. The pause ladder is unchanged. The ceiling itself is set by the model: `MAX_NEW_FRAMES` (1,024) at ~21.5 frames/s caps one take at ~47.6 s, and a take that hits it is `truncated` (section retried, then failed), so 560 chars is sized to fit 43.1 s at a pessimistic 13 chars/s and a test reads the constant out of source. A row's **last** take gets no inserted pause, because the app crossfades the join and a trailing paragraph-length block was up to 0.96 s of silence in front of it. **Missing section (still pinned):** the old `_CLAUSE_END` was `(?<=[,:—])\s+`, which requires whitespace after the dash, so `dynamic—something` never split; a 318-char unit made the container answer 422 and `_section_units`' `raise` dropped the whole 1,705-char section. The clause pattern is a zero-width lookbehind over `, : ;` plus the Unicode dash family, `split_long_text` always returns legal units, and the container's guard hard-slices rather than raising: a missing section is a hole a listener hears. |
 | Clone book completeness and cache identity | `job 75944dc9` (2026-11-06, after #246) finished `ready` in 32 s with **5 of 11** sections, and Modal's own access log had **zero** requests for the failure window. Three defects hid each other. **(1) The generation allowance refused the book.** A per-account daily character cap (default 500,000) plus a global one (2,000,000) had been exceeded — 492,425 used, 17,022 requested — so an `ensureModalCloneJobAllowed` boolean refused the GPU pool, skipped the lane dispatch entirely, and every section then threw `Clone provider modal failed and this book may not switch engines`, a sentence about a call never made, three times each in about a second. The allowance has since been **removed entirely** (2026-11-07, product direction): no per-account cap and no global cap. `MODAL_S2_USER_DAILY_CHARS` and `MODAL_S2_GLOBAL_DAILY_CHARS` are not read by the running app. A stale worker `.env` does not refuse a book. Engine selection is configuration only (`resolveCloneProviderPin`), and no usage figure can pin a book to the backup engine. Only `usage_logs` accounting remains — written best-effort under action `modal_s2_clone`, never able to refuse or block — so cost stays observable. Real provider auth/quota/billing errors still surface as themselves. **(2) The cache key had no recipe in it.** `takehomeCacheVariant` returned the literal `s2-pro-modal-v1`, so #244's 300-char, #245's 400-char and #246's 560-char recipes all hashed identically; the five "ready" sections were byte-identical to S2C7/S2C8 takes, so the new runtime's narration never played. It is now `s2-pro-modal-${cloneNarrationRecipeId()}` — `u560-m260-p220-400-960-a1` — containing only inputs that change audio (unit ceiling, merge width, pause ladder, history anchor), never a deploy id or SHA. A test parses `modal/s2_contract.py` and fails on drift. **(3) "Ready" did not mean complete.** Assembly accepted `mostIndexesReady` (over half) or `doneCount > 0`, so that book was published as finished. Assembly now requires every index; a book with holes is published `failed` with `"N of M sections could not be narrated… not a complete audiobook"`, `progress < 100`, and the section files left in place. Auto-advance does not jump a hole on that `failed` row (`skipUnavailable` is only for `status === "ready"`). `job 75944dc9` itself was not regenerated. The harness disables the section cache unless `TTS_SECTION_CACHE=1`, which is why the clone **lane staging** path had no test; the completeness and acceptance suites set it to `1`. |
 | Missing section in the player | `nextPlayableIndex(segments, from, { skipUnavailable })`. Advancing used to require every earlier index ready, so on a finished book with a hole the rest of the book was unreachable behind a section that would never render. The flag is true only when `job.status === "ready"`; while generating, order is preserved and nothing is skipped. |
-| `modal/s2_endpoints.py` | One absolute URL per Modal endpoint. Rejects a URL that carries a path, and a ready URL that points at the batch host, because each `@modal.fastapi_endpoint` is its own hostname. |
+| `modal/s2_endpoints.py` | One absolute URL per Modal endpoint. Rejects a URL that carries a path, and a ready or control URL that points at the batch host, because each `@modal.fastapi_endpoint` is its own hostname. `MODAL_S2_CONTROL_URL` is the CPU submit/poll/cancel host. |
 | `modal/test_s2_contract.py` | Offline proof of those rules (`python3 -m pytest modal -q`). |
 | `scripts/s2/staging-smoke.mjs` | HTTP acceptance against a deployed endpoint: ready, per-lane batch rows, distinct containers, one build, scale-to-zero. Synthetic text and a generated clip only. |
 | `docs/s2-gpu-staging-runbook.md` | The GPU steps this repo cannot run: staging deploy, direct snapshot build, restore coverage, four-lane fanout, synthetic end-to-end, promotion and rollback. Step 8 sets the live cap to `MODAL_S2_MAX_GPUS` (default 20): deploy, warm the new snapshots, then `update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)` and check the printed cap. `min_containers` stays 0. The deployed image already has `@modal.concurrent(max_inputs=1)`, so a second book is placed on its own container. A redeploy is not required for that and would wipe GPU snapshots. |
@@ -2871,25 +2871,39 @@ S2, Fish, Kokoro (Drew, Walter, George), Modal CPU, clone previews, and the
 S2 prewarm all enter through `src/lib/remote/layer.ts`. One flight per
 provider, book, and section: a second start joins the running call or is
 refused while that call is still live. A refusal is `ModalCloneHeldError`.
-It does not kick `::cover` and it does not start the Fish clock. The S2 book
-path is submit-then-poll. `POST /synthesize_batch` spawns the GPU render and
-returns `{call_id, status:"pending"}` immediately. The worker writes that id
-on the flight before it polls. The same endpoint with `{call_id}` or
-`?call_id=` returns status via `FunctionCall.get(timeout=1)`, and
-`{call_id, cancel:true}` calls `.cancel(terminate_containers=True)`. Stop
-and the drain cancel by that HTTP call. There is no function-call listing
-and no tag match: the CLI listing does not include the request body. A
-timeout after the id is stored stays `still_live` until that id is terminal.
-A completed HTTP response, including an abort of Fish, Kokoro, or Modal CPU,
-is retryable. `still_live` is not cleared by Stop.
+It does not kick `::cover` and it does not start the Fish clock. The S2 book path is submit-then-poll on the CPU function `s2_control`
+(`MODAL_S2_CONTROL_URL`). That function has no GPU. It spawns
+`S2CloneWorker.render_batch` and returns `{call_id, status:"pending"}`
+immediately. The worker writes that id on the flight before it polls. The
+same endpoint with `{call_id}` or `?call_id=` returns status via
+`FunctionCall.get(timeout=1)`, and `{call_id, cancel:true}` calls
+`.cancel(terminate_containers=True)` and then reads the status. Stop and
+the drain cancel by that HTTP call. There is no function-call listing and
+no tag match: the CLI listing does not include the request body. A timeout
+after the id is stored stays `still_live` until that id is terminal.
+`expired` and `not_found` are terminal misses. A poll that is not OK, or
+whose body is not JSON, stays unknown and is polled again; it does not
+finish the flight. Startup and the hourly pass read each stored non-terminal
+id, at most eight per pass. A completed HTTP response, including an abort
+of Fish, Kokoro, or Modal CPU, is retryable. `still_live` is not cleared
+by Stop.
 
-Deploy the Modal app before the worker. The worker's accept wait is 10s. An
-older container that holds the connection until the GPU finishes times out
-that accept with no id. A body that already contains `items` inside the
-accept window is the finished audio.
+The submit carries `idempotency_key` `job:sections:attempt`. The control
+function stores it in a Modal Dict for six hours and returns the existing
+call id on a repeat. `render_batch` returns the audio JSON object. A poll
+never puts response bytes into JSON.
 
-`FunctionCall.cancel(terminate_containers=True)` that returns NotFound, or
-any status that is not terminal (`init failure` included), is still live.
+Deploy the Modal app, run `::cover`, then restart the worker with
+`MODAL_S2_CONTROL_URL`. The worker probes `{probe:true}` and uses
+submit-then-poll only when the body says `protocol: s2-submit-poll`. Until
+then it posts the book to the GPU `/synthesize_batch` and waits the long
+timeout, so a worker restarted before the Modal app does not abort every
+clone book at 10s. A body that already contains `items` inside the accept
+window is still the finished audio.
+
+`FunctionCall.cancel(terminate_containers=True)` is followed by a status
+read. A pending read, or a thrown NotFound with no terminal status, is
+still live. `expired`, `not_found`, and `init failure` are terminal.
 The drain cancels through the HTTP endpoint, using `MODAL_TOKEN_ID` /
 `MODAL_TOKEN_SECRET`. It does not pass a Modal profile. It brakes the shared
 autoscaler only when that cancel is still spawning and, re-checked

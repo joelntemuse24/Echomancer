@@ -89,6 +89,16 @@ class TestEndpointsFromEnv:
         assert got["ready"] == ready
         assert got["single"] == batch  # falls back to the batch host
 
+    def test_control_is_its_own_host(self):
+        batch = "https://acme--app-synthesize-batch.modal.run"
+        control = "https://acme--app-s2-control.modal.run"
+        got = endpoints_from_env(
+            {"MODAL_S2_TTS_URL": batch, "MODAL_S2_CONTROL_URL": control}
+        )
+        assert got["control"] == control
+        with pytest.raises(EndpointUrlError, match="CPU"):
+            endpoints_from_env({"MODAL_S2_TTS_URL": batch, "MODAL_S2_CONTROL_URL": batch})
+
     def test_refuses_a_ready_url_pointing_at_the_batch_host(self):
         batch = "https://acme--app-synthesize-batch.modal.run"
         with pytest.raises(EndpointUrlError, match="separate @modal.fastapi_endpoint"):

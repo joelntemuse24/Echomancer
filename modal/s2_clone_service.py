@@ -13,25 +13,30 @@ section and joins the MP3s.
     -> audio/mpeg (mastered), or JSON error
 
     POST /synthesize_batch
-    {"items": [{"key": "12", "text": "..."}], "reference_audio_base64": "...",
-     "reference_text": "...", "sampling": "0.9,0.9", "job_id": "...",
-     "seed": 123, "seed_epoch": 0}
+    {"items": [{"key": "12", "text": "..."}], ...}
+    -> the audio JSON. This method renders on the H100. It is the synchronous
+       path a worker uses when the CPU control endpoint is not deployed yet.
+
+    POST s2_control  {"probe": true}
+    -> {"protocol": "s2-submit-poll", "protocol_version": 1}
+       CPU only. No GPU. The worker reads this before it chooses a path.
+
+    POST s2_control  {the batch body, "idempotency_key": "job:sections:attempt"}
     -> {"call_id", "status": "pending"}
-       The handler spawns `render_batch` and returns that id in well under a
-       second. It does not wait for the GPU.
+       Spawns `render_batch` and returns that id in well under a second.
+       The same key returns the stored id instead of spawning again.
 
-    POST /synthesize_batch  {"call_id": "..."}     or  ?call_id=...
-    -> {"call_id", "status": "pending"}
-       or {"call_id", "status": "success", "result": {the audio JSON above}}
+    POST s2_control  {"call_id": "..."}     or  ?call_id=...
+    -> pending, success + the audio JSON, or a terminal miss
+       (expired / not_found). FunctionCall.get(timeout=1).
 
-    POST /synthesize_batch  {"call_id": "...", "cancel": true}
-    -> {"call_id", "status": "cancelled"}
-       FunctionCall.cancel(terminate_containers=True). NotFound stays pending.
+    POST s2_control  {"call_id": "...", "cancel": true}
+    -> the status read after cancel(terminate_containers=True).
+       A cancel that does not throw is not treated as cancelled until that read.
 
-    Deploy this app before the worker. A worker that expects `call_id` will
-    time out its short submit against an older container that holds the HTTP
-    body until the GPU finishes. A body that already contains `items` is the
-    finished audio and is still accepted.
+    Deploy this app, run ::cover, then the worker. A worker that starts
+    first probes `s2_control`, misses the protocol, and posts the book to
+    `/synthesize_batch` with the long timeout.
 
 Units: the text is split the way the batch pipeline splits a book — a whole
 paragraph is one generation, and only a paragraph past the model's frame
@@ -415,6 +420,12 @@ print(
 )
 
 heartbeats = modal.Dict.from_name(HEARTBEAT_DICT_NAME, create_if_missing=True)
+
+#: Idempotency rows for the CPU control endpoint. A retry of the same
+#: book, sections, and attempt reads the call id instead of spawning again.
+#: Entries carry their own timestamp; the reader ignores a row older than
+#: the TTL in ``s2_remote_call``.
+CONTROL_DICT_NAME = os.environ.get("S2C_CONTROL_DICT") or f"{APP_NAME}-s2-control"
 
 
 def _section_units(text: str) -> list[dict]:
@@ -992,60 +1003,38 @@ class S2CloneWorker:
         )
 
     @modal.method()
-    def render_batch(self, payload: dict):
+    def render_batch(self, payload: dict) -> dict:
         """GPU render for one spawned FunctionCall.
 
-        The web handler spawns this and returns the id. Calling it directly
-        runs the same body the tests call when Modal's `.spawn` is absent.
+        Returns the JSON object the HTTP handler would have sent. Bytes from
+        ``JSONResponse.content`` are not a poll body: ``json.dumps`` cannot
+        encode them, the poll becomes a 500, and the worker would submit again
+        after the GPU had already finished.
         """
-        response = self._synthesize_batch_body(payload, _SpawnRequest())
-        return getattr(response, "content", response)
+        body = self._synthesize_batch_body(payload, _SpawnRequest())
+        if isinstance(body, dict):
+            return body
+        content = getattr(body, "content", None)
+        if isinstance(content, dict):
+            return content
+        raise TypeError("render_batch must return a JSON object")
 
     @modal.fastapi_endpoint(method="POST", docs=False)
     def synthesize_batch(self, payload: dict, request: Request):
-        """Accept a book, or poll/cancel the FunctionCall id from a previous accept.
+        """Synchronous GPU render.
 
-        When this method can `.spawn()`, the book is not rendered on the
-        request that accepted it. The id comes back immediately. Status and
-        cancel are this same endpoint: `{"call_id"}` or `?call_id=`, and
-        `{"call_id", "cancel": true}`. A process whose method has no
-        `.spawn` (the unit tests) still runs the render inline and returns
-        the audio JSON.
+        Submit, poll, and cancel are the CPU function ``s2_control``. This
+        method stays on the H100 because it renders. A book must not send
+        control traffic here: a cold accept would wait out a GPU restore,
+        and each status POST would be another input on another H100.
         """
         from fastapi import HTTPException
         from fastapi.responses import JSONResponse
 
-        from s2_remote_call import (
-            RemoteCallError,
-            handle_remote_request,
-            query_call_id,
-            request_op,
-        )
-
         if not _token_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         body = payload if isinstance(payload, dict) else {}
-        op = request_op(body, query_call_id(request))
-        spawn = getattr(type(self).render_batch, "spawn", None)
-        if op != "submit" or callable(spawn):
-            def lookup(call_id: str):
-                import modal
-
-                return modal.FunctionCall.from_id(call_id)
-
-            try:
-                result = handle_remote_request(
-                    body,
-                    query_call_id=query_call_id(request),
-                    spawn=spawn,
-                    lookup=lookup,
-                )
-            except RemoteCallError as err:
-                raise HTTPException(
-                    status_code=err.status, detail={"error": err.code, "message": str(err)}
-                ) from err
-            return JSONResponse(result)
-        return self._synthesize_batch_body(body, request)
+        return JSONResponse(self._synthesize_batch_body(body, request))
 
     def _synthesize_batch_body(self, payload: dict, request: Request):
         """Many sections in one call; one batch row per section.
@@ -1066,7 +1055,6 @@ class S2CloneWorker:
         from concurrent.futures import ThreadPoolExecutor
 
         from fastapi import HTTPException
-        from fastapi.responses import JSONResponse
 
         if not _token_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
@@ -1352,7 +1340,7 @@ class S2CloneWorker:
         t_done = time.time()
         self._heartbeat()
 
-        return JSONResponse({
+        return {
             "items": rows,
             "build": _BUILD_ENV["S2C_BUILD"],
             "container_id": self.container_id,
@@ -1400,7 +1388,7 @@ class S2CloneWorker:
                     if k in done["stats"]
                 },
             },
-        })
+        }
 
     @modal.method()
     def synthesize_section(
@@ -1536,9 +1524,92 @@ ready_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("fastapi[standard]==0.115.6")
     .add_local_python_source(
-        "s2_batch", "s2_mastering", "s2_contract", "s2_audio_store"
+        "s2_batch",
+        "s2_mastering",
+        "s2_contract",
+        "s2_audio_store",
+        "s2_remote_call",
     )
 )
+
+
+def control_store():
+    """Named Dict of idempotency key → {call_id, at}. Tests replace this."""
+    table = modal.Dict.from_name(CONTROL_DICT_NAME, create_if_missing=True)
+
+    class _Store:
+        def get(self, key):
+            try:
+                return table[key]
+            except Exception:
+                return None
+
+        def put(self, key, value):
+            table[key] = value
+
+    return _Store()
+
+
+def _spawn_render(payload: dict):
+    """Spawn the H100 method from the CPU function. Never render here."""
+    from s2_remote_call import RemoteCallError
+
+    method = S2CloneWorker.render_batch
+    spawn = getattr(method, "spawn", None)
+    if not callable(spawn):
+        raise RemoteCallError(500, "spawn_unavailable", "GPU spawn is not available")
+    return spawn(payload)
+
+
+def _lookup_call(call_id: str):
+    import modal as modal_mod
+
+    return modal_mod.FunctionCall.from_id(call_id)
+
+
+@app.function(
+    image=ready_image,
+    cpu=0.125,
+    memory=256,
+    timeout=20,
+    min_containers=0,
+    max_containers=4,
+    secrets=[
+        modal.Secret.from_name("echomancer-secrets"),
+        modal.Secret.from_name("echomancer-s2-api"),
+    ],
+    env=_BUILD_ENV,
+)
+@modal.fastapi_endpoint(method="POST", docs=False)
+def s2_control(payload: dict, request: Request):
+    """Accept, poll, or cancel one render. This container has no GPU.
+
+    A cold start is the small image, not an H100 restore. ``render_batch.spawn``
+    places the GPU work and returns its id. Status and cancel use
+    ``FunctionCall.from_id`` on that id. The book path must not POST those
+    to ``S2CloneWorker``: that class is ``max_inputs=1`` on a GPU.
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse
+
+    from s2_remote_call import RemoteCallError, handle_remote_request, query_call_id
+
+    if not _token_ok(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    body = payload if isinstance(payload, dict) else {}
+    try:
+        result = handle_remote_request(
+            body,
+            query_call_id=query_call_id(request),
+            spawn=_spawn_render,
+            lookup=_lookup_call,
+            store=control_store(),
+        )
+    except RemoteCallError as err:
+        raise HTTPException(
+            status_code=err.status, detail={"error": err.code, "message": str(err)}
+        ) from err
+    return JSONResponse(result)
 
 
 def _live_containers(build: str, *, registry=None) -> list[dict]:
