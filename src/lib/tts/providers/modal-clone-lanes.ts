@@ -4,9 +4,11 @@
  * One lane is one HTTP batch call, and Modal starts one container per
  * concurrent call. The book schedule (`planModalCloneBookWave`) uses one
  * lane: the GPU this book already restored. A second call for the same book
- * would be a second GPU, and this path does not open one. A different book
- * gets its own GPU until `MODAL_S2_MAX_GPUS` (and the per-user ceiling).
- * Past that ceiling the books share one call at a time.
+ * would be a second GPU, and this path does not open one. Production
+ * `max_containers` stays 1, so a different book queues on that same GPU
+ * and does not get its own. `MODAL_S2_MAX_GPUS` counts worker leases and
+ * does not open a second container. Past the lease ceiling the books
+ * share one call at a time.
  *
  * ## Why rows per call matter more than lanes
  *

@@ -52,6 +52,37 @@ def test_parse_live_cap_unchanged():
     assert args.brake is False
 
 
+def test_abbreviation_does_not_match_scaledown_window():
+    mod = load_script()
+    with pytest.raises(SystemExit) as caught:
+        mod.parse_args(["--scaledown", "15", "--max-containers", "1"])
+    assert caught.value.code == 2
+
+
+def test_production_apply_above_one_is_refused(monkeypatch):
+    mod = load_script()
+    monkeypatch.delenv("S2_ALLOW_PROD_CAP_ABOVE_1", raising=False)
+    assert mod.production_apply_refusal("echomancer-s2-clone", 0) is None
+    assert mod.production_apply_refusal("echomancer-s2-clone", 1) is None
+    refusal = mod.production_apply_refusal("echomancer-s2-clone", 20)
+    assert refusal is not None
+    assert "refusing max_containers=20" in refusal
+    with pytest.raises(SystemExit, match="refusing max_containers=20"):
+        mod.parse_args(
+            ["--max-containers", "20", "--scaledown-window", "15", "--app", "echomancer-s2-clone"]
+        )
+    assert (
+        mod.production_apply_refusal(
+            "echomancer-s2-clone", 20, {"S2_ALLOW_PROD_CAP_ABOVE_1": "1"}
+        )
+        is None
+    )
+    assert mod.production_apply_refusal("echomancer-s2-clone-staging", 20) is None
+    monkeypatch.setenv("S2_ALLOW_PROD_CAP_ABOVE_1", "yes")
+    with pytest.raises(SystemExit, match="refusing max_containers=20"):
+        mod.parse_args(["--max-containers", "20", "--app", "echomancer-s2-clone"])
+
+
 def test_brake_rejects_nonzero_cap():
     mod = load_script()
     with pytest.raises(SystemExit, match="cannot be combined"):

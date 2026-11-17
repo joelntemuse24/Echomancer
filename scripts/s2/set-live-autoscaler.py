@@ -15,11 +15,14 @@ enter or compile: scaledown only applies once the container has no input.
     python3 scripts/s2/set-live-autoscaler.py --max-containers 1 --scaledown-window 15
 
 `--max-containers` on production is 1. The apply path refuses to run
-without that flag (`--brake` sets 0). When `--print-max` cannot read the
-live autoscaler for `echomancer-s2-clone`, it prints 1. It does not use
-`S2C_RESTORE_MAX` or `MODAL_S2_MAX_GPUS`. Staging still uses those.
-`post-deploy-cover.sh` restores at most 1 on production unless
-`S2_ALLOW_PROD_CAP_ABOVE_1=1`. min_containers stays 0.
+without that flag (`--brake` sets 0). A value above 1 on
+`echomancer-s2-clone` exits non-zero before Modal is imported, unless
+`S2_ALLOW_PROD_CAP_ABOVE_1=1`. Brake 0 stays allowed. When `--print-max`
+cannot read the live autoscaler for `echomancer-s2-clone`, it prints 1.
+It does not use `S2C_RESTORE_MAX` or `MODAL_S2_MAX_GPUS`. Staging still
+uses those. `post-deploy-cover.sh` restores at most 1 on production
+unless that same override is set. min_containers stays 0. Flags are not
+abbreviated: `--scaledown` is not `--scaledown-window`.
 
 `--max-containers 0` (or `--brake`) is a temporary brake: it stops new
 placements without cancelling an in-flight enter or compile. It does not
@@ -82,6 +85,26 @@ def clamp_production_restore(
     return min(saved, OWNER_PRODUCTION_CAP)
 
 
+def production_apply_refusal(
+    app: str, max_containers: int, environ: dict[str, str] | None = None
+) -> str | None:
+    """Refuse a production write above 1. Brake 0 and cap 1 stay allowed.
+
+    The message is the process's stderr. Callers exit non-zero and do not
+    import Modal. ``S2_ALLOW_PROD_CAP_ABOVE_1=1`` is the only override,
+    the same one ``--clamp-restore`` uses. Staging is not this lock.
+    """
+    if max_containers <= OWNER_PRODUCTION_CAP:
+        return None
+    if not is_production_app(app) or allow_prod_cap_above_1(environ):
+        return None
+    return (
+        f"refusing max_containers={max_containers} on production {PRODUCTION_APP}. "
+        "The live cap stays at most 1 (brake 0 is allowed). "
+        "Set S2_ALLOW_PROD_CAP_ABOVE_1=1 only with explicit owner approval."
+    )
+
+
 def config_max_source(environ: dict[str, str] | None = None) -> tuple[int | None, str]:
     """A cap the operator already recorded, and which variable held it.
 
@@ -128,7 +151,7 @@ def validate_autoscaler_values(
 
 
 def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--app", default="echomancer-s2-clone")
     parser.add_argument("--cls", default="S2CloneWorker")
     parser.add_argument(
@@ -206,6 +229,9 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
     error = validate_autoscaler_values(ns.max_containers, ns.scaledown_window)
     if error:
         raise SystemExit(error)
+    refusal = production_apply_refusal(ns.app, ns.max_containers)
+    if refusal:
+        raise SystemExit(refusal)
     return AutoscalerArgs(
         app=ns.app,
         cls=ns.cls,
@@ -306,6 +332,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.print_max:
         return emit_max(args)
+
+    refusal = production_apply_refusal(args.app, args.max_containers)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
 
     import modal
 

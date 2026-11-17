@@ -1344,9 +1344,11 @@ def container_limits(env) -> dict:
 
     Target shape: one frozen app, `min_containers=0`, up to
     `S2C_MAX_CONTAINERS` independent one-GPU containers. The code default
-    stays 1 so a plain deploy cannot open a fleet. The live cap is
-    `update_autoscaler(max_containers=N)` with N matching `MODAL_S2_MAX_GPUS`
-    (default 20). The clamp only stops a typo; 64 is the same ceiling as
+    stays 1 so a plain deploy cannot open a fleet. Production
+    `echomancer-s2-clone` keeps `max_containers` at 1: a second book
+    queues on that GPU. `MODAL_S2_MAX_GPUS` (default 20) is the worker
+    lease count, not this cap. Raising the live cap needs explicit owner
+    approval. The clamp only stops a typo; 64 is the same ceiling as
     the worker.
     """
     def _int(name: str, default: int, low: int, high: int) -> int:

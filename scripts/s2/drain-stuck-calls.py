@@ -264,7 +264,7 @@ def apply_worker_credentials(profile: str | None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--app", default="echomancer-s2-clone")
     parser.add_argument("--cls", default="S2CloneWorker")
     parser.add_argument("--call-id", action="append", default=[])

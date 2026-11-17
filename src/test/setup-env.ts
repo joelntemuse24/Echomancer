@@ -10,7 +10,7 @@
  * provider is faked.
  */
 
-import { mkdtempSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 
@@ -42,8 +42,15 @@ delete process.env.OPENROUTER_API_KEY;
 delete process.env.FISH_API_KEY;
 delete process.env.MODAL_TOKEN_ID;
 delete process.env.MODAL_TOKEN_SECRET;
+delete process.env.MODAL_PROFILE;
 delete process.env.MODAL_S2_WARM_CMD;
 delete process.env.MODAL_S2_WARM_HOOK;
+// A spawned `modal` CLI reads ~/.modal.toml when this is unset.
+{
+  const modalConfig = path.join(process.env.STORAGE_PATH, "empty-modal.toml");
+  writeFileSync(modalConfig, "");
+  process.env.MODAL_CONFIG_PATH = modalConfig;
+}
 // Listen-prep tests assert the code default. A host override must not leak in.
 delete process.env.LISTEN_PREP_MODEL;
 delete process.env.LISTEN_PREP_REASONING;

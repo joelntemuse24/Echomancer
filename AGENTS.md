@@ -69,6 +69,14 @@ is passed. With no profile, plain `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
 are what they use. Do not pass `--profile` to make a token work, and do not
 run those scripts to change the fleet.
 
+Do not run a Modal-touching script, or a test that invokes one, with live
+credentials unless that command is explicitly read-only (`--help`,
+`--print-max`, `--clamp-restore`, `--dry-run`, `--from-env`). An apply
+flag writes the production autoscaler. Pytest strips `MODAL_TOKEN_ID`,
+`MODAL_TOKEN_SECRET`, and `MODAL_PROFILE`, points `MODAL_CONFIG_PATH` at
+an empty file, and fails a socket to Modal. Vitest strips the same
+variables before a test file loads. Do not put the credentials back.
+
 ## Product pricing
 
 - **Target:** ~**€4.50** per typical take-home book (a target, not a hard ceiling).
@@ -659,20 +667,12 @@ busy-not-cold backstop.
   (`MODAL_S2_WARM_HOLD_MS`, default 10s, under the 15s autoscaler target)
   is one cold-sized call again, then the even pages resume.
   Warmth is in-process memory: a worker restart costs one cold call.
-  Under the ceiling, two 10-hour books are two of those ramps at once,
-  peak **2** GPUs. Ten books from ten users stay on that same ramp, peak
-  10. Three books from one user do too (the per-user ceiling is 5). A
-  sixth book from that user shares the oldest holder's GPU: peak stays 5.
-  A 10-hour book plus a 40-minute article at 5 minutes is two GPUs when
-  both are long enough to keep their own. A book of 20,000 characters or
-  less (~21 minutes) shares the oldest running GPU even when the ceiling
-  still has room, one call at a time, so a short article does not pay its
-  own restore and idle while another book already holds an H100. Younger
-  short books wait. A longer book under the ceiling still gets its own
-  GPU. When the ready probe reports a spare warm container, that share
-  uses the warm budget. With the global ceiling at 2, three 10-hour books
-  use 2 GPUs: the oldest and the third share, and the middle book stays on
-  its own GPU. One `synthesize_batch` still has one reference and one
+  Production `echomancer-s2-clone` stays `min_containers` 0 and
+  `max_containers` 1. A second book queues on that same GPU and does not
+  open another container. `MODAL_S2_MAX_GPUS` (default 20) and
+  `MODAL_S2_MAX_GPUS_PER_USER` (default 5) count worker leases. They do
+  not raise the container cap. Raising `max_containers` needs explicit
+  owner approval. One `synthesize_batch` still has one reference and one
   seed, so rows from two books cannot share a call until the container
   reads a reference per item. That is a Modal redeploy.
   `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does not send

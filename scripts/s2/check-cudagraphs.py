@@ -109,7 +109,7 @@ def inspect_log(log: str, *, expect_shapes: int = 0) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--app",
         default=os.environ.get("S2C_APP_NAME", "echomancer-s2-clone-staging"),

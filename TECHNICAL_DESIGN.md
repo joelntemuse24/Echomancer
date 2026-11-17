@@ -71,6 +71,12 @@ where the repo can check it:**
 - Live autoscaler for production `echomancer-s2-clone`: `min_containers=0`,
   `max_containers=1`. Any change needs explicit owner approval. Do not run
   `scripts/s2/set-live-autoscaler.py` or runbook step 8c to raise it.
+  The apply path refuses `max_containers` above 1 on that app unless
+  `S2_ALLOW_PROD_CAP_ABOVE_1=1`, and it exits before importing Modal.
+  Brake 0 stays allowed. Parsers in `scripts/s2` set `allow_abbrev=False`
+  (`--scaledown` is not `--scaledown-window`). Pytest strips
+  `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and `MODAL_PROFILE` and points
+  `MODAL_CONFIG_PATH` at an empty file.
   `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count, not the
   container cap. Code defaults
   are `S2C_MAX_CONTAINERS=1` and `S2C_SCALEDOWN=300` (`container_limits`

@@ -65,7 +65,7 @@ def cancel_call(function_call_id: str, *, dry_run: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     # Deliberately **not** `s2_contract.resolve_app_name`. That resolver sends an
     # unnamed target to staging, which is right for a deploy (it must not evict
     # production's snapshots) but wrong here: this tool cancels a PENDING input,
