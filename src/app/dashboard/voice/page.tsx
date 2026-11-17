@@ -72,7 +72,9 @@ import {
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
 import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
+  clearStockVoicePick,
   readStockVoicePick,
+  rememberedCloneOnRestore,
   writeStockVoicePick,
 } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
@@ -354,7 +356,13 @@ export default function VoiceSelectionPage() {
 
   useLayoutEffect(() => {
     const pick = readStockVoicePick();
-    if (!pick || !isPersistableStandardVoiceId(pick.catalogVoiceId)) return;
+    if (!pick) return;
+    if (pick.catalogVoiceId.startsWith("clone:")) {
+      stockPickRef.current = pick;
+      narratorTouchedRef.current = true;
+      return;
+    }
+    if (!isPersistableStandardVoiceId(pick.catalogVoiceId)) return;
     stockPickRef.current = pick;
     narratorTouchedRef.current = true;
     setSelectedVoiceId(pick.catalogVoiceId);
@@ -576,20 +584,33 @@ export default function VoiceSelectionPage() {
       return;
     }
     if (loading) return;
+    const cloneIds = cloneVoices.map((voice) => voice.id);
+    const restored = rememberedCloneOnRestore({
+      selectedId: selectedVoiceId,
+      rememberedId: stockPickRef.current?.catalogVoiceId ?? null,
+      cloneIds,
+      loaded: true,
+    });
+    if (restored.dropRemembered) {
+      stockPickRef.current = null;
+      clearStockVoicePick();
+    }
+    if (restored.clearTouched) narratorTouchedRef.current = false;
+    const selectedId = restored.selectedId;
     if (activePath === "clone") {
       // Opening the clone list does not select the first clone.
       const next = voiceIdAfterPathChange({
         path: "clone",
-        selectedId: selectedVoiceId,
+        selectedId,
         pathIds: pathVoices.map((voice) => voice.id),
       });
       if (next !== selectedVoiceId) setSelectedVoiceId(next);
       return;
     }
     const next = selectionOnStandardPath({
-      selectedId: selectedVoiceId,
+      selectedId,
       stockIds: stockVoices.map((voice) => voice.id),
-      cloneIds: cloneVoices.map((voice) => voice.id),
+      cloneIds,
       explicitStockId: stockPickRef.current?.catalogVoiceId,
       suggestedId: narrator?.catalogVoiceId,
       narratorTouched: narratorTouchedRef.current,
@@ -631,14 +652,8 @@ export default function VoiceSelectionPage() {
     if (cloneFileRef.current) cloneFileRef.current.value = "";
   };
 
-  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
-    setPinnedVoiceId(null);
-    setSelectedVoiceId(id);
-    if (opts?.dismissSample) clearPendingSample();
-    if (id.startsWith("clone:")) {
-      requestCapacityWarm({ voiceId: id, reason: "voice" });
-    }
-    if (!isPersistableStandardVoiceId(id)) return;
+  const rememberVoice = (id: string) => {
+    if (!isPersistableStandardVoiceId(id) && !id.startsWith("clone:")) return;
     narratorTouchedRef.current = true;
     const pick = {
       catalogVoiceId: id,
@@ -646,11 +661,19 @@ export default function VoiceSelectionPage() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
-    // Drew, Walter, and George all live on the Kokoro CPU app.
-    if (isKokoroCpuVoiceId(id)) {
+  };
+
+  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
+    setPinnedVoiceId(null);
+    setSelectedVoiceId(id);
+    if (opts?.dismissSample) clearPendingSample();
+    rememberVoice(id);
+    if (id.startsWith("clone:") || isKokoroCpuVoiceId(id)) {
       requestCapacityWarm({ voiceId: id, reason: "voice" });
     }
-    if (activePath === "clone") setVoicePath(null);
+    if (activePath === "clone" && isPersistableStandardVoiceId(id)) {
+      setVoicePath(null);
+    }
   };
 
   const stopPreviewPlayback = () => {
@@ -1015,14 +1038,7 @@ export default function VoiceSelectionPage() {
 
   const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
-      if (isPersistableStandardVoiceId(voice.id)) {
-        const pick = {
-          catalogVoiceId: voice.id,
-          delivery: "standard" as const,
-        };
-        stockPickRef.current = pick;
-        writeStockVoicePick(pick);
-      }
+      rememberVoice(voice.id);
       router.push("/");
       return;
     }
@@ -1130,6 +1146,11 @@ export default function VoiceSelectionPage() {
     busy: creating || cloning,
     hasSelectedVoice: selectedVoice != null,
     hasBook: Boolean(pdfPath),
+    voicesLoading: loading,
+    cloneMissing:
+      !loading &&
+      Boolean(selectedVoiceId?.startsWith("clone:")) &&
+      !cloneVoices.some((voice) => voice.id === selectedVoiceId),
   });
 
   const continueVoiceStep = async () => {
@@ -1259,6 +1280,16 @@ export default function VoiceSelectionPage() {
         throw new Error(data.error || "Couldn't delete that clone. Try again.");
       }
       toast.success("Clone removed.");
+      setAllVoices((prev) => prev.filter((item) => item.id !== voice.id));
+      if (stockPickRef.current?.catalogVoiceId === voice.id) {
+        stockPickRef.current = null;
+        clearStockVoicePick();
+      }
+      if (selectedVoiceId === voice.id) {
+        narratorTouchedRef.current = false;
+        setSelectedVoiceId(null);
+      }
+      setLoading(true);
       setVoicesReloadToken((n) => n + 1);
     } catch (err) {
       toast.error(
@@ -1495,8 +1526,13 @@ export default function VoiceSelectionPage() {
   const continueDecision = resolveVoiceContinue(voiceContinueInput());
   const continueLabel =
     continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
+  const submitBlocked =
+    continueDecision.type === "blocked" &&
+    (continueDecision.reason === "voices-loading" ||
+      continueDecision.reason === "clone-missing");
   const showContinue =
     !loading &&
+    !submitBlocked &&
     (pendingSample ||
       (activePath === "clone"
         ? cloneVoices.length > 0

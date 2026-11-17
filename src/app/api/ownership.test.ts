@@ -649,6 +649,101 @@ describe("POST /api/jobs (create)", () => {
     expect(body.code).toBe("TEXT_NOT_READY");
     expect(String(body.error)).toMatch(/still being prepared/i);
   });
+
+  it("rejects an unknown or someone else's clone instead of substituting a stock voice", async () => {
+    const { POST } = await import("@/app/api/jobs/route");
+    const { query } = await import("@/lib/turso");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "A book for a clone. ".repeat(20),
+    });
+    const cloneRowId = "11111111-1111-4111-8111-111111111111";
+    await execute(
+      `INSERT INTO cloned_voices (id, user_id, fish_voice_id, title, state, model)
+       VALUES (?, ?, ?, ?, 'trained', 's2.1-pro-free')`,
+      [cloneRowId, USER_A, "fish-ref", "My clone"]
+    );
+    const catalogVoiceId = `clone:${cloneRowId}`;
+
+    const owned = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: pdfPath,
+          catalogVoiceId,
+          voiceName: "My clone",
+          bookTitle: "Clone book",
+        },
+      })
+    );
+    expect(owned.status).toBe(200);
+    const ownedBody = await owned.json();
+    const ownedRow = await jobRow(ownedBody.jobId);
+    expect(ownedRow?.catalog_voice_id).toBe(catalogVoiceId);
+    expect(ownedRow?.tts_provider).toBe("fish");
+
+    const other = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_B,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: await seedUpload({
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            userId: USER_B,
+            text: "Another person's book. ".repeat(20),
+          }),
+          catalogVoiceId,
+          bookTitle: "Not their clone",
+        },
+      })
+    );
+    expect(other.status).toBe(404);
+    expect((await other.json()).code).toBe("CLONE_NOT_FOUND");
+
+    const missing = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: pdfPath,
+          catalogVoiceId: "clone:22222222-2222-4222-8222-222222222222",
+          bookTitle: "Deleted clone",
+        },
+      })
+    );
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).code).toBe("CLONE_NOT_FOUND");
+
+    await execute(
+      `UPDATE cloned_voices SET deleted_at = unixepoch() WHERE id = ?`,
+      [cloneRowId]
+    );
+    const deleted = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: pdfPath,
+          catalogVoiceId,
+          bookTitle: "Deleted clone",
+        },
+      })
+    );
+    expect(deleted.status).toBe(404);
+    const jobs = await query<{ catalog_voice_id: string; tts_provider: string }>(
+      `SELECT catalog_voice_id, tts_provider FROM jobs WHERE user_id = ?`,
+      [USER_A]
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.tts_provider).toBe("fish");
+    expect(jobs.every((row) => row.tts_provider !== "drew" || row.catalog_voice_id !== catalogVoiceId)).toBe(true);
+  });
 });
 
 describe("Google sign-in merge (durable user_*)", () => {

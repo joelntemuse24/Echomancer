@@ -18,7 +18,12 @@ export type RememberedStockPick = {
 type KeyValueStore = {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 };
+
+function isCloneCatalogId(id: string): boolean {
+  return id.startsWith("clone:");
+}
 
 function browserStorage(): KeyValueStore | null {
   if (typeof window === "undefined") return null;
@@ -38,8 +43,11 @@ export function readStockVoicePick(
     }
     // Michelle left the pile for Ava. Clara left it for Libby. Andrew is
     // retired, so a saved "standard" pick lands on Drew — `coerce` does that.
-    let catalogVoiceId = coercePlainCatalogVoiceId(parsed.catalogVoiceId);
-    if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
+    // A clone id is stored as itself and checked against this person's list
+    // before it is selected.
+    const catalogVoiceId = isCloneCatalogId(parsed.catalogVoiceId)
+      ? parsed.catalogVoiceId
+      : coerceRememberedStockId(parsed.catalogVoiceId);
     return { catalogVoiceId, delivery: "standard" };
   } catch {
     return null;
@@ -50,8 +58,9 @@ export function writeStockVoicePick(
   pick: RememberedStockPick,
   storage: KeyValueStore | null = browserStorage()
 ): void {
-  let catalogVoiceId = coercePlainCatalogVoiceId(pick.catalogVoiceId);
-  if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
+  const catalogVoiceId = isCloneCatalogId(pick.catalogVoiceId)
+    ? pick.catalogVoiceId
+    : coerceRememberedStockId(pick.catalogVoiceId);
   storage?.setItem(
     STORAGE_KEY,
     JSON.stringify({
@@ -59,6 +68,20 @@ export function writeStockVoicePick(
       delivery: "standard",
     })
   );
+}
+
+export function clearStockVoicePick(
+  storage: KeyValueStore | null = browserStorage()
+): void {
+  if (!storage) return;
+  if (storage.removeItem) storage.removeItem(STORAGE_KEY);
+  else storage.setItem(STORAGE_KEY, "");
+}
+
+function coerceRememberedStockId(id: string): string {
+  let catalogVoiceId = coercePlainCatalogVoiceId(id);
+  if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
+  return catalogVoiceId;
 }
 
 /**
@@ -85,4 +108,56 @@ export function resolveStockSelection(input: {
     return input.suggestedId;
   }
   return input.availableIds[0] ?? null;
+}
+
+/**
+ * Apply a saved voice once the catalog has loaded.
+ * A clone id is kept only when it is in this person's clone list. While the
+ * list is still loading the saved clone is not selected and is not dropped.
+ * A deleted clone is cleared so it cannot stay selected through the reload.
+ */
+export function rememberedCloneOnRestore(input: {
+  selectedId: string | null;
+  rememberedId: string | null;
+  cloneIds: readonly string[];
+  loaded: boolean;
+}): {
+  selectedId: string | null;
+  rememberedId: string | null;
+  dropRemembered: boolean;
+  clearTouched: boolean;
+} {
+  if (!input.loaded) {
+    return {
+      selectedId: input.selectedId,
+      rememberedId: input.rememberedId,
+      dropRemembered: false,
+      clearTouched: false,
+    };
+  }
+  const rememberedIsClone = Boolean(
+    input.rememberedId && isCloneCatalogId(input.rememberedId)
+  );
+  const rememberedPresent =
+    rememberedIsClone && input.cloneIds.includes(input.rememberedId!);
+  const dropRemembered = rememberedIsClone && !rememberedPresent;
+  const rememberedId = dropRemembered ? null : input.rememberedId;
+  const selectedIsMissingClone = Boolean(
+    input.selectedId &&
+      isCloneCatalogId(input.selectedId) &&
+      !input.cloneIds.includes(input.selectedId)
+  );
+  let selectedId = selectedIsMissingClone ? null : input.selectedId;
+  if (
+    rememberedPresent &&
+    (selectedId == null || selectedId === input.rememberedId)
+  ) {
+    selectedId = input.rememberedId;
+  }
+  return {
+    selectedId,
+    rememberedId,
+    dropRemembered,
+    clearTouched: selectedIsMissingClone,
+  };
 }

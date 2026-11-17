@@ -15,11 +15,12 @@ not prove the live `/ready` body. Cover calls that answer from an already-warm
 container id do not prove that every GPU type has a snapshot of this recipe.
 There are no always-on GPUs.
 
-The live cap matches `MODAL_S2_MAX_GPUS` (default **20**): one container per
-active clone book, and one call in flight per book. The code default is
-`max_containers=1`, so a plain `modal deploy` does not open that fleet by
-itself. Step 8c sets the live cap after every production deploy and checks
-the printed settings. `min_containers` stays 0. The deployed
+The current owner rule for production `echomancer-s2-clone` is
+`min_containers` 0 and `max_containers` 1. Any change needs explicit owner
+approval. `MODAL_S2_MAX_GPUS` (default **20**) is the worker lease count,
+not permission to raise the autoscaler. The code default is
+`max_containers=1`, so a plain `modal deploy` does not open a fleet.
+Do not run step 8c to set a higher cap. `min_containers` stays 0. The deployed
 `echomancer-s2-clone` image already has `@modal.concurrent(max_inputs=1)`
 on `S2CloneWorker`, so a second book's POST is placed on another container
 (that container restores its own snapshot) rather than queued onto the busy
@@ -32,9 +33,9 @@ was ticked for the current image:
 | Property | Target |
 |---|---|
 | App | one frozen deployment (`echomancer-s2-clone`) |
-| Containers | one GPU per active clone book, up to `MODAL_S2_MAX_GPUS` (default 20) |
+| Containers | production stays at one GPU (`max_containers` 1) until the owner approves more |
 | `min_containers` | `0` (scale to zero when idle) |
-| `max_containers` | live override N = `MODAL_S2_MAX_GPUS` after each deploy (the deploy-time env stays 1) |
+| `max_containers` | `1` on production. A higher live override needs explicit owner approval |
 | Cold start | snapshot restore. ~90 s is a planning figure, not a measured duration of every cold start. A measured restore cited for the 2026-11-06 books was ~57 s. |
 | User-facing | book generation is asynchronous; the browser never waits |
 
@@ -746,7 +747,9 @@ than substituting a voice.
 
 ## 8. Set the live cap to one GPU per book
 
-**Set the live cap to `MODAL_S2_MAX_GPUS` (default 20).** Each active clone
+**Production stays at `max_containers` 1.** Do not raise it to
+`MODAL_S2_MAX_GPUS` (default 20) without explicit owner approval. The
+commands later in 8c that set 20 are not the current rule. Each active clone
 book sends one `synthesize_batch` at a time on its own H100 (see
 `docs/s2-lane-budget.md`). The worker will not start a 21st GPU; the
 autoscaler has to allow the ones it does start. `min_containers` stays 0.
@@ -821,6 +824,11 @@ modal run modal/s2_clone_warm.py --verify --containers 3
       `synthesize_batch` hosts (same checks as step 5)
 
 ### 8c. Set the live cap to `MODAL_S2_MAX_GPUS`
+
+**Do not run this unless the owner has explicitly approved a cap above 1.**
+Production `echomancer-s2-clone` stays `min_containers` 0 and
+`max_containers` 1. The snippet below is the historical raise to the worker
+lease count and is not the current rule.
 
 Do this after every production deploy, including a deploy that left
 `S2C_MAX_CONTAINERS` unset, and only after the image with

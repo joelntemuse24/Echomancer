@@ -25,13 +25,14 @@
 ## Modal access for agents
 
 Workspace `ntemusejoel` credentials are the environment variables
-`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The Modal CLI and the Python SDK
-read those two variables. Never print them.
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The normal shape is
+`MODAL_TOKEN_ID` holding only the `ak-` value and `MODAL_TOKEN_SECRET`
+holding only the `as-` value. The Modal CLI and the Python SDK read those
+two variables. Never print them.
 
-Each variable must be only its own field. `MODAL_TOKEN_ID` is the `ak-…`
-value and `MODAL_TOKEN_SECRET` is the `as-…` value. A sentence, or the same
-string in both variables, is not a token: `modal token info` then reports
-`Token ID is malformed`.
+If both variables arrive as the same combined string, a read-only command
+may split it: the `ak-` field is the id and the `as-` field is the secret.
+Do not write that split to disk.
 
 Allowed without further approval (read-only):
 
@@ -49,9 +50,13 @@ Forbidden unless the owner explicitly approves that command:
 - any call that starts a GPU, including production HTTP endpoints and
   `modal run …::cover`
 
-The production clone app is `echomancer-s2-clone`. It must stay
-`min_containers` 0 and `max_containers` 1. Never leave a GPU running. Do not
+The production clone app is `echomancer-s2-clone`. It stays
+`min_containers` 0 and `max_containers` 1. Any change to that cap needs
+explicit owner approval. Never leave a GPU running. Do not
 change the live cap to enforce that; report what a read-only list shows.
+`MODAL_S2_MAX_GPUS` (the worker lease count, default 20) is not permission
+to set `max_containers`. Do not run `scripts/s2/set-live-autoscaler.py`
+or the runbook's step 8c to raise it.
 A container count above zero is a report, not a reason to stop or scale
 anything from an agent.
 
@@ -506,13 +511,12 @@ One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
-not open a fleet. After that deploy an operator sets the live cap to
-`MODAL_S2_MAX_GPUS` (default **20**) with
-`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)`
-(`scripts/s2/set-live-autoscaler.py`). That call does not deploy and does
-not wipe snapshots. Restart the worker first so its 10s warm hold is under
-the 15s window. A later `modal deploy` resets the override and must be
-followed by the script again.
+not open a fleet. Production `echomancer-s2-clone` stays
+`min_containers` 0 and `max_containers` 1. Raising that cap needs explicit
+owner approval. Do not run `scripts/s2/set-live-autoscaler.py` or the
+runbook step that sets `max_containers` from `MODAL_S2_MAX_GPUS` (the
+worker lease count, default 20). That script does not deploy and does
+not wipe snapshots, and it is still not an agent command.
 `/ready` still reports the deploy-time value, so the printed settings are
 the check. `min_containers` stays 0. The deployed class already has
 `@modal.concurrent(max_inputs=1)`, so a second book's POST is placed on
@@ -608,8 +612,11 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
 - **One H100 per book.** `min_containers` stays 0. A book does not keep a
   GPU waiting, and it does not open a second one for itself.
   `planModalCloneBookWave` sends one call at a time. Another book, from
-  any user or the same user, gets its own GPU until `MODAL_S2_MAX_GPUS`
-  (default 20) and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). Those counts
+  any user or the same user, does not open a second production GPU:
+  `echomancer-s2-clone` stays `max_containers` 1 until the owner approves
+  a change. `MODAL_S2_MAX_GPUS` (default 20) and `MODAL_S2_MAX_GPUS_PER_USER`
+  (default 5) are worker lease counters. They do not raise the Modal
+  autoscaler. Those counts
   are rows in `modal_gpu_leases`, renewed by the take-home heartbeat and
   deleted when the tick ends or the worker shuts down. A dead worker stops
   heartbeating and the row expires, so the GPU is not stuck. Past either

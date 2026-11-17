@@ -17,7 +17,13 @@ export type VoiceContinueDecision =
   | { type: "start-selected" }
   | {
       type: "blocked";
-      reason: "busy" | "quality-fail" | "quality-checking" | "nothing";
+      reason:
+        | "busy"
+        | "quality-fail"
+        | "quality-checking"
+        | "nothing"
+        | "voices-loading"
+        | "clone-missing";
     };
 
 export function resolveVoiceContinue(input: {
@@ -28,7 +34,13 @@ export function resolveVoiceContinue(input: {
   busy: boolean;
   hasSelectedVoice: boolean;
   hasBook: boolean;
+  /** The catalog request has not returned. A saved clone is not confirmed yet. */
+  voicesLoading?: boolean;
+  /** The selected id is `clone:` and it is not in this person's loaded list. */
+  cloneMissing?: boolean;
 }): VoiceContinueDecision {
+  if (input.voicesLoading) return { type: "blocked", reason: "voices-loading" };
+  if (input.cloneMissing) return { type: "blocked", reason: "clone-missing" };
   if (input.busy) return { type: "blocked", reason: "busy" };
 
   if (input.path === "clone" && input.hasPendingSample) {

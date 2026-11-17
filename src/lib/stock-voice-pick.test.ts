@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearStockVoicePick,
   readStockVoicePick,
+  rememberedCloneOnRestore,
   resolveStockSelection,
   writeStockVoicePick,
 } from "./stock-voice-pick";
@@ -11,6 +13,9 @@ function memoryStore() {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => {
       data.set(key, value);
+    },
+    removeItem: (key: string) => {
+      data.delete(key);
     },
   };
 }
@@ -143,5 +148,79 @@ describe("stock voice pick", () => {
         suggestedId: null,
       })
     ).toBe("drew");
+  });
+
+  it("remembers a clone id and restores it only when that clone is still theirs", () => {
+    const storage = memoryStore();
+    writeStockVoicePick(
+      { catalogVoiceId: "clone:abc", delivery: "standard" },
+      storage
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "clone:abc",
+      delivery: "standard",
+    });
+    expect(
+      rememberedCloneOnRestore({
+        selectedId: null,
+        rememberedId: "clone:abc",
+        cloneIds: ["clone:abc"],
+        loaded: true,
+      })
+    ).toEqual({
+      selectedId: "clone:abc",
+      rememberedId: "clone:abc",
+      dropRemembered: false,
+      clearTouched: false,
+    });
+  });
+
+  it("does not select or drop a saved clone while the voice list is still loading", () => {
+    expect(
+      rememberedCloneOnRestore({
+        selectedId: null,
+        rememberedId: "clone:abc",
+        cloneIds: [],
+        loaded: false,
+      })
+    ).toEqual({
+      selectedId: null,
+      rememberedId: "clone:abc",
+      dropRemembered: false,
+      clearTouched: false,
+    });
+  });
+
+  it("drops a deleted clone and does not leave it selected", () => {
+    const storage = memoryStore();
+    writeStockVoicePick(
+      { catalogVoiceId: "clone:gone", delivery: "standard" },
+      storage
+    );
+    const restored = rememberedCloneOnRestore({
+      selectedId: "clone:gone",
+      rememberedId: "clone:gone",
+      cloneIds: ["clone:other"],
+      loaded: true,
+    });
+    expect(restored).toEqual({
+      selectedId: null,
+      rememberedId: null,
+      dropRemembered: true,
+      clearTouched: true,
+    });
+    if (restored.dropRemembered) clearStockVoicePick(storage);
+    expect(readStockVoicePick(storage)).toBeNull();
+  });
+
+  it("does not replace a stock tap with a remembered clone", () => {
+    expect(
+      rememberedCloneOnRestore({
+        selectedId: "libby",
+        rememberedId: "clone:abc",
+        cloneIds: ["clone:abc"],
+        loaded: true,
+      }).selectedId
+    ).toBe("libby");
   });
 });

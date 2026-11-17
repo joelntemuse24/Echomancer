@@ -19,7 +19,14 @@ import {
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
-import { playerShowsPlay } from "@/lib/library/card-play";
+import {
+  mediaSessionActive,
+  partRowCanPlay,
+  partRowLabel,
+  playbackAllowed,
+  playbackUrlForStatus,
+  playerShowsPlay,
+} from "@/lib/library/card-play";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { playerStatusLine, UX } from "@/lib/ux-copy";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
@@ -299,12 +306,11 @@ function PlayerPageInner({ id }: { id: string }) {
   useEffect(() => {
     let stopped = false;
     const cached = peekJob<Job>(id);
-    const seeded =
-      cached && !playerShowsPlay(cached.status)
-        ? null
-        : seededTakehomePlayback(cached, { forceStream, forceSegments });
+    const seeded = playbackAllowed(cached?.status)
+      ? seededTakehomePlayback(cached, { forceStream, forceSegments })
+      : null;
     if (seeded) {
-      setAudioUrl(seeded.url);
+      setAudioUrl(playbackUrlForStatus(cached?.status, seeded.url));
       if (seeded.segmentIndex != null) setSegmentIndex(seeded.segmentIndex);
     }
     async function fetchJob() {
@@ -326,7 +332,7 @@ function PlayerPageInner({ id }: { id: string }) {
         rememberJobDetail(id, { job: j });
         if (stopped) return;
         setJob(j);
-        if (!playerShowsPlay(j.status)) {
+        if (!playbackAllowed(j.status)) {
           setAudioUrl(null);
           return;
         }
@@ -373,9 +379,10 @@ function PlayerPageInner({ id }: { id: string }) {
   const jobStatus = job?.status;
   const jobKind = job?.job_kind;
   useEffect(() => {
+    if (playbackAllowed(jobStatus)) return;
     if (jobStatus !== "failed") return;
-    setAudioUrl(null);
-  }, [jobStatus]);
+    if (audioUrl != null) setAudioUrl(null);
+  }, [jobStatus, audioUrl]);
   useEffect(() => {
     if (!jobStatus) return;
     const isStream = forceStream || jobKind === "stream";
@@ -498,6 +505,11 @@ function PlayerPageInner({ id }: { id: string }) {
           return changed;
         }
 
+        if (!playbackAllowed(next.status)) {
+          if (audioUrlRef.current) setAudioUrl(null);
+          return changed;
+        }
+
         if (next.audio_url && !audioUrlRef.current) {
           setAudioUrl(versionedAudioUrl(next.audio_url, next.updated_at));
         } else if (!audioUrlRef.current) {
@@ -594,6 +606,7 @@ function PlayerPageInner({ id }: { id: string }) {
   }, [id, jobStatus]);
 
   useEffect(() => {
+    if (!playbackAllowed(job?.status)) return;
     if (!waitingForNextRef.current || !job?.segments) return;
     // A finished book with a hole can never fill it, so skip it rather than
     // stranding the rest of the book behind a section that will not render
@@ -1191,7 +1204,7 @@ function PlayerPageInner({ id }: { id: string }) {
     voiceName: job?.voice_name,
   });
   useAudiobookSession({
-    active: Boolean(audioUrl),
+    active: mediaSessionActive(job?.status, Boolean(audioUrl)),
     title: sessionMeta.title,
     artist: sessionMeta.artist,
     album: sessionMeta.album,
@@ -1199,7 +1212,7 @@ function PlayerPageInner({ id }: { id: string }) {
     position: currentTime,
     playbackRate: speed,
     playing: isPlaying,
-    seekable: Boolean(audioUrl) && !isStreamMode,
+    seekable: mediaSessionActive(job?.status, Boolean(audioUrl)) && !isStreamMode,
     chapterSkip: chapterNav,
     actions: sessionActions,
   });
@@ -1315,13 +1328,13 @@ function PlayerPageInner({ id }: { id: string }) {
 
   return (
     <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
-      {audioUrl && (
+      {audioUrl && playbackAllowed(job.status) ? (
         <audio
           ref={audioRef}
           src={audioUrl}
           preload="auto"
         />
-      )}
+      ) : null}
 
       {/* Back button */}
       <Link
@@ -1569,31 +1582,35 @@ function PlayerPageInner({ id }: { id: string }) {
                   .sort((a, b) => a.index - b.index)
                   .find((s) => s.index === index);
                 const isReady = Boolean(seg && seg.status === "ready");
+                const canPlayRow = partRowCanPlay(job.status, isReady);
                 const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
                 return (
                     <button
                       key={index}
                       onClick={() => {
-                        if (isReady && seg) {
-                          pendingChapterSeekRef.current = null;
-                          waitingForNextRef.current = false;
-                          setSegmentIndex(index);
-                          setCurrentTime(0);
-                          playAfterLoadRef.current = true;
-                          const nextUrl = `/api/storage/${seg.path}`;
-                          if (audioUrl === nextUrl && audioRef.current) {
-                            audioRef.current.currentTime = 0;
-                            audioRef.current.play().catch(() => {});
-                          } else {
-                            setAudioUrl(nextUrl);
-                          }
+                        if (!canPlayRow || !seg) return;
+                        const nextUrl = playbackUrlForStatus(
+                          job.status,
+                          `/api/storage/${seg.path}`
+                        );
+                        if (!nextUrl) return;
+                        pendingChapterSeekRef.current = null;
+                        waitingForNextRef.current = false;
+                        setSegmentIndex(index);
+                        setCurrentTime(0);
+                        playAfterLoadRef.current = true;
+                        if (audioUrl === nextUrl && audioRef.current) {
+                          audioRef.current.currentTime = 0;
+                          audioRef.current.play().catch(() => {});
+                        } else {
+                          setAudioUrl(nextUrl);
                         }
                       }}
-                      disabled={!isReady}
+                      disabled={!canPlayRow}
                       className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
-                        isCurrent
+                        isCurrent && canPlayRow
                           ? "bg-primary/10 text-primary font-medium"
-                          : isReady
+                          : canPlayRow
                             ? "text-muted-foreground hover:text-foreground hover:bg-accent"
                             : "text-muted-foreground/40 cursor-not-allowed"
                       }`}
@@ -1602,7 +1619,7 @@ function PlayerPageInner({ id }: { id: string }) {
                         {String(index + 1).padStart(2, "0")}
                       </span>
                       <span className="flex-1">
-                        {isReady ? "Ready" : "Generating…"}
+                        {partRowLabel(job.status, isReady)}
                       </span>
                       {isCurrent && isPlaying && (
                         <span className="flex gap-0.5 items-end h-3">
