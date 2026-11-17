@@ -513,15 +513,19 @@ one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
 not open a fleet. Production `echomancer-s2-clone` stays
 `min_containers` 0 and `max_containers` 1. Raising that cap needs explicit
-owner approval. Do not run `scripts/s2/set-live-autoscaler.py` or the
-runbook step that sets `max_containers` from `MODAL_S2_MAX_GPUS` (the
-worker lease count, default 20). That script does not deploy and does
-not wipe snapshots, and it is still not an agent command.
+owner approval. `scripts/s2/set-live-autoscaler.py` refuses to apply a
+cap unless `--max-containers` is passed (`--brake` sets 0). On production
+that flag is 1. `--print-max` falls back to `MODAL_S2_MAX_GPUS` (the
+worker lease count, default 20) only when the live autoscaler cannot be
+read, and `scripts/s2/post-deploy-cover.sh` restores that printed number.
+The historical runbook command that set the cap to 20 is not the current
+8c step. The script does not deploy and does not wipe snapshots, and it
+is still not an agent command.
 `/ready` still reports the deploy-time value, so the printed settings are
-the check. `min_containers` stays 0. The deployed class already has
-`@modal.concurrent(max_inputs=1)`, so a second book's POST is placed on
-another container (that container restores its own snapshot) rather than
-answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
+the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
+means one call at a time on that GPU. A second book queues on the same
+GPU and never opens a second container. A 429 `lane_busy` body stays a
+busy-not-cold backstop.
 
 - **A warm container is not a free container.** `/ready` reporting
   `warm_containers > 0` means some container finished restoring. Spare
@@ -590,7 +594,8 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
   wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
-  miss tries the unstaged sections once on another container. A client
+  miss is retried once. Production stays at `max_containers` 1, so that
+  retry queues on the same GPU and does not open a second one. A client
   timeout does not: the handler is still rendering. A warm-budget timeout
   parks for that HTTP wait (400s). A first-light timeout parks for the
   rest of the restore plus the opening section (~106s). A backoff that
@@ -612,9 +617,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
 - **One H100 per book.** `min_containers` stays 0. A book does not keep a
   GPU waiting, and it does not open a second one for itself.
   `planModalCloneBookWave` sends one call at a time. Another book, from
-  any user or the same user, does not open a second production GPU:
-  `echomancer-s2-clone` stays `max_containers` 1 until the owner approves
-  a change. `MODAL_S2_MAX_GPUS` (default 20) and `MODAL_S2_MAX_GPUS_PER_USER`
+  any user or the same user, queues on that same GPU and never opens a
+  second one. `echomancer-s2-clone` stays `max_containers` 1 until the
+  owner approves a change. `MODAL_S2_MAX_GPUS` (default 20) and `MODAL_S2_MAX_GPUS_PER_USER`
   (default 5) are worker lease counters. They do not raise the Modal
   autoscaler. Those counts
   are rows in `modal_gpu_leases`, renewed by the take-home heartbeat and
@@ -991,8 +996,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   remain real errors and surface with the provider's own message.
 - **`ready` means the whole book.** Assembly requires every index; a book with
   holes is published `failed` with `"N of M sections could not be narrated… not
-  a complete audiobook"`, `progress < 100`, and its audio intact (the section
-  zip / section-by-section player still work). The old rule accepted
+  a complete audiobook"`, `progress < 100`, and its audio files intact.
+  Download of those files is still allowed. The player does not play a
+  failed book, including the parts list. The old rule accepted
   `mostIndexesReady` (over half) or `doneCount > 0`, which is how 5 of 11
   sections shipped as a finished book.
 - **The section cache is ON in production and was OFF in tests.** The harness

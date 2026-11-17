@@ -9,10 +9,10 @@
  * Three rules, all learned the hard way:
  *   - A book may wait for a snapshot restore. It must not wait for a compile.
  *     One placement that misses the restore budget is dropped. A gateway
- *     miss is tried once on another container. A client timeout is not:
- *     the sync Modal handler keeps rendering, and a second POST of the
- *     same sections bills them twice (`max_inputs=1` places that POST on
- *     another container; it does not return 429). This process does not
+ *     miss is retried once. Production `max_containers` stays 1, so that
+ *     retry queues on the same GPU and does not open a second one. A
+ *     client timeout is not: the sync Modal handler keeps rendering, and
+ *     a second POST of the same sections bills them twice. This process does not
  *     cancel the handler. Only when nothing comes back does the book park,
  *     and the compile itself is an off-path RPC.
  *   - A book never changes engine mid-way. The pin is decided once and stored,
@@ -406,7 +406,8 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
  * With {@link LaneDispatchOptions.firstLight} the lowest index goes first on a
  * single lane; the remaining lanes only open once it is staged. Lanes then run
  * at once, so one compiling variant does not hold the others. A placement that
- * misses the restore budget is tried once more on another container. A probe
+ * misses the restore budget is retried once. Production `max_containers`
+ * stays 1, so the retry queues on the same GPU. A probe
  * that says the pool is empty is not retried: more HTTP calls would each wait
  * the same budget and still could not finish a compile.
  */
@@ -431,7 +432,7 @@ export async function dispatchModalCloneLanes(
     const startedAt = Date.now();
     mergeWave(tally, await runWave(opts, [head], log, 1, true));
     if (!tally.poolCold && tally.placement.includes(head) && !tally.aborted) {
-      // One retry on another container, exactly as a batched lane gets. Two
+      // One retry on the same GPU. Production max_containers stays 1. Two
       // restore budgets is still not a compile.
       log(`[S2 lanes] first-light section ${head} missed the restore budget; retrying it`);
       mergeWave(tally, await runWave(opts, [head], log, 1, true));
@@ -467,7 +468,8 @@ export async function dispatchModalCloneLanes(
     // A multi-section call that missed its budget is retried **one section per
     // call**. Resending the same pack is what made `job 7e4a8b48` loop: 31k
     // characters in one call, aborted at 150s, resent as the same 31k on
-    // another container, aborted again. A one-row call runs at the slow rate,
+    // another container, aborted again. Production max_containers stays 1,
+    // so a retry now queues on the same GPU. A one-row call runs at the slow rate,
     // but it is a rate that completes.
     if (!wave.poolCold && wave.oversize.length > 0 && !wave.aborted) {
       const split = wave.oversize.filter((index) => !tally.staged.has(index));
@@ -482,7 +484,8 @@ export async function dispatchModalCloneLanes(
       }
     }
     // A single-section call that never came back is one placement that missed,
-    // and one retry on another container is the budget #237 allows.
+    // and one retry is the budget #237 allows. Production max_containers
+    // stays 1, so that retry queues on the same GPU.
     if (!wave.poolCold && wave.placement.length > 0 && !wave.aborted) {
       const retry = wave.placement.filter((index) => !tally.staged.has(index));
       if (retry.length > 0) {
@@ -1056,8 +1059,9 @@ async function runWave(
       // fit, not a container that did not restore: the wait it was given was
       // sized from its own characters at a measured rate, so missing it means
       // the rate was optimistic. Splitting is the only retry worth making —
-      // resending the same pack on another container is what made
-      // `job 7e4a8b48` loop. This holds whether or not a sibling answered.
+      // resending the same pack is what made `job 7e4a8b48` loop.
+      // Production max_containers stays 1, so a retry queues on the same GPU.
+      // This holds whether or not a sibling answered.
       if (result.lane.length > 1) oversize.push(...missed);
       else {
         placement.push(...missed);

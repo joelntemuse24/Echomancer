@@ -285,6 +285,7 @@ export default function VoiceSelectionPage() {
     cachedVoices?.voices ?? []
   );
   const [loading, setLoading] = useState(!cachedVoices);
+  const [voicesLoadError, setVoicesLoadError] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   /** After a clone, show only that voice until they ask for the rest. */
@@ -511,6 +512,7 @@ export default function VoiceSelectionPage() {
     loadScreen<VoicesPayload>(SCREEN_VOICES, "/api/tts/voices")
       .then((data) => {
         if (cancelled) return;
+        setVoicesLoadError(false);
         setAllVoices(data.voices || []);
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
@@ -519,9 +521,8 @@ export default function VoiceSelectionPage() {
         );
       })
       .catch(() => {
-        if (!cancelled && !peekScreen(SCREEN_VOICES)) {
-          toast.error("Couldn't load voices. Refresh and try again.");
-        }
+        if (cancelled) return;
+        setVoicesLoadError(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -583,13 +584,14 @@ export default function VoiceSelectionPage() {
       setPinnedVoiceId(null);
       return;
     }
-    if (loading) return;
+    if (loading || voicesLoadError) return;
     const cloneIds = cloneVoices.map((voice) => voice.id);
     const restored = rememberedCloneOnRestore({
       selectedId: selectedVoiceId,
       rememberedId: stockPickRef.current?.catalogVoiceId ?? null,
       cloneIds,
-      loaded: true,
+      loaded: !voicesLoadError,
+      loadFailed: voicesLoadError,
     });
     if (restored.dropRemembered) {
       stockPickRef.current = null;
@@ -623,6 +625,7 @@ export default function VoiceSelectionPage() {
     selectedVoiceId,
     pinnedVoiceId,
     loading,
+    voicesLoadError,
     activePath,
     narrator,
   ]);
@@ -1146,7 +1149,7 @@ export default function VoiceSelectionPage() {
     busy: creating || cloning,
     hasSelectedVoice: selectedVoice != null,
     hasBook: Boolean(pdfPath),
-    voicesLoading: loading,
+    voicesLoading: loading || voicesLoadError,
     cloneMissing:
       !loading &&
       Boolean(selectedVoiceId?.startsWith("clone:")) &&
@@ -1522,7 +1525,7 @@ export default function VoiceSelectionPage() {
 
   const showNarratorWait =
     Boolean(uploadId) && narratorPending && !narratorSettled;
-  const stockUnavailable = !loading && mainVoices.length === 0;
+  const stockUnavailable = !loading && !voicesLoadError && mainVoices.length === 0;
   const continueDecision = resolveVoiceContinue(voiceContinueInput());
   const continueLabel =
     continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
@@ -1584,6 +1587,22 @@ export default function VoiceSelectionPage() {
           </button>
           <div className="divide-y divide-border/40">{renderVoiceCard(soloVoice)}</div>
         </div>
+      ) : null}
+
+      {voicesLoadError ? (
+        <p role="alert" className="mb-8 text-center text-sm text-muted-foreground">
+          Couldn&apos;t load voices.{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setLoading(true);
+              setVoicesReloadToken((n) => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        </p>
       ) : null}
 
       {!soloVoice && loading ? (

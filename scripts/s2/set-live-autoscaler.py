@@ -1,8 +1,10 @@
 """Set the live S2 autoscaler. Does not deploy and does not rebuild snapshots.
 
-The decorator baked into the image is not what production uses after step 8c.
+Production `echomancer-s2-clone` stays `min_containers` 0 and
+`max_containers` 1. After a deploy, run this with `--max-containers 1` so
+the live cap stays there. Raising it needs explicit owner approval.
 `modal deploy` wipes GPU memory snapshots and resets this override, so run
-this again after any deploy. Do not run it from CI.
+the cap-1 call again after any deploy. Do not run it from CI.
 
 Restart the take-home worker first. The worker's default warm hold is 10s,
 which has to stay under this window. Lowering the window while the worker
@@ -10,9 +12,15 @@ still plans a longer hold sends a wide batch at a container that is already
 gone. 15s releases an idle H100 promptly. It does not cancel an in-flight
 enter or compile: scaledown only applies once the container has no input.
 
-    python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15
+    python3 scripts/s2/set-live-autoscaler.py --max-containers 1 --scaledown-window 15
 
-`--max-containers` is the worker's MODAL_S2_MAX_GPUS. min_containers stays 0.
+`--max-containers` on production is 1. The apply path refuses to run
+without that flag (`--brake` sets 0). `--print-max` falls back to
+`S2C_RESTORE_MAX` or `MODAL_S2_MAX_GPUS` (the worker lease count, default
+20) only when the live autoscaler cannot be read. `post-deploy-cover.sh`
+restores whatever that print returned, so a failed live read with that
+env set would put the cap back above 1. Raising the cap needs explicit
+owner approval. min_containers stays 0.
 
 `--max-containers 0` (or `--brake`) is a temporary brake: it stops new
 placements without cancelling an in-flight enter or compile. It does not

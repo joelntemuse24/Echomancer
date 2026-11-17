@@ -360,11 +360,12 @@ def _max_containers() -> int:
     """Independent one-GPU containers.
 
     The baked default stays 1. A plain `modal deploy` therefore cannot open
-    a fleet by itself. After deploy, the runbook sets the live cap with
-    `update_autoscaler(max_containers=N)` where N is `MODAL_S2_MAX_GPUS`
-    (default 20). `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
-    sends a second book's call to another container instead of queueing it
-    on this one; that decorator is in effect only after a redeploy.
+    a fleet by itself. After deploy, the runbook keeps the live cap at
+    `update_autoscaler(max_containers=1)`. Raising it needs explicit owner
+    approval. `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count
+    and is not this cap. `min_containers` stays 0.
+    `@modal.concurrent(max_inputs=1)` means one call at a time on this GPU.
+    A second book queues here and does not open a second container.
     """
     return int(_LIMITS["max_containers"])
 
@@ -614,9 +615,9 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
         **_BUILD_ENV,
     },
 )
-# One input per container. A second book's call is placed on another
-# container (up to max_containers) instead of queueing on this GPU thread,
-# which would answer 429. Needs a redeploy before it takes effect.
+# One input per container. Production max_containers stays 1, so a second
+# book's call queues on this GPU and does not open a second container.
+# Raising the cap needs explicit owner approval. A 429 is the busy backstop.
 @modal.concurrent(max_inputs=1)
 class S2CloneWorker:
     @modal.enter(snap=True)
@@ -925,7 +926,8 @@ class S2CloneWorker:
         HTTP handlers never touch CUDA themselves. Three things can go wrong
         here, and each maps to a different caller decision:
 
-        - `GpuThreadBusy`  ⇒ 429, the lane is occupied; try another container.
+        - `GpuThreadBusy`  ⇒ 429, the lane is occupied. Production max_containers
+          stays 1, so the caller queues on this GPU.
         - `TimeoutError`   ⇒ 503, this boot is still warming; come back later.
         - anything else    ⇒ 500, a real fault that must not look like cold.
 
@@ -1036,7 +1038,8 @@ class S2CloneWorker:
         Submit, poll, and cancel are the CPU function ``s2_control``. This
         method stays on the H100 because it renders. A book must not send
         control traffic here: a cold accept would wait out a GPU restore,
-        and each status POST would be another input on another H100.
+        and each status POST would be another GPU input. Production
+        max_containers stays 1, so it must not open a second one.
         """
         from fastapi import HTTPException
         from fastapi.responses import JSONResponse

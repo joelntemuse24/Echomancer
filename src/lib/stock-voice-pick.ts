@@ -113,21 +113,24 @@ export function resolveStockSelection(input: {
 /**
  * Apply a saved voice once the catalog has loaded.
  * A clone id is kept only when it is in this person's clone list. While the
- * list is still loading the saved clone is not selected and is not dropped.
- * A deleted clone is cleared so it cannot stay selected through the reload.
+ * list is still loading, or the list request failed, the saved clone is not
+ * selected and is not dropped. An empty list counts only after a successful
+ * load. A deleted clone is cleared so it cannot stay selected through the reload.
  */
 export function rememberedCloneOnRestore(input: {
   selectedId: string | null;
   rememberedId: string | null;
   cloneIds: readonly string[];
   loaded: boolean;
+  /** `/api/tts/voices` failed. An empty `cloneIds` is not proof the clone is gone. */
+  loadFailed?: boolean;
 }): {
   selectedId: string | null;
   rememberedId: string | null;
   dropRemembered: boolean;
   clearTouched: boolean;
 } {
-  if (!input.loaded) {
+  if (!input.loaded || input.loadFailed) {
     return {
       selectedId: input.selectedId,
       rememberedId: input.rememberedId,

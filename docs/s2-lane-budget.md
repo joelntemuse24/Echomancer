@@ -193,12 +193,16 @@ cold and **33,576 ms** warm. The tightest margin at 1× is the second call
 | ~2 hours | 1, 1, 1, 1, 1, 3, 16, 24, 12 | 588,152 ms | 550,152 ms |
 | ~10 hours | 1, 1, 1, 1, 1, 3, 16, then eleven 24s | 1,576,533 ms | 1,538,533 ms |
 
-Each clone book gets its own H100 until `MODAL_S2_MAX_GPUS` (default 20)
-and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). The count is a row in
-`modal_gpu_leases`, one per book, renewed with the take-home heartbeat
-and expired if that worker dies. A book still sends one call at a time.
-Past either ceiling the oldest waiter shares the oldest holder's call
-schedule, and younger waiters wait.
+Production `echomancer-s2-clone` stays `min_containers` 0 and
+`max_containers` 1. A second book queues on that GPU and never opens a
+second one. Raising the cap needs explicit owner approval. The lease
+planner still counts rows up to `MODAL_S2_MAX_GPUS` (default 20) and
+`MODAL_S2_MAX_GPUS_PER_USER` (default 5). Those counters do not raise the
+container cap. The count is a row in `modal_gpu_leases`, one per book,
+renewed with the take-home heartbeat and expired if that worker dies. A
+book still sends one call at a time. Past either ceiling the oldest waiter
+shares the oldest holder's call schedule, and younger waiters wait. The
+multi-GPU arithmetic below is that planner, not the production cap.
 
 Under the ceiling every listener is the single-book ramp. One, two, three,
 or ten concurrent 10-hour books (different users, or three from one user)
@@ -237,8 +241,8 @@ the 400s wait. The 24-row smoke body (43,907 characters, 58.7MB) arrived
 whole. `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower the cap; `8000` is the
 rollback toward the cold shape.
 
-One book, one call at a time, on its own GPU. A second book gets a second
-GPU until the ceiling. The overflow share is one call at a time on the
+One book, one call at a time, on the one production GPU. A second book
+queues on that GPU and never opens a second one. The overflow share is one call at a time on the
 holder's GPU, and that partner's first call is still one section. A shared
 call is the widest feeding call the buffers can hold, and a growth call
 when none of those leave the slack. One row is only the last section of a

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   clearStockVoicePick,
@@ -166,6 +167,31 @@ describe("stock voice pick", () => {
         rememberedId: "clone:abc",
         cloneIds: ["clone:abc"],
         loaded: true,
+      })
+    ).toEqual({
+      selectedId: "clone:abc",
+      rememberedId: "clone:abc",
+      dropRemembered: false,
+      clearTouched: false,
+    });
+  });
+
+  it("keeps the saved clone on the voice page when the list request fails", () => {
+    const source = readFileSync("src/app/dashboard/voice/page.tsx", "utf8");
+    expect(source).toContain("if (loading || voicesLoadError) return;");
+    expect(source).toContain("loadFailed: voicesLoadError");
+    expect(source).toContain("voicesLoading: loading || voicesLoadError");
+    expect(source).toContain("Try again");
+  });
+
+  it("keeps a remembered clone when the voice list failed to load", () => {
+    expect(
+      rememberedCloneOnRestore({
+        selectedId: "clone:abc",
+        rememberedId: "clone:abc",
+        cloneIds: [],
+        loaded: true,
+        loadFailed: true,
       })
     ).toEqual({
       selectedId: "clone:abc",
