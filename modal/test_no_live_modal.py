@@ -79,8 +79,27 @@ def test_a_client_imported_after_the_guard_cannot_call_from_env():
         Client.from_env()
 
 
-def test_subprocess_modal_client_fails_without_network():
-    """sitecustomize poisons from_env even though the import happens later."""
+def test_subprocess_modal_client_fails_without_network(tmp_path):
+    """sitecustomize poisons from_env even though the import happens later.
+
+    CI does not install the Modal SDK. The repo's ``modal/`` directory is this
+    project's sources, so a bare ``import modal.client`` is not the client.
+    The stand-in below would return successfully. The guard has to stop it.
+    """
+    package = tmp_path / "modal"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "client.py").write_text(
+        "class Client:\n"
+        "    @classmethod\n"
+        "    def from_env(cls):\n"
+        "        return 'network'\n"
+        "_Client = Client\n"
+    )
+    env = _child_env()
+    entries = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    assert entries and (Path(entries[0]) / "sitecustomize.py").is_file()
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), *entries])
     completed = subprocess.run(
         [
             sys.executable,
@@ -90,7 +109,7 @@ def test_subprocess_modal_client_fails_without_network():
         check=False,
         capture_output=True,
         text=True,
-        env=_child_env(),
+        env=env,
     )
     assert completed.returncode != 0
     assert "must not call Modal" in completed.stderr + completed.stdout
