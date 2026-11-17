@@ -41,6 +41,8 @@ export type Flight = {
   promise?: Promise<unknown>;
   abort?: () => void;
   callId?: string;
+  /** `echo:<job>:<sections>:<nonce>` sent on the request so a listing can find it. */
+  tag?: string;
   startedAt: number;
   endedAt?: number;
   estCostUsd: number;
@@ -73,6 +75,7 @@ const halted = new Map<string, string>();
 const drainRequests = new Set<string>();
 let seq = 0;
 let eventSink: ((event: RemoteEvent) => void) | null = null;
+let stampSink: ((flight: Flight) => void) | null = null;
 
 /** Dollar reservations from `started` rows. Wall time is the merged span. */
 export type SpendRow = {
@@ -105,8 +108,9 @@ export function mergedIntervalMs(intervals: Array<[number, number]>): number {
   return total;
 }
 
+/** One second is one reservation. Milliseconds and a truncated reload match. */
 function spendIdentity(row: SpendRow): string {
-  return `${row.key}|${row.start}`;
+  return `${row.key}|${Math.floor(row.start / 1000)}`;
 }
 
 function rememberSpend(flight: Flight): void {
@@ -122,19 +126,31 @@ function rememberSpend(flight: Flight): void {
 }
 
 function closeSpend(flight: Flight): void {
-  const row = spend.find((item) => item.key === flight.key && item.start === flight.startedAt);
+  const row = spend.find(
+    (item) => item.key === flight.key && Math.abs(item.start - flight.startedAt) < 1_000
+  );
   if (!row) return;
   row.end = flight.endedAt ?? Date.now();
 }
 
 /**
  * Replace the dollar ledger with rows loaded from `remote_calls`.
- * In-memory reservations that are not in that snapshot are kept, so a
- * call that has not been written yet is still counted.
+ * A flight key in that snapshot replaces the memory row, so a reload
+ * cannot append a second copy of the same reservation. A memory row
+ * whose start is newer than the snapshot is kept: it has not been written.
  */
 export function replacePersistedSpend(rows: SpendRow[]): void {
-  const incoming = new Set(rows.map(spendIdentity));
-  const memory = spend.filter((row) => !incoming.has(spendIdentity(row)));
+  const incomingIds = new Set(rows.map(spendIdentity));
+  const newest = new Map<string, number>();
+  for (const row of rows) {
+    newest.set(row.key, Math.max(newest.get(row.key) ?? 0, row.start));
+  }
+  const memory = spend.filter((row) => {
+    if (incomingIds.has(spendIdentity(row))) return false;
+    const persisted = newest.get(row.key);
+    if (persisted == null) return true;
+    return row.start > persisted + 1_000;
+  });
   spend = [...rows, ...memory];
 }
 
@@ -144,6 +160,11 @@ export function spendRows(): readonly SpendRow[] {
 
 export function setRemoteEventSink(fn: ((event: RemoteEvent) => void) | null): void {
   eventSink = fn;
+}
+
+/** Persist a call id or tag onto the open row without adding a spend row. */
+export function setRemoteFlightStamp(fn: ((flight: Flight) => void) | null): void {
+  stampSink = fn;
 }
 
 function nextId(): string {
@@ -159,6 +180,7 @@ export function resetRemoteLayerForTests(): void {
   spend = [];
   seq = 0;
   eventSink = null;
+  stampSink = null;
 }
 
 export function noteDrainRequested(jobId: string | undefined): void {
@@ -199,6 +221,7 @@ function record(partial: Omit<RemoteEvent, "id" | "startedAt"> & { startedAt?: n
     jobId: partial.jobId,
     section: partial.section,
     callId: partial.callId,
+    callTag: partial.callTag,
     outcome: partial.outcome,
     endedAt: partial.endedAt,
     estCostUsd: partial.estCostUsd,
@@ -225,6 +248,9 @@ export function haltBook(jobId: string, reason: string): void {
   for (const flight of flights.values()) {
     if (flight.jobId !== jobId) continue;
     if (flight.status !== "running" && flight.status !== "still_live") continue;
+    // `bindFlightAbort` is what puts this handle here. Stop aborts the
+    // fetch that is still waiting on headers, then the provider records
+    // still_live with the function-call id it already stored.
     try {
       flight.abort?.();
     } catch {
@@ -458,6 +484,7 @@ export function admitRemoteCall(
       jobId: flight.jobId,
       section: flight.sections.join(","),
       callId: flight.callId,
+      callTag: flight.tag,
       outcome: recorded,
       startedAt: flight.startedAt,
       endedAt: flight.endedAt,
@@ -568,20 +595,40 @@ export function bindFlightAbort(key: string, abort: () => void): void {
   if (flight) flight.abort = abort;
 }
 
-export function setFlightCallId(key: string, callId: string): void {
+export function noteFlightTag(key: string, tag: string): void {
   const flight = flights.get(key);
-  if (flight) flight.callId = callId;
+  const value = tag.trim();
+  if (!flight || !value) return;
+  flight.tag = value;
+  stampSink?.(flight);
 }
 
-/** Attach the Modal function-call id to this book's open flights. */
+export function setFlightCallId(key: string, callId: string): void {
+  const flight = flights.get(key);
+  const id = callId.trim();
+  if (!flight || !id || flight.callId === id) return;
+  flight.callId = id;
+  stampSink?.(flight);
+}
+
+/**
+ * Attach a function-call id to the one open flight of this book that
+ * does not have one. Several open flights stay untagged: one listing
+ * must not be copied onto every section.
+ */
 export function noteModalFunctionCall(jobId: string, callId: string): void {
   const id = callId.trim();
   if (!jobId || !id) return;
-  for (const flight of flights.values()) {
-    if (flight.jobId !== jobId) continue;
-    if (flight.status !== "running" && flight.status !== "still_live") continue;
-    if (!flight.callId) flight.callId = id;
-  }
+  const open = [...flights.values()].filter(
+    (flight) =>
+      flight.jobId === jobId &&
+      (flight.status === "running" || flight.status === "still_live") &&
+      !flight.callId
+  );
+  const only = open[0];
+  if (open.length !== 1 || !only) return;
+  only.callId = id;
+  stampSink?.(only);
 }
 
 const LISTED_TERMINAL: Record<string, FlightStatus> = {
@@ -624,6 +671,7 @@ export function settleFlightCall(
       jobId: flight.jobId,
       section: flight.sections.join(","),
       callId,
+      callTag: flight.tag,
       outcome,
       startedAt: flight.startedAt,
       endedAt: now,
@@ -631,19 +679,87 @@ export function settleFlightCall(
   }
 }
 
-export type ListedCall = { callId: string; jobId?: string; status?: string | null };
+export type ListedCall = {
+  callId: string;
+  jobId?: string;
+  tag?: string;
+  status?: string | null;
+  /** Serialized listing row, searched for the client tag when no field is set. */
+  raw?: string;
+};
+
+function listedStatus(status: string | null | undefined): string {
+  return String(status ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^inputstatus\./, "");
+}
+
+function rowMatchesTag(row: ListedCall, tag: string): boolean {
+  if (!tag) return false;
+  if (row.tag === tag) return true;
+  return Boolean(row.raw && row.raw.includes(tag));
+}
+
+/**
+ * The one unclaimed, non-terminal call that belongs to this request.
+ * A tag match wins. A job id matches only when that book has one open call.
+ * Anything else is left unmatched so two books cannot swap ids.
+ */
+export function matchListedCall(
+  rows: ListedCall[],
+  query: { tag?: string; jobId?: string; claimed?: ReadonlySet<string> }
+): string | null {
+  const claimed = query.claimed ?? new Set<string>();
+  const open = rows.filter((row) => {
+    const id = row.callId.trim();
+    if (!id || claimed.has(id)) return false;
+    const status = listedStatus(row.status);
+    if (status && LISTED_TERMINAL[status]) return false;
+    return true;
+  });
+  if (query.tag) {
+    const tagged = open.filter((row) => rowMatchesTag(row, query.tag!));
+    if (tagged.length === 1) return tagged[0]!.callId.trim();
+  }
+  if (query.jobId) {
+    const mine = open.filter((row) => row.jobId === query.jobId);
+    if (mine.length === 1) return mine[0]!.callId.trim();
+  }
+  return null;
+}
+
+function attachListedId(row: ListedCall, id: string): void {
+  const open = remoteFlights().filter(
+    (flight) =>
+      (flight.status === "running" || flight.status === "still_live") && !flight.callId
+  );
+  if (row.tag) {
+    const tagged = open.filter((flight) => flight.tag === row.tag);
+    const taggedFlight = tagged[0];
+    if (tagged.length === 1 && taggedFlight) {
+      taggedFlight.callId = id;
+      stampSink?.(taggedFlight);
+      return;
+    }
+  }
+  if (row.jobId) {
+    const mine = open.filter((flight) => flight.jobId === row.jobId);
+    const mineFlight = mine[0];
+    if (mine.length === 1 && mineFlight) {
+      mineFlight.callId = id;
+      stampSink?.(mineFlight);
+    }
+  }
+}
 
 /** Reconcile a function-call listing. Terminal rows clear still_live. */
 export function applyListedCalls(rows: ListedCall[], now = Date.now()): void {
   for (const row of rows) {
     const id = row.callId.trim();
     if (!id) continue;
-    if (row.jobId) noteModalFunctionCall(row.jobId, id);
-    const status = String(row.status ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/^inputstatus\./, "");
-    const outcome = LISTED_TERMINAL[status];
+    attachListedId(row, id);
+    const outcome = LISTED_TERMINAL[listedStatus(row.status)];
     if (outcome) settleFlightCall(id, outcome, now);
   }
 }
@@ -728,6 +844,13 @@ export type DrainOps = {
   restore: (app: string, maxContainers: number) => Promise<void>;
   /** The cap in force before any brake. Falls back to the argument. */
   readMax?: () => Promise<number>;
+  /** Read again immediately before braking. A snapshot from before cancel is stale. */
+  countOtherLiveBooks?: () => number | Promise<number>;
+  /** How long to wait for containers to hit 0 before restoring anyway. */
+  containerWaitMs?: number;
+  containerPollMs?: number;
+  onBrake?: (savedMax: number) => Promise<void> | void;
+  onRestored?: () => Promise<void> | void;
 };
 
 export type DrainReport = {
@@ -750,10 +873,16 @@ export async function executeDrain(
   ops: DrainOps,
   restoreMaxContainers = 0
 ): Promise<DrainReport> {
-  const saved = ops.readMax
-    ? await ops.readMax()
-    : Math.max(0, Math.floor(Number.isFinite(restoreMaxContainers) ? restoreMaxContainers : 0));
-  const steps = planDrain(saved);
+  let saved: number | null = null;
+  try {
+    const read = ops.readMax
+      ? await ops.readMax()
+      : Math.floor(Number.isFinite(restoreMaxContainers) ? restoreMaxContainers : 0);
+    saved = Number.isFinite(read) && read >= 1 ? Math.floor(read) : null;
+  } catch {
+    saved = null;
+  }
+  const steps = planDrain(saved ?? 0);
   const verdicts: DrainReport["verdicts"] = [];
   for (const callId of target.callIds) {
     let obs: CancelObservation;
@@ -779,6 +908,7 @@ export async function executeDrain(
           jobId: flight.jobId,
           section: flight.sections.join(","),
           callId,
+          callTag: flight.tag,
           outcome: "cancelled",
           startedAt: flight.startedAt,
           endedAt: flight.endedAt,
@@ -791,26 +921,58 @@ export async function executeDrain(
     }
   }
   const stillLive = verdicts.filter((row) => row.verdict === "still_live").map((row) => row.callId);
-  const other = target.otherLiveBooks ?? 0;
-  const braked = stillLive.length > 0 && other === 0;
+  const others = ops.countOtherLiveBooks
+    ? await ops.countOtherLiveBooks()
+    : (target.otherLiveBooks ?? 0);
+  const shouldBrake = stillLive.length > 0 && others === 0 && saved != null;
   let containersAfterBrake = 0;
   let restored = false;
-  if (braked) {
-    await ops.brake(target.app);
-    for (let attempt = 0; attempt < 5; attempt++) {
+  let braked = false;
+  if (!shouldBrake) {
+    try {
       containersAfterBrake = await ops.runningContainers(target.app);
-      if (containersAfterBrake === 0) break;
-    }
-    if (containersAfterBrake === 0) {
-      const restore = steps.find((step) => step.step === "restore_autoscaler");
-      await ops.restore(
-        target.app,
-        restore && restore.step === "restore_autoscaler" ? restore.maxContainers : saved
-      );
-      restored = true;
+    } catch {
+      containersAfterBrake = 0;
     }
   } else {
-    containersAfterBrake = await ops.runningContainers(target.app);
+    braked = true;
+    try {
+      await ops.onBrake?.(saved!);
+    } catch {
+      /* a missed persist is healed only if the row was written */
+    }
+    try {
+      try {
+        await ops.brake(target.app);
+        const waitMs = ops.containerWaitMs ?? 0;
+        const step = ops.containerPollMs ?? 0;
+        const deadline = Date.now() + waitMs;
+        containersAfterBrake = await ops.runningContainers(target.app);
+        while (containersAfterBrake > 0 && Date.now() < deadline) {
+          if (step > 0) await new Promise((resolve) => setTimeout(resolve, step));
+          containersAfterBrake = await ops.runningContainers(target.app);
+        }
+      } catch (err) {
+        console.warn(
+          "[remote] drain brake failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+    } finally {
+      // The brake is never left on. A wait that expires, or a throw from
+      // the brake itself, still puts the saved max back. The call stays
+      // still_live when it was not terminal.
+      try {
+        await ops.restore(target.app, saved!);
+        restored = true;
+        await ops.onRestored?.();
+      } catch (err) {
+        console.warn(
+          "[remote] autoscaler restore failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
   }
   return {
     steps,
@@ -818,7 +980,7 @@ export async function executeDrain(
     containersAfterBrake,
     restored,
     braked,
-    savedMax: saved,
+    savedMax: saved ?? 0,
     stillLive,
   };
 }

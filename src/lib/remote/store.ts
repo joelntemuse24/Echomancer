@@ -24,13 +24,14 @@ export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
     await execute(
       `INSERT INTO remote_calls (
          id, flight_key, idempotency_key, provider, path, job_id, section_key,
-         call_id, status, started_at, ended_at, outcome, est_cost_usd, error
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         call_id, call_tag, status, started_at, ended_at, outcome, est_cost_usd, error
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          ended_at = excluded.ended_at,
          outcome = excluded.outcome,
          call_id = COALESCE(excluded.call_id, remote_calls.call_id),
+         call_tag = COALESCE(excluded.call_tag, remote_calls.call_tag),
          error = excluded.error`,
       [
         event.id,
@@ -41,9 +42,10 @@ export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
         event.jobId ?? null,
         event.section ?? null,
         event.callId ?? null,
+        event.callTag ?? null,
         event.outcome,
-        Math.floor(event.startedAt / 1000),
-        event.endedAt ? Math.floor(event.endedAt / 1000) : null,
+        Math.floor(event.startedAt),
+        event.endedAt ? Math.floor(event.endedAt) : null,
         event.outcome,
         event.estCostUsd ?? null,
         event.error ?? null,
@@ -70,12 +72,13 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
       job_id: string | null;
       section_key: string | null;
       call_id: string | null;
+      call_tag: string | null;
       outcome: string;
       started_at: number;
       est_cost_usd: number | null;
     }>(
       `SELECT flight_key, idempotency_key, provider, path, job_id, section_key,
-              call_id, outcome, started_at, est_cost_usd
+              call_id, call_tag, outcome, started_at, est_cost_usd
        FROM remote_calls
        WHERE rowid IN (SELECT MAX(rowid) FROM remote_calls GROUP BY flight_key)
          AND outcome IN ('started', 'still_live')`
@@ -91,6 +94,7 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
         sections: row.section_key ? row.section_key.split(",").filter(Boolean) : [],
         status: row.outcome === "still_live" ? "still_live" : "running",
         callId: row.call_id ?? undefined,
+        tag: row.call_tag ?? undefined,
         startedAt,
         estCostUsd: Number(row.est_cost_usd ?? 0),
         estMs: Math.max(0, now - startedAt),
@@ -136,4 +140,66 @@ export async function loadPersistedSpend(): Promise<void> {
     };
   });
   replacePersistedSpend(loaded);
+}
+
+/** Write the function-call id onto the latest row without a second spend reservation. */
+export async function stampOpenRemoteCall(flight: {
+  key: string;
+  callId?: string;
+  tag?: string;
+}): Promise<void> {
+  try {
+    await execute(
+      `UPDATE remote_calls
+       SET call_id = COALESCE(?, call_id),
+           call_tag = COALESCE(?, call_tag)
+       WHERE rowid = (SELECT MAX(rowid) FROM remote_calls WHERE flight_key = ?)`,
+      [flight.callId ?? null, flight.tag ?? null, flight.key]
+    );
+  } catch (err) {
+    console.warn(
+      "[remote] call id was not stored:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+export async function saveActiveBrake(app: string, savedMax: number): Promise<void> {
+  try {
+    await execute(
+      `INSERT INTO remote_brake (app, saved_max, active, updated_at)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(app) DO UPDATE SET
+         saved_max = excluded.saved_max,
+         active = 1,
+         updated_at = excluded.updated_at`,
+      [app, Math.floor(savedMax), Date.now()]
+    );
+  } catch (err) {
+    console.warn(
+      "[remote] brake was not stored:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+export async function clearActiveBrake(app: string): Promise<void> {
+  try {
+    await execute(`UPDATE remote_brake SET active = 0, updated_at = ? WHERE app = ?`, [
+      Date.now(),
+      app,
+    ]);
+  } catch (err) {
+    console.warn(
+      "[remote] brake clear failed:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
+export async function loadActiveBrakes(): Promise<Array<{ app: string; savedMax: number }>> {
+  const rows = await query<{ app: string; saved_max: number }>(
+    `SELECT app, saved_max FROM remote_brake WHERE active = 1`
+  );
+  return rows.map((row) => ({ app: row.app, savedMax: Number(row.saved_max) }));
 }

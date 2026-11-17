@@ -101,6 +101,73 @@ def test_print_max_from_env_does_not_guess(monkeypatch):
     assert completed.stdout.strip() == "20"
 
 
+def test_run_drain_restores_when_containers_stay_up():
+    mod = load(DRAIN, "drain_restore_wait")
+    restored = []
+    code = mod.run_drain(
+        call_ids=["fc"],
+        other_live_books=0,
+        restore_max=20,
+        cancel=lambda _id: "still_live",
+        brake=lambda: None,
+        wait_idle=lambda: 3,
+        restore=lambda maxc: restored.append(maxc),
+        recheck_other=lambda: 0,
+    )
+    assert code == 2
+    assert restored == [20]
+
+
+def test_run_drain_restores_when_brake_raises():
+    mod = load(DRAIN, "drain_restore_raise")
+    restored = []
+
+    def boom():
+        raise RuntimeError("brake exploded")
+
+    with pytest.raises(RuntimeError, match="brake exploded"):
+        mod.run_drain(
+            call_ids=["fc"],
+            other_live_books=0,
+            restore_max=12,
+            cancel=lambda _id: "still_live",
+            brake=boom,
+            wait_idle=lambda: 0,
+            restore=lambda maxc: restored.append(maxc),
+            recheck_other=lambda: 0,
+        )
+    assert restored == [12]
+
+
+def test_run_drain_rechecks_other_books_before_braking():
+    mod = load(DRAIN, "drain_recheck")
+    braked = []
+    code = mod.run_drain(
+        call_ids=["fc"],
+        other_live_books=0,
+        restore_max=20,
+        cancel=lambda _id: "still_live",
+        brake=lambda: braked.append(1),
+        wait_idle=lambda: 0,
+        restore=lambda _max: None,
+        recheck_other=lambda: 1,
+    )
+    assert braked == []
+    assert code == 2
+
+
+def test_identity_from_row_reads_a_nested_tag():
+    mod = load(DRAIN, "drain_identity")
+    job, tag = mod.identity_from_row(
+        {
+            "function_call_id": "fc-1",
+            "input": '{"job_id": "book-1", "echo_call_tag": "echo:book-1:0:ab"}',
+        }
+    )
+    assert job == "book-1"
+    assert tag == "echo:book-1:0:ab"
+
+
 def test_cover_script_restores_with_the_real_flag():
     text = COVER.read_text()
     assert "--scaledown-window" in text

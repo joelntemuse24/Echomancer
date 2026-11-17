@@ -37,6 +37,8 @@ export type RemoteEvent = {
   jobId?: string;
   section?: string;
   callId?: string;
+  /** Client tag echoed in the Modal input, so a listing can be mapped to this book. */
+  callTag?: string;
   outcome: RemoteOutcome;
   startedAt: number;
   endedAt?: number;

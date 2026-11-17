@@ -722,7 +722,8 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   leaves the rest for the next tick, and never kicks a snapshot compile for
   it. A warm miss also forgets the warmth bit, so the retry is cold-sized.
   Only a **single-section** placement that never came back on a cold wait is
-  a compile, which is still what fires the off-path `::cover`.
+  a compile. `::cover` waits until no S2 flight for the app is `running` or
+  `still_live`, because that flight is the input still compiling.
 - **Section 0 goes first, alone.** Nothing is playable until section 0 is, and
   a container answers a whole batch of rows together — so a fan-out that
   batches section 0 beside a neighbour holds the first audio back until that
@@ -779,9 +780,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   figure, about **68s** (57s restore + 14s synth + ~2s loudnorm). Later calls
   stay on that same container while the worker posts them back to back.
   `min_containers` stays 0. A placement that already missed its restore
-  budget still kicks `::cover` off the book path so the snapshot can finish.
+  budget does not kick `::cover` while that call is `running` or `still_live`.
 - **Finish the compile off the book path.** When a placement misses the
-  restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
+  restore budget and no S2 flight is `running` or `still_live`, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or
   `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables the kick. That
   process may sit through the 8–16 min compile so the variant gets a sticky

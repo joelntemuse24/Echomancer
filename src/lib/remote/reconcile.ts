@@ -8,6 +8,7 @@
  */
 
 import { query } from "@/lib/turso";
+import { spawn } from "node:child_process";
 import { drainBookCalls } from "@/lib/remote/drain-book";
 import {
   applyListedCalls,
@@ -20,10 +21,81 @@ import {
   planWatchdog,
   remoteFlights,
   setRemoteEventSink,
+  setRemoteFlightStamp,
   takeDrainRequests,
   type ListedCall,
 } from "@/lib/remote/layer";
-import { hydrateOpenRemoteCalls, persistRemoteEvent } from "@/lib/remote/store";
+import {
+  clearActiveBrake,
+  hydrateOpenRemoteCalls,
+  loadActiveBrakes,
+  persistRemoteEvent,
+  stampOpenRemoteCall,
+} from "@/lib/remote/store";
+
+let brakeHealer: ((app: string, savedMax: number) => Promise<void>) | null = null;
+
+export function setBrakeHealerForTests(
+  fn: ((app: string, savedMax: number) => Promise<void>) | null
+): void {
+  brakeHealer = fn;
+}
+
+async function restoreBrake(app: string, savedMax: number): Promise<void> {
+  if (brakeHealer) {
+    await brakeHealer(app, savedMax);
+    return;
+  }
+  if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) {
+    throw new Error("brake restore is not configured");
+  }
+  const child = spawn(
+    "python3",
+    [
+      "scripts/s2/set-live-autoscaler.py",
+      "--app",
+      app,
+      "--max-containers",
+      String(savedMax),
+      "--scaledown-window",
+      "15",
+      "--profile",
+      "ntemusejoel",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  const code = await new Promise<number>((resolve) => {
+    child.on("error", () => resolve(1));
+    child.on("close", (status) => resolve(status ?? 1));
+  });
+  if (code !== 0) throw new Error(`brake restore exited ${code}`);
+}
+
+/** Put back a max that a crashed drain left at 0. */
+export async function healStuckBrakes(): Promise<number> {
+  let rows: Array<{ app: string; savedMax: number }> = [];
+  try {
+    rows = await loadActiveBrakes();
+  } catch {
+    return 0;
+  }
+  let healed = 0;
+  for (const row of rows) {
+    if (!Number.isInteger(row.savedMax) || row.savedMax < 1) continue;
+    try {
+      await restoreBrake(row.app, row.savedMax);
+      await clearActiveBrake(row.app);
+      healed += 1;
+    } catch (err) {
+      console.warn(
+        "[remote] stuck brake was not restored",
+        row.app,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  return healed;
+}
 
 /**
  * List function calls only when this process may talk to Modal.
@@ -31,21 +103,37 @@ import { hydrateOpenRemoteCalls, persistRemoteEvent } from "@/lib/remote/store";
  */
 export async function listModalFunctionCalls(): Promise<ListedCall[]> {
   if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) return [];
-  const { spawn } = await import("node:child_process");
-  const child = spawn("python3", ["scripts/s2/drain-stuck-calls.py", "--list-json"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    "python3",
+    ["scripts/s2/drain-stuck-calls.py", "--list-json", "--profile", "ntemusejoel"],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
   let out = "";
+  let errText = "";
   child.stdout?.on("data", (chunk: Buffer | string) => {
     out += String(chunk);
   });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    errText += String(chunk);
+  });
   const code = await new Promise<number>((resolve) => {
+    child.on("error", () => resolve(1));
     child.on("close", (status) => resolve(status ?? 1));
   });
-  if (code !== 0) return [];
+  if (code !== 0) {
+    console.warn("[remote] function-call list failed", errText.trim().slice(0, 200));
+    return [];
+  }
   try {
     const parsed = JSON.parse(out) as ListedCall[];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((row) => ({
+      callId: String(row.callId ?? ""),
+      jobId: row.jobId || undefined,
+      tag: row.tag || undefined,
+      status: row.status,
+      raw: row.raw,
+    }));
   } catch {
     return [];
   }
@@ -55,7 +143,11 @@ export async function reconcileRemoteCalls(): Promise<void> {
   setRemoteEventSink((event) => {
     void persistRemoteEvent(event);
   });
+  setRemoteFlightStamp((flight) => {
+    void stampOpenRemoteCall(flight);
+  });
   await hydrateOpenRemoteCalls();
+  await healStuckBrakes();
   const listed = await listModalFunctionCalls();
   if (listed.length > 0) applyListedCalls(listed);
   for (const jobId of takeDrainRequests()) {

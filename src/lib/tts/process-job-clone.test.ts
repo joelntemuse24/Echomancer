@@ -667,10 +667,10 @@ describe("lane staging", () => {
         backoffRemainingMs: 0,
       }))).toBeLessThanOrEqual(2);
       expect(await claimTakehomeLease(JOB_ID)).toBeNull();
-      // The tick does not start a side cover. The missed placement still
-      // kicks one compile off the book path, and the book never awaits it.
-      expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
-      expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
+      // The missed placement is this book's own call, still live. Cover is
+      // another input on the same app, so it is not started while that
+      // flight is running or still_live.
+      expect(warmSpawn).toEqual([]);
     });
 
     it("switches to Fish once repeated timeouts spend the defer budget", async () => {

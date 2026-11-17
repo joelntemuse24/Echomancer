@@ -431,13 +431,22 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   path TEXT NOT NULL,
   job_id TEXT,
   section_key TEXT,
-  call_id TEXT,
-  status TEXT NOT NULL,
+         call_id TEXT,
+         call_tag TEXT,
+         status TEXT NOT NULL,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
   outcome TEXT NOT NULL,
   est_cost_usd REAL,
   error TEXT
+)`;
+
+const CREATE_REMOTE_BRAKE_SQL = `
+CREATE TABLE IF NOT EXISTS remote_brake (
+  app TEXT PRIMARY KEY,
+  saved_max INTEGER NOT NULL,
+  active INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 )`;
 
 const CREATE_CPU_TASKS_SQL = `
@@ -480,7 +489,7 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
     'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases',
-    'remote_calls'
+    'remote_calls', 'remote_brake'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -631,7 +640,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 18 &&
+      Number(row?.tables_ok || 0) >= 19 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -674,6 +683,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_CPU_TASKS_SQL },
         { sql: CREATE_CAPACITY_WARMS_SQL },
         { sql: CREATE_REMOTE_CALLS_SQL },
+        { sql: CREATE_REMOTE_BRAKE_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -694,7 +704,11 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_CPU_TASKS_SQL);
       await execute(CREATE_CAPACITY_WARMS_SQL);
       await execute(CREATE_REMOTE_CALLS_SQL);
+      await execute(CREATE_REMOTE_BRAKE_SQL);
     }
+
+    await execute(`ALTER TABLE remote_calls ADD COLUMN call_tag TEXT`).catch(() => {});
+    await execute(CREATE_REMOTE_BRAKE_SQL).catch(() => {});
 
     const tableCheck = await queryOne<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1`

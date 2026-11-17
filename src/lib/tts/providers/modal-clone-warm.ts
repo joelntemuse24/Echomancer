@@ -22,6 +22,7 @@
  * is how the October run spent a fleet of H100s on the same cold boot.
  */
 import { spawn } from "node:child_process";
+import { remoteFlights } from "@/lib/remote/layer";
 import {
   modalCloneMaxGpus,
   modalCloneMaxGpusPerUser,
@@ -110,6 +111,17 @@ export function modalCloneWarmConfigured(
  * the warm could not be started.
  */
 export function kickModalCloneSnapshotWarm(reason: string, now = Date.now()): boolean {
+  const busy = remoteFlights().some(
+    (flight) =>
+      flight.provider === "s2-clone" &&
+      (flight.status === "running" || flight.status === "still_live")
+  );
+  if (busy) {
+    console.log(
+      `[modal-clone] snapshot warm skipped (${reason}): an S2 call is still in flight`
+    );
+    return false;
+  }
   return startWarm(reason, now, "kick");
 }
 

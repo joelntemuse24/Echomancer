@@ -59,6 +59,93 @@ def should_brake(verdicts: list[str], other_live_books: int) -> bool:
     return any(verdict == "still_live" for verdict in verdicts) and other_live_books == 0
 
 
+def identity_from_row(row: dict) -> tuple[str, str]:
+    """job id and client tag, including when they are buried in the input JSON."""
+    import re
+
+    blobs: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, str):
+            blobs.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(row)
+    text = "\n".join(blobs)
+    job = str(row.get("job_id") or "")
+    tag = str(row.get("echo_call_tag") or row.get("tag") or "")
+    if not job:
+        found = re.search(r'"job_id"\s*:\s*"([^"]+)"', text)
+        if found:
+            job = found.group(1)
+    if not tag:
+        found = re.search(r"echo:[A-Za-z0-9_.:|-]+", text)
+        if found:
+            tag = found.group(0)
+    return job, tag
+
+
+def run_drain(
+    *,
+    call_ids: list[str],
+    other_live_books: int,
+    restore_max: int | None,
+    cancel,
+    brake,
+    wait_idle,
+    restore,
+    recheck_other=None,
+) -> int:
+    """Cancel, maybe brake, then always restore a max that was actually read.
+
+    A wait that does not reach zero, and an exception after the brake, both
+    put that max back. The call stays still_live when it is not terminal.
+    `recheck_other` runs immediately before the brake.
+    """
+    saved = restore_max if isinstance(restore_max, int) and restore_max >= 1 else None
+    braked = False
+    code = 0
+    try:
+        verdicts = [cancel(call_id) for call_id in call_ids]
+        others = int(recheck_other()) if recheck_other is not None else int(other_live_books)
+        live = any(verdict == "still_live" for verdict in verdicts)
+        if not live or others != 0 or saved is None:
+            if live and others != 0:
+                print("still_live, but another book is live; autoscaler left unchanged")
+                code = 2
+            elif live and saved is None:
+                print(
+                    "still_live; refusing to brake without the max read before it",
+                    file=sys.stderr,
+                )
+                code = 2
+            return code
+        braked = True
+        brake()
+        remaining = int(wait_idle())
+        print(f"containers after brake: {remaining}")
+        if remaining != 0:
+            print(
+                "containers still running; restoring the saved max and leaving the call still_live",
+                file=sys.stderr,
+            )
+            code = 2
+        return code
+    finally:
+        if braked and saved is not None:
+            try:
+                restore(saved)
+            except Exception as err:
+                print(f"restore failed: {err}", file=sys.stderr)
+                raise
+            print(f"restored max_containers={saved} min_containers=0")
+
+
 def planned_restore_max(saved: int | None) -> int:
     """The cap to put back. Refuses to invent 1."""
     if saved is None or saved < 1:
@@ -148,11 +235,14 @@ def list_calls_json(app: str, cls: str) -> int:
         call_id = row.get("function_call_id") or row.get("id") or ""
         if not call_id:
             continue
+        job_id, tag = identity_from_row(row)
         payload.append(
             {
                 "callId": str(call_id),
-                "jobId": str(row.get("job_id") or ""),
+                "jobId": job_id,
+                "tag": tag,
                 "status": row.get("status"),
+                "raw": json.dumps(row, default=str),
             }
         )
     print(json.dumps(payload))
@@ -170,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list-json", action="store_true")
+    parser.add_argument("--cancel-only", action="store_true")
+    parser.add_argument("--running-count", action="store_true")
     parser.add_argument("--profile", default=os.environ.get("MODAL_PROFILE"))
     args = parser.parse_args(argv)
 
@@ -191,7 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  - no brake: another book still has a live call")
     print("modal app stop is not this script. It wipes snapshots.")
-    if args.dry_run or not args.apply:
+    side = args.running_count or args.cancel_only
+    if (args.dry_run or not args.apply) and not side:
         print("dry-run: no Modal calls")
         return 0
 
@@ -200,10 +293,13 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.pop("MODAL_TOKEN_ID", None)
         os.environ.pop("MODAL_TOKEN_SECRET", None)
 
-    import modal
+    if args.running_count:
+        print(running_containers(args.app))
+        return 0
 
-    verdicts: list[tuple[str, str]] = []
-    for call_id in args.call_id:
+    def cancel_one(call_id: str) -> str:
+        import modal
+
         threw = ""
         status = ""
         try:
@@ -216,32 +312,34 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as err:
             threw = f"{type(err).__name__} {err}"
         verdict = interpret(threw, status)
-        verdicts.append((call_id, verdict))
         print(f"cancel {call_id}: {verdict} ({threw or status or 'no status'})")
+        return verdict
 
-    labels = [verdict for _, verdict in verdicts]
-    if not should_brake(labels, args.other_live_books):
-        if any(verdict == "still_live" for verdict in labels):
-            print("still_live, but another book is live; autoscaler left unchanged")
-            return 2
+    if args.cancel_only:
+        for call_id in args.call_id:
+            cancel_one(call_id)
         return 0
 
-    saved = planned_restore_max(args.restore_max)
-    brake_code = apply_autoscaler(args.app, args.cls, 0, args.profile)
-    if brake_code != 0:
-        print("brake failed", file=sys.stderr)
-        return brake_code
-    remaining = wait_until_idle(args.app)
-    print(f"containers after brake: {remaining}")
-    if remaining != 0:
-        print("containers still running; autoscaler stays braked", file=sys.stderr)
-        return 2
-    restore_code = apply_autoscaler(args.app, args.cls, saved, args.profile)
-    if restore_code != 0:
-        print("restore failed", file=sys.stderr)
-        return restore_code
-    print(f"restored max_containers={saved} min_containers=0")
-    return 0
+    def do_brake() -> None:
+        brake_code = apply_autoscaler(args.app, args.cls, 0, args.profile)
+        if brake_code != 0:
+            raise RuntimeError(f"brake failed {brake_code}")
+
+    def do_restore(saved: int) -> None:
+        restore_code = apply_autoscaler(args.app, args.cls, saved, args.profile)
+        if restore_code != 0:
+            raise RuntimeError(f"restore failed {restore_code}")
+
+    return run_drain(
+        call_ids=list(args.call_id),
+        other_live_books=args.other_live_books,
+        restore_max=args.restore_max,
+        cancel=cancel_one,
+        brake=do_brake,
+        wait_idle=lambda: wait_until_idle(args.app),
+        restore=do_restore,
+        recheck_other=lambda: args.other_live_books,
+    )
 
 
 if __name__ == "__main__":

@@ -107,11 +107,14 @@ import {
 } from "@/lib/tts/provider-slots";
 import {
   admitRemoteCall,
+  bindFlightAbort,
+  flightKey,
   isBookHalted,
   noteDrainRequested,
-  noteModalFunctionCall,
+  setFlightCallId,
   resetRemoteLayerForTests,
 } from "@/lib/remote/layer";
+import { s2CallTag, startS2CallWatch } from "@/lib/remote/s2-call-watch";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -650,8 +653,11 @@ export async function renderModalCloneBatch(
     const stopped = Boolean(jobId && isBookHalted(jobId));
     const aborted = err instanceof ModalCloneColdError && err.clientAborted;
     if (aborted && jobId) noteDrainRequested(jobId);
+    // A client abort, including Stop, means the Modal input may still be
+    // compiling. cancelled would let the next process POST again. The id
+    // stays still_live until a terminal cancel.
     admitted?.finish(
-      stopped ? "cancelled" : aborted ? "still_live" : "failure",
+      aborted ? "still_live" : stopped ? "cancelled" : "failure",
       err instanceof Error ? err.message : String(err)
     );
     throw err;
@@ -1755,6 +1761,24 @@ function nextSeed(): number {
  * another lane can try a different container. A steady-state miss is `pool`.
  * Only a real provider answer surfaces as a normal error.
  */
+function modalFlightKey(
+  jobId: string | undefined,
+  body: Record<string, unknown>
+): { key: string; jobId: string; sections: string[] } | null {
+  if (!jobId) return null;
+  const items = Array.isArray(body.items) ? body.items : null;
+  if (!items || items.length === 0) return null;
+  const sections = items
+    .map((item) => String((item as { key?: unknown }).key ?? ""))
+    .filter(Boolean);
+  if (sections.length === 0) return null;
+  return {
+    key: flightKey({ provider: "s2-clone", jobId, sections }),
+    jobId,
+    sections,
+  };
+}
+
 async function postModal(
   url: string,
   body: Record<string, unknown>,
@@ -1816,6 +1840,13 @@ async function postModal(
     const timeout = AbortSignal.timeout(limit);
     timeout.addEventListener("abort", onExternalAbort, { once: true });
   }
+  const tracked = modalFlightKey(wait?.jobId, body);
+  const tag = tracked ? s2CallTag(tracked.jobId, tracked.sections) : "";
+  const payload = tag ? { ...body, echo_call_tag: tag } : body;
+  if (tracked) bindFlightAbort(tracked.key, () => controller.abort());
+  const watch = tracked
+    ? startS2CallWatch({ tag, jobId: tracked.jobId, flightKey: tracked.key })
+    : null;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -1824,13 +1855,15 @@ async function postModal(
         ...authHeaders(requireToken()),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
   } catch (err) {
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
+      watch?.stop();
+      await watch?.done;
       // The worker dropped the wait. Cancel the unstarted PENDING Modal
       // input so abandoned calls do not pile up and get served after the
       // next enter. A call that has already started is left alone: the
@@ -1859,11 +1892,13 @@ async function postModal(
     settled = true;
     clearTimer();
     signal?.removeEventListener("abort", onExternalAbort);
+    watch?.stop();
   }
+  await watch?.done;
   const callHeader =
     response.headers.get("x-modal-function-call-id") ||
     response.headers.get("modal-function-call-id");
-  if (callHeader && wait?.jobId) noteModalFunctionCall(wait.jobId, callHeader);
+  if (callHeader && tracked) setFlightCallId(tracked.key, callHeader);
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     const refused = modalPlatformRefusal(response.status, detail);
