@@ -11,12 +11,17 @@ Order, and only this order:
   4. Restore the max that was read before the brake. Never guess 1.
      min_containers stays 0.
 
+On production `echomancer-s2-clone` that max is at most 1 unless
+`S2_ALLOW_PROD_CAP_ABOVE_1=1`. A higher `--restore-max` is refused
+before any brake, using the same clamp as `--clamp-restore`. Braking
+first and then failing the restore would leave the live cap at 0.
+
 `modal container stop` is not a step. It reschedules the input.
 `modal app stop` wipes snapshots and needs a redeploy. This script does
 not run it.
 
-    python3 scripts/s2/drain-stuck-calls.py --dry-run --restore-max 20
-    python3 scripts/s2/drain-stuck-calls.py --apply --call-id fc-... --restore-max 20
+    python3 scripts/s2/drain-stuck-calls.py --dry-run --restore-max 1
+    python3 scripts/s2/drain-stuck-calls.py --apply --call-id fc-... --restore-max 1
 """
 
 from __future__ import annotations
@@ -90,6 +95,56 @@ def identity_from_row(row: dict) -> tuple[str, str]:
     return job, tag
 
 
+def _autoscaler_rules():
+    """The live-autoscaler script. It does not import Modal at import time."""
+    import importlib.util
+
+    path = ROOT / "scripts" / "s2" / "set-live-autoscaler.py"
+    spec = importlib.util.spec_from_file_location("set_live_autoscaler", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_restorable_max(app: str, saved: int | None) -> int:
+    """The cap a later restore is allowed to write. Raises before any brake.
+
+    Production uses ``clamp_production_restore``: at most 1 unless
+    ``S2_ALLOW_PROD_CAP_ABOVE_1=1``. A requested value the apply path would
+    refuse is an error here, not a brake followed by a failed restore.
+    A missing value is not turned into 1.
+    """
+    if not isinstance(saved, int) or saved < 1:
+        raise SystemExit(
+            "refusing to guess max_containers=1; pass the max read before the brake"
+        )
+    rules = _autoscaler_rules()
+    clamped = rules.clamp_production_restore(app, saved)
+    if clamped != saved or rules.production_apply_refusal(app, saved):
+        raise SystemExit(
+            f"refusing --restore-max {saved} on {app} before any brake. "
+            "Restoring it would be refused and the autoscaler would stay at "
+            "max_containers=0. "
+            f"Pass --restore-max {clamped}. "
+            "Set S2_ALLOW_PROD_CAP_ABOVE_1=1 only with explicit owner approval."
+        )
+    return clamped
+
+
+def restore_command(app: str, saved: int) -> str:
+    """The command that puts a legal cap back. Production is 1."""
+    rules = _autoscaler_rules()
+    allowed = rules.clamp_production_restore(app, saved)
+    if allowed < 1:
+        allowed = 1
+    return (
+        "python3 scripts/s2/set-live-autoscaler.py "
+        f"--app {app} --max-containers {allowed} --scaledown-window 15"
+    )
+
+
 def run_drain(
     *,
     call_ids: list[str],
@@ -100,14 +155,20 @@ def run_drain(
     wait_idle,
     restore,
     recheck_other=None,
+    app: str = "echomancer-s2-clone",
 ) -> int:
     """Cancel, maybe brake, then always restore a max that was actually read.
 
     A wait that does not reach zero, and an exception after the brake, both
     put that max back. The call stays still_live when it is not terminal.
-    `recheck_other` runs immediately before the brake.
+    `recheck_other` runs immediately before the brake. A restore max the
+    apply path would refuse is rejected before the brake.
     """
-    saved = restore_max if isinstance(restore_max, int) and restore_max >= 1 else None
+    saved: int | None
+    if restore_max is None:
+        saved = None
+    else:
+        saved = require_restorable_max(app, restore_max)
     braked = False
     code = 0
     try:
@@ -141,8 +202,14 @@ def run_drain(
             try:
                 restore(saved)
             except Exception as err:
-                print(f"restore failed: {err}", file=sys.stderr)
-                raise
+                command = restore_command(app, saved)
+                print(
+                    f"restore failed: {err}\n"
+                    "The autoscaler is still braked at max_containers=0.\n"
+                    f"Restore it with:\n  {command}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2) from err
             print(f"restored max_containers={saved} min_containers=0")
 
 
@@ -282,9 +349,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_json:
         return list_calls_json(args.app, args.cls)
 
+    checked_restore: int | None = None
+    if args.restore_max is not None:
+        try:
+            checked_restore = require_restorable_max(args.app, args.restore_max)
+        except SystemExit as err:
+            message = err.code if isinstance(err.code, str) else str(err)
+            print(message, file=sys.stderr)
+            return 2
+
     restore_label = (
-        str(planned_restore_max(args.restore_max))
-        if args.restore_max is not None and args.restore_max >= 1
+        str(checked_restore)
+        if checked_restore is not None
         else "UNSET (will not guess 1)"
     )
     brake = should_brake(["still_live"] if args.call_id else [], args.other_live_books)
@@ -341,16 +417,25 @@ def main(argv: list[str] | None = None) -> int:
         if restore_code != 0:
             raise RuntimeError(f"restore failed {restore_code}")
 
-    return run_drain(
-        call_ids=list(args.call_id),
-        other_live_books=args.other_live_books,
-        restore_max=args.restore_max,
-        cancel=cancel_one,
-        brake=do_brake,
-        wait_idle=lambda: wait_until_idle(args.app),
-        restore=do_restore,
-        recheck_other=lambda: args.other_live_books,
-    )
+    try:
+        return run_drain(
+            call_ids=list(args.call_id),
+            other_live_books=args.other_live_books,
+            restore_max=checked_restore,
+            cancel=cancel_one,
+            brake=do_brake,
+            wait_idle=lambda: wait_until_idle(args.app),
+            restore=do_restore,
+            recheck_other=lambda: args.other_live_books,
+            app=args.app,
+        )
+    except SystemExit as err:
+        if isinstance(err.code, str):
+            print(err.code, file=sys.stderr)
+            return 2
+        if isinstance(err.code, int):
+            return err.code
+        raise
 
 
 if __name__ == "__main__":

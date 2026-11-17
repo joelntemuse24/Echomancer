@@ -374,7 +374,8 @@ Python on `PATH` that can import `modal`. A stuck call is
 drained with `scripts/s2/drain-stuck-calls.py`: cancel with
 `terminate_containers=True`, treat NotFound as still live, brake
 `max_containers` to 0, confirm zero containers, then restore the previous
-max. `min_containers` stays 0. `modal container stop` is not a step.
+max. On production that restore is `--restore-max 1`. A higher value is
+refused before the brake. `min_containers` stays 0. `modal container stop` is not a step.
 `modal app stop` wipes snapshots and is the last resort.
 
 | `kind` | Wall time | What it means |

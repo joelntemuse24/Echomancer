@@ -73,10 +73,16 @@ where the repo can check it:**
   `scripts/s2/set-live-autoscaler.py` or runbook step 8c to raise it.
   The apply path refuses `max_containers` above 1 on that app unless
   `S2_ALLOW_PROD_CAP_ABOVE_1=1`, and it exits before importing Modal.
-  Brake 0 stays allowed. Parsers in `scripts/s2` set `allow_abbrev=False`
+  `scripts/s2/drain-stuck-calls.py` refuses `--restore-max` above that
+  clamp before it brakes, so a refused restore cannot leave the cap at 0.
+  A restore that fails after a brake prints the command that puts
+  `max_containers` back to 1. Brake 0 stays allowed. Parsers in
+  `scripts/s2` set `allow_abbrev=False`
   (`--scaledown` is not `--scaledown-window`). Pytest strips
-  `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and `MODAL_PROFILE` and points
-  `MODAL_CONFIG_PATH` at an empty file.
+  `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and `MODAL_PROFILE`, points
+  `MODAL_CONFIG_PATH` at an empty file, refuses DNS and
+  `create_connection` for `*.modal.com` / `*.modal.run`, and makes
+  `Client.from_env` raise, including in a subprocess via `sitecustomize`.
   `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count, not the
   container cap. Code defaults
   are `S2C_MAX_CONTAINERS=1` and `S2C_SCALEDOWN=300` (`container_limits`

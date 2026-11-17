@@ -191,7 +191,7 @@ def test_run_drain_restores_when_containers_stay_up():
     code = mod.run_drain(
         call_ids=["fc"],
         other_live_books=0,
-        restore_max=20,
+        restore_max=1,
         cancel=lambda _id: "still_live",
         brake=lambda: None,
         wait_idle=lambda: 3,
@@ -199,7 +199,7 @@ def test_run_drain_restores_when_containers_stay_up():
         recheck_other=lambda: 0,
     )
     assert code == 2
-    assert restored == [20]
+    assert restored == [1]
 
 
 def test_run_drain_restores_when_brake_raises():
@@ -213,14 +213,14 @@ def test_run_drain_restores_when_brake_raises():
         mod.run_drain(
             call_ids=["fc"],
             other_live_books=0,
-            restore_max=12,
+            restore_max=1,
             cancel=lambda _id: "still_live",
             brake=boom,
             wait_idle=lambda: 0,
             restore=lambda maxc: restored.append(maxc),
             recheck_other=lambda: 0,
         )
-    assert restored == [12]
+    assert restored == [1]
 
 
 def test_run_drain_rechecks_other_books_before_braking():
@@ -229,7 +229,7 @@ def test_run_drain_rechecks_other_books_before_braking():
     code = mod.run_drain(
         call_ids=["fc"],
         other_live_books=0,
-        restore_max=20,
+        restore_max=1,
         cancel=lambda _id: "still_live",
         brake=lambda: braked.append(1),
         wait_idle=lambda: 0,
@@ -238,6 +238,81 @@ def test_run_drain_rechecks_other_books_before_braking():
     )
     assert braked == []
     assert code == 2
+
+
+def test_production_restore_above_one_does_not_brake():
+    mod = load(DRAIN, "drain_refuse_before_brake")
+    braked = []
+    with pytest.raises(SystemExit, match="before any brake"):
+        mod.run_drain(
+            call_ids=["fc"],
+            other_live_books=0,
+            restore_max=20,
+            cancel=lambda _id: "still_live",
+            brake=lambda: braked.append(1),
+            wait_idle=lambda: 0,
+            restore=lambda _max: None,
+            recheck_other=lambda: 0,
+            app="echomancer-s2-clone",
+        )
+    assert braked == []
+
+
+def test_staging_restore_above_one_is_allowed():
+    mod = load(DRAIN, "drain_staging_restore")
+    assert mod.require_restorable_max("echomancer-s2-clone-staging", 20) == 20
+
+
+def test_restore_failure_prints_the_command_for_one(capsys):
+    mod = load(DRAIN, "drain_restore_loud")
+
+    def boom(_max):
+        raise RuntimeError("restore refused")
+
+    with pytest.raises(SystemExit) as caught:
+        mod.run_drain(
+            call_ids=["fc"],
+            other_live_books=0,
+            restore_max=1,
+            cancel=lambda _id: "still_live",
+            brake=lambda: None,
+            wait_idle=lambda: 0,
+            restore=boom,
+            recheck_other=lambda: 0,
+            app="echomancer-s2-clone",
+        )
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "max_containers=0" in err
+    assert (
+        "python3 scripts/s2/set-live-autoscaler.py "
+        "--app echomancer-s2-clone --max-containers 1 --scaledown-window 15"
+    ) in err
+
+
+def test_apply_restore_max_20_exits_before_modal():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(DRAIN),
+            "--apply",
+            "--call-id",
+            "fc-1",
+            "--restore-max",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=child_env(),
+    )
+    assert completed.returncode != 0
+    assert "before any brake" in completed.stderr
+    assert "--restore-max 1" in completed.stderr
+    assert "live autoscaler now" not in completed.stdout
+    assert "cancel fc-1" not in completed.stdout
 
 
 def test_a_missing_profile_keeps_the_worker_token(monkeypatch):
@@ -269,6 +344,11 @@ def test_cover_script_restores_with_the_real_flag():
     assert "python3 -m modal" not in text
     assert "--clamp-restore" in text
     assert "S2_ALLOW_PROD_CAP_ABOVE_1" in text
+    assert text.index("--clamp-restore") < text.index("trap restore")
+    cancel = (ROOT / "scripts" / "s2" / "cancel-unstarted-pending.py").read_text()
+    assert "does not brake or restore" in cancel
+    assert "update_autoscaler" not in cancel
+    assert "--restore-max" in cancel and "--restore-max 1" in cancel
 
 
 def test_clamp_restore_cli_caps_production_without_calling_modal(monkeypatch):

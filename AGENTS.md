@@ -65,7 +65,9 @@ anything from an agent.
 That script also runs `modal run` and writes the autoscaler, so agents do
 not run it. `scripts/s2/set-live-autoscaler.py` and
 `scripts/s2/drain-stuck-calls.py` drop those env vars only when `--profile`
-is passed. With no profile, plain `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
+is passed. The drain refuses `--restore-max` above 1 on production before
+it brakes, so a refused restore cannot leave the cap at 0. Pass
+`--restore-max 1`. With no profile, plain `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
 are what they use. Do not pass `--profile` to make a token work, and do not
 run those scripts to change the fleet.
 
