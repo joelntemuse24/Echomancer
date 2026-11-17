@@ -78,7 +78,7 @@ describe("serializeJob ETA", () => {
     // 10 sections × 16s + 15s finalize, divided by the fanout of 1.
     expect(job.eta_seconds).toBe(175);
     expect(job.eta_state).toBe("estimating");
-    expect(job.eta_label).toBe("Estimating…");
+    expect(job.eta_label).toBe("~3 min");
   });
 
   it("leaves stream jobs without a section ETA", () => {

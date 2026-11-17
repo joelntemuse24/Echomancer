@@ -181,6 +181,7 @@ import {
   runRollingIndexPool,
   upsertSegment,
 } from "@/lib/tts/section-index";
+import { narrationProgressPercent } from "@/lib/tts/narration-progress";
 import {
   readSectionCache,
   sectionCacheKey,
@@ -2223,7 +2224,7 @@ async function runClaimedTick(
               [
                 nextWriteIndex(),
                 JSON.stringify(segments),
-                Math.min(99, Math.round((done / total) * 100)),
+                narrationProgressPercent(done, total),
                 done,
                 total,
                 JSON.stringify(ttsOptions),
@@ -2319,7 +2320,7 @@ async function runClaimedTick(
               [
                 nextWriteIndex(),
                 JSON.stringify(segments),
-                Math.min(99, Math.round((done / total) * 100)),
+                narrationProgressPercent(done, total),
                 done,
                 total,
                 JSON.stringify(ttsOptions),
@@ -2357,7 +2358,7 @@ async function runClaimedTick(
             [
               nextWriteIndex(),
               JSON.stringify(segments),
-              Math.min(99, Math.round((done / total) * 100)),
+              narrationProgressPercent(done, total),
               done,
               total,
               JSON.stringify(ttsOptions),
@@ -2868,7 +2869,7 @@ async function runClaimedTick(
                   [
                     lowestUnreadyIndex(segments, total),
                     JSON.stringify(segments),
-                    Math.min(99, Math.round((done / total) * 100)),
+                    narrationProgressPercent(done, total),
                     done,
                     total,
                   ]
@@ -3054,7 +3055,7 @@ async function runClaimedTick(
                   [
                     lowestUnreadyIndex(segments, total),
                     JSON.stringify(segments),
-                    Math.min(99, Math.round((done / total) * 100)),
+                    narrationProgressPercent(done, total),
                     done,
                     total,
                   ]
@@ -3376,7 +3377,7 @@ async function runClaimedTick(
         jobId,
         lease,
         message,
-        Math.min(99, Math.round((doneCount / total) * 100))
+        narrationProgressPercent(doneCount, total)
       );
       console.log(
         `[Job ${jobId}] only ${doneCount}/${total} sections are ready — marking FAILED, not concatenating`
@@ -3452,7 +3453,7 @@ async function runClaimedTick(
            updated_at = unixepoch()`;
       const readyArgs = [
         publishedStatus,
-        complete ? 100 : Math.min(99, Math.round((doneCount / total) * 100)),
+        complete ? 100 : narrationProgressPercent(doneCount, total),
         total,
         JSON.stringify(segments),
         playable ? path : null,
@@ -3665,7 +3666,7 @@ async function runClaimedTick(
      WHERE id = ? AND processing_lease_token = ?`,
     [
       nextIndex,
-      Math.min(99, Math.round((doneCount / total) * 100)),
+      narrationProgressPercent(doneCount, total),
       doneCount,
     ]
   );

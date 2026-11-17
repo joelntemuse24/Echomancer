@@ -60,6 +60,17 @@ describe("nextJobPollDelay", () => {
     ).toBe(JOB_POLL_MIN_MS);
   });
 
+  it("stays at the minimum while the book is finishing", () => {
+    expect(
+      nextJobPollDelay({
+        delay: JOB_POLL_MAX_MS,
+        changed: false,
+        hasPlayableAudio: true,
+        urgent: true,
+      })
+    ).toBe(JOB_POLL_MIN_MS);
+  });
+
   it("never exceeds the cap", () => {
     expect(
       nextJobPollDelay({ delay: JOB_POLL_MAX_MS, changed: false, hasPlayableAudio: true })

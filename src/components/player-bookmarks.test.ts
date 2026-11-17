@@ -63,6 +63,8 @@ describe("PlayerBookmarks", () => {
     expect(markup).toContain('fill="currentColor"');
     expect(markup).toContain(">Saved<");
     expect(markup).toContain('role="status"');
+    expect(markup).toContain('data-testid="bookmark-notice"');
+    expect(markup).not.toContain("sr-only");
   });
 
   it("says Already saved when the playhead is already marked", () => {
@@ -77,6 +79,8 @@ describe("PlayerBookmarks", () => {
       })
     );
     expect(markup).toContain(">Already saved<");
+    expect(markup).toContain('data-testid="bookmark-notice"');
+    expect(markup).not.toContain("sr-only");
     expect(markup).toContain('fill="none"');
     expect(markup).not.toContain('fill="currentColor"');
   });
@@ -118,6 +122,26 @@ describe("PlayerBookmarks", () => {
     expect(markup).toContain('aria-label="Remove bookmark at Part 2 · 0:12"');
     expect(markup).not.toContain("<input");
     expect(markup).not.toContain("<textarea");
+    expect(markup).toContain('data-bookmark-open="true"');
+    const save = markup.slice(
+      markup.indexOf('data-testid="save-bookmark"'),
+      markup.indexOf('data-testid="bookmark-list-toggle"')
+    );
+    const toggle = markup.slice(
+      markup.indexOf('data-testid="bookmark-list-toggle"'),
+      markup.indexOf('data-testid="bookmark-list"')
+    );
+    expect(save).not.toContain("disabled=");
+    expect(toggle).not.toContain("disabled=");
+    expect(save).toContain("text-foreground");
+    expect(toggle).toContain("text-foreground");
+    expect(save).not.toContain("text-muted-foreground");
+    expect(toggle).not.toContain("text-muted-foreground");
+    expect(save).not.toContain("hover:opacity-70");
+    expect(toggle).not.toContain("hover:opacity-70");
+    expect(save).toContain("relative z-30");
+    expect(toggle).toContain("relative z-30");
+    expect(markup).toContain("z-20");
   });
 });
 

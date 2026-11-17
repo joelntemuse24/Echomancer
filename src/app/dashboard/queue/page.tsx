@@ -25,6 +25,7 @@ import {
   peekScreen,
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
+import { generationStatus } from "@/lib/player/generation-status";
 import { libraryStatus, UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
@@ -526,20 +527,57 @@ export default function QueuePage() {
                           )}
                         </span>
                         <span className="font-medium">
-                          {job.progress}%{progressSuffix(job, Date.now() / 1000)}
+                          {job.job_kind === "stream"
+                            ? `${job.progress}%${progressSuffix(job, Date.now() / 1000)}`
+                            : generationStatus({
+                                status: job.status,
+                                currentSection: job.current_section,
+                                totalSections: job.total_sections,
+                                segments: job.segments,
+                                etaLabel: smoothedLabelFor(
+                                  etaPrevRef.current,
+                                  job,
+                                  Date.now() / 1000
+                                ),
+                                etaState: job.eta_state,
+                                waitingForText: job.waiting_for_text,
+                                provider: job.tts_provider,
+                              }).line}
                         </span>
                       </div>
                       <div
                         className="w-full h-1 bg-accent rounded-full overflow-hidden"
                         role="progressbar"
                         aria-label={`${job.book_title} generation progress`}
-                        aria-valuenow={job.progress}
+                        aria-valuenow={
+                          job.job_kind === "stream"
+                            ? job.progress
+                            : generationStatus({
+                                status: job.status,
+                                currentSection: job.current_section,
+                                totalSections: job.total_sections,
+                                segments: job.segments,
+                                provider: job.tts_provider,
+                              }).meter
+                        }
                         aria-valuemin={0}
                         aria-valuemax={100}
                       >
                         <div
                           className="h-full bg-foreground transition-all duration-500 ease-out"
-                          style={{ width: `${job.progress}%` }}
+                          style={{
+                            width: `${
+                              job.job_kind === "stream"
+                                ? job.progress
+                                : generationStatus({
+                                    status: job.status,
+                                    currentSection: job.current_section,
+                                    totalSections: job.total_sections,
+                                    segments: job.segments,
+                                    provider: job.tts_provider,
+                                  }).meter
+                            }%`,
+                          }}
                         />
                       </div>
                       <span className="text-xs text-muted-foreground self-start">

@@ -30,6 +30,7 @@ import {
   parseSegmentMap,
   readyCount,
 } from "@/lib/tts/section-index";
+import { narrationProgressPercent } from "@/lib/tts/narration-progress";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { recoveryHoldReason } from "@/lib/modal/workspace-disabled";
 
@@ -349,7 +350,7 @@ export async function PATCH(
        updated_at = unixepoch()
        WHERE id = ?`,
       [
-        total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
+        narrationProgressPercent(done, total),
         done,
         nextIndex,
         id,

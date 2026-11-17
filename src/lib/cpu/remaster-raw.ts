@@ -13,6 +13,7 @@ import { fileExists, uploadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
 import { cpuTaskId, ensureCpuTaskTable, getCpuTask, reopenCpuTaskForRaw } from "@/lib/cpu/tasks";
 import { sectionObjectName } from "@/lib/tts/section-index";
+import { narrationProgressPercent } from "@/lib/tts/narration-progress";
 import type { JobSegment } from "@/lib/tts/types";
 
 export interface RawRemasterPlan {
@@ -197,7 +198,7 @@ export async function applyRawRemaster(input: {
      WHERE id = ? AND status NOT IN ('ready', 'cancelled') AND deleted_at IS NULL`,
     [
       JSON.stringify(nextSegments),
-      total > 0 ? Math.min(99, Math.round((ready / total) * 100)) : 0,
+      narrationProgressPercent(ready, total),
       input.jobId,
     ]
   );

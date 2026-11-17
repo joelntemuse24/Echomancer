@@ -6,6 +6,7 @@ import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
 import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
+import { BOOKMARK_LIST_DISMISS_EVENT, bookmarkEscapeTarget, bookmarkListKeyAction } from "@/lib/player/bookmarks";
 import { SKIP_SECONDS } from "@/lib/player/seek";
 import type { ReadAlongDocument, ReadAlongPosition } from "@/lib/player/read-along";
 import { cn } from "@/lib/utils";
@@ -73,6 +74,7 @@ export function ReadAlongFocus({
   position,
   onSeek,
   bookTitle,
+  statusLine,
   chapterTitle,
   playing,
   speed,
@@ -92,6 +94,7 @@ export function ReadAlongFocus({
   position: ReadAlongPosition;
   onSeek?: (charIndex: number) => void;
   bookTitle: string;
+  statusLine?: string | null;
   chapterTitle: string | null;
   playing: boolean;
   speed: number;
@@ -139,22 +142,37 @@ export function ReadAlongFocus({
     };
   }, []);
 
-  // Leaving browser fullscreen (Esc on a desktop browser) is the exit.
+  // Leaving browser fullscreen is the exit, unless a bookmark list is open.
+  // The browser consumes Esc to leave fullscreen and may not deliver the key,
+  // so that path closes the list and stays in the overlay.
   useEffect(() => {
     const onChange = () => {
-      if (window.document.fullscreenElement == null) onCloseRef.current();
+      if (window.document.fullscreenElement != null) return;
+      const shell = shellRef.current;
+      if (shell?.querySelector("[data-bookmark-list]")) {
+        shell.dispatchEvent(new Event(BOOKMARK_LIST_DISMISS_EVENT, { bubbles: true }));
+        return;
+      }
+      onCloseRef.current();
     };
     window.document.addEventListener("fullscreenchange", onChange);
     return () => window.document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // Esc always leaves focus mode. The browser also exits element fullscreen
-  // on Esc (and fires fullscreenchange, which closes too), so both paths
-  // agree. An open speed list is dismissed first.
+  // Esc leaves focus mode. An open speed list is dismissed by its own listener.
+  // An open bookmark list takes the key: the list closes and focus stays.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (shellRef.current?.querySelector('[role="listbox"], [data-bookmark-list]')) return;
+      if (bookmarkListKeyAction(event.key) !== "close") return;
+      const shell = shellRef.current;
+      const listOpen = Boolean(shell?.querySelector("[data-bookmark-list]"));
+      if (bookmarkEscapeTarget(listOpen) === "list") {
+        event.preventDefault();
+        event.stopPropagation();
+        shell?.dispatchEvent(new Event(BOOKMARK_LIST_DISMISS_EVENT, { bubbles: true }));
+        return;
+      }
+      if (shell?.querySelector('[role="listbox"]')) return;
       onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
@@ -177,6 +195,11 @@ export function ReadAlongFocus({
       <div className="flex shrink-0 items-start justify-between gap-3 px-4 pt-3 md:px-8">
         <div className="min-w-0">
           <p className="truncate font-serif text-sm text-muted-foreground">{bookTitle}</p>
+          {statusLine ? (
+            <p className="text-xs text-muted-foreground" role="status">
+              {statusLine}
+            </p>
+          ) : null}
           {chapterTitle ? (
             <p className="truncate font-serif text-base text-foreground">{chapterTitle}</p>
           ) : null}

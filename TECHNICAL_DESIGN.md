@@ -2647,8 +2647,11 @@ read-along to the viewport with a slim bar at the bottom: play/pause, ±15 s,
 scrubber, a bookmark control, speed, and the chapter title. It asks the Fullscreen API, but the
 overlay is always `fixed inset-0` with `100dvh`, because iOS has no element
 fullscreen and a request can be refused — so the CSS path alone is
-complete. Esc, the Exit control, and leaving browser fullscreen all close
-it; an open speed list or bookmark list takes Esc first. A saved preference reopens it on the next visit. Scrolling is
+complete. The Exit control closes it. Esc closes it too, except an open bookmark
+list takes that key: the list closes and focus stays, including when the browser
+used Esc to leave element fullscreen. An open speed list is dismissed first.
+Leaving browser fullscreen by any other path closes focus. A saved preference
+reopens it on the next visit. Scrolling is
 `behavior: smooth` unless `prefers-reduced-motion` is set, in which case
 placement is immediate.
 
@@ -2659,8 +2662,11 @@ The chevron opens a short list: each row is the timestamp (and the part,
 when the book is still playing a section file) plus a chapter name or a
 transcript snippet when that text is already on the page. A tap jumps
 there; a remove control deletes the row. There is no note field. A new mark
-within 2 seconds of an existing one on the same clock is that mark. The
-icon fills and a short status says Saved, or Already saved. Anonymous
+within 2 seconds of an existing one on the same clock is that mark, including a second tap while the first request is still in flight. The
+icon fills for a new mark. The status says Saved, or Already saved when the
+server (or that second tap) reports the existing mark, and it stays up for
+2 seconds. The bookmark and chevron stay full strength while the list is
+open. Anonymous
 bookmarks move with the rest of that browser's library on sign-in. The
 table is `bookmarks` (`user_id`, `job_id`, `position_seconds`,
 `section_index`, `label`). Another person's book is 404.
