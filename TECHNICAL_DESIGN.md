@@ -479,7 +479,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent` and `bookmarks`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache`, `bookmarks` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`); then indexes (`idx_users_google_sub` unique, `idx_bookmarks_user_job`) |
+| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent`, `bookmarks`, and `playback_positions`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache`, `bookmarks`, `playback_positions` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`); then indexes (`idx_users_google_sub` unique, `idx_bookmarks_user_job`) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -2677,21 +2677,42 @@ reopens it on the next visit. Scrolling is
 `behavior: smooth` unless `prefers-reduced-motion` is set, in which case
 placement is immediate.
 
+**Resume.** The player used to open every file at 0: the `<audio>` element
+has no memory, and nothing stored a playhead. `playback_positions`
+(`user_id`, `job_id`, `position_seconds`, `section_index`, `updated_at`)
+keeps the last place for that listener and that book. The page also writes
+`localStorage` key `ec-resume:<jobId>` so the first paint and a signed-out
+browser restore before the server answers. A newer `updated_at` wins until
+the listener seeks. Writes happen about every 5 seconds while playing, and
+immediately on pause, seek, track change, and when the tab hides. The
+stored number is the book clock: earlier ready parts are added when the
+file on screen is one section. A finished book within 10 seconds of the
+end is stored as 0. A book still generating clamps to the audio that
+exists. A failed book does not restore. Reopening seeks to that time and
+does not press play. The library line is `Resume at 33:12` when that time
+is worth returning to. Sign-in copies the anonymous rows onto the durable
+user and keeps the later one. `GET /api/jobs` and `GET /api/jobs/[id]`
+include `resume_position_seconds`, `resume_section_index`, and
+`resume_updated_at`. `PUT /api/jobs/[id]/position` writes the row.
+
 **Bookmarks.** The same one-tap control sits beside playback speed on the
 main player and under the scrubber in focus mode. A tap stores the current
-playhead for this listener and this book (`POST /api/jobs/[id]/bookmarks`).
-The chevron opens a short list: each row is the timestamp (and the part,
-when the book is still playing a section file) plus a chapter name or a
-transcript snippet when that text is already on the page. A tap jumps
-there; a remove control deletes the row. There is no note field. A new mark
-within 2 seconds of an existing one on the same clock is that mark, including a second tap while the first request is still in flight. The
-icon fills for a new mark. The status says Saved, or Already saved when the
-server (or that second tap) reports the existing mark, and it stays up for
-2 seconds. The bookmark and chevron stay full strength while the list is
-open. Anonymous
-bookmarks move with the rest of that browser's library on sign-in. The
-table is `bookmarks` (`user_id`, `job_id`, `position_seconds`,
-`section_index`, `label`). Another person's book is 404.
+book-clock timestamp for this listener and this book
+(`POST /api/jobs/[id]/bookmarks`) and the status says `Bookmarked 33:12`.
+The chevron opens a short list sorted by that clock. Each row is the
+timestamp. A tap seeks there; a remove control deletes the row. There is
+no note field and no snippet. A new mark within 2 seconds of an existing
+one on the same clock is that mark, including a second tap while the first
+request is still in flight. The icon fills for a new mark. The status says
+`Already bookmarked` when the server (or that second tap) reports the
+existing mark, and it stays up for 2 seconds. Older rows that stored a
+part-local time and a label still play: the label is kept in the table and
+hidden, and the part time is placed on the book clock when that part's
+duration is known. Anonymous bookmarks and resume positions move with the
+rest of that browser's library on sign-in. The table is `bookmarks`
+(`user_id`, `job_id`, `position_seconds`, `section_index`, `label`).
+Another person's book is 404. The lock-screen session seeks on the same
+book clock as the scrubber. Read-along stays on the file's own clock.
 
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
 page (`/dashboard/player/[id]/markup`). The link is rendered only for a

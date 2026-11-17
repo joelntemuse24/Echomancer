@@ -123,6 +123,16 @@ describe("completeGoogleSignIn", () => {
        VALUES ('bm-b', ?, ?, 4, 1, NULL, 1)`,
       [USER_B, JOB_B]
     );
+    await execute(
+      `INSERT INTO playback_positions (user_id, job_id, position_seconds, section_index, updated_at)
+       VALUES (?, ?, 1992, NULL, 10)`,
+      [USER_A, JOB_A]
+    );
+    await execute(
+      `INSERT INTO playback_positions (user_id, job_id, position_seconds, section_index, updated_at)
+       VALUES (?, ?, 40, 1, 11)`,
+      [USER_B, JOB_B]
+    );
 
     const { user } = await completeGoogleSignIn({
       googleSub: GOOGLE_SUB,
@@ -167,6 +177,14 @@ describe("completeGoogleSignIn", () => {
     expect(bookmarks).toEqual([
       { id: "bm-a", user_id: user.id },
       { id: "bm-b", user_id: USER_B },
+    ]);
+
+    const positions = await query<{ user_id: string; job_id: string; position_seconds: number }>(
+      `SELECT user_id, job_id, position_seconds FROM playback_positions ORDER BY job_id`
+    );
+    expect(positions).toEqual([
+      { user_id: user.id, job_id: JOB_A, position_seconds: 1992 },
+      { user_id: USER_B, job_id: JOB_B, position_seconds: 40 },
     ]);
   });
 

@@ -1,6 +1,19 @@
 import { versionedAudioUrl } from "@/lib/player/playback-url";
+import { playbackAllowed } from "@/lib/library/card-play";
+import {
+  availableBookSeconds,
+  bookTimeFromElement,
+  contiguousSpans,
+  decideResume,
+  placeOnTimeline,
+} from "@/lib/player/playback-position";
 
-type Segment = { index: number; path: string; status: string };
+type Segment = {
+  index: number;
+  path: string;
+  status: string;
+  durationSeconds?: number | null;
+};
 
 export type CachedJobPlayback = {
   job_kind?: string | null;
@@ -40,4 +53,94 @@ export function seededTakehomePlayback(
   }
   if (first) return { url: `/api/storage/${first.path}`, segmentIndex: 0 };
   return null;
+}
+
+export type ResumeSeed = SeededPlayback & {
+  /** Seconds on the file this URL points at. 0 is the start of that file. */
+  localSeconds: number;
+  /** The stored spot was the end of a finished book, so the next open starts over. */
+  restart: boolean;
+};
+
+/**
+ * Where the player opens. A stored book-clock position picks the part (or
+ * the finished file) and the offset inside it. Without one, this is the
+ * same source {@link seededTakehomePlayback} would start at 0.
+ */
+export function playbackForResume(
+  job: CachedJobPlayback & { duration_seconds?: number | null } | null | undefined,
+  saved: { positionSeconds: number; sectionIndex: number | null } | null,
+  opts: { forceStream: boolean; forceSegments: boolean }
+): ResumeSeed | null {
+  if (!playbackAllowed(job?.status)) return null;
+  const base = seededTakehomePlayback(job, opts);
+  if (!base) return null;
+  const opened: ResumeSeed = { ...base, localSeconds: 0, restart: false };
+  if (!saved) return opened;
+
+  const spans = contiguousSpans(job?.segments ?? []);
+  const complete = job?.status === "ready";
+  const duration =
+    typeof job?.duration_seconds === "number" && job.duration_seconds > 0
+      ? job.duration_seconds
+      : null;
+  let bookSeconds = saved.positionSeconds;
+  let absolute = saved.sectionIndex == null;
+  if (saved.sectionIndex != null) {
+    const mapped = bookTimeFromElement({
+      mode: "section",
+      elementSeconds: saved.positionSeconds,
+      sectionIndex: saved.sectionIndex,
+      spans,
+    });
+    if (mapped.absolute) {
+      bookSeconds = mapped.seconds;
+      absolute = true;
+    }
+  }
+
+  if (!absolute && saved.sectionIndex != null) {
+    const ready = new Map<number, Segment>();
+    for (const segment of job?.segments ?? []) {
+      if (segment.status === "ready" && segment.path) ready.set(segment.index, segment);
+    }
+    const section = ready.get(saved.sectionIndex);
+    if (!section) return opened;
+    return {
+      url: `/api/storage/${section.path}`,
+      segmentIndex: saved.sectionIndex,
+      localSeconds: Math.max(0, saved.positionSeconds),
+      restart: false,
+    };
+  }
+
+  const decision = decideResume({
+    playbackAllowed: true,
+    positionSeconds: bookSeconds,
+    durationSeconds: duration,
+    availableSeconds: availableBookSeconds(spans, duration, complete),
+    complete,
+  });
+  if (decision.kind === "ignore") return null;
+  if (decision.kind === "restart") return { ...opened, restart: true };
+  if (decision.kind !== "restore") return opened;
+
+  const fullFile = base.segmentIndex == null && !base.url.includes("/sections/");
+  if (fullFile) {
+    return { ...opened, localSeconds: decision.seconds };
+  }
+  const placed = placeOnTimeline({ bookSeconds: decision.seconds, spans });
+  if (!placed) return { ...opened, localSeconds: decision.seconds };
+  const ready = new Map<number, Segment>();
+  for (const segment of job?.segments ?? []) {
+    if (segment.status === "ready" && segment.path) ready.set(segment.index, segment);
+  }
+  const section = ready.get(placed.sectionIndex);
+  if (!section) return opened;
+  return {
+    url: `/api/storage/${section.path}`,
+    segmentIndex: placed.sectionIndex,
+    localSeconds: placed.localSeconds,
+    restart: false,
+  };
 }

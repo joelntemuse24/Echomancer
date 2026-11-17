@@ -48,12 +48,13 @@ describe("PlayerBookmarks", () => {
     expect(markup).not.toContain('data-testid="bookmark-list"');
   });
 
-  it("fills the icon and says Saved after a new mark", () => {
+  it("fills the icon and says Bookmarked with the clock after a new mark", () => {
     const markup = html(
       createElement(PlayerBookmarks, {
         bookmarks: marks,
         disabled: false,
         notice: "saved",
+        noticeText: "Bookmarked 33:12",
         onSave: () => {},
         onJump: () => {},
         onRemove: () => {},
@@ -61,13 +62,13 @@ describe("PlayerBookmarks", () => {
     );
     expect(markup).toContain('data-bookmark-state="saved"');
     expect(markup).toContain('fill="currentColor"');
-    expect(markup).toContain(">Saved<");
+    expect(markup).toContain(">Bookmarked 33:12<");
     expect(markup).toContain('role="status"');
     expect(markup).toContain('data-testid="bookmark-notice"');
     expect(markup).not.toContain("sr-only");
   });
 
-  it("says Already saved when the playhead is already marked", () => {
+  it("says Already bookmarked when the playhead is already marked", () => {
     const markup = html(
       createElement(PlayerBookmarks, {
         bookmarks: marks,
@@ -78,7 +79,7 @@ describe("PlayerBookmarks", () => {
         onRemove: () => {},
       })
     );
-    expect(markup).toContain(">Already saved<");
+    expect(markup).toContain(">Already bookmarked<");
     expect(markup).toContain('data-testid="bookmark-notice"');
     expect(markup).not.toContain("sr-only");
     expect(markup).toContain('fill="none"');
@@ -100,7 +101,7 @@ describe("PlayerBookmarks", () => {
     expect(markup).toContain('aria-label="Bookmarks"');
   });
 
-  it("opens a list of timestamps and snippets with a remove control", () => {
+  it("opens a list of timestamps with a remove control and no note", () => {
     const markup = html(
       createElement(PlayerBookmarks, {
         bookmarks: marks,
@@ -116,8 +117,10 @@ describe("PlayerBookmarks", () => {
     expect(markup).toContain('data-testid="bookmark-list"');
     expect(markup).toContain('role="dialog"');
     expect(markup).toContain("1:05");
-    expect(markup).toContain("The harbor was quiet");
+    expect(markup).not.toContain("The harbor was quiet");
     expect(markup).toContain("Part 2 · 0:12");
+    expect(markup).not.toContain("<input");
+    expect(markup).not.toContain("<textarea");
     expect(markup).toContain('aria-label="Remove bookmark at 1:05"');
     expect(markup).toContain('aria-label="Remove bookmark at Part 2 · 0:12"');
     expect(markup).not.toContain("<input");

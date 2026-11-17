@@ -33,6 +33,8 @@ import {
 } from "@/lib/tts/catalog/allowlist";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
+import { resumeFields } from "@/lib/player/playback-position";
+import { listPlaybackPositions } from "@/lib/turso/playback-positions";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getOwnedUploadByPath, uploadStatus } from "@/lib/turso/uploads";
@@ -504,9 +506,16 @@ export async function GET(request: NextRequest) {
     );
     if (sweepable && pollSweepDue()) deferLeaseSweep();
 
+    const resumes = await listPlaybackPositions(
+      userId,
+      jobs.map((job) => String(job.id))
+    );
     return NextResponse.json({
       jobs: await Promise.all(
-        jobs.map((job) => withDirectDownloadUrl(serializeJob(job), job))
+        jobs.map(async (job) => ({
+          ...(await withDirectDownloadUrl(serializeJob(job), job)),
+          ...resumeFields(resumes.get(String(job.id)) ?? null),
+        }))
       ),
       pagination: {
         page,

@@ -9,6 +9,7 @@ import {
   bookmarkListKeyAction,
   bookmarkNoticeAfterResponse,
   bookmarkNoticeFromResponse,
+  bookmarkSavedText,
   bookmarkPlaceLabel,
   bookmarkSaveTap,
   bookmarksAreDuplicates,
@@ -127,13 +128,14 @@ describe("bookmark status", () => {
     expect(BOOKMARK_NOTICE_MS).toBe(2000);
   });
 
-  it("maps a duplicate response to Already saved and a new row to Saved", () => {
+  it("maps a duplicate response to Already bookmarked and a new row to Bookmarked", () => {
     expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: true, duplicate: true })]).toBe(
-      "Already saved"
+      "Already bookmarked"
     );
     expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: true, duplicate: false })]).toBe(
-      "Saved"
+      "Bookmarked"
     );
+    expect(bookmarkSavedText(33 * 60 + 12)).toBe("Bookmarked 33:12");
     expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: false, duplicate: true })]).toBe(
       "Couldn't save bookmark"
     );
@@ -161,7 +163,7 @@ describe("bookmark status", () => {
           currentEpoch: afterSecondTap,
         })!
       ]
-    ).toBe("Already saved");
+    ).toBe("Already bookmarked");
   });
 
   it("treats a second tap within 2 seconds, including one still in flight, as Already saved", () => {

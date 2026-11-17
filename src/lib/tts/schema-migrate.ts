@@ -376,6 +376,22 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job ON bookmarks (user_id, job_id, section_index, position_seconds)`,
 ];
 
+/**
+ * Last listening position. One row per listener per book. `section_index`
+ * is set only when the book clock could not be built yet (a part whose
+ * earlier durations are still unknown). New bookmarks leave their own
+ * `label` empty; this table is the automatic resume, not a mark.
+ */
+const CREATE_PLAYBACK_POSITIONS_SQL = `
+CREATE TABLE IF NOT EXISTS playback_positions (
+  user_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  position_seconds REAL NOT NULL,
+  section_index INTEGER,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (user_id, job_id)
+)`;
+
 const CREATE_TAKEHOME_CREATE_KEYS_SQL = `
 CREATE TABLE IF NOT EXISTS takehome_create_keys (
   idem_key TEXT PRIMARY KEY,
@@ -452,7 +468,8 @@ CREATE TABLE IF NOT EXISTS remote_brake (
 
 /**
  * One playhead mark per tap, owned by the same user id as the book.
- * `label` is a chapter or transcript snippet captured at save time, not a note.
+ * `label` is kept for rows already stored. New marks leave it empty:
+ * the list shows the book-clock timestamp, not a snippet.
  */
 const CREATE_BOOKMARKS_SQL = `
 CREATE TABLE IF NOT EXISTS bookmarks (
@@ -505,7 +522,7 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
     'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases',
-    'remote_calls', 'remote_brake', 'bookmarks'
+    'remote_calls', 'remote_brake', 'bookmarks', 'playback_positions'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -658,7 +675,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 20 &&
+      Number(row?.tables_ok || 0) >= 21 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -704,6 +721,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_REMOTE_CALLS_SQL },
         { sql: CREATE_REMOTE_BRAKE_SQL },
         { sql: CREATE_BOOKMARKS_SQL },
+        { sql: CREATE_PLAYBACK_POSITIONS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -726,6 +744,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_REMOTE_CALLS_SQL);
       await execute(CREATE_REMOTE_BRAKE_SQL);
       await execute(CREATE_BOOKMARKS_SQL);
+      await execute(CREATE_PLAYBACK_POSITIONS_SQL);
     }
 
     await execute(`ALTER TABLE remote_calls ADD COLUMN call_tag TEXT`).catch(() => {});

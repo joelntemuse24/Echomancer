@@ -8,6 +8,8 @@ import { requireOwnedJob } from "@/lib/auth/guard";
 import { forgetModalCloneJob } from "@/lib/tts/providers/modal-clone";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
+import { resumeFields } from "@/lib/player/playback-position";
+import { getPlaybackPosition } from "@/lib/turso/playback-positions";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { durationsFromSectionStarts } from "@/lib/tts/section-clock";
 import {
@@ -92,9 +94,11 @@ export async function GET(
       }
       chapters = await chaptersForReadyJob(current);
     }
+    const resume = await getPlaybackPosition(String(current.user_id), id);
     return NextResponse.json({
       job: {
         ...serialized,
+        ...resumeFields(resume),
         ...(chapters.length > 0 ? { chapters } : {}),
         ...(wait.waitingForText ? { waiting_for_text: true } : {}),
       },

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BOOKMARK_NOTICE_MS,
+  bookmarkSavedText,
   bookmarkNoticeAfterResponse,
   bookmarkSaveTap,
   sortBookmarks,
@@ -20,6 +21,7 @@ import {
 export function useJobBookmarks(jobId: string) {
   const [bookmarks, setBookmarks] = useState<JobBookmark[]>([]);
   const [notice, setNotice] = useState<BookmarkNotice | null>(null);
+  const [noticeText, setNoticeText] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bookmarksRef = useRef(bookmarks);
@@ -32,6 +34,7 @@ export function useJobBookmarks(jobId: string) {
     let cancelled = false;
     setBookmarks([]);
     setNotice(null);
+    setNoticeText(null);
     void fetch(`/api/jobs/${jobId}/bookmarks`, { cache: "no-store" })
       .then(async (response) => (response.ok ? response.json() : null))
       .then((body: { bookmarks?: JobBookmark[] } | null) => {
@@ -52,17 +55,24 @@ export function useJobBookmarks(jobId: string) {
     };
   }, []);
 
-  const flash = useCallback((next: BookmarkNotice) => {
+  const flash = useCallback((next: BookmarkNotice, text?: string) => {
     setNotice(next);
+    setNoticeText(text ?? null);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setNotice(null), BOOKMARK_NOTICE_MS);
+    timer.current = setTimeout(() => {
+      setNotice(null);
+      setNoticeText(null);
+    }, BOOKMARK_NOTICE_MS);
   }, []);
 
   const save = useCallback(
-    async (input: SaveBookmarkInput) => {
+    async (
+      input: SaveBookmarkInput,
+      dedupeAgainst?: readonly { positionSeconds: number; sectionIndex: number | null }[]
+    ) => {
       const tap = bookmarkSaveTap({
         pending: pendingRef.current,
-        bookmarks: bookmarksRef.current,
+        bookmarks: dedupeAgainst ?? bookmarksRef.current,
         positionSeconds: input.positionSeconds,
         sectionIndex: input.sectionIndex,
       });
@@ -98,7 +108,12 @@ export function useJobBookmarks(jobId: string) {
           requestEpoch: token,
           currentEpoch: epoch.current,
         });
-        if (next) flash(next);
+        if (next) {
+          flash(
+            next,
+            next === "saved" ? bookmarkSavedText(input.positionSeconds) : undefined
+          );
+        }
       } catch {
         const next = bookmarkNoticeAfterResponse({
           httpOk: false,
@@ -106,7 +121,12 @@ export function useJobBookmarks(jobId: string) {
           requestEpoch: token,
           currentEpoch: epoch.current,
         });
-        if (next) flash(next);
+        if (next) {
+          flash(
+            next,
+            next === "saved" ? bookmarkSavedText(input.positionSeconds) : undefined
+          );
+        }
       } finally {
         if (inflight.current === token) {
           pendingRef.current = false;
@@ -140,5 +160,5 @@ export function useJobBookmarks(jobId: string) {
     [jobId]
   );
 
-  return { bookmarks, notice, pending, save, remove };
+  return { bookmarks, notice, noticeText, pending, save, remove };
 }

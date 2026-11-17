@@ -222,6 +222,30 @@ export async function mergeAnonymousOwnership(
     durableUserId,
     anonUserId,
   ]);
+  // Copy, keeping the later of the two when the durable account already
+  // has a place in the same book, then drop the anonymous rows.
+  await execute(
+    `INSERT INTO playback_positions (
+       user_id, job_id, position_seconds, section_index, updated_at
+     )
+     SELECT ?, job_id, position_seconds, section_index, updated_at
+     FROM playback_positions
+     WHERE user_id = ?
+     ON CONFLICT(user_id, job_id) DO UPDATE SET
+       position_seconds = CASE
+         WHEN excluded.updated_at >= playback_positions.updated_at
+           THEN excluded.position_seconds
+         ELSE playback_positions.position_seconds
+       END,
+       section_index = CASE
+         WHEN excluded.updated_at >= playback_positions.updated_at
+           THEN excluded.section_index
+         ELSE playback_positions.section_index
+       END,
+       updated_at = MAX(playback_positions.updated_at, excluded.updated_at)`,
+    [durableUserId, anonUserId]
+  );
+  await execute(`DELETE FROM playback_positions WHERE user_id = ?`, [anonUserId]);
 }
 
 export async function completeGoogleSignIn(
