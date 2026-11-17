@@ -219,6 +219,112 @@ export function shouldPersistPlayhead(input: {
   return true;
 }
 
+/** The 5s write runs only while audio is playing and the tab is visible. */
+export function resumeTickAllowed(input: { playing: boolean; hidden: boolean }): boolean {
+  return input.playing && !input.hidden;
+}
+
+/**
+ * A part is on the book clock only when that part itself is in the contiguous
+ * prefix. A ready part after a hole keeps its own file clock.
+ */
+export function sectionOnBookClock(
+  spans: readonly SectionSpan[],
+  sectionIndex: number | null
+): boolean {
+  if (sectionIndex == null) return false;
+  return spans.some((span) => span.index === sectionIndex);
+}
+
+/**
+ * The job response may move the playhead only when the listener has not
+ * started and the element is still behind the stored time.
+ */
+export function shouldApplyDetailSeek(input: {
+  moved: boolean;
+  playing: boolean;
+  elementSeconds: number;
+  targetSeconds: number;
+}): boolean {
+  if (input.moved || input.playing) return false;
+  if (!(input.targetSeconds > 0.05)) return false;
+  const at = Number.isFinite(input.elementSeconds) ? input.elementSeconds : 0;
+  if (at + 0.25 >= input.targetSeconds) return false;
+  return true;
+}
+
+/** Skip a server write when the playhead has not moved. */
+export function samePlayhead(
+  previous: { positionSeconds: number; sectionIndex: number | null } | null,
+  next: { positionSeconds: number; sectionIndex: number | null }
+): boolean {
+  if (!previous) return false;
+  if (previous.sectionIndex !== next.sectionIndex) return false;
+  return Math.abs(previous.positionSeconds - next.positionSeconds) < 0.5;
+}
+
+/**
+ * What a pause, tick, or hide may store.
+ * A source change resets `currentTime` to 0 and fires pause while
+ * `readyState` is HAVE_NOTHING or a seek is still pending. That 0 is the
+ * load, so it is not stored. A pending book time is stored instead.
+ * Returns null when there is nothing safe to write.
+ */
+export function snapshotForPersist(input: {
+  reason: ResumeSaveReason;
+  currentTime: number;
+  readyState: number;
+  ended: boolean;
+  pendingActive: boolean;
+  pendingBookSeconds: number | null;
+  restoreLanded: boolean;
+  onSection: boolean;
+  sectionIndex: number | null;
+  spans: readonly SectionSpan[];
+  complete: boolean;
+  durationSeconds: number | null;
+  hasNextSection: boolean;
+}): { positionSeconds: number; sectionIndex: number | null } | null {
+  const userAct = input.reason === "seek" || input.reason === "track";
+  const loading = !(input.readyState > 0);
+  const pendingTime =
+    typeof input.pendingBookSeconds === "number" && Number.isFinite(input.pendingBookSeconds)
+      ? Math.max(0, input.pendingBookSeconds)
+      : null;
+
+  const commit = (bookSeconds: number, absolute: boolean) => {
+    const bookEnded =
+      input.ended && input.complete && (!input.onSection || !input.hasNextSection);
+    const stored = positionToPersist({
+      bookSeconds,
+      durationSeconds: input.durationSeconds,
+      complete: input.complete,
+      ended: bookEnded,
+    });
+    return {
+      positionSeconds: stored.positionSeconds,
+      sectionIndex: stored.finished || absolute ? null : input.sectionIndex,
+    };
+  };
+
+  if (!userAct && (input.pendingActive || loading)) {
+    if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
+    return null;
+  }
+  const element = Number.isFinite(input.currentTime) ? Math.max(0, input.currentTime) : 0;
+  if (!userAct && !input.restoreLanded && element < 0.5) {
+    if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
+    return null;
+  }
+  const mapped = bookTimeFromElement({
+    mode: input.onSection ? "section" : "full",
+    elementSeconds: element,
+    sectionIndex: input.onSection ? input.sectionIndex : null,
+    spans: input.spans,
+  });
+  return commit(mapped.seconds, mapped.absolute);
+}
+
 export function preferResume(
   local: StoredResume | null,
   remote: StoredResume | null

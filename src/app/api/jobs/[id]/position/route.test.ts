@@ -47,7 +47,7 @@ describe("playback position", () => {
   });
 
   it("replaces the previous position instead of stacking rows", async () => {
-    await PUT(
+    const first = await PUT(
       await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
         method: "PUT",
         userId: USER_A,
@@ -55,11 +55,12 @@ describe("playback position", () => {
       }),
       routeParams({ id: JOB_A })
     );
+    const saved = await first.json();
     await PUT(
       await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
         method: "PUT",
         userId: USER_A,
-        body: { positionSeconds: 90, sectionIndex: 2 },
+        body: { positionSeconds: 90, sectionIndex: 2, expectedUpdatedAt: saved.updatedAt },
       }),
       routeParams({ id: JOB_A })
     );
@@ -98,6 +99,41 @@ describe("playback position", () => {
       [JOB_A]
     );
     expect(rows).toEqual([{ user_id: USER_A }]);
+  });
+
+  it("rejects a write from a tab that last read an older row", async () => {
+    const first = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 33 * 60 + 12 },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    const saved = await first.json();
+    const phone = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 40 * 60, expectedUpdatedAt: saved.updatedAt },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    expect(phone.status).toBe(200);
+    const stale = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 33 * 60 + 12, expectedUpdatedAt: saved.updatedAt },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    expect(stale.status).toBe(409);
+    const rows = await query<{ position_seconds: number }>(
+      `SELECT position_seconds FROM playback_positions WHERE job_id = ?`,
+      [JOB_A]
+    );
+    expect(rows).toEqual([{ position_seconds: 40 * 60 }]);
   });
 
   it("rejects a position that is not a timestamp", async () => {

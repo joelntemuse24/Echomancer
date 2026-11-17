@@ -1,0 +1,512 @@
+/**
+ * @vitest-environment jsdom
+ *
+ * The player page owns the <audio> element. These tests mount that page
+ * with a media element that does what browsers do on a source change:
+ * currentTime returns to 0, readyState drops to HAVE_NOTHING, and pause fires.
+ */
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetJob, rememberJobDetail } from "@/lib/nav/screen-cache";
+import { resetClientSearchForTests } from "@/lib/nav/client-search";
+import PlayerPage from "./page";
+
+const JOB = "resume-book";
+
+type MediaState = {
+  src: string;
+  time: number;
+  paused: boolean;
+  ready: number;
+  ended: boolean;
+};
+
+const mediaState = new WeakMap<EventTarget, MediaState>();
+
+function mediaOf(target: EventTarget): MediaState {
+  let row = mediaState.get(target);
+  if (!row) {
+    row = { src: "", time: 0, paused: true, ready: 0, ended: false };
+    mediaState.set(target, row);
+  }
+  return row;
+}
+
+let applyingSrc = false;
+let originalSetAttribute: typeof Element.prototype.setAttribute | null = null;
+
+function applyMediaSrc(element: HTMLMediaElement, value: string) {
+  const row = mediaOf(element);
+  const next = String(value ?? "");
+  const changed = row.src !== "" && next !== row.src;
+  const wasPlaying = !row.paused;
+  row.src = next;
+  if (!changed) return;
+  row.time = 0;
+  row.ready = 0;
+  row.ended = false;
+  if (wasPlaying) {
+    row.paused = true;
+    element.dispatchEvent(new Event("pause"));
+  }
+}
+
+function installMediaElement() {
+  const proto = window.HTMLMediaElement.prototype;
+  const define = (
+    name: string,
+    descriptor: {
+      get?: (this: HTMLMediaElement) => unknown;
+      set?: (this: HTMLMediaElement, value: never) => void;
+    }
+  ) => {
+    Object.defineProperty(proto, name, { configurable: true, ...descriptor });
+  };
+  if (!originalSetAttribute) {
+    originalSetAttribute = window.Element.prototype.setAttribute;
+    const nativeSetAttribute = originalSetAttribute;
+    window.Element.prototype.setAttribute = function setAttribute(name: string, value: string) {
+      if (!applyingSrc && name === "src" && this instanceof window.HTMLMediaElement) {
+        applyingSrc = true;
+        try {
+          applyMediaSrc(this, value);
+          return nativeSetAttribute.call(this, name, value);
+        } finally {
+          applyingSrc = false;
+        }
+      }
+      return nativeSetAttribute.call(this, name, value);
+    };
+  }
+  define("src", {
+    get() {
+      return mediaOf(this).src || this.getAttribute("src") || "";
+    },
+    set(value: string) {
+      if (applyingSrc) return;
+      applyingSrc = true;
+      try {
+        applyMediaSrc(this, value);
+        originalSetAttribute!.call(this, "src", String(value ?? ""));
+      } finally {
+        applyingSrc = false;
+      }
+    },
+  });
+  define("currentSrc", {
+    get() {
+      return mediaOf(this).src;
+    },
+  });
+  define("currentTime", {
+    get() {
+      return mediaOf(this).time;
+    },
+    set(value: number) {
+      const row = mediaOf(this);
+      row.time = Number(value) || 0;
+      row.ended = false;
+      if (row.ready < 1) row.ready = 1;
+    },
+  });
+  define("paused", {
+    get() {
+      return mediaOf(this).paused;
+    },
+  });
+  define("readyState", {
+    get() {
+      return mediaOf(this).ready;
+    },
+    set(value: number) {
+      mediaOf(this).ready = value;
+    },
+  });
+  define("ended", {
+    get() {
+      return mediaOf(this).ended;
+    },
+  });
+  define("duration", {
+    get() {
+      return 400;
+    },
+  });
+  define("seeking", {
+    get() {
+      return false;
+    },
+  });
+  define("networkState", {
+    get() {
+      return 1;
+    },
+  });
+  proto.play = function play() {
+    mediaOf(this).paused = false;
+    this.dispatchEvent(new Event("play"));
+    this.dispatchEvent(new Event("playing"));
+    return Promise.resolve();
+  };
+  proto.pause = function pause() {
+    const row = mediaOf(this);
+    if (row.paused) return;
+    row.paused = true;
+    this.dispatchEvent(new Event("pause"));
+  };
+  proto.load = function load() {};
+}
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/dashboard/player/resume-book",
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+  }),
+}));
+
+vi.mock("next/link", () => ({
+  default: ({
+    children,
+    href,
+  }: {
+    children?: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>,
+}));
+
+type JobBody = Record<string, unknown>;
+
+let jobBody: JobBody;
+let puts: Array<Record<string, unknown>>;
+let holdJob: Promise<void> | null;
+let releaseJob: (() => void) | null;
+let staleWrite: boolean;
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function baseJob(overrides: JobBody = {}): JobBody {
+  return {
+    id: JOB,
+    book_title: "Harbor",
+    voice_name: "Drew",
+    status: "ready",
+    progress: 100,
+    current_section: 1,
+    total_sections: 1,
+    audio_url: "/api/storage/audiobooks/resume-book/full.mp3",
+    duration_seconds: 4000,
+    error_message: null,
+    created_at: "2026-11-17T00:00:00.000Z",
+    updated_at: "2026-11-17T00:00:00.000Z",
+    job_kind: "takehome",
+    tts_provider: "drew",
+    segments: null,
+    chapters: [],
+    resume_position_seconds: null,
+    resume_section_index: null,
+    resume_updated_at: null,
+    ...overrides,
+  };
+}
+
+function audio(): HTMLAudioElement {
+  const element = document.querySelector("audio");
+  if (!element) throw new Error("player audio is not mounted");
+  return element;
+}
+
+async function emit(target: EventTarget, name: string) {
+  await act(async () => {
+    target.dispatchEvent(new Event(name));
+  });
+}
+
+async function settle() {
+  for (let i = 0; i < 6; i++) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+}
+
+async function openPlayer() {
+  render(<PlayerPage />);
+  await settle();
+  if (releaseJob) {
+    releaseJob();
+    releaseJob = null;
+    holdJob = null;
+    await settle();
+  }
+}
+
+beforeEach(() => {
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {
+      return false;
+    },
+  });
+  installMediaElement();
+  if (!("ResizeObserver" in window)) {
+    class ResizeObserverStub {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+  }
+  vi.useFakeTimers();
+  resetClientSearchForTests();
+  localStorage.clear();
+  forgetJob(JOB);
+  puts = [];
+  staleWrite = false;
+  holdJob = null;
+  releaseJob = null;
+  jobBody = baseJob();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/position") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        puts.push(body);
+        if (staleWrite) {
+          return json(
+            { stale: true, positionSeconds: 50, sectionIndex: null, updatedAt: 100 },
+            409
+          );
+        }
+        return json({
+          positionSeconds: body.positionSeconds,
+          sectionIndex: body.sectionIndex ?? null,
+          updatedAt: 101,
+        });
+      }
+      if (url.includes("/bookmarks")) return json({ bookmarks: [] });
+      if (url.includes(`/api/jobs/${JOB}`)) {
+        if (holdJob) await holdJob;
+        return json({ job: jobBody });
+      }
+      return json({});
+    })
+  );
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  localStorage.clear();
+  forgetJob(JOB);
+});
+
+describe("player resume", () => {
+  it("does not persist 0 when the source changes while playing", async () => {
+    jobBody = baseJob({
+      status: "processing",
+      progress: 40,
+      current_section: 1,
+      total_sections: 2,
+      audio_url: null,
+      duration_seconds: null,
+      segments: [
+        {
+          index: 0,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0000.mp3",
+          durationSeconds: 200,
+        },
+        {
+          index: 1,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0001.mp3",
+          durationSeconds: 100,
+        },
+      ],
+    });
+    await openPlayer();
+    const element = audio();
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 50;
+    fireEvent.click(screen.getByRole("button", { name: "Parts" }));
+    const partTwo = screen.getAllByRole("button").find((button) => button.textContent?.includes("02"));
+    if (!partTwo) throw new Error("part 2 row is missing");
+    await act(async () => {
+      fireEvent.click(partTwo);
+    });
+    await settle();
+    expect(element.currentTime).toBe(0);
+    expect(puts.some((body) => body.positionSeconds === 0 && body.sectionIndex == null)).toBe(false);
+    expect(puts.some((body) => body.positionSeconds === 200)).toBe(true);
+  });
+
+  it("does not write until the server row is merged", async () => {
+    holdJob = new Promise((resolve) => {
+      releaseJob = resolve;
+    });
+    rememberJobDetail(JOB, { job: jobBody });
+    render(<PlayerPage />);
+    await settle();
+    const element = audio();
+    await emit(element, "loadedmetadata");
+    await emit(element, "pause");
+    await settle();
+    expect(puts).toEqual([]);
+    jobBody = baseJob({
+      resume_position_seconds: 1992,
+      resume_section_index: null,
+      resume_updated_at: 500,
+    });
+    releaseJob?.();
+    releaseJob = null;
+    holdJob = null;
+    await settle();
+    await emit(element, "loadedmetadata");
+    await emit(element, "pause");
+    await settle();
+    expect(puts.filter((body) => body.positionSeconds === 0)).toEqual([]);
+  });
+
+  it("does not seek back over a listener who already pressed play", async () => {
+    holdJob = new Promise((resolve) => {
+      releaseJob = resolve;
+    });
+    rememberJobDetail(JOB, { job: jobBody });
+    render(<PlayerPage />);
+    await settle();
+    const element = audio();
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 15;
+    jobBody = baseJob({
+      resume_position_seconds: 1992,
+      resume_section_index: null,
+      resume_updated_at: 500,
+    });
+    releaseJob?.();
+    releaseJob = null;
+    holdJob = null;
+    await settle();
+    expect(element.currentTime).toBe(15);
+    expect(element.src).toContain("full.mp3");
+  });
+
+  it("does not write while paused or when the tab becomes visible", async () => {
+    jobBody = baseJob({
+      resume_position_seconds: 50,
+      resume_updated_at: 100,
+    });
+    await openPlayer();
+    const element = audio();
+    await emit(element, "loadedmetadata");
+    await settle();
+    element.currentTime = 80;
+    await emit(element, "timeupdate");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(puts).toEqual([]);
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await emit(document, "visibilitychange");
+    await settle();
+    expect(puts).toEqual([
+      expect.objectContaining({ positionSeconds: 80, expectedUpdatedAt: 100, force: false }),
+    ]);
+    const afterHide = puts.length;
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await emit(document, "visibilitychange");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(puts).toHaveLength(afterHide);
+  });
+
+  it("keeps a rejected stale write from becoming the stored clock", async () => {
+    staleWrite = true;
+    jobBody = baseJob({
+      resume_position_seconds: 50,
+      resume_updated_at: 100,
+    });
+    await openPlayer();
+    const element = audio();
+    await emit(element, "loadedmetadata");
+    await settle();
+    element.currentTime = 80;
+    await emit(element, "timeupdate");
+    await emit(element, "pause");
+    await settle();
+    expect(puts[0]).toMatchObject({
+      positionSeconds: 80,
+      expectedUpdatedAt: 100,
+      force: false,
+    });
+    const stored = JSON.parse(localStorage.getItem(`ec-resume:${JOB}`) ?? "{}") as {
+      updatedAt?: number;
+    };
+    expect(stored.updatedAt).toBe(100);
+  });
+
+  it("skips on a part past a hole using that part's clock", async () => {
+    jobBody = baseJob({
+      status: "processing",
+      progress: 30,
+      current_section: 0,
+      total_sections: 3,
+      audio_url: null,
+      duration_seconds: null,
+      segments: [
+        {
+          index: 0,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0000.mp3",
+          durationSeconds: 100,
+        },
+        { index: 1, status: "pending", path: "", durationSeconds: null },
+        {
+          index: 2,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0002.mp3",
+          durationSeconds: 80,
+        },
+      ],
+    });
+    await openPlayer();
+    fireEvent.click(screen.getByRole("button", { name: "Parts" }));
+    const partThree = screen.getAllByRole("button").find((button) => button.textContent?.includes("03"));
+    if (!partThree) throw new Error("part 3 row is missing");
+    await act(async () => {
+      fireEvent.click(partThree);
+    });
+    const element = audio();
+    expect(element.src).toContain("0002.mp3");
+    element.currentTime = 20;
+    fireEvent.click(screen.getByRole("button", { name: "Forward 10 seconds" }));
+    expect(element.currentTime).toBe(30);
+    expect(element.src).toContain("0002.mp3");
+  });
+});

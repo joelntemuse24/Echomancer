@@ -34,7 +34,7 @@ import {
 import { serializeJob } from "@/lib/jobs/serialize";
 import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
 import { resumeFields } from "@/lib/player/playback-position";
-import { listPlaybackPositions } from "@/lib/turso/playback-positions";
+import { listPlaybackPositions, type PlaybackPosition } from "@/lib/turso/playback-positions";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getOwnedUploadByPath, uploadStatus } from "@/lib/turso/uploads";
@@ -506,10 +506,15 @@ export async function GET(request: NextRequest) {
     );
     if (sweepable && pollSweepDue()) deferLeaseSweep();
 
-    const resumes = await listPlaybackPositions(
-      userId,
-      jobs.map((job) => String(job.id))
-    );
+    let resumes = new Map<string, PlaybackPosition>();
+    try {
+      resumes = await listPlaybackPositions(
+        userId,
+        jobs.map((job) => String(job.id))
+      );
+    } catch (error) {
+      console.error("resume positions unavailable:", error);
+    }
     return NextResponse.json({
       jobs: await Promise.all(
         jobs.map(async (job) => ({

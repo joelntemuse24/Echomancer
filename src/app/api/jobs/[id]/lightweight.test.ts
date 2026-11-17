@@ -6,6 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { execute } from "@/lib/turso";
 import {
   UPLOAD_ID_A,
   USER_A,
@@ -107,6 +108,22 @@ describe("GET /api/jobs/[id] on a poll", () => {
     expect(
       download.mock.calls.some((call) => /playback-chapters|section-starts/.test(String(call[0])))
     ).toBe(true);
+  });
+
+  it("returns the job with resume null when the positions table is missing", async () => {
+    await seedOwnedJob({ status: "ready", audioStoragePath: "audiobooks/x/full.mp3" });
+    const schema = await import("@/lib/tts/schema-migrate");
+    const ensure = vi.spyOn(schema, "ensureTtsJobColumns").mockResolvedValue("hot");
+    await execute("DROP TABLE playback_positions");
+
+    const { response, body } = await get();
+
+    expect(ensure).toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(body.job.id).toBe(JOB_A);
+    expect(body.job.resume_position_seconds).toBeNull();
+    expect(body.job.resume_section_index).toBeNull();
+    expect(body.job.resume_updated_at).toBeNull();
   });
 
   it("does no upload lookup when the job is not waiting for text", async () => {

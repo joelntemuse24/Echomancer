@@ -59,23 +59,63 @@ export async function listPlaybackPositions(
   return out;
 }
 
+export type PlaybackWrite =
+  | { accepted: true; position: PlaybackPosition }
+  | { accepted: false; position: PlaybackPosition };
+
+/**
+ * Compare-and-swap on `updated_at`. A tab that last read an older row
+ * cannot replace a position another device has written since.
+ * `force` is a seek or a part change on this device: the listener moved
+ * the playhead, so that write replaces the row.
+ */
 export async function upsertPlaybackPosition(input: {
   userId: string;
   jobId: string;
   positionSeconds: number;
   sectionIndex: number | null;
-}): Promise<PlaybackPosition> {
-  await execute(
+  expectedUpdatedAt: number | null;
+  force: boolean;
+}): Promise<PlaybackWrite> {
+  const updated = await execute(
+    `UPDATE playback_positions
+     SET position_seconds = ?, section_index = ?,
+         updated_at = MAX(unixepoch(), playback_positions.updated_at + 1)
+     WHERE user_id = ? AND job_id = ?
+       AND (? = 1 OR updated_at = ?)`,
+    [
+      input.positionSeconds,
+      input.sectionIndex,
+      input.userId,
+      input.jobId,
+      input.force ? 1 : 0,
+      input.expectedUpdatedAt,
+    ]
+  );
+  if (updated.rowsAffected > 0) {
+    const position = await getPlaybackPosition(input.userId, input.jobId);
+    if (!position) throw new Error("Playback position was not stored");
+    return { accepted: true, position };
+  }
+  const inserted = await execute(
     `INSERT INTO playback_positions (
        user_id, job_id, position_seconds, section_index, updated_at
-     ) VALUES (?, ?, ?, ?, unixepoch())
-     ON CONFLICT(user_id, job_id) DO UPDATE SET
-       position_seconds = excluded.position_seconds,
-       section_index = excluded.section_index,
-       updated_at = excluded.updated_at`,
-    [input.userId, input.jobId, input.positionSeconds, input.sectionIndex]
+     )
+     SELECT ?, ?, ?, ?, unixepoch()
+     WHERE NOT EXISTS (
+       SELECT 1 FROM playback_positions WHERE user_id = ? AND job_id = ?
+     )`,
+    [
+      input.userId,
+      input.jobId,
+      input.positionSeconds,
+      input.sectionIndex,
+      input.userId,
+      input.jobId,
+    ]
   );
-  const row = await getPlaybackPosition(input.userId, input.jobId);
-  if (!row) throw new Error("Playback position was not stored");
-  return row;
+  const position = await getPlaybackPosition(input.userId, input.jobId);
+  if (!position) throw new Error("Playback position was not stored");
+  if (inserted.rowsAffected > 0) return { accepted: true, position };
+  return { accepted: false, position };
 }

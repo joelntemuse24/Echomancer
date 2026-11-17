@@ -20,6 +20,8 @@ const NO_STORE = { "Cache-Control": "private, no-store" };
 const putSchema = z.object({
   positionSeconds: z.number().finite().min(0).max(1_000_000),
   sectionIndex: z.number().int().min(0).max(100_000).nullable().optional(),
+  expectedUpdatedAt: z.number().int().min(0).nullable().optional(),
+  force: z.boolean().optional(),
 });
 
 export async function GET(
@@ -56,19 +58,22 @@ export async function PUT(
     if (!parsed.success) {
       throw new AppError("INVALID_BODY", "That position could not be saved.", 400);
     }
-    const position = await upsertPlaybackPosition({
+    const write = await upsertPlaybackPosition({
       userId: session.userId,
       jobId: id,
       positionSeconds: parsed.data.positionSeconds,
       sectionIndex: parsed.data.sectionIndex ?? null,
+      expectedUpdatedAt: parsed.data.expectedUpdatedAt ?? null,
+      force: parsed.data.force === true,
     });
     return NextResponse.json(
       {
-        positionSeconds: position.positionSeconds,
-        sectionIndex: position.sectionIndex,
-        updatedAt: position.updatedAt,
+        positionSeconds: write.position.positionSeconds,
+        sectionIndex: write.position.sectionIndex,
+        updatedAt: write.position.updatedAt,
+        stale: !write.accepted,
       },
-      { headers: NO_STORE }
+      { status: write.accepted ? 200 : 409, headers: NO_STORE }
     );
   } catch (error) {
     return handleApiError(error);

@@ -2683,17 +2683,29 @@ has no memory, and nothing stored a playhead. `playback_positions`
 keeps the last place for that listener and that book. The page also writes
 `localStorage` key `ec-resume:<jobId>` so the first paint and a signed-out
 browser restore before the server answers. A newer `updated_at` wins until
-the listener seeks. Writes happen about every 5 seconds while playing, and
-immediately on pause, seek, track change, and when the tab hides. The
-stored number is the book clock: earlier ready parts are added when the
-file on screen is one section. A finished book within 10 seconds of the
-end is stored as 0. A book still generating clamps to the audio that
-exists. A failed book does not restore. Reopening seeks to that time and
-does not press play. The library line is `Resume at 33:12` when that time
-is worth returning to. Sign-in copies the anonymous rows onto the durable
-user and keeps the later one. `GET /api/jobs` and `GET /api/jobs/[id]`
-include `resume_position_seconds`, `resume_section_index`, and
-`resume_updated_at`. `PUT /api/jobs/[id]/position` writes the row.
+the listener seeks or presses play. Writes happen about every 5 seconds
+while audio is playing and the tab is visible, and immediately on pause,
+seek, track change, and when the tab hides. Becoming visible does not
+write, and a position that has not moved is not written again. A source
+change resets the element to 0 and pauses it; that 0 is the load, so it
+is not stored. A pending book time is stored instead. Nothing is written
+until the job response has merged the server row, or that request has
+failed. `PUT /api/jobs/[id]/position` sends the `updated_at` this tab last
+read. The server updates the row only when that value still matches, or
+when the write is a seek or a part change. A stale tab gets 409 and leaves
+the row alone. The stored number is the book clock when the part on screen
+is inside the contiguous ready prefix. A ready part after a hole keeps
+that part's own clock for skip, the scrubber, focus mode, and the lock
+screen. A finished book within 10 seconds of the end is stored as 0. A
+book still generating clamps to the audio that exists. A failed book does
+not restore. Reopening seeks to that time and does not press play. If the
+listener has already started, the job response does not seek backward over
+them. The library line is `Resume at 33:12` when that time is worth
+returning to. Sign-in copies the anonymous rows onto the durable user and
+keeps the later one. `GET /api/jobs` and `GET /api/jobs/[id]` include
+`resume_position_seconds`, `resume_section_index`, and
+`resume_updated_at`. The detail read creates the table first, and a
+position read that fails still returns the job with those fields null.
 
 **Bookmarks.** The same one-tap control sits beside playback speed on the
 main player and under the scrubber in focus mode. A tap stores the current

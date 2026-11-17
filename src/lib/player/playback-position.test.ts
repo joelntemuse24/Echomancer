@@ -13,7 +13,12 @@ import {
   positionToPersist,
   preferResume,
   readStoredResume,
+  resumeTickAllowed,
+  samePlayhead,
+  sectionOnBookClock,
+  shouldApplyDetailSeek,
   shouldPersistPlayhead,
+  snapshotForPersist,
   sortBookmarksByClock,
   writeStoredResume,
   type StoredResume,
@@ -265,6 +270,107 @@ describe("bookmark clock", () => {
       spans
     );
     expect(rows.map((row) => row.id)).toEqual(["open", "legacy", "late"]);
+  });
+
+  it("does not store a 0 that came from a source change", () => {
+    const spans = contiguousSpans(parts);
+    const swapped = snapshotForPersist({
+      reason: "pause",
+      currentTime: 0,
+      readyState: 0,
+      ended: false,
+      pendingActive: true,
+      pendingBookSeconds: 120,
+      restoreLanded: true,
+      onSection: true,
+      sectionIndex: 1,
+      spans,
+      complete: false,
+      durationSeconds: null,
+      hasNextSection: true,
+    });
+    expect(swapped).toEqual({ positionSeconds: 120, sectionIndex: null });
+    const reset = snapshotForPersist({
+      reason: "pause",
+      currentTime: 0,
+      readyState: 0,
+      ended: false,
+      pendingActive: false,
+      pendingBookSeconds: null,
+      restoreLanded: false,
+      onSection: false,
+      sectionIndex: null,
+      spans,
+      complete: true,
+      durationSeconds: 1000,
+      hasNextSection: false,
+    });
+    expect(reset).toBeNull();
+  });
+
+  it("keeps a real pause", () => {
+    const spans = contiguousSpans(parts);
+    expect(
+      snapshotForPersist({
+        reason: "pause",
+        currentTime: 20,
+        readyState: 4,
+        ended: false,
+        pendingActive: false,
+        pendingBookSeconds: null,
+        restoreLanded: true,
+        onSection: true,
+        sectionIndex: 1,
+        spans,
+        complete: false,
+        durationSeconds: null,
+        hasNextSection: true,
+      })
+    ).toEqual({ positionSeconds: 120, sectionIndex: null });
+  });
+
+  it("does not seek over a listener who already started", () => {
+    expect(
+      shouldApplyDetailSeek({ moved: false, playing: true, elementSeconds: 15, targetSeconds: 1992 })
+    ).toBe(false);
+    expect(
+      shouldApplyDetailSeek({ moved: true, playing: false, elementSeconds: 0, targetSeconds: 1992 })
+    ).toBe(false);
+    expect(
+      shouldApplyDetailSeek({ moved: false, playing: false, elementSeconds: 1992, targetSeconds: 1992 })
+    ).toBe(false);
+    expect(
+      shouldApplyDetailSeek({ moved: false, playing: false, elementSeconds: 0, targetSeconds: 1992 })
+    ).toBe(true);
+  });
+
+  it("ticks only while playing and visible", () => {
+    expect(resumeTickAllowed({ playing: true, hidden: false })).toBe(true);
+    expect(resumeTickAllowed({ playing: false, hidden: false })).toBe(false);
+    expect(resumeTickAllowed({ playing: true, hidden: true })).toBe(false);
+  });
+
+  it("treats an unchanged playhead as already saved", () => {
+    expect(samePlayhead({ positionSeconds: 40, sectionIndex: null }, { positionSeconds: 40.2, sectionIndex: null })).toBe(true);
+    expect(samePlayhead({ positionSeconds: 40, sectionIndex: null }, { positionSeconds: 48, sectionIndex: null })).toBe(false);
+    expect(samePlayhead(null, { positionSeconds: 40, sectionIndex: null })).toBe(false);
+  });
+
+  it("keeps a part past a hole on its own clock", () => {
+    const spans = contiguousSpans([
+      { index: 0, status: "ready", durationSeconds: 100 },
+      { index: 1, status: "pending" },
+      { index: 2, status: "ready", durationSeconds: 80 },
+    ]);
+    expect(sectionOnBookClock(spans, 0)).toBe(true);
+    expect(sectionOnBookClock(spans, 2)).toBe(false);
+    const off = bookTimeFromElement({
+      mode: "section",
+      elementSeconds: 20,
+      sectionIndex: 2,
+      spans,
+    });
+    expect(off).toEqual({ seconds: 20, absolute: false });
   });
 
   it("keeps a legacy part mark when its duration is still unknown", () => {
