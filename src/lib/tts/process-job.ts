@@ -792,7 +792,11 @@ async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boole
     `SELECT status, deleted_at, processing_lease_token FROM jobs WHERE id = ?`,
     [jobId]
   );
-  if (!row || row.deleted_at != null || row.status === "cancelled") return true;
+  if (!row || row.deleted_at != null || row.status === "cancelled") {
+    const { haltBook } = await import("@/lib/remote/layer");
+    haltBook(jobId, row?.deleted_at != null ? "deleted" : "cancelled");
+    return true;
+  }
   return row.processing_lease_token !== lease;
 }
 

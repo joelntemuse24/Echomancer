@@ -351,15 +351,27 @@ export async function openFishTtsStream(
   const apiKey = requireFishKey();
   const model = nativeModel(input.model);
 
-  const res = await fetch(`${FISH_API_BASE}/v1/tts`, {
-    method: "POST",
-    headers: {
-      ...authHeaders(apiKey),
-      "Content-Type": "application/json",
-      model,
+  const { remoteFetch, remoteSectionKey } = await import("@/lib/remote/http");
+  const res = await remoteFetch({
+    provider: "fish",
+    path: input.jobId ? "book" : "preview",
+    jobId: input.jobId,
+    section: input.jobId
+      ? remoteSectionKey(input.sectionIndex, input.text)
+      : `preview:${input.catalogVoiceId}:${input.text.length}`,
+    timeoutMs: 120_000,
+    estCostUsd: 0.02,
+    url: `${FISH_API_BASE}/v1/tts`,
+    init: {
+      method: "POST",
+      headers: {
+        ...authHeaders(apiKey),
+        "Content-Type": "application/json",
+        model,
+      },
+      body: JSON.stringify(buildTtsBody(input, latency)),
+      signal: input.signal,
     },
-    body: JSON.stringify(buildTtsBody(input, latency)),
-    signal: input.signal,
   });
 
   if (!res.ok) {

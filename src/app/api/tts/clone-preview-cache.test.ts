@@ -130,8 +130,8 @@ describe("GET /api/tts/clones/[id]/preview", () => {
 
     const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
     const res = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
-    expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("PREVIEW_NOT_STORED");
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -142,8 +142,8 @@ describe("GET /api/tts/clones/[id]/preview", () => {
       await request(catalogIdForClone(clone.id), USER_A),
       routeParams({ id: catalogIdForClone(clone.id) })
     );
-    expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("PREVIEW_NOT_STORED");
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
   });
 
   it("reports another session's clone as 404 and never reads its clip", async () => {
@@ -180,8 +180,8 @@ describe("POST /api/tts/clones/[id]/preview", () => {
     const fetchMock = providerMock(13);
     vi.stubGlobal("fetch", fetchMock);
 
-    const { POST } = await import("@/app/api/tts/clones/[id]/preview/route");
-    const first = await POST(await render(clone.id, USER_A), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const first = await bakeClonePreview(clone.id);
     expect(first.status).toBe(200);
     expect(first.headers.get("x-echomancer-preview")).toBe("generated");
     const firstBytes = Buffer.from(await first.arrayBuffer());
@@ -229,8 +229,8 @@ describe("POST /api/tts/clones/[id]/preview", () => {
     const fetchMock = vi.fn(async () => new Response("reference not found", { status: 422 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { POST } = await import("@/app/api/tts/clones/[id]/preview/route");
-    const res = await POST(await render(clone.id, USER_A), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
 
     expect(res.status).toBe(502);
     const body = await res.json();
@@ -271,8 +271,8 @@ describe("POST /api/tts/clones/[id]/preview", () => {
       vi.fn(async () => new Response("upstream unavailable", { status: 503 }))
     );
 
-    const { POST } = await import("@/app/api/tts/clones/[id]/preview/route");
-    const res = await POST(await render(clone.id, USER_A), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
 
     expect(res.status).toBe(503);
     const body = await res.json();
@@ -386,7 +386,7 @@ describe("preview key derivation", () => {
       }),
       routeParams({ id: clone.id })
     );
-    expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("PREVIEW_NOT_STORED");
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
   });
 });

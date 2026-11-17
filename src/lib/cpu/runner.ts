@@ -275,15 +275,38 @@ async function postCpuPlacement(
   const acceptMs = cpuDispatchAcceptMs();
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ taskId, ownerToken: owner }),
-      signal: AbortSignal.timeout(acceptMs),
-    });
+    const { remoteFetch, remoteCallStillLive } = await import("@/lib/remote/http");
+    try {
+      response = await remoteFetch({
+        provider: "modal-cpu",
+        section: taskId,
+        timeoutMs: acceptMs,
+        estCostUsd: 0.02,
+        url,
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ taskId, ownerToken: owner }),
+          signal: AbortSignal.timeout(acceptMs),
+        },
+      });
+    } catch (err) {
+      if (remoteCallStillLive(err) && !(err instanceof Error && err.name === "TimeoutError") && !(err instanceof Error && err.name === "AbortError")) {
+        logCpu({
+          event: "cpu_dispatch",
+          id: taskId,
+          kind,
+          result: "accepted",
+          error: "in_flight",
+          acceptMs,
+        });
+        return "accepted";
+      }
+      throw err;
+    }
   } catch (err) {
     if (isUnreachable(err)) {
       await requeueCpuTask(taskId, owner);

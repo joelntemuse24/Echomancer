@@ -41,6 +41,8 @@ export interface RouteTakehomeWorkerInput {
    * clone. The voice list calls this; the handler checks the clone itself.
    */
   prewarmClonePool?: (userId: string) => Promise<boolean> | boolean;
+  drainBook?: (jobId: string) => Promise<void> | void;
+  bakeClonePreview?: (catalogVoiceId: string) => Promise<void> | void;
   /**
    * One no-task POST per pool. The caller already holds the shared lease.
    * Busy is reported as ready. This does not insert a task.
@@ -211,6 +213,46 @@ export async function routeTakehomeWorkerRequest(
     return json(202, { ok: true, started: Boolean(started) });
   }
 
+  if (method === "POST" && path === "/drain") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const jobId = parseJobId(input.bodyText);
+    if (!jobId) return json(400, { ok: false, error: "jobId is required" });
+    await input.drainBook?.(jobId);
+    return json(202, { ok: true, jobId });
+  }
+
+  if (method === "POST" && path === "/clone-preview") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    let catalogVoiceId = "";
+    try {
+      const parsed = JSON.parse(input.bodyText || "{}") as { catalogVoiceId?: unknown };
+      if (typeof parsed.catalogVoiceId === "string") catalogVoiceId = parsed.catalogVoiceId.trim();
+    } catch {
+      catalogVoiceId = "";
+    }
+    if (!catalogVoiceId) return json(400, { ok: false, error: "catalogVoiceId is required" });
+    void Promise.resolve(input.bakeClonePreview?.(catalogVoiceId)).catch((err) => {
+      console.warn("[takehome-worker] clone preview bake failed", err);
+    });
+    return json(202, { ok: true, catalogVoiceId });
+  }
+
   if (method === "POST" && path === "/capacity-warm") {
     if (
       !authorizeWorkerRequest({
@@ -228,7 +270,9 @@ export async function routeTakehomeWorkerRequest(
     try {
       const parsed = JSON.parse(input.bodyText || "{}") as { pools?: unknown };
       if (Array.isArray(parsed.pools)) {
-        pools = parsed.pools.filter((pool) => pool === "cpu" || pool === "kokoro");
+        pools = parsed.pools.filter(
+          (pool) => pool === "cpu" || pool === "kokoro" || pool === "s2"
+        );
       }
     } catch {
       pools = [];

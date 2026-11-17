@@ -616,6 +616,9 @@ export default function VoiceSelectionPage() {
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
+    if (id.startsWith("clone:")) {
+      requestCapacityWarm({ voiceId: id, reason: "voice" });
+    }
     if (!isPersistableStandardVoiceId(id)) return;
     narratorTouchedRef.current = true;
     const pick = {
@@ -716,40 +719,14 @@ export default function VoiceSelectionPage() {
       const storedUrl = await readStored();
       if (storedUrl) return storedUrl;
 
-      // Nothing saved yet: render this clone's sample exactly once.
-      const rendered = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "first-play" }),
-      });
-      if (!rendered.ok) {
-        const data = await rendered.json().catch(() => ({}));
-        if (rendered.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        // Cold: the server has started a restore. Wait for it and read storage
-        // instead of retrying synthesis — the retry is what used to sit through
-        // a second cold start.
-        if (rendered.status === 503 && data.code === "PREVIEW_ENGINE_COLD") {
-          for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
-            await new Promise((resolve) => setTimeout(resolve, waitMs));
-            const ready = await readStored();
-            if (ready) return ready;
-          }
-        }
-        throw new Error(
-          userFriendlyError(
-            data.error ||
-              "That voice's sample couldn't be made. Nothing else was substituted."
-          )
-        );
+      // The request path does not render. The worker bakes the clip.
+      toast.message("Preparing preview");
+      for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        const ready = await readStored();
+        if (ready) return ready;
       }
-      const buf = await rendered.arrayBuffer();
-      if (buf.byteLength < 256) {
-        throw new Error("That sample was empty. Try again.");
-      }
-      const mime = sniffPreviewMime(buf, rendered.headers.get("content-type"));
-      const url = URL.createObjectURL(new Blob([buf], { type: mime }));
-      previewCacheRef.current.set(voice.id, { url, mime });
-      return url;
+      return null;
     } catch (e: unknown) {
       toast.error(
         e instanceof Error ? e.message : "Couldn't play the sample. Try again."

@@ -422,6 +422,24 @@ CREATE TABLE IF NOT EXISTS capacity_warms (
   expires_at INTEGER NOT NULL
 )`;
 
+const CREATE_REMOTE_CALLS_SQL = `
+CREATE TABLE IF NOT EXISTS remote_calls (
+  id TEXT PRIMARY KEY,
+  flight_key TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  path TEXT NOT NULL,
+  job_id TEXT,
+  section_key TEXT,
+  call_id TEXT,
+  status TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  outcome TEXT NOT NULL,
+  est_cost_usd REAL,
+  error TEXT
+)`;
+
 const CREATE_CPU_TASKS_SQL = `
 CREATE TABLE IF NOT EXISTS cpu_tasks (
   id TEXT PRIMARY KEY,
@@ -461,7 +479,8 @@ SELECT
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
-    'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases'
+    'provider_throttle', 'cpu_tasks', 'capacity_warms', 'modal_gpu_leases',
+    'remote_calls'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -612,7 +631,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 17 &&
+      Number(row?.tables_ok || 0) >= 18 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -654,6 +673,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_PROVIDER_THROTTLE_SQL },
         { sql: CREATE_CPU_TASKS_SQL },
         { sql: CREATE_CAPACITY_WARMS_SQL },
+        { sql: CREATE_REMOTE_CALLS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -673,6 +693,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_PROVIDER_THROTTLE_SQL);
       await execute(CREATE_CPU_TASKS_SQL);
       await execute(CREATE_CAPACITY_WARMS_SQL);
+      await execute(CREATE_REMOTE_CALLS_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

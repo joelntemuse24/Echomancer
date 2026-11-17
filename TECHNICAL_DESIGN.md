@@ -2865,6 +2865,26 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 ---
 
+## Remote calls
+
+S2, Fish, Kokoro (Drew, Walter, George), Modal CPU, clone previews, and the
+S2 prewarm all enter through `src/lib/remote/layer.ts`. One flight per
+provider, book, and section: a second start joins the running call or is
+refused while that call is still live. A timeout leaves the flight
+`still_live`. Cancel, delete, the worker restart, and the player Stop
+button all call `haltBook`, and a halted book cannot start another call.
+`FunctionCall.cancel` that returns NotFound, or any status that is not
+terminal, is still live. The drain then brakes `max_containers` to 0 and
+restores the previous max with `min_containers` still 0. It does not stop
+a container first, and it does not stop the Modal app.
+
+Budgets refuse new calls. They do not switch the narrator. Under Vitest
+they are off unless `REMOTE_ENFORCE_BUDGETS=1`.
+
+The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal
+CPU apps. Each has `min_containers: 0`. The worker loads open `remote_calls`
+rows on startup and once an hour.
+
 ## Related reading order (first week in the codebase)
 
 1. `src/proxy.ts` → `lib/auth/session.ts` → `lib/auth/guard.ts`

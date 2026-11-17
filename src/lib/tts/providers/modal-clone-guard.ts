@@ -483,6 +483,31 @@ export function modalCloneFirstLightWaitMs(
  */
 export const MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS = 360_000;
 
+/**
+ * Book-path HTTP wait for a first-light call whose container has not started.
+ *
+ * The warm page and the cover RPC keep the long clocks. A customer call that
+ * is still compiling must not sit until the 6 minute placement budget and
+ * then start another GPU. 180s is the top of the 120–180s book window.
+ */
+export const MODAL_CLONE_BOOK_CALL_TIMEOUT_DEFAULT_MS = 180_000;
+export const MODAL_CLONE_BOOK_CALL_TIMEOUT_MIN_MS = 120_000;
+export const MODAL_CLONE_BOOK_CALL_TIMEOUT_MAX_MS = 180_000;
+
+export function modalCloneBookCallTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = Number((env.MODAL_S2_BOOK_CALL_TIMEOUT_MS ?? "").trim());
+  const chosen =
+    Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : MODAL_CLONE_BOOK_CALL_TIMEOUT_DEFAULT_MS;
+  return Math.min(
+    MODAL_CLONE_BOOK_CALL_TIMEOUT_MAX_MS,
+    Math.max(MODAL_CLONE_BOOK_CALL_TIMEOUT_MIN_MS, chosen)
+  );
+}
+
 export function modalCloneProxyCeilingMs(): number {
   return MODAL_CLONE_PROXY_KILL_MS - MODAL_CLONE_PROXY_MARGIN_MS;
 }

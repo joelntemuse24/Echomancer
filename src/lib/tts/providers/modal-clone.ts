@@ -66,6 +66,7 @@ import { mapPool } from "@/lib/async-pool";
 import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
+  modalCloneBookCallTimeoutMs,
   modalCloneCallTimeoutMs,
   modalCloneFirstLightHttpWaitMs,
   modalClonePlacementBudgetMs,
@@ -104,6 +105,12 @@ import {
   holdModalCloneLaneSlot,
   ProviderSlotBusyError,
 } from "@/lib/tts/provider-slots";
+import {
+  admitRemoteCall,
+  isBookHalted,
+  noteDrainRequested,
+  resetRemoteLayerForTests,
+} from "@/lib/remote/layer";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -252,6 +259,7 @@ export function resetModalCloneRuntimeForTests(): void {
   bookAnsweredAt.clear();
   inflightRenders.clear();
   sealedRenderUntil.clear();
+  resetRemoteLayerForTests();
   placementProbe = null;
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
@@ -461,9 +469,19 @@ export async function loadCloneReference(
       "Clone reference must be between 1 byte and 15 MiB"
     );
   }
+  let transcript = (clone.reference_transcript ?? "").trim();
+  if (!transcript) {
+    const { ensureCloneReferenceTranscript } = await import(
+      "@/lib/tts/clone-reference-transcript"
+    );
+    transcript = await ensureCloneReferenceTranscript({
+      cloneId: catalogVoiceId.slice("clone:".length),
+      audio,
+    });
+  }
   return {
     audio,
-    transcript: clone.reference_transcript ?? "",
+    transcript,
     userId: clone.user_id || "anonymous",
     catalogVoiceId,
   };
@@ -557,11 +575,44 @@ export async function renderModalCloneBatch(
     warmBatch?: boolean;
   }
 ): Promise<CloneBatchOutcome> {
+  const sections = items.map((item) => String(item.key));
+  const admitted = jobId
+    ? admitRemoteCall({
+        provider: "s2-clone",
+        path: opts?.warmBatch ? "warm" : "book",
+        jobId,
+        sections,
+        estMs: opts?.workMs,
+        // H100 list price is about $0.001097/s. The estimate is for the
+        // budget, not an invoice.
+        estCostUsd: opts?.workMs ? (opts.workMs / 1000) * 0.001097 : 0.05,
+      })
+    : null;
+  if (admitted?.kind === "join") return admitted.promise as Promise<CloneBatchOutcome>;
+  if (admitted?.kind === "blocked") {
+    if (admitted.reason === "cancelled" || isBookHalted(jobId)) {
+      throw new ModalCloneColdError(
+        "This book was stopped.",
+        0,
+        "placement",
+        "restore",
+        true,
+        true
+      );
+    }
+    throw new ModalCloneColdError(
+      "Modal clone is still waiting on the original placement",
+      COLD_BACKOFF_MS,
+      "placement",
+      "restore",
+      true,
+      true
+    );
+  }
   if (jobId) {
-    const existing = inflightRenders.get(jobId);
-    if (existing) return existing;
     const until = sealedRenderUntil.get(jobId) ?? 0;
     if (Date.now() < until) {
+      admitted?.finish("still_live", "sealed");
       throw new ModalCloneColdError(
         "Modal clone is still waiting on the original placement",
         until - Date.now(),
@@ -573,9 +624,21 @@ export async function renderModalCloneBatch(
     }
   }
   const run = renderModalCloneBatchBody(items, reference, signal, jobId, opts);
+  if (admitted) admitted.flight.promise = run;
   if (jobId) inflightRenders.set(jobId, run);
   try {
-    return await run;
+    const result = await run;
+    admitted?.finish("success");
+    return result;
+  } catch (err) {
+    const stopped = Boolean(jobId && isBookHalted(jobId));
+    const aborted = err instanceof ModalCloneColdError && err.clientAborted;
+    if (aborted && jobId) noteDrainRequested(jobId);
+    admitted?.finish(
+      stopped ? "cancelled" : aborted ? "still_live" : "failure",
+      err instanceof Error ? err.message : String(err)
+    );
+    throw err;
   } finally {
     if (jobId && inflightRenders.get(jobId) === run) inflightRenders.delete(jobId);
   }
@@ -1680,7 +1743,9 @@ async function postModal(
   const armed = wait && wait.ms > 0 ? wait.ms : modalCloneCallTimeoutMs();
   const kind = wait?.kind ?? "steady";
   const firstLight = wait?.firstLight === true;
-  const limit = firstLight ? modalCloneFirstLightHttpWaitMs(armed) : armed;
+  const limit = firstLight
+    ? Math.min(modalCloneFirstLightHttpWaitMs(armed), modalCloneBookCallTimeoutMs())
+    : armed;
   const controller = new AbortController();
   const onExternalAbort = () => controller.abort();
   signal?.addEventListener("abort", onExternalAbort, { once: true });

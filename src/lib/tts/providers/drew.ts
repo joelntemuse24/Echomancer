@@ -21,6 +21,7 @@ import {
   drewEndpoint,
 } from "@/lib/tts/drew-voice";
 import { concatWav, splitSowellText } from "@/lib/tts/providers/sowell";
+import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
 
 async function onePiece(
   input: SynthesizeInput,
@@ -35,22 +36,30 @@ async function onePiece(
       : 1;
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "audio/wav",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        text,
-        speed,
-        voice: DREW_PROVIDER_VOICE_ID,
-        ...(input.jobId ? { jobId: input.jobId } : {}),
-        ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
-      }),
-      signal: input.signal,
-    });
+    const res = await remoteFetch({
+        provider: "kokoro",
+        jobId: input.jobId,
+        section: remoteSectionKey(input.sectionIndex, text),
+        timeoutMs: 120_000,
+        estCostUsd: 0.01,
+        url,
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "audio/wav",
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            text,
+            speed,
+            voice: DREW_PROVIDER_VOICE_ID,
+            ...(input.jobId ? { jobId: input.jobId } : {}),
+            ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
+          }),
+          signal: input.signal,
+        },
+      });
     if (res.status === 429 && attempt < 3) {
       await new Promise((resolve) => setTimeout(resolve, 40));
       continue;

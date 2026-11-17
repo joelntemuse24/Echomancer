@@ -27,8 +27,10 @@ export const WARM_HOLD_MS = 300_000;
  * container by much: a warm is useful when generation starts within ~25 s.
  */
 export const KOKORO_WARM_HOLD_MS = 25_000;
+/** One short S2 prewarm. It does not stack, and min_containers stays 0. */
+export const S2_WARM_HOLD_MS = 90_000;
 
-export type WarmPool = "cpu" | "kokoro";
+export type WarmPool = "cpu" | "kokoro" | "s2";
 export type WarmReason = "create" | "voice";
 export type WarmPostResult = "ready" | "unreachable" | "unconfigured";
 
@@ -61,7 +63,9 @@ export function kokoroWarmLimit(input: {
 
 /** How long a claimed warm suppresses another one for this pool. */
 export function warmHoldMs(pool: WarmPool): number {
-  return pool === "kokoro" ? KOKORO_WARM_HOLD_MS : WARM_HOLD_MS;
+  if (pool === "kokoro") return KOKORO_WARM_HOLD_MS;
+  if (pool === "s2") return S2_WARM_HOLD_MS;
+  return WARM_HOLD_MS;
 }
 
 export function poolsForWarm(input: {
@@ -70,6 +74,7 @@ export function poolsForWarm(input: {
 }): WarmPool[] {
   const voice = (input.voiceId ?? "").trim();
   const kokoro = isKokoroCpuVoiceId(voice);
+  if (input.reason === "voice" && voice.startsWith("clone:")) return ["s2"];
   if (input.reason === "voice") return kokoro ? ["kokoro"] : [];
   return kokoro ? ["cpu", "kokoro"] : ["cpu"];
 }
@@ -177,6 +182,10 @@ export async function postWarm(
   env: NodeJS.ProcessEnv,
   fetchImpl: typeof fetch
 ): Promise<WarmPostResult> {
+  if (pool === "s2") {
+    const { prewarmS2Clone } = await import("@/lib/remote/prewarm");
+    return prewarmS2Clone();
+  }
   const target = warmTarget(pool, env);
   if (!target) return "unconfigured";
   try {

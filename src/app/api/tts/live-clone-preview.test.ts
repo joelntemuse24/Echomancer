@@ -272,8 +272,8 @@ describe("GET /api/tts/clones/[id]/preview", () => {
       await previewRequest(clone.id, USER_A),
       routeParams({ id: clone.id })
     );
-    expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("PREVIEW_NOT_STORED");
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -326,8 +326,8 @@ describe("GET /api/tts/clones/[id]/preview", () => {
       routeParams({ id: clone.id })
     );
     // A different reference is a different voice, so the old file is not it.
-    expect(res.status).toBe(404);
-    expect((await res.json()).code).toBe("PREVIEW_NOT_STORED");
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

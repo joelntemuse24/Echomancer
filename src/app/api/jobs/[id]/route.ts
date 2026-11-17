@@ -183,6 +183,8 @@ export async function DELETE(
     // worker holds the lease and would otherwise publish (`ready`) a row the
     // user just deleted, or upload a full file long after the delete.
     forgetModalCloneJob(id);
+    const { stopBookRemotely } = await import("@/lib/remote/stop");
+    await stopBookRemotely(id, "deleted");
     await execute(
       `UPDATE jobs SET status = 'cancelled', error_message = 'Deleted by user',
        processing_lease_token = NULL, lease_expires_at = NULL,

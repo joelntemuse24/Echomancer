@@ -104,6 +104,24 @@ async function main(): Promise<void> {
   }
   assertTakehomeWorkerSecrets();
   await ensureTtsJobColumns();
+  const { reconcileRemoteCalls } = await import("@/lib/remote/reconcile");
+  await reconcileRemoteCalls().catch((err) => {
+    console.warn(
+      "[takehome-worker] remote reconcile failed",
+      err instanceof Error ? err.message : err
+    );
+  });
+  const remoteTimer = setInterval(() => {
+    void reconcileRemoteCalls().catch((err) => {
+      console.warn(
+        "[takehome-worker] remote reconcile failed",
+        err instanceof Error ? err.message : err
+      );
+    });
+  }, 60 * 60 * 1000);
+  if (typeof remoteTimer === "object" && remoteTimer && "unref" in remoteTimer) {
+    remoteTimer.unref();
+  }
   setExtractListenPrepHandler((uploadId) => {
     void prepareUploadForListening(uploadId).catch((err) => {
       console.warn(
@@ -330,12 +348,25 @@ async function handle(
         );
         return prewarmClonePoolForUser(userId, "voice list");
       },
+      drainBook: async (jobId) => {
+        const { haltBook, noteDrainRequested, planDrain } = await import("@/lib/remote/layer");
+        haltBook(jobId, "cancelled");
+        noteDrainRequested(jobId);
+        console.info("[takehome-worker] drain", jobId, planDrain(1).map((step) => step.step).join(" → "));
+      },
+      bakeClonePreview: async (catalogVoiceId) => {
+        const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+        await bakeClonePreview(catalogVoiceId);
+      },
       warmCapacity: async (pools) => {
         const { postWarm } = await import("@/lib/capacity/warm");
         const results: Record<string, string> = {};
         for (const pool of pools) {
-          if (pool !== "cpu" && pool !== "kokoro") continue;
-          results[pool] = await postWarm(pool, process.env, fetch);
+          if (pool !== "cpu" && pool !== "kokoro" && pool !== "s2") continue;
+          results[pool] =
+            pool === "s2"
+              ? await (await import("@/lib/remote/prewarm")).prewarmS2Clone()
+              : await postWarm(pool, process.env, fetch);
         }
         return results;
       },

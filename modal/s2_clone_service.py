@@ -539,7 +539,9 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
     cpu=_CPU,
     memory=32768,
     # The token lives in its own secret so rotating it never touches the other
-    # Echomancer credentials.
+    # Echomancer credentials. echomancer-secrets is R2. echomancer-s2-api is
+    # the synthesize token. The deleted id st-oSaUG4rgleYRkfxzTGggqc is not
+    # one of these names and must not be reattached.
     secrets=[
         modal.Secret.from_name("echomancer-secrets"),
         modal.Secret.from_name("echomancer-s2-api"),
@@ -559,6 +561,11 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
         "S2B_GPU": GPU,
         "S2B_BATCH": str(BATCH),
         "S2B_MAX_SEQ_LEN": str(MAX_SEQ_LEN),
+        # The class env replaces the process environment. Without these, a
+        # production container re-imports this module, resolve_app_name sees
+        # no opt-in, and the log says echomancer-s2-clone-staging.
+        "S2C_APP_NAME": APP_NAME,
+        "S2C_ALLOW_PRODUCTION": "1" if APP_NAME == "echomancer-s2-clone" else "0",
         **_BUILD_ENV,
     },
 )
@@ -831,6 +838,7 @@ class S2CloneWorker:
             "gpu_jobs": self.gpu.jobs_done,
             "calls": self.calls,
             "refs_cached": len(self.ref_cache),
+            "graphs": getattr(self, "graph_check", None),
             # The narration recipe this container would render with, so a
             # book's audio can be matched to the numbers behind it without
             # reading the container's image.

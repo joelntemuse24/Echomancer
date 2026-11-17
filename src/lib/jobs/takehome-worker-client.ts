@@ -171,6 +171,56 @@ export async function requestClonePoolPrewarm(userId: string): Promise<boolean> 
   }
 }
 
+/** Ask the worker to drain one book's remote calls. A missing worker is not a failure. */
+export async function requestBookDrain(jobId: string): Promise<boolean> {
+  const url = takehomeWorkerUrl();
+  const secret = takehomeWorkerSecret();
+  if (!url || !secret || !jobId.trim()) return false;
+  try {
+    const res = await fetch(`${url}/drain`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ jobId }),
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch (err) {
+    console.warn(
+      "[drain] worker request failed:",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
+/** Ask the worker to bake one clone preview. The request path does not render it. */
+export async function requestClonePreviewBake(catalogVoiceId: string): Promise<boolean> {
+  const url = takehomeWorkerUrl();
+  const secret = takehomeWorkerSecret();
+  if (!url || !secret || !catalogVoiceId.trim()) return false;
+  try {
+    const res = await fetch(`${url}/clone-preview`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ catalogVoiceId }),
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch (err) {
+    console.warn(
+      "[clone-preview] worker request failed:",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
 class WorkerHttpError extends Error {
   constructor(
     message: string,

@@ -53,6 +53,7 @@ import base64
 import os
 import pathlib
 import statistics
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -335,7 +336,7 @@ def cover_variants(
     restore_s: float,
     compile_s: float,
     rpc_timeout: int,
-) -> None:
+) -> bool:
     """Place containers until `streak` calls in a row restore by wall clock.
 
     Between rounds the previous containers are given `scaledown` seconds to
@@ -366,10 +367,15 @@ def cover_variants(
         for i, status in enumerate(results):
             wall = float(status.get("wall_s") or 0)
             kind = _classify_row(status, restore_s, compile_s)
+            graphs = status.get("graphs") or ""
             print(
                 f"  {i}: wall={wall:.1f}s kind={kind} boot={status.get('boot')} "
+                f"graphs={graphs or 'missing'} "
                 f"id={status.get('container_id')} {status.get('error') or ''}"
             )
+            if kind == "restore" and not str(graphs).startswith(("ok(", "recaptured(")):
+                print(f"    graphs={graphs} is not a captured graph; streak does not count")
+                kind = "failed"
             if kind == "compile":
                 compiles += 1
                 print(
@@ -386,7 +392,7 @@ def cover_variants(
                     f"(<= {restore_s:.0f}s). Variant coverage is in place.\n"
                     "Books still must not be the thing that compiles."
                 )
-                return
+                return True
     print(
         f"\nrounds finished: {compiles} compile(s) completed over RPC, "
         f"restore streak {streak_n}/{target}."
@@ -401,6 +407,7 @@ def cover_variants(
             "No compile finished and the restore streak was not met. "
             "Re-run cover. Do not use a customer book to build the snapshot."
         )
+    return False
 
 
 @app.local_entrypoint()
@@ -422,16 +429,22 @@ def cover(
     print(f"covering {APP_NAME}.{CLASS_NAME} …")
     _require_empty_input_queue()
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
-    cover_variants(
-        worker,
-        containers=containers,
-        rounds=rounds,
-        streak=streak,
-        scaledown=scaledown,
-        restore_s=restore_s,
-        compile_s=compile_s,
-        rpc_timeout=rpc_timeout,
-    )
+    met = False
+    try:
+        met = cover_variants(
+            worker,
+            containers=containers,
+            rounds=rounds,
+            streak=streak,
+            scaledown=scaledown,
+            restore_s=restore_s,
+            compile_s=compile_s,
+            rpc_timeout=rpc_timeout,
+        )
+    finally:
+        print("min_containers stays 0. The wrapper restores the autoscaler.")
+    if not met:
+        sys.exit(1)
 
 
 @app.local_entrypoint()
@@ -475,3 +488,9 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
         "  Then time the FIRST cold HTTP call with staging-smoke.mjs — that wall\n"
         "  clock is the real restore duration."
     )
+
+
+@app.local_entrypoint()
+def prewarm() -> None:
+    """One short restore. Not the post-deploy cover, and not a compile wait."""
+    cover(containers=1, rounds=1, streak=1, scaledown=15, rpc_timeout=90)

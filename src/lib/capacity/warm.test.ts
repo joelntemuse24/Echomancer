@@ -72,6 +72,7 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     expect(poolsForWarm({ reason: "voice", voiceId: "drew" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "sowell" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "ava" })).toEqual([]);
+    expect(poolsForWarm({ reason: "voice", voiceId: "clone:abc" })).toEqual(["s2"]);
   });
 
   it("points the Kokoro pool at Drew's endpoint first, then Walter's", () => {
