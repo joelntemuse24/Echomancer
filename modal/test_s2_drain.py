@@ -184,6 +184,62 @@ def test_cover_script_restores_with_the_real_flag():
     assert "resolve_modal_python" in text
     assert "python3 scripts" not in text
     assert "python3 -m modal" not in text
+    assert "--clamp-restore" in text
+    assert "S2_ALLOW_PROD_CAP_ABOVE_1" in text
+
+
+def test_clamp_restore_cli_caps_production_without_calling_modal(monkeypatch):
+    """--clamp-restore exits before Modal. Production cannot restore 20."""
+    monkeypatch.delenv("S2_ALLOW_PROD_CAP_ABOVE_1", raising=False)
+    base = {k: v for k, v in os.environ.items() if k != "S2_ALLOW_PROD_CAP_ABOVE_1"}
+    locked = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=base,
+    )
+    assert locked.returncode == 0
+    assert locked.stdout.strip() == "1"
+    staging = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone-staging",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=base,
+    )
+    assert staging.returncode == 0
+    assert staging.stdout.strip() == "20"
+    opened = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**base, "S2_ALLOW_PROD_CAP_ABOVE_1": "1"},
+    )
+    assert opened.returncode == 0
+    assert opened.stdout.strip() == "20"
 
 
 def test_modal_python_uses_MODAL_PYTHON_or_a_detected_interpreter(tmp_path):

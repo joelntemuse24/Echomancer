@@ -96,11 +96,7 @@ def test_print_max_on_modal_16_uses_update_autoscaler_with_no_arguments(capsys):
     assert "guess" not in captured.err
 
 
-def test_print_max_logs_the_config_fallback_and_does_not_guess(monkeypatch, capsys):
-    mod = load_script()
-    monkeypatch.setenv("MODAL_S2_MAX_GPUS", "20")
-    monkeypatch.delenv("S2C_RESTORE_MAX", raising=False)
-
+def _block_modal_import(monkeypatch):
     import builtins
 
     real_import = builtins.__import__
@@ -111,7 +107,43 @@ def test_print_max_logs_the_config_fallback_and_does_not_guess(monkeypatch, caps
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", boom)
+
+
+def test_print_max_unread_production_prints_one_not_the_lease_count(monkeypatch, capsys):
+    """A failed live read must not restore MODAL_S2_MAX_GPUS on production."""
+    mod = load_script()
+    monkeypatch.setenv("MODAL_S2_MAX_GPUS", "20")
+    monkeypatch.setenv("S2C_RESTORE_MAX", "16")
+    monkeypatch.delenv("S2_ALLOW_PROD_CAP_ABOVE_1", raising=False)
+    _block_modal_import(monkeypatch)
+
     code = mod.emit_max(mod.parse_args(["--print-max", "--app", "echomancer-s2-clone"]))
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "1"
+    assert "production max_containers stays 1" in captured.err
+    assert "from config" not in captured.err
+    assert "20" not in captured.out
+    assert "16" not in captured.out
+
+    monkeypatch.delenv("MODAL_S2_MAX_GPUS", raising=False)
+    monkeypatch.delenv("S2C_RESTORE_MAX", raising=False)
+    code = mod.emit_max(mod.parse_args(["--print-max", "--app", "echomancer-s2-clone"]))
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "1"
+    assert "guess" not in captured.err
+
+
+def test_print_max_unread_staging_keeps_the_config_fallback(monkeypatch, capsys):
+    mod = load_script()
+    monkeypatch.setenv("MODAL_S2_MAX_GPUS", "20")
+    monkeypatch.delenv("S2C_RESTORE_MAX", raising=False)
+    _block_modal_import(monkeypatch)
+
+    code = mod.emit_max(
+        mod.parse_args(["--print-max", "--app", "echomancer-s2-clone-staging"])
+    )
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out.strip() == "20"
@@ -119,11 +151,46 @@ def test_print_max_logs_the_config_fallback_and_does_not_guess(monkeypatch, caps
     assert "from config" in captured.err
 
     monkeypatch.delenv("MODAL_S2_MAX_GPUS", raising=False)
-    code = mod.emit_max(mod.parse_args(["--print-max", "--app", "echomancer-s2-clone"]))
+    code = mod.emit_max(
+        mod.parse_args(["--print-max", "--app", "echomancer-s2-clone-staging"])
+    )
     captured = capsys.readouterr()
     assert code == 2
     assert "guess" in captured.err
     assert captured.out.strip() == ""
+
+
+def test_print_max_unread_production_override_uses_the_recorded_count(monkeypatch, capsys):
+    mod = load_script()
+    monkeypatch.setenv("MODAL_S2_MAX_GPUS", "20")
+    monkeypatch.delenv("S2C_RESTORE_MAX", raising=False)
+    monkeypatch.setenv("S2_ALLOW_PROD_CAP_ABOVE_1", "1")
+    _block_modal_import(monkeypatch)
+
+    code = mod.emit_max(mod.parse_args(["--print-max", "--app", "echomancer-s2-clone"]))
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "20"
+    assert "from config" in captured.err
+
+    monkeypatch.setenv("S2_ALLOW_PROD_CAP_ABOVE_1", "yes")
+    code = mod.emit_max(mod.parse_args(["--print-max", "--app", "echomancer-s2-clone"]))
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "1"
+
+
+def test_clamp_restore_locks_production_at_one(monkeypatch):
+    mod = load_script()
+    monkeypatch.delenv("S2_ALLOW_PROD_CAP_ABOVE_1", raising=False)
+    assert mod.clamp_production_restore("echomancer-s2-clone", 20) == 1
+    assert mod.clamp_production_restore("echomancer-s2-clone", 1) == 1
+    assert mod.clamp_production_restore("echomancer-s2-clone", 0) == 0
+    assert mod.clamp_production_restore("echomancer-s2-clone-staging", 20) == 20
+    monkeypatch.setenv("S2_ALLOW_PROD_CAP_ABOVE_1", "1")
+    assert mod.clamp_production_restore("echomancer-s2-clone", 20) == 20
+    monkeypatch.setenv("S2_ALLOW_PROD_CAP_ABOVE_1", "true")
+    assert mod.clamp_production_restore("echomancer-s2-clone", 20) == 1
 
 
 def test_missing_max_containers_still_required_without_brake():

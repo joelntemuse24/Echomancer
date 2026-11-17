@@ -15,12 +15,11 @@ enter or compile: scaledown only applies once the container has no input.
     python3 scripts/s2/set-live-autoscaler.py --max-containers 1 --scaledown-window 15
 
 `--max-containers` on production is 1. The apply path refuses to run
-without that flag (`--brake` sets 0). `--print-max` falls back to
-`S2C_RESTORE_MAX` or `MODAL_S2_MAX_GPUS` (the worker lease count, default
-20) only when the live autoscaler cannot be read. `post-deploy-cover.sh`
-restores whatever that print returned, so a failed live read with that
-env set would put the cap back above 1. Raising the cap needs explicit
-owner approval. min_containers stays 0.
+without that flag (`--brake` sets 0). When `--print-max` cannot read the
+live autoscaler for `echomancer-s2-clone`, it prints 1. It does not use
+`S2C_RESTORE_MAX` or `MODAL_S2_MAX_GPUS`. Staging still uses those.
+`post-deploy-cover.sh` restores at most 1 on production unless
+`S2_ALLOW_PROD_CAP_ABOVE_1=1`. min_containers stays 0.
 
 `--max-containers 0` (or `--brake`) is a temporary brake: it stops new
 placements without cancelling an in-flight enter or compile. It does not
@@ -39,6 +38,11 @@ import sys
 from typing import NamedTuple
 
 
+PRODUCTION_APP = "echomancer-s2-clone"
+OWNER_PRODUCTION_CAP = 1
+ALLOW_PROD_CAP_ABOVE_1 = "S2_ALLOW_PROD_CAP_ABOVE_1"
+
+
 class AutoscalerArgs(NamedTuple):
     app: str
     cls: str
@@ -48,6 +52,34 @@ class AutoscalerArgs(NamedTuple):
     print_max: bool = False
     from_env: bool = False
     profile: str | None = None
+    clamp_restore: int | None = None
+
+
+def is_production_app(app: str) -> bool:
+    """The production clone app only. Staging keeps its own name."""
+    return app == PRODUCTION_APP
+
+
+def allow_prod_cap_above_1(environ: dict[str, str] | None = None) -> bool:
+    """Explicit owner override. Anything other than ``1`` stays locked."""
+    env = environ if environ is not None else os.environ
+    return (env.get(ALLOW_PROD_CAP_ABOVE_1) or "").strip() == "1"
+
+
+def clamp_production_restore(
+    app: str, saved: int, environ: dict[str, str] | None = None
+) -> int:
+    """The cap ``post-deploy-cover.sh`` may write back.
+
+    Production stays at most 1. A live read of a higher number, or a
+    lease-count env var, does not raise it. Staging is unchanged.
+    ``S2_ALLOW_PROD_CAP_ABOVE_1=1`` is the only way past the lock.
+    """
+    if saved < 0:
+        return saved
+    if not is_production_app(app) or allow_prod_cap_above_1(environ):
+        return saved
+    return min(saved, OWNER_PRODUCTION_CAP)
 
 
 def config_max_source(environ: dict[str, str] | None = None) -> tuple[int | None, str]:
@@ -119,7 +151,19 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
     parser.add_argument(
         "--from-env",
         action="store_true",
-        help="With --print-max, read S2C_RESTORE_MAX or MODAL_S2_MAX_GPUS and do not call Modal.",
+        help=(
+            "With --print-max, read S2C_RESTORE_MAX or MODAL_S2_MAX_GPUS and do not call Modal. "
+            "This is an explicit config read. An unread live autoscaler on production does not use it."
+        ),
+    )
+    parser.add_argument(
+        "--clamp-restore",
+        type=int,
+        default=None,
+        help=(
+            "Print the cap post-deploy-cover.sh may restore for --app, then exit. "
+            "Production stays at most 1 unless S2_ALLOW_PROD_CAP_ABOVE_1=1. Does not call Modal."
+        ),
     )
     parser.add_argument(
         "--profile",
@@ -127,6 +171,20 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
         help="Modal profile. Unsets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET so a stale token cannot win.",
     )
     ns = parser.parse_args(argv)
+    if ns.clamp_restore is not None:
+        if ns.clamp_restore < 0 or ns.clamp_restore > 64:
+            raise SystemExit("clamp-restore must be 0..64")
+        return AutoscalerArgs(
+            app=ns.app,
+            cls=ns.cls,
+            max_containers=ns.clamp_restore,
+            scaledown_window=ns.scaledown_window,
+            brake=False,
+            print_max=False,
+            from_env=False,
+            profile=ns.profile,
+            clamp_restore=ns.clamp_restore,
+        )
     if ns.print_max:
         return AutoscalerArgs(
             app=ns.app,
@@ -137,6 +195,7 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
             print_max=True,
             from_env=bool(ns.from_env),
             profile=ns.profile,
+            clamp_restore=None,
         )
     if ns.brake:
         if ns.max_containers not in (None, 0):
@@ -156,11 +215,27 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
         print_max=False,
         from_env=bool(ns.from_env),
         profile=ns.profile,
+        clamp_restore=None,
     )
 
 
+def unread_live_max(
+    app: str, environ: dict[str, str] | None = None
+) -> tuple[int | None, str]:
+    """What ``--print-max`` prints when the live autoscaler cannot be read.
+
+    Production prints 1 and names that cap. Staging keeps the recorded
+    lease count (``S2C_RESTORE_MAX``, then ``MODAL_S2_MAX_GPUS``). The
+    production override ``S2_ALLOW_PROD_CAP_ABOVE_1=1`` uses that same
+    recorded count. A missing count is ``(None, "")`` and is not a guess of 1.
+    """
+    if is_production_app(app) and not allow_prod_cap_above_1(environ):
+        return OWNER_PRODUCTION_CAP, "production cap"
+    return config_max_source(environ)
+
+
 def emit_max(args: AutoscalerArgs) -> int:
-    """Print one integer. The source is logged on stderr. Never a silent 1."""
+    """Print one integer. The source is logged on stderr."""
     apply_profile(args.profile)
     if args.from_env:
         value, name = config_max_source()
@@ -191,7 +266,7 @@ def emit_max(args: AutoscalerArgs) -> int:
         how = str(err)
         print(f"live autoscaler unread: {err}", file=sys.stderr)
     if live is None:
-        fallback, name = config_max_source()
+        fallback, name = unread_live_max(args.app)
         if fallback is None:
             print(
                 f"live autoscaler unread ({how}); refusing to guess max_containers. "
@@ -199,10 +274,17 @@ def emit_max(args: AutoscalerArgs) -> int:
                 file=sys.stderr,
             )
             return 2
-        print(
-            f"live autoscaler unread ({how}); using {name}={fallback} from config",
-            file=sys.stderr,
-        )
+        if name == "production cap":
+            print(
+                f"live autoscaler unread ({how}); "
+                "production max_containers stays 1",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"live autoscaler unread ({how}); using {name}={fallback} from config",
+                file=sys.stderr,
+            )
         print(fallback)
         return 0
     print(f"print-max: live max_containers={live} via {how}", file=sys.stderr)
@@ -219,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         raise
     apply_profile(args.profile)
+    if args.clamp_restore is not None:
+        print(clamp_production_restore(args.app, args.clamp_restore))
+        return 0
     if args.print_max:
         return emit_max(args)
 

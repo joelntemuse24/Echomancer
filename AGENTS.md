@@ -515,9 +515,10 @@ not open a fleet. Production `echomancer-s2-clone` stays
 `min_containers` 0 and `max_containers` 1. Raising that cap needs explicit
 owner approval. `scripts/s2/set-live-autoscaler.py` refuses to apply a
 cap unless `--max-containers` is passed (`--brake` sets 0). On production
-that flag is 1. `--print-max` falls back to `MODAL_S2_MAX_GPUS` (the
-worker lease count, default 20) only when the live autoscaler cannot be
-read, and `scripts/s2/post-deploy-cover.sh` restores that printed number.
+that flag is 1. When `--print-max` cannot read the live autoscaler for
+`echomancer-s2-clone`, it prints 1 and does not use `MODAL_S2_MAX_GPUS`.
+Staging still uses that lease count. `scripts/s2/post-deploy-cover.sh`
+restores at most 1 on production unless `S2_ALLOW_PROD_CAP_ABOVE_1=1`.
 The historical runbook command that set the cap to 20 is not the current
 8c step. The script does not deploy and does not wipe snapshots, and it
 is still not an agent command.
