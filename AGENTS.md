@@ -787,9 +787,13 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   the CPU endpoint `s2_control` (`MODAL_S2_CONTROL_URL`): it spawns the H100
   `render_batch`, returns the FunctionCall id before any waiting, and Stop
   cancels that id on the same CPU host. Poll and cancel never enter the GPU
-  class. A worker that starts before that endpoint is deployed probes it,
-  misses the protocol, and posts the book to `/synthesize_batch` with the
-  long timeout. Deploy the Modal app, run `::cover`, then the worker.
+  class. A batch body uses that host whenever the URL is set. A cold start
+  retries the same idempotency key until the control deadline, then fails
+  the section. The synchronous GPU post is used when the URL is unset, or
+  when the control body names a different protocol. A `{text}` post stays
+  on `MODAL_S2_SYNTHESIZE_URL`. Deploying this app rebuilds the H100
+  snapshots, because `render_batch` is on `S2CloneWorker`. Run `::cover`
+  after that deploy, then restart the worker.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2

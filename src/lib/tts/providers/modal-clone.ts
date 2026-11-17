@@ -116,8 +116,9 @@ import {
 } from "@/lib/remote/layer";
 import {
   resetS2ControlForTests,
-  s2BookTransport,
+  s2ControlOrigin,
   s2IdempotencyKey,
+  S2ProtocolMismatch,
   submitThenPoll,
 } from "@/lib/tts/providers/modal-clone-call";
 
@@ -1863,35 +1864,49 @@ async function postModal(
     ...authHeaders(requireToken()),
     "Content-Type": "application/json",
   };
-  // The CPU control endpoint is optional. Until it answers the protocol
-  // probe, this post is the synchronous GPU render and keeps the long wait.
-  const transport = tracked ? await s2BookTransport(controller.signal) : "sync";
-  if (tracked && transport === "submit-poll") {
-    // The long timer is the single-section probe. A book polls by the stored
-    // call id instead, so that probe must not abort the submit.
+  // Batch bodies with a control URL always submit-poll. A cold CPU
+  // container retries that submit. The GPU post is the unset-URL path,
+  // or a body that names a different protocol. `{text}` stays on `url`.
+  const batchItems = Array.isArray(body.items) && body.items.length > 0;
+  const control = tracked && batchItems ? s2ControlOrigin() : null;
+  if (control) {
+    // The long timer is the GPU wait. A book polls by the stored call id,
+    // so that timer must not abort the control accept.
     clearTimer();
   }
+  const postGpu = () =>
+    fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
   let response: Response;
   try {
-    if (tracked && transport === "submit-poll") {
-      response = await submitThenPoll({
-        url: new URL(process.env.MODAL_S2_CONTROL_URL!.trim()).origin,
-        body,
-        headers,
-        signal: controller.signal,
-        // The id is stored before this wait. First light keeps polling until
-        // the proxy ceiling, which is the old "container has started" extension,
-        // without a CLI probe. A submit that never returns an id stops at 10s.
-        waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
-        onCallId: (id) => setFlightCallId(tracked.key, id),
-      });
+    if (control && tracked) {
+      try {
+        response = await submitThenPoll({
+          url: control,
+          body,
+          headers,
+          signal: controller.signal,
+          // The id is stored before this wait. First light keeps polling until
+          // the proxy ceiling. A submit that never returns an id fails the
+          // section after the control deadline; it does not post the GPU.
+          waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
+          onCallId: (id) => setFlightCallId(tracked.key, id),
+        });
+      } catch (err) {
+        if (!(err instanceof S2ProtocolMismatch)) throw err;
+        if (firstLight) armAbort(limit);
+        else {
+          const timeout = AbortSignal.timeout(limit);
+          timeout.addEventListener("abort", onExternalAbort, { once: true });
+        }
+        response = await postGpu();
+      }
     } else {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      response = await postGpu();
     }
   } catch (err) {
     signal?.throwIfAborted();

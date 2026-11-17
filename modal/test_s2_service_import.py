@@ -897,8 +897,8 @@ def test_control_endpoint_spawns_polls_and_cancels_off_the_gpu(service, monkeypa
 
         seen["get_error"] = NotFoundError("missing")
         missing = service.s2_control({"call_id": "fc-spawned"}, request)
-        assert missing.content["status"] == "not_found"
-        assert missing.content["terminal"] is True
+        assert missing.content["status"] == "unknown"
+        assert missing.content["terminal"] is False
 
         seen["get_error"] = TimeoutError("running")
         cancelled = service.s2_control({"call_id": "fc-spawned", "cancel": True}, request)
@@ -908,8 +908,8 @@ def test_control_endpoint_spawns_polls_and_cancels_off_the_gpu(service, monkeypa
 
         seen["get_error"] = NotFoundError("gone after cancel")
         confirmed = service.s2_control({"call_id": "fc-spawned", "cancel": True}, request)
-        assert confirmed.content["status"] == "not_found"
-        assert confirmed.content["terminal"] is True
+        assert confirmed.content["status"] == "unknown"
+        assert confirmed.content["terminal"] is False
     finally:
         if hasattr(service.S2CloneWorker.render_batch, "spawn"):
             del service.S2CloneWorker.render_batch.spawn

@@ -20,6 +20,7 @@ import {
 } from "./modal-clone";
 import {
   BATCH_HOST,
+  CONTROL_HOST,
   READY_HOST,
   SINGLE_HOST,
   endpointOf,
@@ -154,6 +155,30 @@ describe("requests go to the right host", () => {
     const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls).toEqual([SINGLE_HOST]);
     expect(endpointOf(urls[0]!)).toBe("single");
+  });
+
+  it("keeps a single-section post on its own host when control is configured", async () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", SINGLE_HOST);
+    vi.stubEnv("MODAL_S2_CONTROL_URL", CONTROL_HOST);
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    const fetchMock = setupFetch();
+
+    await synthesizeModalClone({
+      text: "It is a truth universally acknowledged.",
+      voiceId: "private-fish-id",
+      catalogVoiceId: "clone:saved-id",
+      model: "s2.1-pro-base",
+      jobId: "book-single",
+    });
+
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls).toEqual([SINGLE_HOST]);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    expect(body.text).toBe("It is a truth universally acknowledged.");
+    expect(body.items).toBeUndefined();
+    expect(urls.some((url) => endpointOf(url) === "control")).toBe(false);
   });
 
   it("renders a single section through a one-row batch when no single host exists", async () => {

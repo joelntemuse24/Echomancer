@@ -18,6 +18,7 @@ import {
 import { drainBookCalls, setDrainHooksForTests } from "@/lib/remote/drain-book";
 import { prewarmS2Clone, setPrewarmSpawnForTests } from "@/lib/remote/prewarm";
 import {
+  pollStoredS2Calls,
   reconcileRemoteCalls,
   setBrakeHealerForTests,
   setBrakeMaxReaderForTests,
@@ -26,6 +27,8 @@ import {
   cancelS2Call,
   setS2StatusBudgetForTests,
   setS2StatusReaderForTests,
+  S2_CONTROL_DEADLINE_MS,
+  S2ControlUnavailable,
 } from "@/lib/tts/providers/modal-clone-call";
 import {
   hydrateOpenRemoteCalls,
@@ -632,7 +635,8 @@ describe("remote book path", () => {
   it("treats a spaced init failure and a terminal miss as cancelled", () => {
     expect(interpretCancelResult({ status: "init failure" })).toBe("terminal");
     expect(interpretCancelResult({ status: "expired" })).toBe("terminal");
-    expect(interpretCancelResult({ status: "not_found" })).toBe("terminal");
+    expect(interpretCancelResult({ status: "not_found" })).toBe("still_live");
+    expect(interpretCancelResult({ status: "unknown" })).toBe("still_live");
     expect(interpretCancelResult({ status: "pending", threw: "NotFound" })).toBe("still_live");
   });
 
@@ -677,6 +681,136 @@ describe("remote book path", () => {
     );
     expect(outcome.audio.get("0")?.audio.byteLength).toBeGreaterThan(0);
     expect(urls).toEqual([BATCH_HOST]);
+  });
+
+  it("retries a slow control accept and does not post the GPU", async () => {
+    await resetDatabase();
+    stubModalEndpoints(vi.stubEnv, { control: true });
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(String(url));
+        return new Response("busy", { status: 503 });
+      })
+    );
+    const pending = renderModalCloneBatch(
+      [{ key: "0", text: "The harbor was quiet." }],
+      reference,
+      undefined,
+      "book-slow-control"
+    );
+    const settled = pending.then(
+      () => "ok" as const,
+      (err: unknown) => err
+    );
+    await vi.advanceTimersByTimeAsync(S2_CONTROL_DEADLINE_MS + 1_000);
+    const error = await settled;
+    vi.useRealTimers();
+    expect(error).toBeInstanceOf(S2ControlUnavailable);
+    expect(urls.length).toBeGreaterThan(1);
+    expect(urls.every((url) => endpointOf(url) === "control")).toBe(true);
+    expect(remoteFlights().find((flight) => flight.jobId === "book-slow-control")?.status).toBe(
+      "failure"
+    );
+  });
+
+  it("falls back to the GPU only when the control body names another protocol", async () => {
+    await resetDatabase();
+    stubModalEndpoints(vi.stubEnv, { control: true });
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        urls.push(String(url));
+        const payload = JSON.parse(String(init?.body ?? "{}")) as { items?: unknown };
+        if (endpointOf(String(url)) === "control") {
+          return new Response(
+            JSON.stringify({ protocol: "legacy-sync", protocol_version: 0, status: "ok" }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        expect(payload.items).toBeTruthy();
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                key: "0",
+                audio_b64: Buffer.from([0x49, 0x44, 0x33, 0, 1]).toString("base64"),
+                duration_s: 1,
+                truncated_units: 0,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
+    const outcome = await renderModalCloneBatch(
+      [{ key: "0", text: "The harbor was quiet." }],
+      reference,
+      undefined,
+      "book-legacy"
+    );
+    expect(outcome.audio.get("0")?.audio.byteLength).toBeGreaterThan(0);
+    expect(urls.map((url) => endpointOf(url))).toEqual(["control", "batch"]);
+  });
+
+  it("keeps the same idempotency key when a poll is not_found", async () => {
+    await resetDatabase();
+    stubModalEndpoints(vi.stubEnv, { control: true });
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    setS2StatusBudgetForTests(80);
+    const keys: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body ?? "{}")) as {
+          items?: unknown;
+          idempotency_key?: string;
+        };
+        if (payload.items) {
+          keys.push(String(payload.idempotency_key));
+          return new Response(
+            JSON.stringify({ call_id: "fc-nf", status: "pending" }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        return new Response(
+          JSON.stringify({ call_id: "fc-nf", status: "not_found" }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      })
+    );
+    await expect(
+      renderModalCloneBatch(
+        [{ key: "0", text: "The harbor was quiet." }],
+        reference,
+        undefined,
+        "book-nf"
+      )
+    ).rejects.toBeInstanceOf(ModalCloneColdError);
+    expect(keys.length).toBeGreaterThan(1);
+    expect(new Set(keys).size).toBe(1);
+    expect(remoteFlights().find((flight) => flight.jobId === "book-nf")).toMatchObject({
+      status: "still_live",
+      callId: "fc-nf",
+    });
+    await expect(
+      renderModalCloneBatch(
+        [{ key: "0", text: "The harbor was quiet." }],
+        reference,
+        undefined,
+        "book-nf"
+      )
+    ).rejects.toBeInstanceOf(ModalCloneHeldError);
+    expect(keys.length).toBeGreaterThan(1);
   });
 
   it("keeps polling a transport error and does not submit the book again", async () => {
@@ -759,6 +893,34 @@ describe("remote book path", () => {
     expect(remoteFlights().find((flight) => flight.callId === "fc-stored")?.status).toBe(
       "failure"
     );
+  });
+
+  it("rotates the stored-id poll so a pending prefix cannot starve the rest", async () => {
+    await resetDatabase();
+    const seen: string[] = [];
+    setS2StatusReaderForTests(async (callId) => {
+      seen.push(callId);
+      return { status: "unknown" };
+    });
+    for (let index = 0; index < 10; index += 1) {
+      const admitted = admitRemoteCall({
+        provider: "s2-clone",
+        path: "book",
+        jobId: `book-rot-${index}`,
+        sections: [String(index)],
+        callId: `fc-${index}`,
+      });
+      if (admitted.kind === "start") admitted.finish("still_live");
+    }
+    await pollStoredS2Calls();
+    const first = seen.slice();
+    expect(first).toHaveLength(8);
+    expect(first).toContain("fc-0");
+    expect(first).not.toContain("fc-9");
+    seen.length = 0;
+    await pollStoredS2Calls();
+    expect(seen.slice(0, 2).sort()).toEqual(["fc-8", "fc-9"]);
+    expect(seen).toHaveLength(8);
   });
 
   it("does not double-count dollars after a reload", async () => {

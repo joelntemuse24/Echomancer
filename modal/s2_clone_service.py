@@ -27,16 +27,20 @@ section and joins the MP3s.
        The same key returns the stored id instead of spawning again.
 
     POST s2_control  {"call_id": "..."}     or  ?call_id=...
-    -> pending, success + the audio JSON, or a terminal miss
-       (expired / not_found). FunctionCall.get(timeout=1).
+    -> pending, success + the audio JSON, unknown (NotFound while the
+       input may still be pending), or a terminal miss (expired).
+       FunctionCall.get(timeout=1).
 
     POST s2_control  {"call_id": "...", "cancel": true}
     -> the status read after cancel(terminate_containers=True).
        A cancel that does not throw is not treated as cancelled until that read.
 
-    Deploy this app, run ::cover, then the worker. A worker that starts
-    first probes `s2_control`, misses the protocol, and posts the book to
-    `/synthesize_batch` with the long timeout.
+    Deploy this app, then run ::cover. `render_batch` lives on
+    S2CloneWorker, so the deploy rebuilds that class's GPU snapshots and
+    ::cover is required before the worker. A worker with no
+    MODAL_S2_CONTROL_URL posts the book to `/synthesize_batch` and waits
+    the long timeout. A set URL always submits here; a slow cold start
+    retries the same idempotency key and then fails the section.
 
 Units: the text is split the way the batch pipeline splits a book — a whole
 paragraph is one generation, and only a paragraph past the model's frame

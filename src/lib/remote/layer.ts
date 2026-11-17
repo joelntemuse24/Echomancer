@@ -41,6 +41,8 @@ export type Flight = {
   promise?: Promise<unknown>;
   abort?: () => void;
   callId?: string;
+  /** Last time reconcile read this id. Unset sorts first, so the window rotates. */
+  polledAt?: number;
   /** `echo:<job>:<sections>:<nonce>` sent on the request so a listing can find it. */
   tag?: string;
   startedAt: number;
@@ -603,6 +605,15 @@ export function setFlightCallId(key: string, callId: string): void {
   stampSink?.(flight);
 }
 
+/** Remember that this id was read, so the next pass starts at an older one. */
+export function noteFlightPolled(callId: string, at = Date.now()): void {
+  const id = callId.trim();
+  if (!id) return;
+  for (const flight of flights.values()) {
+    if (flight.callId === id) flight.polledAt = at;
+  }
+}
+
 /**
  * Move a still_live or running flight to a terminal outcome.
  * A non-terminal observation leaves the flight still_live.
@@ -661,7 +672,6 @@ const CANCEL_TERMINAL = new Set([
   "cancelled",
   "canceled",
   "expired",
-  "not_found",
   "1",
   "2",
   "3",
@@ -674,9 +684,9 @@ export function interpretCancelResult(obs: CancelObservation): CancelVerdict {
     .trim()
     .toLowerCase()
     .replace(/^inputstatus\./, "");
-  // An explicit terminal status wins, including a miss the server re-read
-  // after cancel. A thrown NotFound with no terminal status is still live:
-  // the input may not have been published yet.
+  // An explicit terminal status wins. NotFound is not one of them: get()
+  // can raise it while the input is still pending. A thrown NotFound with
+  // no terminal status is still live.
   if (status && CANCEL_TERMINAL.has(status)) return "terminal";
   const thrown = (obs.threw ?? "").toLowerCase();
   if (thrown.includes("notfound") || thrown.includes("not found")) return "still_live";

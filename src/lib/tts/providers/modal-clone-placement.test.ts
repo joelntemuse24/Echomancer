@@ -1,9 +1,9 @@
 /**
  * First light submits, stores the function-call id, then polls that id.
  *
- * The accept itself is short. Once the id is stored, the poll runs to the
- * proxy ceiling and Stop is the thing that cancels it. A submit that never
- * returns an id does not call the CLI cancel and does not start a second GPU.
+ * The accept retries on the CPU host. Once the id is stored, the poll runs
+ * to the proxy ceiling and Stop is the thing that cancels it. A submit that
+ * never returns an id fails the section and does not post the GPU.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +18,8 @@ import {
 import { setModalCloneCallCancellerForTests } from "./modal-clone-cancel";
 import { setModalCloneWarmSpawnerForTests } from "./modal-clone-warm";
 import { MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS } from "./modal-clone-guard";
-import { endpointOf, stubModalEndpoints } from "./modal-endpoints.fixture";
+import { S2_CONTROL_DEADLINE_MS, S2ControlUnavailable } from "./modal-clone-call";
+import { BATCH_HOST, endpointOf, stubModalEndpoints } from "./modal-endpoints.fixture";
 import { execute, queryOne } from "@/lib/turso";
 
 vi.mock("@/lib/turso", () => ({
@@ -149,7 +150,7 @@ describe("first-light placement budget", () => {
     expect(harness.posts()).toBe(1);
   }, 20_000);
 
-  it("parks a submit that never returns an id and does not start a second GPU", async () => {
+  it("fails a control accept that never returns an id and does not post the GPU", async () => {
     vi.useFakeTimers();
     const harness = setup({ hangSubmit: true });
     const pending = renderModalCloneBatch(item, reference, undefined, "job-never", {
@@ -161,18 +162,15 @@ describe("first-light placement budget", () => {
       (err: unknown) => err
     );
     await harness.entered;
-    await vi.advanceTimersByTimeAsync(MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS);
+    await vi.advanceTimersByTimeAsync(S2_CONTROL_DEADLINE_MS + 1_000);
     const error = await settled;
-    expect(error).toBeInstanceOf(ModalCloneColdError);
-    expect((error as ModalCloneColdError).clientAborted).toBe(true);
+    expect(error).toBeInstanceOf(S2ControlUnavailable);
     expect(harness.cancelled).toEqual([]);
-    expect(harness.posts()).toBe(1);
-    await expect(
-      renderModalCloneBatch(item, reference, undefined, "job-never", {
-        raceForFirstAudio: true,
-      })
-    ).rejects.toMatchObject({ name: "ModalCloneHeldError", reason: "sealed" });
-    expect(harness.posts()).toBe(1);
+    expect(harness.posts()).toBeGreaterThan(1);
+    const urls = harness.fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => endpointOf(url) === "batch" || url.startsWith(BATCH_HOST))).toBe(
+      false
+    );
   });
 
   it("does not open a second submit while the first call is in flight", async () => {

@@ -17,6 +17,7 @@ import {
   orphanedFlights,
   planHealthCheck,
   planWatchdog,
+  noteFlightPolled,
   remoteFlights,
   setRemoteEventSink,
   setRemoteFlightStamp,
@@ -138,24 +139,31 @@ function outcomeForTerminalStatus(status: string): "success" | "cancelled" | "fa
 }
 
 /**
- * One short read of each stored id that is still open.
+ * One short read of the oldest-polled stored ids that are still open.
  *
- * Startup and the hourly pass both call this. A transport problem stays
- * `unknown` and the flight stays live. `expired` and `not_found` are
- * terminal, so the next tick may submit again. The cap is one pass, not
- * a loop, so a stuck id cannot pin this process to the control endpoint.
+ * Startup and the hourly pass both call this. The window moves, so an id
+ * that stays pending does not keep every later id waiting another hour.
+ * A transport problem, or NotFound while the input may still be pending,
+ * stays `unknown` and the flight stays live. `expired` is terminal, so
+ * the next tick may submit again. The cap is one pass, not a loop.
  */
 export async function pollStoredS2Calls(limit = STORED_ID_POLL_LIMIT): Promise<number> {
-  const open = remoteFlights().filter(
-    (flight) =>
-      flight.provider === "s2-clone" &&
-      (flight.status === "running" || flight.status === "still_live") &&
-      Boolean(flight.callId)
-  );
+  const open = remoteFlights()
+    .filter(
+      (flight) =>
+        flight.provider === "s2-clone" &&
+        (flight.status === "running" || flight.status === "still_live") &&
+        Boolean(flight.callId)
+    )
+    .sort(
+      (a, b) =>
+        (a.polledAt ?? 0) - (b.polledAt ?? 0) || a.startedAt - b.startedAt
+    );
   let settled = 0;
   for (const flight of open.slice(0, Math.max(0, limit))) {
     const callId = flight.callId;
     if (!callId) continue;
+    noteFlightPolled(callId);
     let status = "unknown";
     try {
       status = (await pollS2Call(callId)).status;

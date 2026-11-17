@@ -29,7 +29,6 @@ TERMINAL_STATUSES = frozenset(
         "cancelled",
         "canceled",
         "expired",
-        "not_found",
         "terminated",
         "timeout",
         "init_failure",
@@ -195,7 +194,8 @@ def poll_render(call_id: str, get, *, timeout_s: float = POLL_GET_TIMEOUT_S) -> 
         if _is_output_expired(err):
             return _status(call_id, "expired")
         if _is_not_found(err):
-            return _status(call_id, "not_found")
+            # get() can raise NotFound while the input is still PENDING.
+            return _status(call_id, "unknown", error="not_published")
         if _is_plain_timeout(err):
             return _status(call_id, "pending")
         return _status(call_id, "failure", error=f"{type(err).__name__}: {err}")
@@ -226,7 +226,8 @@ def cancel_render(call_id: str, cancel, read_status=None) -> dict:
         if _is_output_expired(err):
             return _status(call_id, "expired")
         if _is_not_found(err):
-            return _status(call_id, "not_found")
+            # get() can raise NotFound while the input is still PENDING.
+            return _status(call_id, "unknown", error="not_published")
         if _is_plain_timeout(err):
             return _status(call_id, "pending")
         return _status(call_id, "failure", error=f"{type(err).__name__}: {err}")

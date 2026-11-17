@@ -6,18 +6,23 @@
  * the drain cancel that id with `{cancel:true}` on the same host. No CLI,
  * no profile.
  *
- * When that endpoint is not deployed, `s2BookTransport` is `sync` and the
- * caller posts the book to the GPU endpoint with the long timeout.
+ * A batch body uses that endpoint whenever `MODAL_S2_CONTROL_URL` is set.
+ * A cold start is a slow accept: the same idempotency key is posted again
+ * until the deadline, and the section fails if the id never arrives. The
+ * synchronous GPU post is only for an unset URL, or a body that names a
+ * different protocol. A single-section `{text}` post stays on its own host.
  */
 
 export const S2_CONTROL_PROTOCOL = "s2-submit-poll";
 
-const SUBMIT_MS = 10_000;
+/** One accept. Matches the CPU function timeout, so a cold start can answer. */
+export const S2_CONTROL_ACCEPT_MS = 20_000;
+/** Retries of that accept. Past this the section fails; the GPU is not posted. */
+export const S2_CONTROL_DEADLINE_MS = 45_000;
+const CONTROL_BACKOFF_MS = 2_000;
 const POLL_ATTEMPT_MS = 5_000;
 const POLL_GAP_MS = 2_000;
-const PROBE_MS = 3_000;
-const PROTOCOL_HOLD_MS = 60_000;
-const PROTOCOL_MISS_MS = 5_000;
+const NOT_FOUND_RESUBMITS = 1;
 
 const TERMINAL_S2_STATUS = new Set([
   "success",
@@ -25,7 +30,6 @@ const TERMINAL_S2_STATUS = new Set([
   "cancelled",
   "canceled",
   "expired",
-  "not_found",
   "terminated",
   "timeout",
   "init_failure",
@@ -33,7 +37,6 @@ const TERMINAL_S2_STATUS = new Set([
 ]);
 
 let statusBudgetForTests: number | null = null;
-let protocolCache: { at: number; mode: "submit-poll" | "sync"; until: number } | null = null;
 let statusReaderForTests: ((callId: string) => Promise<{ status?: string | null }>) | null = null;
 
 /** Shorten the poll budget. Production uses the call's own wait. */
@@ -50,8 +53,25 @@ export function setS2StatusReaderForTests(
 
 export function resetS2ControlForTests(): void {
   statusBudgetForTests = null;
-  protocolCache = null;
   statusReaderForTests = null;
+}
+
+/** The control host did not accept the book before the deadline. */
+export class S2ControlUnavailable extends Error {
+  constructor(message = "Modal control did not accept the book") {
+    super(message);
+    this.name = "S2ControlUnavailable";
+  }
+}
+
+/** The control host named a protocol this worker does not speak. */
+export class S2ProtocolMismatch extends Error {
+  readonly protocol: string;
+  constructor(protocol: string) {
+    super(`S2 control protocol ${protocol}`);
+    this.name = "S2ProtocolMismatch";
+    this.protocol = protocol;
+  }
 }
 
 export function isTerminalS2Status(status: string | null | undefined): boolean {
@@ -64,7 +84,7 @@ export function s2IdempotencyKey(jobId: string, sections: string[], epoch: numbe
   return `${jobId}:${keys}:${Math.max(0, Math.floor(epoch))}`;
 }
 
-function controlOrigin(): string | null {
+export function s2ControlOrigin(): string | null {
   const raw = process.env.MODAL_S2_CONTROL_URL?.trim();
   if (!raw) return null;
   let control: string;
@@ -125,55 +145,64 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function rememberProtocol(mode: "submit-poll" | "sync"): void {
-  const hold = mode === "submit-poll" ? PROTOCOL_HOLD_MS : PROTOCOL_MISS_MS;
-  protocolCache = { at: Date.now(), mode, until: Date.now() + hold };
+type SubmitHit =
+  | { kind: "audio"; response: Response }
+  | { kind: "call"; callId: string }
+  | { kind: "protocol"; protocol: string }
+  | { kind: "retry" };
+
+function parseJson(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function differentProtocol(data: Record<string, unknown> | null): string | null {
+  const protocol = data?.protocol;
+  if (typeof protocol !== "string") return null;
+  const named = protocol.trim();
+  if (!named || named === S2_CONTROL_PROTOCOL) return null;
+  return named;
 }
 
 /**
- * `submit-poll` only when the CPU control endpoint names this protocol.
- * Anything else, including a missing URL, is the synchronous GPU post.
+ * One accept. A timeout or a 5xx is `retry` (the container is still
+ * starting). A named protocol that is not this one is a positive mismatch.
  */
-export async function s2BookTransport(signal?: AbortSignal): Promise<"submit-poll" | "sync"> {
-  if (protocolCache && Date.now() < protocolCache.until) return protocolCache.mode;
-  const url = controlOrigin();
-  if (!url || !process.env.MODAL_S2_TOKEN?.trim()) {
-    rememberProtocol("sync");
-    return "sync";
-  }
-  const probeTimeout = new AbortController();
-  const timer = setTimeout(() => probeTimeout.abort(), PROBE_MS);
-  const signals = [probeTimeout.signal];
-  if (signal) signals.push(signal);
+async function postSubmit(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  acceptMs: number
+): Promise<SubmitHit> {
+  const submitTimeout = new AbortController();
+  const submitTimer = setTimeout(() => submitTimeout.abort(), Math.max(1, acceptMs));
+  let submit: Response;
   try {
-    const response = await fetch(url, {
+    submit = await fetch(url, {
       method: "POST",
-      headers: callHeaders(),
-      body: JSON.stringify({ probe: true }),
-      signal: AbortSignal.any(signals),
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.any([signal, submitTimeout.signal]),
     });
-    const text = await response.text();
-    let data: Record<string, unknown> | null = null;
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
-    } catch {
-      data = null;
-    }
-    const version = Number(data?.protocol_version ?? 0);
-    const mode =
-      response.ok && data?.protocol === S2_CONTROL_PROTOCOL && version >= 1
-        ? "submit-poll"
-        : "sync";
-    rememberProtocol(mode);
-    return mode;
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    rememberProtocol("sync");
-    return "sync";
   } finally {
-    clearTimeout(timer);
+    clearTimeout(submitTimer);
   }
+  const text = await submit.text();
+  const data = parseJson(text);
+  if (data && Array.isArray(data.items)) return { kind: "audio", response: replay(submit, text) };
+  const named = differentProtocol(data);
+  if (named && !data?.call_id) return { kind: "protocol", protocol: named };
+  const callId = typeof data?.call_id === "string" ? data.call_id.trim() : "";
+  if (submit.ok && callId) return { kind: "call", callId };
+  return { kind: "retry" };
 }
 
 function missError(callId: string, status: string): Error {
@@ -191,39 +220,48 @@ export async function submitThenPoll(opts: {
   waitMs: number;
   onCallId: (callId: string) => void;
 }): Promise<Response> {
-  const submitTimeout = new AbortController();
-  const submitTimer = setTimeout(() => submitTimeout.abort(), SUBMIT_MS);
-  const submitSignal = AbortSignal.any([opts.signal, submitTimeout.signal]);
-  let submit: Response;
-  try {
-    submit = await fetch(opts.url, {
-      method: "POST",
-      headers: opts.headers,
-      body: JSON.stringify(opts.body),
-      signal: submitSignal,
-    });
-  } finally {
-    clearTimeout(submitTimer);
+  const acceptUntil = Date.now() + S2_CONTROL_DEADLINE_MS;
+  let callId = "";
+  while (!callId) {
+    if (opts.signal.aborted) {
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    }
+    const remaining = acceptUntil - Date.now();
+    if (remaining <= 0) {
+      throw new S2ControlUnavailable();
+    }
+    let hit: SubmitHit;
+    try {
+      hit = await postSubmit(
+        opts.url,
+        opts.body,
+        opts.headers,
+        opts.signal,
+        Math.min(S2_CONTROL_ACCEPT_MS, remaining)
+      );
+    } catch (err) {
+      if (opts.signal.aborted) throw err;
+      const wait = Math.min(CONTROL_BACKOFF_MS, acceptUntil - Date.now());
+      if (wait <= 0) throw new S2ControlUnavailable();
+      await sleep(wait, opts.signal);
+      continue;
+    }
+    if (hit.kind === "audio") return hit.response;
+    if (hit.kind === "protocol") throw new S2ProtocolMismatch(hit.protocol);
+    if (hit.kind === "call") {
+      callId = hit.callId;
+      // Persist before any poll. A timeout after this still has an id to cancel.
+      opts.onCallId(callId);
+      break;
+    }
+    const wait = Math.min(CONTROL_BACKOFF_MS, acceptUntil - Date.now());
+    if (wait <= 0) throw new S2ControlUnavailable();
+    await sleep(wait, opts.signal);
   }
-  const submitText = await submit.text();
-  let submitJson: Record<string, unknown> | null = null;
-  try {
-    const parsed = JSON.parse(submitText) as unknown;
-    if (parsed && typeof parsed === "object") submitJson = parsed as Record<string, unknown>;
-  } catch {
-    submitJson = null;
-  }
-  // An old container that finished inside the accept window returns the audio.
-  if (submitJson && Array.isArray(submitJson.items)) {
-    return replay(submit, submitText);
-  }
-  const callId = typeof submitJson?.call_id === "string" ? submitJson.call_id.trim() : "";
-  if (!submit.ok || !callId) return replay(submit, submitText);
-  // Persist before any poll. A timeout after this still has an id to cancel.
-  opts.onCallId(callId);
 
   const budget = statusBudgetForTests ?? opts.waitMs;
   const deadline = Date.now() + budget;
+  let notFoundResubmits = 0;
   while (Date.now() < deadline) {
     if (opts.signal.aborted) {
       throw Object.assign(new Error("aborted"), { name: "AbortError" });
@@ -251,16 +289,39 @@ export async function submitThenPoll(opts: {
     } finally {
       clearTimeout(pollTimer);
     }
-    const pollText = await poll.text();
-    let data: Record<string, unknown> | null = null;
-    try {
-      const parsed = JSON.parse(pollText) as unknown;
-      if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
-    } catch {
-      data = null;
-    }
+    const data = parseJson(await poll.text());
     const status = typeof data?.status === "string" ? data.status : "";
-    if (!poll.ok || !data || status === "pending" || status === "unknown" || !status) {
+    // NotFound can be raised while the input is still pending. Poll the
+    // stored id, and one resubmit uses the same idempotency key so the
+    // server returns that id instead of spawning.
+    if (status === "not_found" && notFoundResubmits < NOT_FOUND_RESUBMITS) {
+      notFoundResubmits += 1;
+      try {
+        const again = await postSubmit(
+          opts.url,
+          opts.body,
+          opts.headers,
+          opts.signal,
+          Math.min(S2_CONTROL_ACCEPT_MS, Math.max(1, deadline - Date.now()))
+        );
+        if (again.kind === "audio") return again.response;
+        if (again.kind === "call") {
+          callId = again.callId;
+          opts.onCallId(callId);
+        }
+      } catch (err) {
+        if (opts.signal.aborted) throw err;
+      }
+      continue;
+    }
+    if (
+      !poll.ok ||
+      !data ||
+      status === "pending" ||
+      status === "unknown" ||
+      status === "not_found" ||
+      !status
+    ) {
       if (Date.now() >= deadline) break;
       await sleep(Math.min(POLL_GAP_MS, Math.max(0, deadline - Date.now())), opts.signal);
       continue;
@@ -287,15 +348,15 @@ export async function submitThenPoll(opts: {
 }
 
 /**
- * Read one stored id. A transport problem is `unknown` (still live).
- * `expired` and `not_found` are terminal misses.
+ * Read one stored id. A transport problem, or NotFound while the input
+ * may still be pending, is `unknown` (still live). `expired` is terminal.
  */
 export async function pollS2Call(callId: string): Promise<{ status: string }> {
   if (statusReaderForTests) {
     const read = await statusReaderForTests(callId);
     return { status: typeof read.status === "string" ? read.status : "unknown" };
   }
-  const origin = controlOrigin();
+  const origin = s2ControlOrigin();
   if (!origin || !process.env.MODAL_S2_TOKEN?.trim()) return { status: "unknown" };
   try {
     const response = await fetch(withCallId(origin, callId), {
@@ -317,13 +378,13 @@ export async function pollS2Call(callId: string): Promise<{ status: string }> {
 
 /**
  * Cancel one stored FunctionCall, then use the status the server re-read.
- * `pending` is not terminal. `expired` and `not_found` are.
+ * `pending` and `not_found` are not terminal. `expired` is.
  */
 export async function cancelS2Call(callId: string): Promise<{
   status?: string | null;
   threw?: string | null;
 }> {
-  const origin = controlOrigin();
+  const origin = s2ControlOrigin();
   if (!origin) return { status: "pending", threw: "MODAL_S2_CONTROL_URL is not configured" };
   const response = await fetch(withCallId(origin, callId), {
     method: "POST",

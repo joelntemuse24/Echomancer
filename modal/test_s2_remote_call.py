@@ -128,9 +128,9 @@ def test_poll_timeout_expired_not_found_and_a_dict_result():
 
     call.get_error = NotFoundError("no such input")
     missing = remote.poll_render("fc-1", call.get)
-    assert missing["status"] == "not_found"
-    assert missing["terminal"] is True
-    assert missing["miss"] is True
+    assert missing["status"] == "unknown"
+    assert missing["terminal"] is False
+    assert missing.get("miss") is not True
 
     call.get_error = None
     done = remote.poll_render("fc-1", call.get)
@@ -179,8 +179,8 @@ def test_cancel_rereads_status_and_does_not_assume_success():
     gone = remote.cancel_render(
         "fc-1", call.cancel, read_status=lambda: remote.poll_render("fc-1", call.get)
     )
-    assert gone["status"] == "not_found"
-    assert gone["terminal"] is True
+    assert gone["status"] == "unknown"
+    assert gone["terminal"] is False
 
     call.cancel_error = None
     call.get_error = OutputExpiredError("expired")
