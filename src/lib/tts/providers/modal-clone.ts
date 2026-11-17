@@ -1896,8 +1896,9 @@ async function postModal(
           headers,
           signal: controller.signal,
           // The id is stored before this wait. First light keeps polling until
-          // the proxy ceiling. A submit that never returns an id fails the
-          // section after the control deadline; it does not post the GPU.
+          // the proxy ceiling. A timeout with no id stays unconfirmed and
+          // does not post the GPU. A completed 5xx fails the book after the
+          // control deadline.
           waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
           onCallId: (id) => setFlightCallId(tracked.key, id),
         });

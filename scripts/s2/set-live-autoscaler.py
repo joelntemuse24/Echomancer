@@ -42,14 +42,24 @@ class AutoscalerArgs(NamedTuple):
     profile: str | None = None
 
 
-def saved_max_from_env(environ: dict[str, str] | None = None) -> int | None:
-    """A cap the operator already recorded. Never invents 1."""
+def config_max_source(environ: dict[str, str] | None = None) -> tuple[int | None, str]:
+    """A cap the operator already recorded, and which variable held it.
+
+    ``S2C_RESTORE_MAX`` wins over ``MODAL_S2_MAX_GPUS``. Neither is a guess:
+    a missing value stays ``(None, "")``.
+    """
     env = environ if environ is not None else os.environ
     for key in ("S2C_RESTORE_MAX", "MODAL_S2_MAX_GPUS"):
         raw = (env.get(key) or "").strip()
         if raw.isdigit() and int(raw) >= 1:
-            return int(raw)
-    return None
+            return int(raw), key
+    return None, ""
+
+
+def saved_max_from_env(environ: dict[str, str] | None = None) -> int | None:
+    """A cap the operator already recorded. Never invents 1."""
+    value, _name = config_max_source(environ)
+    return value
 
 
 def apply_profile(profile: str | None) -> None:
@@ -142,36 +152,52 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
 
 
 def emit_max(args: AutoscalerArgs) -> int:
-    """Print one integer. --from-env never imports Modal."""
+    """Print one integer. The source is logged on stderr. Never a silent 1."""
     apply_profile(args.profile)
     if args.from_env:
-        value = saved_max_from_env()
+        value, name = config_max_source()
         if value is None:
-            print("refusing to guess max_containers 1", file=sys.stderr)
+            print(
+                "refusing to guess max_containers. "
+                "Set MODAL_S2_MAX_GPUS or S2C_RESTORE_MAX.",
+                file=sys.stderr,
+            )
             return 2
+        print(f"print-max: {name}={value} from config", file=sys.stderr)
         print(value)
         return 0
     live: int | None = None
+    how = "no reader"
     try:
         import modal
 
+        root = __import__("pathlib").Path(__file__).resolve().parents[2]
+        modal_dir = str(root / "modal")
+        if modal_dir not in sys.path:
+            sys.path.insert(0, modal_dir)
+        from s2_contract import read_autoscaler_max
+
         worker = modal.Cls.from_name(args.app, args.cls)()
-        settings = None
-        for name in ("get_autoscaler", "autoscaler"):
-            fn = getattr(worker, name, None)
-            if callable(fn):
-                settings = fn()
-                break
-        value = getattr(settings, "max_containers", None) if settings is not None else None
-        if isinstance(value, int) and value >= 0:
-            live = value
+        live, how = read_autoscaler_max(worker)
     except Exception as err:
+        how = str(err)
         print(f"live autoscaler unread: {err}", file=sys.stderr)
     if live is None:
-        live = saved_max_from_env()
-    if live is None:
-        print("refusing to guess max_containers 1", file=sys.stderr)
-        return 2
+        fallback, name = config_max_source()
+        if fallback is None:
+            print(
+                f"live autoscaler unread ({how}); refusing to guess max_containers. "
+                "Set MODAL_S2_MAX_GPUS or S2C_RESTORE_MAX.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"live autoscaler unread ({how}); using {name}={fallback} from config",
+            file=sys.stderr,
+        )
+        print(fallback)
+        return 0
+    print(f"print-max: live max_containers={live} via {how}", file=sys.stderr)
     print(live)
     return 0
 

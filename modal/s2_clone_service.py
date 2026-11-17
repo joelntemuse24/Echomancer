@@ -155,9 +155,10 @@ from s2_contract import (
     ReferenceTextError,
     boot_kind,
     container_limits,
-    heartbeat_dict_name,
+    deploy_identity,
     parse_sampling,
-    resolve_app_name,
+    read_autoscaler_max,
+    running_container_count,
     decoded_reference_stats,
     seed_for_call,
     snapshot_age_s,
@@ -171,11 +172,13 @@ from s2_contract import (
 from s2_audio_store import R2, KeepAlivePool, UploadPool, transport_name
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
-#: The app this module deploys to. `s2_contract.resolve_app_name` is the one
-#: rule the service, the warm script and the input-queue script share: production
+#: The app this module deploys to. `deploy_identity` is the one resolution the
+#: GPU class, `s2_control`, and `ready` bake into their function env. Production
 #: needs `S2C_ALLOW_PRODUCTION=1`, even when its name is spelled out, because a
-#: deploy invalidates every snapshot that app has.
-APP_NAME = resolve_app_name(os.environ)
+#: deploy invalidates every snapshot that app has. A container re-import sees
+#: those baked names, so it cannot fall through to the staging Dict.
+_IDENTITY = deploy_identity(os.environ)
+APP_NAME = _IDENTITY["S2C_APP_NAME"]
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
@@ -199,9 +202,10 @@ HEARTBEAT_TTL_SECONDS = int(os.environ.get("S2C_HEARTBEAT_TTL", "90"))
 #: Refresh a container's heartbeat at most this often (seconds). The timer uses
 #: it; a call-triggered refresh is throttled by the same value.
 HEARTBEAT_MIN_INTERVAL = int(os.environ.get("S2C_HEARTBEAT_INTERVAL", "30"))
-#: Boot registry name. A staging app must set its own, or its `/ready` would
-#: report production's containers and vice versa.
-HEARTBEAT_DICT_NAME = heartbeat_dict_name(os.environ)
+#: Boot registry and the control Dict. Both come from `deploy_identity`, so a
+#: staging container cannot open production's stores or the other way around.
+HEARTBEAT_DICT_NAME = _IDENTITY["S2C_HEARTBEAT_DICT"]
+CONTROL_DICT_NAME = _IDENTITY["S2C_CONTROL_DICT"]
 
 _LIMITS = container_limits(os.environ)
 
@@ -306,9 +310,13 @@ _BUILD_ENV = {
     "S2C_VERSION": S2C_VERSION,
     "S2C_MAX_CONTAINERS": str(_LIMITS["max_containers"]),
     "S2C_LANES": str(_LIMITS["lanes"]),
-    # Both the GPU class and the CPU probe resolve the registry from this, so a
-    # staging deploy cannot read production's heartbeats.
-    "S2C_HEARTBEAT_DICT": HEARTBEAT_DICT_NAME,
+    # App name, opt-in, heartbeat Dict, and control Dict. `@app.function(env=)`
+    # and `@app.cls(env=)` replace the process environment, so a key omitted
+    # here is absent when the container re-imports this module. Every function
+    # in the app gets this same dict. Production and staging then cannot share
+    # stores: a control container without these keys logged the staging app
+    # and opened echomancer-s2-clone-staging-s2-control.
+    **_IDENTITY,
     # The engine is pinned into the container, not read from the ambient
     # environment at request time. Two reasons: a snapshot has to be built for
     # exactly the kernels it will run, and a runtime override that disagreed with
@@ -419,6 +427,7 @@ web_image = (
 #: Shared boot registry: one entry per container, written after restore.
 print(
     f"[S2C] app={APP_NAME} heartbeat_dict={HEARTBEAT_DICT_NAME} "
+    f"control_dict={CONTROL_DICT_NAME} "
     f"engine={ENGINE} version={S2C_VERSION} build={_BUILD_ENV['S2C_BUILD']}"
     + ("" if APP_NAME != "echomancer-s2-clone" else "  (PRODUCTION)")
 )
@@ -428,8 +437,8 @@ heartbeats = modal.Dict.from_name(HEARTBEAT_DICT_NAME, create_if_missing=True)
 #: Idempotency rows for the CPU control endpoint. A retry of the same
 #: book, sections, and attempt reads the call id instead of spawning again.
 #: Entries carry their own timestamp; the reader ignores a row older than
-#: the TTL in ``s2_remote_call``.
-CONTROL_DICT_NAME = os.environ.get("S2C_CONTROL_DICT") or f"{APP_NAME}-s2-control"
+#: the TTL in ``s2_remote_call``. The name is the deploy identity, not a
+#: second lookup that can fall through to staging.
 
 
 def _section_units(text: str) -> list[dict]:
@@ -600,11 +609,8 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
         "S2B_GPU": GPU,
         "S2B_BATCH": str(BATCH),
         "S2B_MAX_SEQ_LEN": str(MAX_SEQ_LEN),
-        # The class env replaces the process environment. Without these, a
-        # production container re-imports this module, resolve_app_name sees
-        # no opt-in, and the log says echomancer-s2-clone-staging.
-        "S2C_APP_NAME": APP_NAME,
-        "S2C_ALLOW_PRODUCTION": "1" if APP_NAME == "echomancer-s2-clone" else "0",
+        # Same identity dict as s2_control and ready. The class env replaces
+        # the process environment, so the keys have to be in this mapping.
         **_BUILD_ENV,
     },
 )
@@ -1555,10 +1561,15 @@ def control_store():
 
 
 def _spawn_render(payload: dict):
-    """Spawn the H100 method from the CPU function. Never render here."""
+    """Spawn the H100 method from the CPU function. Never render here.
+
+    Modal raises ``You can't access methods on a Cls directly`` when a
+    method is read on the class. The instance owns ``render_batch.spawn``.
+    """
     from s2_remote_call import RemoteCallError
 
-    method = S2CloneWorker.render_batch
+    worker = S2CloneWorker()
+    method = worker.render_batch
     spawn = getattr(method, "spawn", None)
     if not callable(spawn):
         raise RemoteCallError(500, "spawn_unavailable", "GPU spawn is not available")
@@ -1566,9 +1577,140 @@ def _spawn_render(payload: dict):
 
 
 def _lookup_call(call_id: str):
+    """Poll and cancel go through FunctionCall, not a method on the Cls."""
     import modal as modal_mod
 
     return modal_mod.FunctionCall.from_id(call_id)
+
+
+def _config_max() -> tuple[int | None, str]:
+    """``MODAL_S2_MAX_GPUS`` or ``S2C_RESTORE_MAX`` when the live read cannot."""
+    for name in ("S2C_RESTORE_MAX", "MODAL_S2_MAX_GPUS"):
+        raw = str(os.environ.get(name) or "").strip()
+        if raw.isdigit() and int(raw) >= 1:
+            return int(raw), name
+    return None, ""
+
+
+def _running_now() -> tuple[int, str]:
+    """Containers of this class. Stats first; heartbeats if the client has none."""
+    worker = S2CloneWorker()
+    for name in ("get_current_stats", "stats"):
+        fn = getattr(worker, name, None)
+        if not callable(fn):
+            continue
+        try:
+            count = running_container_count(fn())
+        except Exception as err:
+            print(f"[S2C] container stats unread via {name}: {err}", file=sys.stderr)
+            continue
+        if count is not None:
+            return count, name
+    return len(_live_containers(_BUILD_ENV["S2C_BUILD"])), "heartbeats"
+
+
+def _fleet(body: dict) -> dict:
+    """Read, brake, restore, or count. This process's deployed app only.
+
+    The caller does not choose the app. A request that named one could brake
+    staging from a production worker, or the other way around. min_containers
+    stays 0. Brake and restore are the Modal call; the decision to brake
+    (non-terminal cancel, no other live S2 book, restore on every exit)
+    stays in the worker.
+    """
+    from s2_remote_call import RemoteCallError
+
+    action = str(body.get("autoscaler") or "").strip().lower()
+    worker = S2CloneWorker()
+    if action == "count":
+        running, source = _running_now()
+        return {
+            "status": "ok",
+            "running": running,
+            "source": source,
+            "app": APP_NAME,
+            "terminal": True,
+        }
+    if action == "read":
+        value, how = read_autoscaler_max(worker)
+        if value is None:
+            fallback, source = _config_max()
+            print(
+                f"[S2C] live autoscaler unread ({how}); "
+                f"using {source or 'nothing'}={fallback} from config",
+                file=sys.stderr,
+            )
+            if fallback is None:
+                raise RemoteCallError(
+                    503,
+                    "autoscaler_unread",
+                    "refusing to guess max_containers",
+                )
+            return {
+                "status": "ok",
+                "max_containers": fallback,
+                "min_containers": 0,
+                "source": source,
+                "app": APP_NAME,
+                "terminal": True,
+            }
+        return {
+            "status": "ok",
+            "max_containers": value,
+            "min_containers": 0,
+            "source": how,
+            "app": APP_NAME,
+            "terminal": True,
+        }
+    if action == "brake":
+        settings = worker.update_autoscaler(
+            min_containers=0, max_containers=0, scaledown_window=15
+        )
+        applied = _settings_max(settings)
+        if applied not in (0, None):
+            raise RemoteCallError(
+                500,
+                "autoscaler_not_applied",
+                f"brake left max_containers={applied}",
+            )
+        return {
+            "status": "ok",
+            "max_containers": 0,
+            "min_containers": 0,
+            "app": APP_NAME,
+            "terminal": True,
+        }
+    if action == "restore":
+        try:
+            max_c = int(body.get("max_containers"))
+        except (TypeError, ValueError):
+            raise RemoteCallError(400, "bad_max", "restore needs max_containers") from None
+        if max_c < 1 or max_c > 64:
+            raise RemoteCallError(400, "bad_max", "restore max_containers must be 1..64")
+        settings = worker.update_autoscaler(
+            min_containers=0, max_containers=max_c, scaledown_window=15
+        )
+        applied = _settings_max(settings)
+        if applied is not None and applied != max_c:
+            raise RemoteCallError(
+                500,
+                "autoscaler_not_applied",
+                f"restore left max_containers={applied}",
+            )
+        return {
+            "status": "ok",
+            "max_containers": max_c,
+            "min_containers": 0,
+            "app": APP_NAME,
+            "terminal": True,
+        }
+    raise RemoteCallError(400, "bad_autoscaler", "autoscaler must be read, brake, restore, or count")
+
+
+def _settings_max(settings):
+    from s2_contract import _settings_max as read_max
+
+    return read_max(settings)
 
 
 @app.function(
@@ -1586,9 +1728,11 @@ def _lookup_call(call_id: str):
 )
 @modal.fastapi_endpoint(method="POST", docs=False)
 def s2_control(payload: dict, request: Request):
-    """Accept, poll, cancel, or look up one render. This container has no GPU.
+    """Accept, poll, cancel, look up, or adjust the autoscaler. This container has no GPU.
 
     ``{lookup: true, idempotency_key}`` reads the Dict and does not spawn.
+    ``{autoscaler: "read"|"brake"|"restore"|"count"}`` talks to this deployed
+    app only. A body with ``items`` is still a submit.
 
     A cold start is the small image, not an H100 restore. ``render_batch.spawn``
     places the GPU work and returns its id. Status and cancel use
@@ -1610,6 +1754,7 @@ def s2_control(payload: dict, request: Request):
             spawn=_spawn_render,
             lookup=_lookup_call,
             store=control_store(),
+            fleet=_fleet,
         )
     except RemoteCallError as err:
         raise HTTPException(

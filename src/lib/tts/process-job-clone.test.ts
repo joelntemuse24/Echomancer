@@ -23,9 +23,11 @@ import {
 import { execute, query } from "@/lib/turso";
 import {
   BATCH_HOST,
+  CONTROL_HOST,
   READY_HOST,
   endpointOf,
 } from "@/lib/tts/providers/modal-endpoints.fixture";
+import { CLONE_ENGINE_FAILED, voiceEngineStarting } from "@/lib/ux-copy";
 
 const JOB_ID = "dddddddd-0000-4000-8000-000000000001";
 const CLONE_ID = "clone:96a74157-aaaa-4bbb-8ccc-ddddeeeeffff";
@@ -1943,5 +1945,91 @@ describe("clone books get their own GPU until the ceiling", () => {
     expect(result.yieldSlot).toBe(true);
     delete process.env.MODAL_S2_MAX_GPUS;
     delete process.env.MODAL_S2_MAX_GPUS_PER_USER;
+  });
+});
+
+describe("a control 5xx fails the book instead of the starting line", () => {
+  it("fails the section after the accept deadline and shows the error", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    const { resetS2ControlForTests, setS2AcceptDeadlineForTests } = await import(
+      "@/lib/tts/providers/modal-clone-call"
+    );
+    resetModalCloneRuntimeForTests();
+    resetS2ControlForTests();
+    setS2AcceptDeadlineForTests(40);
+    configureModal();
+    process.env.MODAL_S2_CONTROL_URL = CONTROL_HOST;
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const where = endpointOf(String(url));
+        posts.push(where ?? String(url));
+        if (where === "ready") {
+          return new Response(
+            JSON.stringify({ ready: true, warm_containers: 1, build: "abc123" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (where === "control") {
+          const payload = JSON.parse(String(init?.body ?? "{}")) as { lookup?: boolean };
+          if (payload.lookup) {
+            return new Response(JSON.stringify({ status: "absent", terminal: false }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              detail:
+                "You can't access methods on a Cls directly - Did you forget to instantiate the class first?",
+            }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        throw new Error(`unexpected ${where ?? url}`);
+      })
+    );
+    await seedCloneJob("A sentence. ".repeat(80));
+    await fakeAdapter();
+    try {
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+      expect(result.done).toBe(true);
+      const row = await jobRow(JOB_ID);
+      expect(row?.status).toBe("failed");
+      expect(row?.error_message).toBe(CLONE_ENGINE_FAILED);
+      const segments = JSON.parse(String(row?.segments_json ?? "[]")) as {
+        index: number;
+        status: string;
+        error?: string;
+      }[];
+      expect(segments.find((segment) => segment.index === 0)).toMatchObject({
+        status: "failed",
+        error: CLONE_ENGINE_FAILED,
+      });
+      expect(
+        voiceEngineStarting({
+          catalog_voice_id: CLONE_ID,
+          status: row?.status,
+          first_section_at: row?.first_section_at ?? null,
+          segments,
+        })
+      ).toBe(false);
+      expect(
+        voiceEngineStarting({
+          catalog_voice_id: CLONE_ID,
+          status: "processing",
+          segments: [],
+        })
+      ).toBe(true);
+      expect(posts).toContain("control");
+      expect(posts).not.toContain("batch");
+    } finally {
+      resetS2ControlForTests();
+      delete process.env.MODAL_S2_CONTROL_URL;
+    }
   });
 });

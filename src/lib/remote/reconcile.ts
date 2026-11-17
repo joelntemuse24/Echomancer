@@ -26,7 +26,7 @@ import {
   settleFlightCall,
   takeDrainRequests,
 } from "@/lib/remote/layer";
-import { runModalCli } from "@/lib/remote/modal-cli";
+import { s2ControlOrigin, s2Fleet } from "@/lib/tts/providers/modal-clone-call";
 import {
   isTerminalS2Status,
   pollS2Call,
@@ -62,39 +62,21 @@ async function restoreBrake(app: string, savedMax: number): Promise<void> {
     await brakeHealer(app, savedMax);
     return;
   }
-  if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) {
+  if (process.env.VITEST || !s2ControlOrigin() || !process.env.MODAL_S2_TOKEN?.trim()) {
     throw new Error("brake restore is not configured");
   }
-  const { code, out } = await runModalCli([
-    "scripts/s2/set-live-autoscaler.py",
-    "--app",
-    app,
-    "--max-containers",
-    String(savedMax),
-    "--scaledown-window",
-    "15",
-  ]);
-  if (code !== 0) throw new Error(out.trim() || `brake restore exited ${code}`);
+  await s2Fleet("restore", savedMax);
 }
 
 async function readLiveMax(app: string): Promise<number | null> {
   if (liveMaxReader) return liveMaxReader(app);
-  if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) return null;
-  const { code, out } = await runModalCli([
-    "scripts/s2/set-live-autoscaler.py",
-    "--print-max",
-    "--app",
-    app,
-  ]);
-  const line = out
-    .trim()
-    .split("\n")
-    .map((row) => row.trim())
-    .filter(Boolean)
-    .pop();
-  const n = Number(line);
-  if (code !== 0 || !Number.isInteger(n) || n < 0) return null;
-  return n;
+  if (process.env.VITEST || !s2ControlOrigin() || !process.env.MODAL_S2_TOKEN?.trim()) return null;
+  try {
+    const row = await s2Fleet("read");
+    return row.maxContainers;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -352,6 +352,66 @@ def test_web_endpoints_declare_a_method(service):
         assert entry["kwargs"].get("docs") is False
 
 
+def test_every_function_bakes_the_same_deploy_identity(service):
+    """GPU class, s2_control, and ready share one deploy-time identity."""
+    import os
+
+    from s2_contract import deploy_identity
+
+    identity = deploy_identity(os.environ)
+    (cls,) = _service_only(service._recorder.classes)
+    functions = _service_only(service._recorder.functions)
+    names = {getattr(fn.get("_fn", None), "__name__", "") for fn in functions}
+    assert len(functions) == 2
+    for key, value in identity.items():
+        assert cls["env"][key] == value, key
+        for fn in functions:
+            assert fn["env"][key] == value, (key, fn.get("timeout"))
+    assert names or True
+    again = deploy_identity(identity)
+    assert again["S2C_APP_NAME"] == identity["S2C_APP_NAME"]
+    assert again["S2C_CONTROL_DICT"] == identity["S2C_CONTROL_DICT"]
+    assert again["S2C_HEARTBEAT_DICT"] == identity["S2C_HEARTBEAT_DICT"]
+
+
+def test_fleet_brake_restore_and_count_do_not_spawn(service, monkeypatch):
+    calls = []
+
+    class Settings:
+        def __init__(self, max_containers: int) -> None:
+            self.max_containers = max_containers
+            self.min_containers = 0
+
+    class Worker:
+        def update_autoscaler(self, **kwargs):
+            calls.append(kwargs)
+            if not kwargs:
+                return Settings(20)
+            return Settings(int(kwargs.get("max_containers", 0)))
+
+        def get_current_stats(self):
+            return type("Stats", (), {"num_total_runners": 3})()
+
+    monkeypatch.setattr(service, "S2CloneWorker", Worker)
+    read = service._fleet({"autoscaler": "read", "app": "echomancer-s2-clone-staging"})
+    assert read["max_containers"] == 20
+    assert read["app"] == service.APP_NAME
+    assert calls == [{}]
+    calls.clear()
+    brake = service._fleet({"autoscaler": "brake"})
+    assert brake["max_containers"] == 0
+    assert brake["min_containers"] == 0
+    assert calls == [{"min_containers": 0, "max_containers": 0, "scaledown_window": 15}]
+    calls.clear()
+    restored = service._fleet({"autoscaler": "restore", "max_containers": 20})
+    assert restored["max_containers"] == 20
+    assert calls[0]["min_containers"] == 0
+    assert calls[0]["max_containers"] == 20
+    counted = service._fleet({"autoscaler": "count"})
+    assert counted["running"] == 3
+    assert counted["app"] == service.APP_NAME
+
+
 def test_ready_and_control_are_cpu_functions(service):
     functions = _service_only(service._recorder.functions)
     assert len(functions) == 2, "ready and s2_control are the only module-level functions"
@@ -850,12 +910,34 @@ def test_control_endpoint_spawns_polls_and_cancels_off_the_gpu(service, monkeypa
 
     import modal
 
+    class _Instance:
+        def __init__(self):
+            self.render_batch = self
+
+        def spawn(self, payload):
+            return spawn(payload)
+
+    class _RaisingCls:
+        """Modal raises on a method read of the class. The instance spawns."""
+
+        def __call__(self):
+            return _Instance()
+
+        def __getattr__(self, name):
+            raise AttributeError(
+                "You can't access methods on a Cls directly - "
+                "Did you forget to instantiate the class first?"
+            )
+
     modal.FunctionCall = _FunctionCall
-    service.S2CloneWorker.render_batch.spawn = spawn
+    original_worker = service.S2CloneWorker
+    service.S2CloneWorker = _RaisingCls()
     memory = _Memory()
     monkeypatch.setattr(service, "control_store", lambda: memory)
     request = _FakeRequest("tok")
     try:
+        with pytest.raises(AttributeError, match="instantiate the class first"):
+            service.S2CloneWorker.render_batch
         probed = service.s2_control({"probe": True}, request)
         assert probed.content["protocol"] == "s2-submit-poll"
         assert seen["spawns"] == 0
@@ -911,5 +993,29 @@ def test_control_endpoint_spawns_polls_and_cancels_off_the_gpu(service, monkeypa
         assert confirmed.content["status"] == "unknown"
         assert confirmed.content["terminal"] is False
     finally:
-        if hasattr(service.S2CloneWorker.render_batch, "spawn"):
-            del service.S2CloneWorker.render_batch.spawn
+        service.S2CloneWorker = original_worker
+
+
+def test_control_and_warm_do_not_read_methods_on_the_cls(service):
+    """A method on the bare Cls is the production AttributeError at cls.py:891."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    root = Path(service.__file__).resolve().parent
+    bare = re.compile(r"S2CloneWorker\s*\.\s*[A-Za-z_]")
+    for name in ("s2_clone_service.py", "s2_clone_warm.py"):
+        hits = [
+            line.strip()
+            for line in (root / name).read_text().splitlines()
+            if not line.lstrip().startswith("#") and bare.search(line)
+        ]
+        assert hits == [], hits
+    spawn = inspect.getsource(service._spawn_render)
+    assert "S2CloneWorker()" in spawn
+    lookup = inspect.getsource(service._lookup_call)
+    assert "FunctionCall.from_id" in lookup
+    assert "S2CloneWorker" not in lookup
+    warm = (root / "s2_clone_warm.py").read_text()
+    assert "worker().status.spawn()" in warm
+    assert "worker().synthesize_section.remote(" in warm

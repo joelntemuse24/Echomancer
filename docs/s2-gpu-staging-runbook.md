@@ -364,8 +364,12 @@ stops only when `streak` calls in a row finish inside the restore budget.
 bash scripts/s2/post-deploy-cover.sh
 ```
 
-Each row prints `wall=` and `graphs=`. A restore counts toward the streak
-only when `graphs` starts with `ok(` or `recaptured(`. A stuck call is
+Each row prints `wall=` and `graphs=`. The first round's RPC wait is the
+compile budget plus margin (a 1200s get returned before a ~1290–1350s compile
+and printed `graphs=missing`). A later round counts toward the streak only
+when `graphs` starts with `ok(` or `recaptured(` and the container id is one
+this cover has not already used. The script uses `MODAL_PYTHON`, or the first
+Python on `PATH` that can import `modal`. A stuck call is
 drained with `scripts/s2/drain-stuck-calls.py`: cancel with
 `terminate_containers=True`, treat NotFound as still live, brake
 `max_containers` to 0, confirm zero containers, then restore the previous

@@ -785,15 +785,24 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   or `still_live`. Once the flight has a function-call id, that call also
   blocks cover for every other book.   The book path is submit-then-poll on
   the CPU endpoint `s2_control` (`MODAL_S2_CONTROL_URL`): it spawns the H100
-  `render_batch`, returns the FunctionCall id before any waiting, and Stop
-  cancels that id on the same CPU host. Poll and cancel never enter the GPU
+  with `S2CloneWorker().render_batch.spawn` (the class is instantiated
+  first; a method read on the Cls raises), returns the FunctionCall id
+  before any waiting, and Stop
+  cancels that id on the same CPU host. Brake, restore, and the container
+  count are the same endpoint and the same bearer, scoped to the app that
+  function was deployed as. The worker does not run the Modal CLI. Poll and
+  cancel never enter the GPU
   class. A batch body uses that host whenever the URL is set. A cold start
-  retries the same idempotency key until the control deadline. An accept
-  that ends with no id is `submit_unconfirmed`: the attempt does not move,
-  the next tick posts that same key, and `{lookup:true}` reads the Dict
-  without spawning. The section fails only after three empty lookups or
-  135s, and that failure looks the key up once more so a late id is stored
-  for cancel. NotFound stays on that key. After the render wait plus 30s
+  retries the same idempotency key until the control deadline. A timeout
+  with no HTTP status that ends with no id is `submit_unconfirmed`: the
+  attempt does not move, the next tick posts that same key, and
+  `{lookup:true}` reads the Dict without spawning. That case fails only
+  after three empty lookups or 135s, and that failure looks the key up
+  once more so a late id is stored for cancel. A completed HTTP 5xx is
+  the function answering, so the spawn did not happen. Those retries stay
+  inside the 45s deadline, then the section and the book fail with
+  "The voice engine didn't start. Try again." The book does not stay on
+  "Starting the clone voice…". NotFound stays on that key. After the render wait plus 30s
   it settles like `expired` and cover is free. The synchronous GPU post is
   used when the URL is unset, or when the control body names a different
   protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
@@ -994,7 +1003,11 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   with `python3 -m pytest modal -q`. Keep it dependency-free.
 - Staging: `S2C_APP_NAME=echomancer-s2-clone-staging` and
   `S2C_HEARTBEAT_DICT=…-staging` keep it a separate app with separate
-  snapshots. `scripts/s2/staging-smoke.mjs` is the HTTP acceptance check; use
+  snapshots. `deploy_identity` bakes the app name, the opt-in, the heartbeat
+  Dict, and the control Dict into every function env (GPU class, `s2_control`,
+  `ready`). A function env replaces the process environment, so a missing key
+  made control log the staging app and open the staging Dict.
+  `scripts/s2/staging-smoke.mjs` is the HTTP acceptance check; use
   synthetic text and a generated clip only, never a real book.
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.

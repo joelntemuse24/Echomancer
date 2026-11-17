@@ -65,17 +65,22 @@ from s2_contract import (
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
+    cold_restore_counts,
+    compile_rpc_timeout_s,
+    deploy_identity,
+    fresh_gap_s,
     placement_kind,
-    resolve_app_name,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
 )
 from s2_input_queue import assert_no_unfinished_inputs
 
-#: How long one RPC may sit. Long enough for an 8–16 min compile. Books never
-#: use this; their HTTP wait is the restore budget.
-RPC_COMPILE_TIMEOUT_S = 1200
+#: How long one RPC may sit. A measured cold compile is 1290–1350s, so a
+#: fixed 1200s get() returned before graphs existed and cover printed
+#: graphs=missing. The budget is the init timeout and that measurement,
+#: plus margin, and it stays under the class timeout. Books never use this.
+RPC_COMPILE_TIMEOUT_S = compile_rpc_timeout_s()
 
 # An app object is required to host `local_entrypoint`; nothing is deployed
 # from this file. The worker lives in s2_clone_service.py.
@@ -86,7 +91,8 @@ app = modal.App("echomancer-s2-clone-warm")
 #: the one that was just deployed — and production needs `S2C_ALLOW_PRODUCTION=1`
 #: to be named, because warming is not harmless: it can start a compile, and the
 #: deploy that precedes it already invalidated that app's snapshots.
-APP_NAME = resolve_app_name(os.environ)
+_IDENTITY = deploy_identity(os.environ)
+APP_NAME = _IDENTITY["S2C_APP_NAME"]
 CLASS_NAME = "S2CloneWorker"
 
 
@@ -298,12 +304,52 @@ def warm(
     )
 
 
+def _is_wait_timeout(err: BaseException) -> bool:
+    name = type(err).__name__.lower()
+    text = str(err).lower()
+    return "timeout" in name or "timeout" in text
+
+
+def _await_handle(handle, rpc_timeout: int, *, poll_s: int = 60):
+    """Poll one spawned call until it returns or the compile budget ends.
+
+    A single ``get(timeout=1200)`` raised while the container was still
+    compiling. That exception has no ``graphs`` field, so cover reported
+    ``graphs=missing``. A slice that times out is the same call, still
+    running. The handle is not cancelled: cancelling a compile drops the
+    snapshot this round is waiting to publish.
+    """
+    deadline = time.time() + max(1, int(rpc_timeout))
+    last: BaseException | None = None
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None, last or TimeoutError(
+                f"status still running after {rpc_timeout}s"
+            )
+        slice_s = max(1, min(int(poll_s), int(remaining)))
+        try:
+            return handle.get(timeout=slice_s), None
+        except Exception as err:
+            last = err
+            if not _is_wait_timeout(err):
+                return None, err
+            print(
+                f"  status still running; {int(remaining)}s left "
+                f"in the {rpc_timeout}s compile budget",
+                flush=True,
+            )
+
+
 def _timed_status(worker, rpc_timeout: int) -> dict:
     """One `status()` over RPC. Wall time includes the cold boot."""
     started = time.time()
     try:
-        status = worker().status.spawn().get(timeout=rpc_timeout)
-    except Exception as err:  # a spawn that never lands is a real finding
+        handle = worker().status.spawn()
+    except Exception as err:
+        return {"error": str(err), "wall_s": round(time.time() - started, 1)}
+    status, err = _await_handle(handle, rpc_timeout)
+    if err is not None:
         return {"error": str(err), "wall_s": round(time.time() - started, 1)}
     if not isinstance(status, dict):
         status = {"error": str(status)}
@@ -324,6 +370,15 @@ def _classify_row(status: dict, restore_s: float, compile_s: float) -> str:
     return placement_kind(
         float(status.get("wall_s") or 0), restore_s=restore_s, compile_s=compile_s
     )
+
+
+def _same_containers(results: list[dict], seen: set[str]) -> bool:
+    """True when every id in this round was already used by an earlier round."""
+    ids = [str(row.get("container_id") or "") for row in results]
+    present = [cid for cid in ids if cid]
+    if not present:
+        return False
+    return all(cid in seen for cid in present)
 
 
 def cover_variants(
@@ -355,15 +410,24 @@ def cover_variants(
     )
     streak_n = 0
     compiles = 0
+    seen: set[str] = set()
     target = max(1, streak)
     total_rounds = max(1, rounds)
     for round_i in range(total_rounds):
         if round_i and scaledown > 0:
-            wait = scaledown + 5
-            print(f"\nscale-to-zero: waiting {wait}s so the next placement is fresh …")
+            wait = fresh_gap_s(scaledown)
+            print(f"\nscale-to-zero: waiting {wait}s so the next placement is a new container …")
             time.sleep(wait)
         print(f"\n== cover round {round_i + 1}/{total_rounds} ==")
         results = _fanout_status(worker, containers, rpc_timeout)
+        if round_i and seen and _same_containers(results, seen) and scaledown > 0:
+            wait = fresh_gap_s(scaledown)
+            print(
+                f"round answered from a container this cover already used; "
+                f"waiting {wait}s for it to exit, then placing again"
+            )
+            time.sleep(wait)
+            results = _fanout_status(worker, containers, rpc_timeout)
         for i, status in enumerate(results):
             wall = float(status.get("wall_s") or 0)
             kind = _classify_row(status, restore_s, compile_s)
@@ -373,9 +437,19 @@ def cover_variants(
                 f"graphs={graphs or 'missing'} "
                 f"id={status.get('container_id')} {status.get('error') or ''}"
             )
-            if kind == "restore" and not str(graphs).startswith(("ok(", "recaptured(")):
+            fresh = cold_restore_counts(status, seen)
+            if kind == "restore" and fresh == "same-container":
+                print(
+                    f"    container {status.get('container_id')} already served "
+                    "this cover; not a cold restore"
+                )
+                kind = "failed"
+            elif kind == "restore" and fresh != "ok":
                 print(f"    graphs={graphs} is not a captured graph; streak does not count")
                 kind = "failed"
+            cid = str(status.get("container_id") or "")
+            if cid:
+                seen.add(cid)
             if kind == "compile":
                 compiles += 1
                 print(

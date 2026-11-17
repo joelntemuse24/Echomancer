@@ -34,6 +34,13 @@ export const WAIT = {
 } as const;
 
 /**
+ * Shown when the control endpoint keeps answering 5xx and no section exists.
+ * A processing clone book with no section otherwise stays on
+ * {@link WAIT.startingEngine}, which is what hid this for minutes.
+ */
+export const CLONE_ENGINE_FAILED = "The voice engine didn't start. Try again.";
+
+/**
  * A clone book that has been claimed and has not produced a section yet.
  * Extract (`waiting`, or `waiting_for_text`) is a different wait.
  */
