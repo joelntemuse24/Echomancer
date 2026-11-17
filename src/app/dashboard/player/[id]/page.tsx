@@ -19,6 +19,7 @@ import {
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
+import { playerShowsPlay } from "@/lib/library/card-play";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { playerStatusLine, UX } from "@/lib/ux-copy";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
@@ -298,7 +299,10 @@ function PlayerPageInner({ id }: { id: string }) {
   useEffect(() => {
     let stopped = false;
     const cached = peekJob<Job>(id);
-    const seeded = seededTakehomePlayback(cached, { forceStream, forceSegments });
+    const seeded =
+      cached && !playerShowsPlay(cached.status)
+        ? null
+        : seededTakehomePlayback(cached, { forceStream, forceSegments });
     if (seeded) {
       setAudioUrl(seeded.url);
       if (seeded.segmentIndex != null) setSegmentIndex(seeded.segmentIndex);
@@ -322,6 +326,10 @@ function PlayerPageInner({ id }: { id: string }) {
         rememberJobDetail(id, { job: j });
         if (stopped) return;
         setJob(j);
+        if (!playerShowsPlay(j.status)) {
+          setAudioUrl(null);
+          return;
+        }
 
         const isStream = forceStream || j.job_kind === "stream";
         if (isStream) {
@@ -364,6 +372,10 @@ function PlayerPageInner({ id }: { id: string }) {
 
   const jobStatus = job?.status;
   const jobKind = job?.job_kind;
+  useEffect(() => {
+    if (jobStatus !== "failed") return;
+    setAudioUrl(null);
+  }, [jobStatus]);
   useEffect(() => {
     if (!jobStatus) return;
     const isStream = forceStream || jobKind === "stream";
@@ -1299,6 +1311,7 @@ function PlayerPageInner({ id }: { id: string }) {
     provider: job.tts_provider,
   });
   const statusLine = playerStatusLine(job, narration.line);
+  const showPlay = playerShowsPlay(job.status);
 
   return (
     <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
@@ -1403,6 +1416,7 @@ function PlayerPageInner({ id }: { id: string }) {
       )}
 
       <div className="flex flex-col items-center gap-8 md:gap-10 mb-8">
+        {showPlay ? (
         <PlayerTransport
           audioReady={Boolean(audioUrl)}
           playing={isPlaying}
@@ -1417,8 +1431,9 @@ function PlayerPageInner({ id }: { id: string }) {
           onPrevious={() => skipTo(view.previous)}
           onNext={() => skipTo(view.next)}
         />
+        ) : null}
 
-        {audioUrl ? (
+        {showPlay && audioUrl ? (
           <>
             <PlayerSeekGroup
               currentTime={currentTime}
@@ -1467,7 +1482,7 @@ function PlayerPageInner({ id }: { id: string }) {
           ) : transcript ? (
             <ReadAlongTranscript
               document={streamClock ?? transcript}
-              onSeek={isStreamMode ? undefined : seekToChar}
+              onSeek={!showPlay || isStreamMode ? undefined : seekToChar}
               onToggleFullscreen={() => setFocus(true)}
               position={readAlongPosition}
             />
@@ -1479,7 +1494,8 @@ function PlayerPageInner({ id }: { id: string }) {
         <ReadAlongFocus
           document={streamClock ?? transcript}
           position={readAlongPosition}
-          onSeek={isStreamMode ? undefined : seekToChar}
+          onSeek={!showPlay || isStreamMode ? undefined : seekToChar}
+          playback={showPlay}
           bookTitle={job.book_title}
           statusLine={statusLine}
           chapterTitle={chapterNav ? view.dragLabel : null}

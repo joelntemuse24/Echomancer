@@ -84,11 +84,13 @@ export function DashboardChrome({
               <Link
                 href={CREATE_HREF}
                 prefetch={PREFETCH_SCREEN}
-                aria-label="New audiobook"
+                aria-label={NAV.newBook}
+                title={NAV.newBook}
                 onClick={() => prepareNewAudiobook()}
-                className="inline-flex h-11 w-11 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                className="inline-flex h-11 items-center justify-center gap-1.5 px-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+                <span>{NAV.newBook}</span>
               </Link>
               <AuthControls
                 identity={identity}

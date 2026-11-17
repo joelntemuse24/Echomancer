@@ -22,6 +22,48 @@
 > a cold GPU pool parks the book rather than switching narrator. See
 > `docs/s2-gpu-staging-runbook.md`.
 
+## Modal access for agents
+
+Workspace `ntemusejoel` credentials are the environment variables
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The Modal CLI and the Python SDK
+read those two variables. Never print them.
+
+Each variable must be only its own field. `MODAL_TOKEN_ID` is the `ak-…`
+value and `MODAL_TOKEN_SECRET` is the `as-…` value. A sentence, or the same
+string in both variables, is not a token: `modal token info` then reports
+`Token ID is malformed`.
+
+Allowed without further approval (read-only):
+
+- `modal token info` and `modal profile current`
+- `modal app list`
+- `modal container list`
+- `modal app logs` (read)
+- billing and usage reads
+
+Forbidden unless the owner explicitly approves that command:
+
+- `modal deploy`, `modal run`, `modal serve`
+- `modal app stop`, `modal container stop`
+- autoscaler changes, including `min_containers` and `max_containers`
+- any call that starts a GPU, including production HTTP endpoints and
+  `modal run …::cover`
+
+The production clone app is `echomancer-s2-clone`. It must stay
+`min_containers` 0 and `max_containers` 1. Never leave a GPU running. Do not
+change the live cap to enforce that; report what a read-only list shows.
+A container count above zero is a report, not a reason to stop or scale
+anything from an agent.
+
+`scripts/s2/post-deploy-cover.sh` unsets `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET` and forces `MODAL_PROFILE` (default `ntemusejoel`).
+That script also runs `modal run` and writes the autoscaler, so agents do
+not run it. `scripts/s2/set-live-autoscaler.py` and
+`scripts/s2/drain-stuck-calls.py` drop those env vars only when `--profile`
+is passed. With no profile, plain `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
+are what they use. Do not pass `--profile` to make a token work, and do not
+run those scripts to change the fleet.
+
 ## Product pricing
 
 - **Target:** ~**€4.50** per typical take-home book (a target, not a hard ceiling).
@@ -1316,7 +1358,7 @@ src/lib/paragraph-spans.ts # Blank-line paragraph offsets, one copy
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 in 0.05 steps, default 1× (not Fish speed)
-src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
+src/lib/player/seek.ts # ±10s skip (main player and focus) + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop + POST /extract

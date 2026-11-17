@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyClonePreviewRead,
   clonePreparingAfterTokenCheck,
+  PREVIEW_PREPARING_LABEL,
   previewControl,
   previewControlLabel,
 } from "./clone-preview-phase";
@@ -17,6 +18,13 @@ describe("classifyClonePreviewRead", () => {
     expect(classifyClonePreviewRead(200, null)).toBe("audio");
     expect(classifyClonePreviewRead(500, "PREVIEW_FAILED")).toBe("failed");
     expect(classifyClonePreviewRead(404, "PREVIEW_NOT_STORED")).toBe("failed");
+  });
+});
+
+describe("preview preparing label", () => {
+  it("is visible text, not only a spinner name", () => {
+    expect(PREVIEW_PREPARING_LABEL).toBe("Preparing preview…");
+    expect(PREVIEW_PREPARING_LABEL.length).toBeGreaterThan("Play".length);
   });
 });
 

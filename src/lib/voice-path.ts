@@ -1,3 +1,4 @@
+import { resolveStockSelection } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
 import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
@@ -106,6 +107,47 @@ export function voicesForPath<T extends PathVoice>(
     return walter ? [...slim, walter] : slim;
   }
   return voices.filter((voice) => isUserCloneVoice(voice));
+}
+
+/**
+ * Stock cards, then this person's clones. The clone panel still lists the
+ * clones; the main list and the new-book step use this so a `clone:` voice
+ * is selectable without opening that panel. A clone is never the default
+ * highlight — that stays the first stock id.
+ */
+export function voicesForMainList<T extends PathVoice>(voices: T[]): T[] {
+  const stock = voicesForPath(voices, "standard");
+  const clones = voicesForPath(voices, "clone");
+  const stockIds = new Set(stock.map((voice) => voice.id));
+  return [...stock, ...clones.filter((voice) => !stockIds.has(voice.id))];
+}
+
+/**
+ * Standard-path highlight. A chosen clone stays chosen. Stock auto-pick
+ * still runs only over stock ids, so a suggestion cannot land on a clone
+ * and a clone cannot become the default.
+ */
+export function selectionOnStandardPath(input: {
+  selectedId: string | null;
+  stockIds: readonly string[];
+  cloneIds: readonly string[];
+  explicitStockId?: string | null;
+  suggestedId?: string | null;
+  narratorTouched: boolean;
+}): string | null {
+  if (input.selectedId && input.cloneIds.includes(input.selectedId)) {
+    return input.selectedId;
+  }
+  const explicitId = input.narratorTouched
+    ? input.selectedId && input.stockIds.includes(input.selectedId)
+      ? input.selectedId
+      : input.explicitStockId
+    : null;
+  return resolveStockSelection({
+    availableIds: input.stockIds,
+    explicitId,
+    suggestedId: input.suggestedId,
+  });
 }
 
 export function withVoicePathParam(

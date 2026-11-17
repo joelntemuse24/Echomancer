@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, type RefObject } from "react";
+import { SKIP_SECONDS } from "@/lib/player/seek";
 
 export interface SessionActions {
   play: () => void;
@@ -74,10 +75,10 @@ export function useAudiobookSession(input: {
     setHandler(session, "pause", () => call()?.pause());
     if (seekable) {
       setHandler(session, "seekbackward", (details) => {
-        call()?.seekBy(-(details.seekOffset || 10));
+        call()?.seekBy(-(details.seekOffset || SKIP_SECONDS));
       });
       setHandler(session, "seekforward", (details) => {
-        call()?.seekBy(details.seekOffset || 10);
+        call()?.seekBy(details.seekOffset || SKIP_SECONDS);
       });
       setHandler(session, "seekto", (details) => {
         if (typeof details.seekTime === "number") call()?.seekTo(details.seekTime);

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   FINE_SEEK_WINDOW_SECONDS,
+  FOCUS_SKIP_SECONDS,
   SKIP_SECONDS,
+  skipAriaLabel,
   clampSeekSeconds,
   fineSeekAnchor,
   fineSeekBounds,
@@ -68,8 +70,11 @@ describe("fineSeekWindow", () => {
 });
 
 describe("thresholds", () => {
-  it("skips ten seconds", () => {
+  it("skips ten seconds on the main player and in focus mode", () => {
     expect(SKIP_SECONDS).toBe(10);
+    expect(FOCUS_SKIP_SECONDS).toBe(SKIP_SECONDS);
+    expect(skipAriaLabel("back")).toBe("Back 10 seconds");
+    expect(skipAriaLabel("forward")).toBe("Forward 10 seconds");
   });
 
   it("uses a two-minute precise window", () => {

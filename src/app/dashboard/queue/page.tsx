@@ -25,6 +25,7 @@ import {
   peekScreen,
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
+import { libraryCardCanOpen, libraryCardCanPlay } from "@/lib/library/card-play";
 import { generationStatus } from "@/lib/player/generation-status";
 import { libraryStatus, UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
@@ -243,17 +244,10 @@ export default function QueuePage() {
       : `/dashboard/player/${job.id}`;
   };
 
-  const canPlay = (job: Job): boolean =>
-    job.status === "ready" ||
-    job.job_kind === "stream" ||
-    (job.segments?.some((s) => s.status === "ready") ?? false);
+  const canPlay = (job: Job): boolean => libraryCardCanPlay(job);
 
   /** Open the player — including while generating, so progress is visible. */
-  const canOpen = (job: Job): boolean =>
-    canPlay(job) ||
-    job.status === "processing" ||
-    job.status === "queued" ||
-    job.status === "waiting";
+  const canOpen = (job: Job): boolean => libraryCardCanOpen(job);
 
   const openLabel = (job: Job): string => {
     if (canPlay(job)) return "Listen";

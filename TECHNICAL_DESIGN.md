@@ -2422,8 +2422,12 @@ corner of the landing and dashboard footers, at low opacity.
   upload or paste that id stays selected; the narrator suggestion does not
   replace it. **Clone a voice** is a row under the stock list
   (`?path=clone`, `src/lib/voice-path.ts`). It opens the clone form on the
-  same screen. The stock names stay. Opening it does not change the selected
-  voice (`voiceIdAfterPathChange`). YouTube clipping for an anonymous
+  same screen. Saved clones (`clone:<uuid>`) are also rows in that main list,
+  on the Voices page and on the new-book step, marked **Your clone**
+  (`voicesForMainList`). They stay selectable when the clone panel is closed.
+  The panel's **Your voices** list is the same set. Opening the panel does not
+  change the selected voice (`voiceIdAfterPathChange`). A chosen clone is not
+  replaced by the stock suggestion (`selectionOnStandardPath`). YouTube clipping for an anonymous
   session says to sign in (`GET /api/clips` `reason: "sign-in"`). The upload
   control is the one on this page.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.

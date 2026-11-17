@@ -7,7 +7,7 @@ import { PlayerSpeedControl } from "@/components/player-speed-control";
 import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import { BOOKMARK_LIST_DISMISS_EVENT, bookmarkEscapeTarget, bookmarkListKeyAction } from "@/lib/player/bookmarks";
-import { SKIP_SECONDS } from "@/lib/player/seek";
+import { FOCUS_SKIP_SECONDS, skipAriaLabel } from "@/lib/player/seek";
 import type { ReadAlongDocument, ReadAlongPosition } from "@/lib/player/read-along";
 import { cn } from "@/lib/utils";
 
@@ -56,12 +56,6 @@ const controlButton =
   "inline-flex items-center justify-center text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30";
 
 /**
- * Focus mode skips further than the inline transport, so a long book moves
- * in a few taps on a phone.
- */
-export const FOCUS_SKIP_SECONDS = SKIP_SECONDS + 5;
-
-/**
  * Focus (full-screen) read-along: the transcript fills the viewport with a
  * slim player bar pinned to the bottom. Uses the Fullscreen API where the
  * browser has it; iOS Safari has no element fullscreen, and some browsers
@@ -89,6 +83,7 @@ export function ReadAlongFocus({
   onScrubActiveChange,
   onSpeedChange,
   bookmarkControl,
+  playback = true,
 }: {
   document: ReadAlongDocument;
   position: ReadAlongPosition;
@@ -109,6 +104,8 @@ export function ReadAlongFocus({
   onScrubActiveChange: (dragging: boolean) => void;
   onSpeedChange: (next: number) => void;
   bookmarkControl?: ReactNode;
+  /** Failed books keep the transcript and hide play, skip, and the seek bar. */
+  playback?: boolean;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
   /** The same remembered preference the inline player bar uses. */
@@ -220,9 +217,15 @@ export function ReadAlongFocus({
 
       <div className="min-h-0 flex-1 px-3 pt-2 md:px-8">
         {/* No focus toggle inside the overlay: the header's Exit closes it. */}
-        <ReadAlongTranscript document={document} position={position} onSeek={onSeek} fullscreen />
+        <ReadAlongTranscript
+          document={document}
+          position={position}
+          onSeek={playback ? onSeek : undefined}
+          fullscreen
+        />
       </div>
 
+      {playback ? (
       <div className="shrink-0 border-t border-foreground/10 bg-background/95 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur">
         <div className="mx-auto w-full max-w-[65ch] px-4 md:px-0">
           <PlayerSeekGroup
@@ -244,7 +247,7 @@ export function ReadAlongFocus({
                 type="button"
                 onClick={() => onSkip(-FOCUS_SKIP_SECONDS)}
                 disabled={streamMode}
-                aria-label={`Back ${FOCUS_SKIP_SECONDS} seconds`}
+                aria-label={skipAriaLabel("back", FOCUS_SKIP_SECONDS)}
                 className={cn(controlButton, "min-h-12 min-w-12")}
               >
                 <SkipGlyph seconds={FOCUS_SKIP_SECONDS} direction="back" />
@@ -261,7 +264,7 @@ export function ReadAlongFocus({
                 type="button"
                 onClick={() => onSkip(FOCUS_SKIP_SECONDS)}
                 disabled={streamMode}
-                aria-label={`Forward ${FOCUS_SKIP_SECONDS} seconds`}
+                aria-label={skipAriaLabel("forward", FOCUS_SKIP_SECONDS)}
                 className={cn(controlButton, "min-h-12 min-w-12")}
               >
                 <SkipGlyph seconds={FOCUS_SKIP_SECONDS} direction="forward" />
@@ -271,6 +274,7 @@ export function ReadAlongFocus({
           </div>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

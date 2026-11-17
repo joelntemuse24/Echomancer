@@ -171,6 +171,8 @@ export function LandingPage() {
   };
 
   const handleSubmit = async () => {
+    // A file, pasted text, and a link all confirm on this page, then open
+    // the voice step. Paste does not skip a review the others have.
     if (mode === "paste") await handleSubmitPaste();
     else await handleSubmitDocument();
   };
