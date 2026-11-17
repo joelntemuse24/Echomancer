@@ -120,7 +120,7 @@ export function userFriendlyError(rawError: string | null): string {
   if (lower.includes("no audio sections") || lower.includes("no valid audio") || lower.includes("no text to synthesize"))
     return "Nothing was spoken. The file may be empty.";
   if (lower.includes("cancelled by user"))
-    return "Cancelled.";
+    return "Stopped.";
   if (lower.includes("partial failure"))
     return "Part of the book was made. Try again.";
   if (

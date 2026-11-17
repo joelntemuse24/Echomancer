@@ -18,7 +18,8 @@ export const UX = {
   generating: "Generating",
   starting: "Generating",
   failed: "Failed",
-  cancelled: "Cancelled",
+  /** A book the listener stopped. Deleted books are not in the library. */
+  cancelled: "Stopped",
   readyToPlay: "Ready to play",
 
   listeningPaused: "This listen stops here. Save the book.",
@@ -62,6 +63,19 @@ export function voiceEngineStarting(job: {
     return false;
   }
   return true;
+}
+
+/**
+ * The line under the title on the main player and in focus mode.
+ * A clone with no section yet says the engine is starting; otherwise the
+ * narration line (including Stopped) is the same on both surfaces.
+ */
+export function playerStatusLine(
+  job: Parameters<typeof voiceEngineStarting>[0],
+  narrationLine: string | null
+): string | null {
+  if (voiceEngineStarting(job)) return WAIT.startingEngine[0];
+  return narrationLine;
 }
 
 /** Voice step. Stock names stay on screen; clone is a row under them. */
@@ -154,8 +168,8 @@ export function libraryStatus(job: {
   job_kind?: string | null;
   segments?: Array<{ status: string }> | null;
 }): { id: LibraryStatus; label: string } {
-  // `cancelled` is deliberately distinct from `failed`: nothing went wrong, so
-  // offering "Retry" for it would misread the user's intent.
+  // A stopped book is distinct from `failed`: nothing went wrong, so
+  // offering "Retry" for it would misread the listener's intent.
   if (job.status === "cancelled") {
     return { id: "cancelled", label: UX.cancelled };
   }

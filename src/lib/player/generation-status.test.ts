@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptJobPoll, generationStatus } from "./generation-status";
+import { acceptJobPoll, commitUserStop, generationStatus } from "./generation-status";
 
 const providers = ["drew", "george", "sowell", "fish", "modal", "edge"] as const;
 
@@ -92,5 +92,22 @@ describe("acceptJobPoll", () => {
     expect(acceptJobPoll("cancelled", "cancelled")).toBe(true);
     expect(acceptJobPoll("processing", "cancelled")).toBe(true);
     expect(acceptJobPoll(null, "processing")).toBe(true);
+  });
+
+  it("writes the cancelled job onto the poll ref before the next paint", () => {
+    const holder = {
+      current: {
+        status: "processing",
+        error_message: null as string | null,
+        current_section: 1,
+      },
+    };
+    const next = commitUserStop(holder, holder.current);
+    expect(holder.current).toBe(next);
+    expect(holder.current.status).toBe("cancelled");
+    expect(holder.current.error_message).toBe("Cancelled by user");
+    expect(holder.current.current_section).toBe(1);
+    expect(acceptJobPoll(holder.current.status, "processing")).toBe(false);
+    expect(acceptJobPoll(holder.current.status, "queued")).toBe(false);
   });
 });

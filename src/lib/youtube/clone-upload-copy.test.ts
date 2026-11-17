@@ -18,5 +18,8 @@ describe("clone upload copy", () => {
     expect(youtubeClipNotice({ fileSelected: false, clipsEnabled: false })).toBe(
       YOUTUBE_COPY.clippingUnavailable
     );
+    expect(
+      youtubeClipNotice({ fileSelected: false, clipsEnabled: false, needsSignIn: true })
+    ).toBe(YOUTUBE_COPY.clippingNeedsSignIn);
   });
 });

@@ -155,3 +155,23 @@ export function acceptJobPoll(
     prevStatus === "ready" || prevStatus === "failed" || prevStatus === "cancelled";
   return !(terminal && OPEN.has(nextStatus));
 }
+
+/** The row Stop writes. The stored status stays `cancelled`; the player says Stopped. */
+export function jobAfterUserStop<T extends { status: string; error_message?: string | null }>(
+  job: T
+): T {
+  return { ...job, status: "cancelled", error_message: "Cancelled by user" } as T;
+}
+
+/**
+ * Stop must update the poll ref in the same turn as the state write.
+ * The ref is what an in-flight poll reads; the render effect is too late.
+ */
+export function commitUserStop<T extends { status: string; error_message?: string | null }>(
+  holder: { current: T | null },
+  job: T
+): T {
+  const next = jobAfterUserStop(job);
+  holder.current = next;
+  return next;
+}
