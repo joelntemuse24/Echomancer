@@ -14,6 +14,7 @@ import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { CLIP_CLIENT_WAIT_MS } from "@/lib/youtube/clip-policy";
 import { REFERENCE_QUALITY_COPY } from "@/lib/tts/reference-quality/config";
 import { proxyClipErrorCopy, YOUTUBE_COPY } from "@/lib/youtube/messages";
+import { youtubeClipNotice } from "@/lib/youtube/clone-upload-copy";
 import {
   clipPhaseFromStatus,
   clipWaitProgress,
@@ -596,6 +597,13 @@ export function YoutubeClipPicker({
     ? requested.startSeconds + requested.lengthSeconds
     : (range?.endSec ?? 0);
   const clipLabel = waitLabel(waitPhase);
+  const clipNotice = accessChecked
+    ? youtubeClipNotice({
+        fileSelected: hideUnavailable,
+        clipsEnabled: proxyEnabled,
+        needsSignIn: clipReason === "sign-in",
+      })
+    : null;
 
   return (
     <div className="w-full space-y-3">
@@ -780,11 +788,9 @@ export function YoutubeClipPicker({
         </div>
       ) : null}
 
-      {accessChecked && !proxyEnabled && !hideUnavailable ? (
+      {clipNotice ? (
         <p role="status" className="text-sm">
-          {clipReason === "sign-in"
-            ? YOUTUBE_COPY.clippingNeedsSignIn
-            : YOUTUBE_COPY.clippingUnavailable}
+          {clipNotice}
         </p>
       ) : null}
       {sampleUrl ? (

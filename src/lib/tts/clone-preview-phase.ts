@@ -32,3 +32,31 @@ export function previewControlLabel(input: {
   if (control === "stop") return `Stop ${input.name}`;
   return `Play ${input.name}`;
 }
+
+/**
+ * Preparing belongs to the attempt that showed it.
+ * A failed token check clears that attempt. A late write from the same
+ * attempt cannot put Preparing back once the token has moved. A newer
+ * attempt that already owns the flag is left alone.
+ */
+export function clonePreparingAfterTokenCheck(input: {
+  preparingId: string | null;
+  voiceId: string;
+  requestToken: number;
+  activeToken: number;
+  ownerToken: number;
+  show: boolean;
+}): { preparingId: string | null; ownerToken: number } {
+  const stale = input.requestToken !== input.activeToken;
+  const owns =
+    input.ownerToken === input.requestToken && input.preparingId === input.voiceId;
+  if (stale) {
+    if (owns) return { preparingId: null, ownerToken: 0 };
+    return { preparingId: input.preparingId, ownerToken: input.ownerToken };
+  }
+  if (input.show) {
+    return { preparingId: input.voiceId, ownerToken: input.requestToken };
+  }
+  if (owns) return { preparingId: null, ownerToken: 0 };
+  return { preparingId: input.preparingId, ownerToken: input.ownerToken };
+}

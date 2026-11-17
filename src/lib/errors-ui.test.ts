@@ -77,6 +77,10 @@ describe("userFriendlyError", () => {
     expect(userFriendlyError(MODAL_WORKSPACE_DISABLED_MESSAGE)).not.toMatch(/\$/);
   });
 
+  it("says Stopped when the listener stopped the book", () => {
+    expect(userFriendlyError("Cancelled by user")).toBe("Stopped.");
+  });
+
   it("passes clone quality fail copy through without rewriting or truncating", () => {
     const raw = `${CLONE_SAMPLE_QUALITY_COPY.failHeadline} ${CLONE_SAMPLE_QUALITY_COPY.failPrimary}`;
     expect(userFriendlyError(raw)).toBe(raw);

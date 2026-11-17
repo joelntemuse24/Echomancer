@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { voiceEngineStarting } from "./ux-copy";
+import { libraryStatus, playerStatusLine, voiceEngineStarting, WAIT } from "./ux-copy";
 
 describe("voiceEngineStarting", () => {
   it("is the clone book before the first section", () => {
@@ -40,5 +40,36 @@ describe("voiceEngineStarting", () => {
         segments: [{ path: "audiobooks/j/sections/0000.mp3", status: "ready" }],
       })
     ).toBe(false);
+  });
+});
+
+describe("playerStatusLine", () => {
+  it("uses the clone engine line on the main player and in focus", () => {
+    const job = { catalog_voice_id: "clone:abc", status: "processing" };
+    const line = playerStatusLine(job, "0 of 24 · 0% · Estimating…");
+    expect(line).toBe(WAIT.startingEngine[0]);
+    expect(line).toBe("Starting the clone voice…");
+  });
+
+  it("uses the narration line once the clone has a section, and for a stopped book", () => {
+    expect(
+      playerStatusLine(
+        { catalog_voice_id: "clone:abc", status: "processing", first_section_at: 1 },
+        "1 of 20 · 5% · under a minute left"
+      )
+    ).toBe("1 of 20 · 5% · under a minute left");
+    expect(
+      playerStatusLine({ catalog_voice_id: "drew", status: "cancelled" }, "Stopped")
+    ).toBe("Stopped");
+  });
+});
+
+describe("libraryStatus", () => {
+  it("says Stopped for a book the listener stopped", () => {
+    expect(libraryStatus({ status: "cancelled" })).toEqual({
+      id: "cancelled",
+      label: "Stopped",
+    });
+    expect(libraryStatus({ status: "failed" }).label).toBe("Failed");
   });
 });

@@ -65,6 +65,7 @@ import { requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   classifyClonePreviewRead,
+  clonePreparingAfterTokenCheck,
   previewControlLabel,
 } from "@/lib/tts/clone-preview-phase";
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
@@ -298,6 +299,7 @@ export default function VoiceSelectionPage() {
   const [previewPreparingId, setPreviewPreparingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const previewTokenRef = useRef(0);
+  const previewOwnerRef = useRef(0);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
@@ -677,6 +679,40 @@ export default function VoiceSelectionPage() {
     return `/api/tts/live?${liveParams.toString()}`;
   };
 
+  const applyPreparing = (voiceId: string, token: number, show: boolean) => {
+    // Read the token inside the update. A Stop that already moved it must not
+    // be overwritten by a Preparing write queued just before the click.
+    setPreviewPreparingId((current) =>
+      clonePreparingAfterTokenCheck({
+        preparingId: current,
+        voiceId,
+        requestToken: token,
+        activeToken: previewTokenRef.current,
+        ownerToken: previewOwnerRef.current,
+        show,
+      }).preparingId
+    );
+    const next = clonePreparingAfterTokenCheck({
+      preparingId: previewOwnerRef.current === token ? voiceId : null,
+      voiceId,
+      requestToken: token,
+      activeToken: previewTokenRef.current,
+      ownerToken: previewOwnerRef.current,
+      show,
+    });
+    previewOwnerRef.current = next.ownerToken;
+  };
+
+  /** A stopped or replaced attempt drops Preparing. A newer attempt keeps its own. */
+  const releasePreview = (voiceId: string, token: number) => {
+    const owner = previewOwnerRef.current;
+    if (owner !== 0 && owner !== token) return;
+    previewOwnerRef.current = 0;
+    setPreviewPreparingId((current) => (current === voiceId ? null : current));
+    setPreviewLoading((current) => (current === voiceId ? null : current));
+    setPreviewingId((current) => (current === voiceId ? null : current));
+  };
+
   /**
    * A saved clone's preview URL: the stored MP3, or one explicit render.
    *
@@ -728,23 +764,37 @@ export default function VoiceSelectionPage() {
 
     try {
       const first = await readStored();
-      if (!current()) return null;
+      if (!current()) {
+        releasePreview(voice.id, token);
+        return null;
+      }
       if (first.kind === "audio") return first.url;
       if (first.kind === "failed") return null;
 
       // The request path does not render. The worker bakes the clip.
-      setPreviewPreparingId(voice.id);
+      applyPreparing(voice.id, token, true);
+      if (!current()) {
+        releasePreview(voice.id, token);
+        return null;
+      }
       toast.message("Preparing preview");
       for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
-        if (!current()) return null;
+        if (!current()) {
+          releasePreview(voice.id, token);
+          return null;
+        }
         const ready = await readStored();
-        if (!current()) return null;
+        if (!current()) {
+          releasePreview(voice.id, token);
+          return null;
+        }
         if (ready.kind === "audio") return ready.url;
         if (ready.kind === "failed") return null;
       }
       return null;
     } catch {
+      if (!current()) releasePreview(voice.id, token);
       return null;
     }
   };
@@ -758,6 +808,7 @@ export default function VoiceSelectionPage() {
     const preparingThis = previewPreparingId === voice.id;
     if (playingThis || preparingThis) {
       previewTokenRef.current += 1;
+      previewOwnerRef.current = 0;
       const kept = voiceIdAfterRowAction({
         action: "stop-preview",
         voiceId: voice.id,
@@ -792,16 +843,22 @@ export default function VoiceSelectionPage() {
     });
     if (next) selectVoice(next, { dismissSample: !isClonedVoice(voice) });
     const token = ++previewTokenRef.current;
+    previewOwnerRef.current = token;
     setPreviewingId(null);
     setPreviewPreparingId(isClonedVoice(voice) ? voice.id : null);
     setPreviewLoading(voice.id);
 
     const audio = getPreviewAudio();
     const still = () => previewTokenRef.current === token;
+    const stoppedDuringPreview = () => {
+      if (still()) return false;
+      releasePreview(voice.id, token);
+      return true;
+    };
     // A pause we asked for is not an error, so only a real failure reaches the
     // toast. `onEnd` and `onError` both leave the row idle again.
     const clearPreview = () => {
-      if (!still()) return;
+      if (stoppedDuringPreview()) return;
       setPreviewingId(null);
       setPreviewPreparingId(null);
       setPreviewLoading(null);
@@ -814,7 +871,7 @@ export default function VoiceSelectionPage() {
       clearPreview();
     };
     const markPlaying = () => {
-      if (!still()) return;
+      if (stoppedDuringPreview()) return;
       setPreviewLoading(null);
       setPreviewPreparingId(null);
       setPreviewingId(voice.id);
@@ -826,7 +883,7 @@ export default function VoiceSelectionPage() {
         onStart: markPlaying,
         onEnd: samplePlayed,
       });
-      if (!still()) return;
+      if (stoppedDuringPreview()) return;
       if (outcome === "played") {
         markPlaying();
         return;
@@ -848,14 +905,14 @@ export default function VoiceSelectionPage() {
             clearPreview();
           },
         });
-        if (!still()) return;
+        if (stoppedDuringPreview()) return;
         if (result === "played") {
           browserSpeechActiveRef.current = true;
           markPlaying();
           return;
         }
       } catch (e: unknown) {
-        if (!still()) return;
+        if (stoppedDuringPreview()) return;
         toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
         clearPreview();
         return;
@@ -872,7 +929,7 @@ export default function VoiceSelectionPage() {
         // and a fallback there is how a different engine's take once got
         // stored as this clone's preview.
         const url = await clonedPreviewUrl(voice, token);
-        if (!still()) return;
+        if (stoppedDuringPreview()) return;
         if (!url) {
           clearPreview();
           toast.error("Couldn't play the sample. Try again.");
@@ -902,7 +959,7 @@ export default function VoiceSelectionPage() {
         onEnd: samplePlayed,
         onError: sampleFailed,
       });
-      if (!still()) return;
+      if (stoppedDuringPreview()) return;
       if (outcome === "played") markPlaying();
       else if (outcome !== "interrupted") clearPreview();
       return;
@@ -936,7 +993,7 @@ export default function VoiceSelectionPage() {
       });
       if (still() && outcome === "played") markPlaying();
     } catch (e: unknown) {
-      if (!still()) return;
+      if (stoppedDuringPreview()) return;
       clearPreview();
       toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
     }
