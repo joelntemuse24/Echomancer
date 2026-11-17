@@ -68,10 +68,13 @@ def query_call_id(request) -> str:
 
 
 def request_op(payload, query: str = "") -> str:
-    """``probe`` names the protocol. ``submit`` renders. The others address an id."""
+    """``probe`` names the protocol. ``lookup`` reads the Dict. ``submit`` renders."""
     body = payload if isinstance(payload, dict) else {}
     if body.get("probe") is True:
         return "probe"
+    # A book body is never a lookup: items would spawn. Lookup is the key only.
+    if body.get("lookup") is True and not body.get("items") and not body.get("text"):
+        return "lookup"
     call_id = str(body.get("call_id") or query or "").strip()
     if body.get("cancel") is True and call_id:
         return "cancel"
@@ -139,6 +142,19 @@ def _stored_call(store, key: str, now: float) -> str:
     if at <= 0 or now - at > IDEMPOTENCY_TTL_S:
         return ""
     return str(row.get("call_id") or "").strip()
+
+
+def lookup_stored_call(key: str, store, now: float) -> dict:
+    """The Dict row for this key. This does not spawn."""
+    found = _stored_call(store, key, now) if key and store is not None else ""
+    if not found:
+        return {
+            "status": "absent",
+            "protocol": CONTROL_PROTOCOL,
+            "protocol_version": CONTROL_PROTOCOL_VERSION,
+            "terminal": False,
+        }
+    return _status(found, "pending", idempotent=True)
 
 
 def submit_render(payload, spawn, *, store=None, now=None) -> dict:
@@ -249,6 +265,10 @@ def handle_remote_request(
     if op == "probe":
         return protocol_body()
     body = payload if isinstance(payload, dict) else {}
+    if op == "lookup":
+        key = str(body.get("idempotency_key") or "").strip()
+        moment = time.time() if now is None else float(now)
+        return lookup_stored_call(key, store, moment)
     call_id = str(body.get("call_id") or query_call_id or "").strip()
     if op == "cancel":
         if lookup is None:

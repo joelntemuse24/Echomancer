@@ -18,6 +18,8 @@ import {
   planHealthCheck,
   planWatchdog,
   noteFlightPolled,
+  noteFlightNotFound,
+  clearFlightNotFound,
   remoteFlights,
   setRemoteEventSink,
   setRemoteFlightStamp,
@@ -25,7 +27,12 @@ import {
   takeDrainRequests,
 } from "@/lib/remote/layer";
 import { runModalCli } from "@/lib/remote/modal-cli";
-import { isTerminalS2Status, pollS2Call } from "@/lib/tts/providers/modal-clone-call";
+import {
+  isTerminalS2Status,
+  pollS2Call,
+  resolveOpenS2Keys,
+  S2_NOT_FOUND_RECONCILE_MS,
+} from "@/lib/tts/providers/modal-clone-call";
 import {
   clearActiveBrake,
   hydrateOpenRemoteCalls,
@@ -143,11 +150,14 @@ function outcomeForTerminalStatus(status: string): "success" | "cancelled" | "fa
  *
  * Startup and the hourly pass both call this. The window moves, so an id
  * that stays pending does not keep every later id waiting another hour.
- * A transport problem, or NotFound while the input may still be pending,
- * stays `unknown` and the flight stays live. `expired` is terminal, so
- * the next tick may submit again. The cap is one pass, not a loop.
+ * A transport problem stays `unknown` and the flight stays live.
+ * NotFound stays live until it is older than the render wait plus a margin,
+ * then it settles like `expired`. `expired` is terminal. A key with no stored
+ * id is read from the Dict first, so a spawned call is not left untracked.
+ * The cap is one pass, not a loop.
  */
 export async function pollStoredS2Calls(limit = STORED_ID_POLL_LIMIT): Promise<number> {
+  await resolveOpenS2Keys().catch(() => undefined);
   const open = remoteFlights()
     .filter(
       (flight) =>
@@ -165,11 +175,24 @@ export async function pollStoredS2Calls(limit = STORED_ID_POLL_LIMIT): Promise<n
     if (!callId) continue;
     noteFlightPolled(callId);
     let status = "unknown";
+    let error = "";
     try {
-      status = (await pollS2Call(callId)).status;
+      const read = await pollS2Call(callId);
+      status = read.status;
+      error = read.error ?? "";
     } catch {
       status = "unknown";
     }
+    const notPublished = status === "not_found" || error === "not_published";
+    if (notPublished) {
+      const age = noteFlightNotFound(callId);
+      if (age >= S2_NOT_FOUND_RECONCILE_MS) {
+        settleFlightCall(callId, "failure");
+        settled += 1;
+      }
+      continue;
+    }
+    clearFlightNotFound(callId);
     if (!isTerminalS2Status(status)) continue;
     settleFlightCall(callId, outcomeForTerminalStatus(status));
     settled += 1;

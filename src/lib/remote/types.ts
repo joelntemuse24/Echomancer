@@ -17,7 +17,10 @@ export type RemoteProvider = (typeof REMOTE_PROVIDERS)[number];
 
 export type RemotePath = "book" | "warm" | "cover" | "preview" | "health";
 
-/** Terminal rows are success, failure, cancelled, timeout. still_live is not. */
+/**
+ * Terminal rows are success, failure, cancelled, timeout.
+ * still_live and submit_unconfirmed are not: the call may still be on Modal.
+ */
 export type RemoteOutcome =
   | "started"
   | "success"
@@ -25,6 +28,7 @@ export type RemoteOutcome =
   | "cancelled"
   | "timeout"
   | "still_live"
+  | "submit_unconfirmed"
   | "refused"
   | "joined";
 

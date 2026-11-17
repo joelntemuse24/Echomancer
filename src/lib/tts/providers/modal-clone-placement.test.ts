@@ -77,9 +77,13 @@ function setup(opts?: {
       items?: unknown;
       call_id?: string;
       probe?: boolean;
+      lookup?: boolean;
     };
     if (payload.probe) {
       return jsonResponse({ protocol: "s2-submit-poll", protocol_version: 1, status: "ok" });
+    }
+    if (payload.lookup) {
+      return jsonResponse({ status: "absent", terminal: false });
     }
     const signal = init?.signal;
     if (payload.items) {

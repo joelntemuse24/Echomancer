@@ -1586,7 +1586,9 @@ def _lookup_call(call_id: str):
 )
 @modal.fastapi_endpoint(method="POST", docs=False)
 def s2_control(payload: dict, request: Request):
-    """Accept, poll, or cancel one render. This container has no GPU.
+    """Accept, poll, cancel, or look up one render. This container has no GPU.
+
+    ``{lookup: true, idempotency_key}`` reads the Dict and does not spawn.
 
     A cold start is the small image, not an H100 restore. ``render_batch.spawn``
     places the GPU work and returns its id. Status and cancel use

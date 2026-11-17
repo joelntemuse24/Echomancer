@@ -2799,7 +2799,13 @@ async function runClaimedTick(
             // followed by audio does not accumulate.
             await publishChain.catch(() => undefined);
             const aborted = new Set(dispatch.abortedIndexes);
-            const charge = dispatch.missing.filter((index) => !aborted.has(index));
+            const sameKey = new Set([
+              ...dispatch.unconfirmedIndexes,
+              ...dispatch.settledNotFoundIndexes,
+            ]);
+            const charge = dispatch.missing.filter(
+              (index) => !aborted.has(index) && !sameKey.has(index)
+            );
             if (charge.length > 0 && !dispatch.cold && !dispatch.providerFault) {
               await writeLock(async () => {
                 for (const index of charge) {
@@ -2920,6 +2926,34 @@ async function runClaimedTick(
             }
           }
 
+          if (
+            dispatch &&
+            clonePin === "modal" &&
+            dispatch.settledNotFoundIndexes.length > 0 &&
+            dispatch.staged === 0
+          ) {
+            // The call is settled and the key stays. Park so cover is free
+            // and a book that keeps missing still reaches the Fish clock.
+            const outcome = await deferForColdClonePool({
+              jobId,
+              lease,
+              job,
+              stagedCount: dispatch.staged,
+              notBeforeSec: 30,
+              reason: "timeout",
+            });
+            if (outcome.park) {
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+            if (outcome.switched || modalCloneDeferMs() <= 0) clonePin = "fish";
+          }
+
           if (clonePin === "modal") {
             // Nothing was staged at the start of the tick, so the player still
             // needs a window of the takes this GPU call just wrote. Later
@@ -2945,15 +2979,22 @@ async function runClaimedTick(
             // backoff holds the next POST. A 429 is busy, not cold. Falling
             // through into per-section synthesizeModalClone used to hold up
             // to modalCloneLanes() slots and start more H100s.
+            // An unconfirmed accept and a settled NotFound keep the same key.
+            const sameKeyMiss = new Set([
+              ...(dispatch?.unconfirmedIndexes ?? []),
+              ...(dispatch?.settledNotFoundIndexes ?? []),
+            ]);
             if (
               dispatch &&
+              clonePin === "modal" &&
               !dispatch.cold &&
               !dispatch.providerFault &&
               dispatch.busy === 0 &&
-              dispatch.missing.length > 0
+              dispatch.missing.some((index) => !sameKeyMiss.has(index))
             ) {
               await writeLock(async () => {
                 for (const index of dispatch.missing) {
+                  if (sameKeyMiss.has(index)) continue;
                   const prev = segments.find((segment) => segment.index === index);
                   const ledger = cloneDropLedger(prev);
                   segments = upsertSegment(segments, {

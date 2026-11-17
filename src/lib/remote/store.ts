@@ -81,7 +81,7 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
               call_id, call_tag, outcome, started_at, est_cost_usd
        FROM remote_calls
        WHERE rowid IN (SELECT MAX(rowid) FROM remote_calls GROUP BY flight_key)
-         AND outcome IN ('started', 'still_live')`
+         AND outcome IN ('started', 'still_live', 'submit_unconfirmed')`
     );
     for (const row of rows) {
       const startedAt = asMs(Number(row.started_at)) || now;
@@ -92,7 +92,12 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
         path: row.path,
         jobId: row.job_id ?? undefined,
         sections: row.section_key ? row.section_key.split(",").filter(Boolean) : [],
-        status: row.outcome === "still_live" ? "still_live" : "running",
+        status:
+          row.outcome === "still_live"
+            ? "still_live"
+            : row.outcome === "submit_unconfirmed"
+              ? "submit_unconfirmed"
+              : "running",
         callId: row.call_id ?? undefined,
         tag: row.call_tag ?? undefined,
         startedAt,

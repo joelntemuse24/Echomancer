@@ -118,6 +118,7 @@ import {
   resetS2ControlForTests,
   s2ControlOrigin,
   s2IdempotencyKey,
+  S2ControlUnavailable,
   S2ProtocolMismatch,
   submitThenPoll,
 } from "@/lib/tts/providers/modal-clone-call";
@@ -629,6 +630,7 @@ export async function renderModalCloneBatch(
         // H100 list price is about $0.001097/s. The estimate is for the
         // budget, not an invoice.
         estCostUsd: opts?.workMs ? (opts.workMs / 1000) * 0.001097 : 0.05,
+        idempotencyKey: s2IdempotencyKey(jobId, sections, opts?.seedEpoch ?? 0),
       })
     : null;
   if (admitted?.kind === "join") return admitted.promise as Promise<CloneBatchOutcome>;
@@ -659,12 +661,15 @@ export async function renderModalCloneBatch(
   } catch (err) {
     const stopped = Boolean(jobId && isBookHalted(jobId));
     const aborted = err instanceof ModalCloneColdError && err.clientAborted;
+    const unconfirmed = err instanceof S2ControlUnavailable && !err.giveUp;
     if (aborted && jobId) noteDrainRequested(jobId);
     // A client abort, including Stop, means the Modal input may still be
     // compiling. cancelled would let the next process POST again. The id
-    // stays still_live until a terminal cancel.
+    // stays still_live until a terminal cancel. An accept with no id is
+    // submit_unconfirmed: the same key is posted again, and the attempt
+    // does not move. giveUp is the bounded miss after an empty lookup.
     admitted?.finish(
-      aborted ? "still_live" : stopped ? "cancelled" : "failure",
+      unconfirmed ? "submit_unconfirmed" : aborted ? "still_live" : stopped ? "cancelled" : "failure",
       err instanceof Error ? err.message : String(err)
     );
     throw err;

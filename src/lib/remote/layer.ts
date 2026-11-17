@@ -28,7 +28,14 @@ export function isTerminalOutcome(outcome: RemoteOutcome): boolean {
   return TERMINAL.has(outcome);
 }
 
-export type FlightStatus = "running" | "still_live" | "success" | "failure" | "cancelled" | "timeout";
+export type FlightStatus =
+  | "running"
+  | "still_live"
+  | "submit_unconfirmed"
+  | "success"
+  | "failure"
+  | "cancelled"
+  | "timeout";
 
 export type Flight = {
   key: string;
@@ -43,6 +50,8 @@ export type Flight = {
   callId?: string;
   /** Last time reconcile read this id. Unset sorts first, so the window rotates. */
   polledAt?: number;
+  /** First time a poll of this id came back NotFound. Age is measured from here. */
+  notFoundSince?: number;
   /** `echo:<job>:<sections>:<nonce>` sent on the request so a listing can find it. */
   tag?: string;
   startedAt: number;
@@ -239,7 +248,11 @@ function record(partial: Omit<RemoteEvent, "id" | "startedAt"> & { startedAt?: n
 }
 
 export function hydrateRemoteFlight(flight: Flight): void {
-  if (flight.status === "running" || flight.status === "still_live") {
+  if (
+    flight.status === "running" ||
+    flight.status === "still_live" ||
+    flight.status === "submit_unconfirmed"
+  ) {
     flights.set(flight.key, flight);
   }
 }
@@ -605,6 +618,105 @@ export function setFlightCallId(key: string, callId: string): void {
   stampSink?.(flight);
 }
 
+/**
+ * A Dict lookup found the call that an accept never returned.
+ * The flight becomes still_live so poll, drain, and cover can see it.
+ * A newer flight for the same sections is left alone; the id is stored
+ * beside it so a spawned call is not dropped.
+ */
+export function adoptFlightCall(idempotencyKey: string, callId: string): boolean {
+  const key = idempotencyKey.trim();
+  const id = callId.trim();
+  if (!key || !id) return false;
+  let adopted = false;
+  for (const flight of flights.values()) {
+    if (flight.idempotencyKey !== key) continue;
+    if (flight.callId && flight.callId !== id) continue;
+    if (
+      flight.status !== "submit_unconfirmed" &&
+      flight.status !== "running" &&
+      flight.status !== "still_live" &&
+      flight.status !== "failure"
+    ) {
+      continue;
+    }
+    flight.callId = id;
+    if (flight.status === "submit_unconfirmed" || flight.status === "failure") {
+      flight.status = "still_live";
+    }
+    stampSink?.(flight);
+    adopted = true;
+  }
+  return adopted;
+}
+
+/** Remember an id whose flight row was already replaced by a later attempt. */
+export function rememberTrackedCall(input: {
+  idempotencyKey: string;
+  callId: string;
+  jobId?: string;
+  sections?: string[];
+}): void {
+  const id = input.callId.trim();
+  if (!id) return;
+  for (const flight of flights.values()) {
+    if (flight.callId === id) return;
+  }
+  const sections = input.sections ?? [];
+  const key = `s2-clone|${input.jobId ?? "-"}|${sections.join(",")}|tracked|${id}`;
+  const flight: Flight = {
+    key,
+    idempotencyKey: input.idempotencyKey,
+    provider: "s2-clone",
+    path: "book",
+    jobId: input.jobId,
+    sections,
+    status: "still_live",
+    callId: id,
+    startedAt: Date.now(),
+    estCostUsd: 0,
+    estMs: 0,
+  };
+  flights.set(key, flight);
+  stampSink?.(flight);
+}
+
+/** How long a stored id has been NotFound. The first observation starts the clock. */
+export function noteFlightNotFound(callId: string, now = Date.now()): number {
+  const id = callId.trim();
+  if (!id) return 0;
+  let age = 0;
+  for (const flight of flights.values()) {
+    if (flight.callId !== id) continue;
+    if (
+      flight.status !== "running" &&
+      flight.status !== "still_live" &&
+      flight.status !== "submit_unconfirmed"
+    ) {
+      continue;
+    }
+    if (!flight.notFoundSince) flight.notFoundSince = now;
+    age = Math.max(age, now - flight.notFoundSince);
+  }
+  return age;
+}
+
+export function clearFlightNotFound(callId: string): void {
+  const id = callId.trim();
+  if (!id) return;
+  for (const flight of flights.values()) {
+    if (flight.callId === id) flight.notFoundSince = undefined;
+  }
+}
+
+/** Tests age a NotFound observation without waiting out the render budget. */
+export function rewindFlightNotFoundForTests(callId: string, ms: number): void {
+  const id = callId.trim();
+  for (const flight of flights.values()) {
+    if (flight.callId === id && flight.notFoundSince) flight.notFoundSince -= ms;
+  }
+}
+
 /** Remember that this id was read, so the next pass starts at an older one. */
 export function noteFlightPolled(callId: string, at = Date.now()): void {
   const id = callId.trim();
@@ -623,10 +735,16 @@ export function settleFlightCall(
   outcome: FlightStatus,
   now = Date.now()
 ): void {
-  if (outcome === "running" || outcome === "still_live") return;
+  if (outcome === "running" || outcome === "still_live" || outcome === "submit_unconfirmed") return;
   for (const flight of flights.values()) {
     if (flight.callId !== callId) continue;
-    if (flight.status !== "running" && flight.status !== "still_live") continue;
+    if (
+      flight.status !== "running" &&
+      flight.status !== "still_live" &&
+      flight.status !== "submit_unconfirmed"
+    ) {
+      continue;
+    }
     flight.status = outcome;
     flight.endedAt = now;
     flight.promise = undefined;
@@ -1051,7 +1169,8 @@ export function everyStartHasAnEnd(log: readonly RemoteEvent[] = events): boolea
       event.outcome === "failure" ||
       event.outcome === "cancelled" ||
       event.outcome === "timeout" ||
-      event.outcome === "still_live"
+      event.outcome === "still_live" ||
+      event.outcome === "submit_unconfirmed"
     ) {
       open.set(event.flightKey, (open.get(event.flightKey) ?? 0) - 1);
     }

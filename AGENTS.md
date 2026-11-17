@@ -783,17 +783,22 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   `min_containers` stays 0. A placement that already missed its restore
   budget does not kick `::cover` for that book while its flight is `running`
   or `still_live`. Once the flight has a function-call id, that call also
-  blocks cover for every other book. The book path is submit-then-poll on
+  blocks cover for every other book.   The book path is submit-then-poll on
   the CPU endpoint `s2_control` (`MODAL_S2_CONTROL_URL`): it spawns the H100
   `render_batch`, returns the FunctionCall id before any waiting, and Stop
   cancels that id on the same CPU host. Poll and cancel never enter the GPU
   class. A batch body uses that host whenever the URL is set. A cold start
-  retries the same idempotency key until the control deadline, then fails
-  the section. The synchronous GPU post is used when the URL is unset, or
-  when the control body names a different protocol. A `{text}` post stays
-  on `MODAL_S2_SYNTHESIZE_URL`. Deploying this app rebuilds the H100
-  snapshots, because `render_batch` is on `S2CloneWorker`. Run `::cover`
-  after that deploy, then restart the worker.
+  retries the same idempotency key until the control deadline. An accept
+  that ends with no id is `submit_unconfirmed`: the attempt does not move,
+  the next tick posts that same key, and `{lookup:true}` reads the Dict
+  without spawning. The section fails only after three empty lookups or
+  135s, and that failure looks the key up once more so a late id is stored
+  for cancel. NotFound stays on that key. After the render wait plus 30s
+  it settles like `expired` and cover is free. The synchronous GPU post is
+  used when the URL is unset, or when the control body names a different
+  protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
+  this app rebuilds the H100 snapshots, because `render_batch` is on
+  `S2CloneWorker`. Run `::cover` after that deploy, then restart the worker.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2

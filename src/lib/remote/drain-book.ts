@@ -9,7 +9,7 @@ import {
 } from "@/lib/remote/layer";
 import { runModalCli } from "@/lib/remote/modal-cli";
 import { clearActiveBrake, saveActiveBrake } from "@/lib/remote/store";
-import { cancelS2Call } from "@/lib/tts/providers/modal-clone-call";
+import { cancelS2Call, resolveOpenS2Keys } from "@/lib/tts/providers/modal-clone-call";
 
 let testHooks: DrainOps | null = null;
 
@@ -120,6 +120,7 @@ function productionOps(app: string): DrainOps {
  */
 export async function drainBookCalls(jobId: string, reason: string): Promise<DrainReport | null> {
   haltBook(jobId, reason);
+  await resolveOpenS2Keys(jobId).catch(() => undefined);
   const callIds = bookCallIds(jobId);
   const app = process.env.S2C_APP_NAME?.trim() || "echomancer-s2-clone";
   if (!testHooks && (process.env.VITEST || !process.env.MODAL_TOKEN_ID)) return null;

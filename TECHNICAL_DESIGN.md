@@ -2881,10 +2881,13 @@ same endpoint with `{call_id}` or `?call_id=` returns status via
 the drain cancel by that HTTP call. There is no function-call listing and
 no tag match: the CLI listing does not include the request body. A timeout
 after the id is stored stays `still_live` until that id is terminal.
-`expired` is a terminal miss. NotFound on `get()` stays unknown: the input
-may still be pending, so the same id is polled and one resubmit uses the
-same idempotency key. A poll that is not OK, or whose body is not JSON,
-stays unknown and is polled again; it does not finish the flight. Startup
+`expired` is a terminal miss. NotFound on `get()` stays unknown
+(`error: not_published`): the input may still be pending, so the same id
+is polled and one resubmit uses the same idempotency key. After the render
+wait plus 30s of that miss, the flight settles like `expired` and no longer
+blocks `::cover`. The attempt does not move. A poll that is not OK, or whose
+body is not JSON, stays unknown and is polled again; it does not finish the
+flight. Startup
 and the hourly pass read the oldest-polled stored ids, eight per pass, so
 a pending prefix cannot starve the rest. A completed HTTP response, including an abort
 of Fish, Kokoro, or Modal CPU, is retryable. `still_live` is not cleared
@@ -2899,10 +2902,15 @@ Deploy the Modal app, run `::cover`, then restart the worker with
 `MODAL_S2_CONTROL_URL`. The deploy rebuilds `S2CloneWorker` GPU snapshots,
 so `::cover` after the deploy is mandatory. A batch body uses submit-poll
 whenever that URL is set. A timeout or a 5xx retries the same idempotency
-key until the control deadline and then fails the section. The GPU post
-is used when the URL is unset, or when the control body names a different
-protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. A body that
-already contains `items` inside the accept window is still the finished audio.
+key until the control deadline. The window then reads the Dict with
+`{lookup:true, idempotency_key}` and does not spawn. No id is
+`submit_unconfirmed`: the attempt stays, and the next tick posts the same
+key. Three empty lookups, or 135s, fail the section, and that last lookup
+is stored when it finds an id. Reconcile and drain resolve a key that has
+no stored id the same way. The GPU post is used when the URL is unset, or
+when the control body names a different protocol. A `{text}` post stays on
+`MODAL_S2_SYNTHESIZE_URL`. A body that already contains `items` inside the
+accept window is still the finished audio.
 
 `FunctionCall.cancel(terminate_containers=True)` is followed by a status
 read. A pending read, or a thrown NotFound with no terminal status, is

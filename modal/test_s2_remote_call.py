@@ -103,6 +103,44 @@ def test_a_repeated_submit_returns_the_stored_id():
     assert len(spawned) == 2
 
 
+def test_lookup_by_key_returns_the_stored_id_and_does_not_spawn():
+    store = _Store()
+    spawned = []
+
+    def spawn(_payload):
+        spawned.append(object())
+        return _Call(object_id=f"fc-{len(spawned)}")
+
+    payload = {
+        "items": [{"key": "0", "text": "Hello."}],
+        "idempotency_key": "book-1:0:0",
+    }
+    remote.submit_render(payload, spawn, store=store, now=1_000)
+    assert remote.request_op({"lookup": True, "idempotency_key": "book-1:0:0"}) == "lookup"
+    # A book body is still a submit, even if lookup is also set.
+    assert remote.request_op({**payload, "lookup": True}) == "submit"
+    looked = remote.handle_remote_request(
+        {"lookup": True, "idempotency_key": "book-1:0:0"},
+        spawn=spawn,
+        store=store,
+        now=1_001,
+    )
+    assert looked["call_id"] == "fc-1"
+    assert looked["status"] == "pending"
+    assert looked["idempotent"] is True
+    assert len(spawned) == 1
+    missing = remote.handle_remote_request(
+        {"lookup": True, "idempotency_key": "book-1:9:0"},
+        spawn=spawn,
+        store=store,
+        now=1_002,
+    )
+    assert missing["status"] == "absent"
+    assert "call_id" not in missing
+    assert missing["terminal"] is False
+    assert len(spawned) == 1
+
+
 def test_submit_reads_function_call_id_when_object_id_is_absent():
     class Spawned:
         function_call_id = "fc-alt"
