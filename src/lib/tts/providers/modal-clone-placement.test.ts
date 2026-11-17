@@ -155,7 +155,7 @@ describe("first-light placement budget", () => {
       renderModalCloneBatch(item, reference, undefined, "job-never", {
         raceForFirstAudio: true,
       })
-    ).rejects.toBeInstanceOf(ModalCloneColdError);
+    ).rejects.toMatchObject({ name: "ModalCloneHeldError", reason: "sealed" });
     expect(harness.posts()).toBe(1);
   });
 

@@ -491,6 +491,27 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
 
 
 @app.local_entrypoint()
-def prewarm() -> None:
-    """One short restore. Not the post-deploy cover, and not a compile wait."""
-    cover(containers=1, rounds=1, streak=1, scaledown=15, rpc_timeout=90)
+def prewarm(rpc_timeout: int = 90) -> None:
+    """One restore-only status() call. This is not ::cover.
+
+    Cover may sit through a compile and must not be cancelled. This
+    entrypoint cancels its own timed-out status() so a 90s get cannot
+    become a second compile. Never cancel a FunctionCall during
+    enter/compile of a cover run.
+    """
+    _require_empty_input_queue()
+    worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
+    handle = worker().status.spawn()
+    try:
+        status = handle.get(timeout=rpc_timeout)
+    except Exception as err:
+        try:
+            handle.cancel(terminate_containers=True)
+        except Exception as cancel_err:
+            print(f"prewarm cancel failed: {cancel_err}", file=sys.stderr)
+        print(f"prewarm cancelled after {rpc_timeout}s: {err}", file=sys.stderr)
+        raise SystemExit(1) from err
+    if not isinstance(status, dict):
+        print(status)
+        return
+    print(status)

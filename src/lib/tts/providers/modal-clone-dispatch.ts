@@ -35,6 +35,7 @@
 
 import {
   ModalCloneColdError,
+  ModalCloneHeldError,
   ModalCloneLaneBusyError,
   ModalCloneProviderError,
   modalCloneBookHasSpareContainer,
@@ -223,6 +224,13 @@ export interface LaneDispatchResult {
   selfBackoff: boolean;
   /** A client timeout happened on a warm-budget call. */
   abortedWarm: boolean;
+  /**
+   * The layer refused a new POST. The book waits on the call it already
+   * has. This does not kick a compile and does not start the Fish clock.
+   */
+  held: boolean;
+  /** The book is over its remote-call budget. Fail it. Do not park it cold. */
+  budgetStop: boolean;
   /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
   firstLight: FirstLightReport | null;
 }
@@ -265,6 +273,8 @@ interface WaveOutcome {
   abortedIndexes: number[];
   selfBackoff: boolean;
   abortedWarm: boolean;
+  held: boolean;
+  budgetStop: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -287,6 +297,8 @@ interface DispatchTally {
   abortedIndexes: number[];
   selfBackoff: boolean;
   abortedWarm: boolean;
+  held: boolean;
+  budgetStop: boolean;
 }
 
 function emptyTally(): DispatchTally {
@@ -308,6 +320,8 @@ function emptyTally(): DispatchTally {
     abortedIndexes: [],
     selfBackoff: false,
     abortedWarm: false,
+    held: false,
+    budgetStop: false,
   };
 }
 
@@ -340,6 +354,8 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   if (wave.aborted) tally.aborted = true;
   if (wave.selfBackoff) tally.selfBackoff = true;
   if (wave.abortedWarm) tally.abortedWarm = true;
+  if (wave.held) tally.held = true;
+  if (wave.budgetStop) tally.budgetStop = true;
   for (const index of wave.abortedIndexes) {
     if (!tally.abortedIndexes.includes(index)) tally.abortedIndexes.push(index);
   }
@@ -753,6 +769,8 @@ async function finishDispatch(
     abortedIndexes: [...tally.abortedIndexes],
     selfBackoff: tally.selfBackoff,
     abortedWarm: tally.abortedWarm,
+    held: tally.held,
+    budgetStop: tally.budgetStop,
     firstLight,
   };
 }
@@ -804,6 +822,8 @@ async function runWave(
   const abortedIndexes: number[] = [];
   let selfBackoff = false;
   let abortedWarm = false;
+  let held = false;
+  let budgetStop = false;
 
   if (attempted.length === 0) {
     return {
@@ -826,6 +846,8 @@ async function runWave(
       abortedIndexes: [],
       selfBackoff: false,
       abortedWarm: false,
+      held: false,
+      budgetStop: false,
     };
   }
 
@@ -958,6 +980,11 @@ async function runWave(
     if (result.transport) transport = true;
     const err = result.error;
     if (!err) continue;
+    if (err instanceof ModalCloneHeldError) {
+      if (err.reason === "budget") budgetStop = true;
+      else held = true;
+      continue;
+    }
     if (err instanceof ModalCloneColdError && err.clientAborted) {
       aborted = true;
       if (err.waitKind === "warm") abortedWarm = true;
@@ -1026,5 +1053,7 @@ async function runWave(
     abortedIndexes,
     selfBackoff,
     abortedWarm,
+    held,
+    budgetStop,
   };
 }

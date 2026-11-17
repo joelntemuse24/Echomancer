@@ -16,8 +16,9 @@ enter or compile: scaledown only applies once the container has no input.
 
 `--max-containers 0` (or `--brake`) is a temporary brake: it stops new
 placements without cancelling an in-flight enter or compile. It does not
-drain PENDING inputs. After the compile publishes, restore production with
-`--max-containers 1 --scaledown-window 15`. Never `FunctionCall.cancel()` or
+drain PENDING inputs. After the compile publishes, restore the max that
+was read before the brake (`--scaledown-window 15`, min_containers 0).
+Never `FunctionCall.cancel()` or
 `modal container stop` mid-enter to "save money"; that reschedules leftovers
 and can interrupt snapshot publish.
 """
@@ -25,6 +26,7 @@ and can interrupt snapshot publish.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import NamedTuple
 
@@ -35,6 +37,27 @@ class AutoscalerArgs(NamedTuple):
     max_containers: int
     scaledown_window: int
     brake: bool
+    print_max: bool = False
+    from_env: bool = False
+    profile: str | None = None
+
+
+def saved_max_from_env(environ: dict[str, str] | None = None) -> int | None:
+    """A cap the operator already recorded. Never invents 1."""
+    env = environ if environ is not None else os.environ
+    for key in ("S2C_RESTORE_MAX", "MODAL_S2_MAX_GPUS"):
+        raw = (env.get(key) or "").strip()
+        if raw.isdigit() and int(raw) >= 1:
+            return int(raw)
+    return None
+
+
+def apply_profile(profile: str | None) -> None:
+    if not profile:
+        return
+    os.environ["MODAL_PROFILE"] = profile
+    os.environ.pop("MODAL_TOKEN_ID", None)
+    os.environ.pop("MODAL_TOKEN_SECRET", None)
 
 
 def validate_autoscaler_values(
@@ -70,7 +93,33 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
         help="Set max_containers=0 to stop new placements without cancelling a compile.",
     )
     parser.add_argument("--scaledown-window", type=int, default=15)
+    parser.add_argument(
+        "--print-max",
+        action="store_true",
+        help="Print the live max (or the env cap with --from-env) and exit. Does not update.",
+    )
+    parser.add_argument(
+        "--from-env",
+        action="store_true",
+        help="With --print-max, read S2C_RESTORE_MAX or MODAL_S2_MAX_GPUS and do not call Modal.",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Modal profile. Unsets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET so a stale token cannot win.",
+    )
     ns = parser.parse_args(argv)
+    if ns.print_max:
+        return AutoscalerArgs(
+            app=ns.app,
+            cls=ns.cls,
+            max_containers=0 if ns.max_containers is None else ns.max_containers,
+            scaledown_window=ns.scaledown_window,
+            brake=False,
+            print_max=True,
+            from_env=bool(ns.from_env),
+            profile=ns.profile,
+        )
     if ns.brake:
         if ns.max_containers not in (None, 0):
             raise SystemExit("--brake cannot be combined with a non-zero --max-containers")
@@ -86,7 +135,45 @@ def parse_args(argv: list[str] | None = None) -> AutoscalerArgs:
         max_containers=ns.max_containers,
         scaledown_window=ns.scaledown_window,
         brake=bool(ns.brake or ns.max_containers == 0),
+        print_max=False,
+        from_env=bool(ns.from_env),
+        profile=ns.profile,
     )
+
+
+def emit_max(args: AutoscalerArgs) -> int:
+    """Print one integer. --from-env never imports Modal."""
+    apply_profile(args.profile)
+    if args.from_env:
+        value = saved_max_from_env()
+        if value is None:
+            print("refusing to guess max_containers 1", file=sys.stderr)
+            return 2
+        print(value)
+        return 0
+    live: int | None = None
+    try:
+        import modal
+
+        worker = modal.Cls.from_name(args.app, args.cls)()
+        settings = None
+        for name in ("get_autoscaler", "autoscaler"):
+            fn = getattr(worker, name, None)
+            if callable(fn):
+                settings = fn()
+                break
+        value = getattr(settings, "max_containers", None) if settings is not None else None
+        if isinstance(value, int) and value >= 0:
+            live = value
+    except Exception as err:
+        print(f"live autoscaler unread: {err}", file=sys.stderr)
+    if live is None:
+        live = saved_max_from_env()
+    if live is None:
+        print("refusing to guess max_containers 1", file=sys.stderr)
+        return 2
+    print(live)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
             print(err.code, file=sys.stderr)
             return 2
         raise
+    apply_profile(args.profile)
+    if args.print_max:
+        return emit_max(args)
 
     import modal
 
@@ -110,8 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "brake applied: max_containers=0 (no new placements). "
             "This is not a drain and does not cancel in-flight enter/compile. "
-            "Restore with --max-containers 1 --scaledown-window 15 when the "
-            "compile has published."
+            "Restore the max that was read before the brake, with min_containers=0."
         )
     print("live autoscaler now:", settings)
     if settings.max_containers != args.max_containers:

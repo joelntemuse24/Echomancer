@@ -349,10 +349,8 @@ async function handle(
         return prewarmClonePoolForUser(userId, "voice list");
       },
       drainBook: async (jobId) => {
-        const { haltBook, noteDrainRequested, planDrain } = await import("@/lib/remote/layer");
-        haltBook(jobId, "cancelled");
-        noteDrainRequested(jobId);
-        console.info("[takehome-worker] drain", jobId, planDrain(1).map((step) => step.step).join(" → "));
+        const { drainBookCalls } = await import("@/lib/remote/drain-book");
+        await drainBookCalls(jobId, "cancelled");
       },
       bakeClonePreview: async (catalogVoiceId) => {
         const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");

@@ -2870,20 +2870,33 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 S2, Fish, Kokoro (Drew, Walter, George), Modal CPU, clone previews, and the
 S2 prewarm all enter through `src/lib/remote/layer.ts`. One flight per
 provider, book, and section: a second start joins the running call or is
-refused while that call is still live. A timeout leaves the flight
-`still_live`. Cancel, delete, the worker restart, and the player Stop
-button all call `haltBook`, and a halted book cannot start another call.
-`FunctionCall.cancel` that returns NotFound, or any status that is not
-terminal, is still live. The drain then brakes `max_containers` to 0 and
-restores the previous max with `min_containers` still 0. It does not stop
-a container first, and it does not stop the Modal app.
+refused while that call is still live. A refusal is `ModalCloneHeldError`.
+It does not kick `::cover` and it does not start the Fish clock. A Modal
+spawn that may still be running stays `still_live` until its stored
+function-call id is terminal. A completed HTTP response, including an abort
+of Fish, Kokoro, or Modal CPU, is retryable. `still_live` is not cleared by
+Stop; Stop cancels that book's stored call ids.
 
-Budgets refuse new calls. They do not switch the narrator. Under Vitest
-they are off unless `REMOTE_ENFORCE_BUDGETS=1`.
+`FunctionCall.cancel(terminate_containers=True)` that returns NotFound, or
+any status that is not terminal, is still live. The drain brakes the shared
+autoscaler only when that cancel is still spawning and no other book has a
+live call. It then waits until the extra containers are gone and restores
+the max read before the brake. `min_containers` stays 0. It does not stop
+a container first, and it does not stop the Modal app. `planDrain(0)`
+restores 0, not 1.
+
+A budget breach fails that book. It does not park it as cold and it does
+not switch narrator. Dollars come from persisted `remote_calls` rows.
+Overlapping Kokoro lanes count as one wall clock. Under Vitest budgets are
+off unless `REMOTE_ENFORCE_BUDGETS=1`.
 
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal
-CPU apps. Each has `min_containers: 0`. The worker loads open `remote_calls`
-rows on startup and once an hour.
+CPU apps. Each has `min_containers: 0`. Startup and the hourly pass load
+the newest row per `flight_key` and settle listed function calls that are
+already terminal. A health check with no restore sample skips. The clone
+prewarm is one restore-only RPC that cancels itself on timeout. The
+post-deploy cover reads the live max, forces the `ntemusejoel` profile,
+and restores that max with `--scaledown-window`.
 
 ## Related reading order (first week in the codebase)
 

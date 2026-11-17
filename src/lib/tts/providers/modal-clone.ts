@@ -109,6 +109,7 @@ import {
   admitRemoteCall,
   isBookHalted,
   noteDrainRequested,
+  noteModalFunctionCall,
   resetRemoteLayerForTests,
 } from "@/lib/remote/layer";
 
@@ -167,6 +168,28 @@ export class ModalCloneColdError extends Error {
     this.waitKind = waitKind;
     this.clientAborted = clientAborted;
     this.selfBackoff = selfBackoff;
+  }
+}
+
+/**
+ * The remote-call layer refused this POST. The original call is still
+ * the one in flight, the book is over budget, or it was stopped.
+ *
+ * This is not a cold placement. It must not kick `::cover` and it must
+ * not start the Fish defer clock.
+ */
+export class ModalCloneHeldError extends Error {
+  readonly reason: "in_flight" | "sealed" | "cancelled" | "budget";
+  readonly retryAfterMs: number;
+  constructor(
+    reason: "in_flight" | "sealed" | "cancelled" | "budget",
+    message: string,
+    retryAfterMs = COLD_BACKOFF_MS
+  ) {
+    super(message);
+    this.name = "ModalCloneHeldError";
+    this.reason = reason;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -576,6 +599,16 @@ export async function renderModalCloneBatch(
   }
 ): Promise<CloneBatchOutcome> {
   const sections = items.map((item) => String(item.key));
+  if (jobId) {
+    const until = sealedRenderUntil.get(jobId) ?? 0;
+    if (Date.now() < until) {
+      throw new ModalCloneHeldError(
+        "sealed",
+        "Modal clone is still waiting on the original placement",
+        until - Date.now()
+      );
+    }
+  }
   const admitted = jobId
     ? admitRemoteCall({
         provider: "s2-clone",
@@ -590,38 +623,21 @@ export async function renderModalCloneBatch(
     : null;
   if (admitted?.kind === "join") return admitted.promise as Promise<CloneBatchOutcome>;
   if (admitted?.kind === "blocked") {
-    if (admitted.reason === "cancelled" || isBookHalted(jobId)) {
-      throw new ModalCloneColdError(
-        "This book was stopped.",
-        0,
-        "placement",
-        "restore",
-        true,
-        true
-      );
-    }
-    throw new ModalCloneColdError(
-      "Modal clone is still waiting on the original placement",
-      COLD_BACKOFF_MS,
-      "placement",
-      "restore",
-      true,
-      true
+    const reason =
+      admitted.reason === "budget"
+        ? "budget"
+        : admitted.reason === "cancelled" || isBookHalted(jobId)
+          ? "cancelled"
+          : "in_flight";
+    throw new ModalCloneHeldError(
+      reason,
+      reason === "budget"
+        ? "This book is over its remote-call budget."
+        : reason === "cancelled"
+          ? "This book was stopped."
+          : "Modal clone is still waiting on the original placement",
+      reason === "cancelled" ? 0 : COLD_BACKOFF_MS
     );
-  }
-  if (jobId) {
-    const until = sealedRenderUntil.get(jobId) ?? 0;
-    if (Date.now() < until) {
-      admitted?.finish("still_live", "sealed");
-      throw new ModalCloneColdError(
-        "Modal clone is still waiting on the original placement",
-        until - Date.now(),
-        "placement",
-        "restore",
-        true,
-        true
-      );
-    }
   }
   const run = renderModalCloneBatchBody(items, reference, signal, jobId, opts);
   if (admitted) admitted.flight.promise = run;
@@ -1580,7 +1596,13 @@ export function rememberModalCloneCold(jobId?: string): void {
 function coldFromWait(
   kind: "restore" | "steady" | "warm",
   message: string,
-  ctx: { jobId?: string; appWide?: boolean; clientAborted?: boolean } = {}
+  ctx: {
+    jobId?: string;
+    appWide?: boolean;
+    clientAborted?: boolean;
+    /** The probe said this placement had started. Do not kick a second GPU. */
+    placementStarted?: boolean;
+  } = {}
 ): ModalCloneColdError {
   const aborted = ctx.clientAborted === true;
   if (kind === "warm") {
@@ -1600,7 +1622,7 @@ function coldFromWait(
     );
   }
   if (kind === "restore") {
-    kickModalCloneSnapshotWarm(message);
+    if (!ctx.placementStarted) kickModalCloneSnapshotWarm(message);
     if (aborted) rememberModalCloneCold(ctx.jobId);
     return new ModalCloneColdError(
       message,
@@ -1828,6 +1850,7 @@ async function postModal(
           jobId: wait?.jobId,
           appWide: wait?.appWideCold,
           clientAborted: true,
+          placementStarted: containerStarted,
         }
       );
     }
@@ -1837,6 +1860,10 @@ async function postModal(
     clearTimer();
     signal?.removeEventListener("abort", onExternalAbort);
   }
+  const callHeader =
+    response.headers.get("x-modal-function-call-id") ||
+    response.headers.get("modal-function-call-id");
+  if (callHeader && wait?.jobId) noteModalFunctionCall(wait.jobId, callHeader);
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     const refused = modalPlatformRefusal(response.status, detail);

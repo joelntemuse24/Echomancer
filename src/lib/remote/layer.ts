@@ -74,6 +74,74 @@ const drainRequests = new Set<string>();
 let seq = 0;
 let eventSink: ((event: RemoteEvent) => void) | null = null;
 
+/** Dollar reservations from `started` rows. Wall time is the merged span. */
+export type SpendRow = {
+  key: string;
+  jobId?: string;
+  usd: number;
+  start: number;
+  end: number;
+};
+
+let spend: SpendRow[] = [];
+
+export function mergedIntervalMs(intervals: Array<[number, number]>): number {
+  const sorted = intervals
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+    .sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let cursor = -1;
+  let open = -1;
+  for (const [start, end] of sorted) {
+    if (cursor < 0 || start > cursor) {
+      if (cursor >= 0) total += cursor - open;
+      open = start;
+      cursor = end;
+    } else if (end > cursor) {
+      cursor = end;
+    }
+  }
+  if (cursor >= 0) total += cursor - open;
+  return total;
+}
+
+function spendIdentity(row: SpendRow): string {
+  return `${row.key}|${row.start}`;
+}
+
+function rememberSpend(flight: Flight): void {
+  const row: SpendRow = {
+    key: flight.key,
+    jobId: flight.jobId,
+    usd: flight.estCostUsd,
+    start: flight.startedAt,
+    end: flight.startedAt + (flight.estMs > 0 ? flight.estMs : 0),
+  };
+  if (spend.some((existing) => spendIdentity(existing) === spendIdentity(row))) return;
+  spend.push(row);
+}
+
+function closeSpend(flight: Flight): void {
+  const row = spend.find((item) => item.key === flight.key && item.start === flight.startedAt);
+  if (!row) return;
+  row.end = flight.endedAt ?? Date.now();
+}
+
+/**
+ * Replace the dollar ledger with rows loaded from `remote_calls`.
+ * In-memory reservations that are not in that snapshot are kept, so a
+ * call that has not been written yet is still counted.
+ */
+export function replacePersistedSpend(rows: SpendRow[]): void {
+  const incoming = new Set(rows.map(spendIdentity));
+  const memory = spend.filter((row) => !incoming.has(spendIdentity(row)));
+  spend = [...rows, ...memory];
+}
+
+export function spendRows(): readonly SpendRow[] {
+  return spend;
+}
+
 export function setRemoteEventSink(fn: ((event: RemoteEvent) => void) | null): void {
   eventSink = fn;
 }
@@ -88,6 +156,7 @@ export function resetRemoteLayerForTests(): void {
   events.length = 0;
   halted.clear();
   drainRequests.clear();
+  spend = [];
   seq = 0;
   eventSink = null;
 }
@@ -150,7 +219,7 @@ export function hydrateRemoteFlight(flight: Flight): void {
   }
 }
 
-export function haltBook(jobId: string, reason: string, now = Date.now()): void {
+export function haltBook(jobId: string, reason: string): void {
   if (!jobId) return;
   halted.set(jobId, reason);
   for (const flight of flights.values()) {
@@ -161,25 +230,9 @@ export function haltBook(jobId: string, reason: string, now = Date.now()): void 
     } catch {
       /* the provider's own catch records the outcome */
     }
-    // A call whose promise already settled as still_live has nobody left to
-    // record the stop. A running call records cancelled from its own catch.
-    if (flight.status === "still_live") {
-      flight.status = "cancelled";
-      flight.endedAt = now;
-      record({
-        flightKey: flight.key,
-        idempotencyKey: flight.idempotencyKey,
-        provider: flight.provider,
-        path: flight.path,
-        jobId,
-        section: flight.sections.join(","),
-        callId: flight.callId,
-        outcome: "cancelled",
-        startedAt: flight.startedAt,
-        endedAt: now,
-        error: reason,
-      });
-    }
+    // still_live stays until the stored function-call id is terminal.
+    // Marking it cancelled here let the next tick POST while Modal was
+    // still compiling. A running call records cancelled from its own catch.
   }
 }
 
@@ -234,24 +287,26 @@ export function defaultBudgetCaps(env: NodeJS.ProcessEnv = process.env): BudgetC
   };
 }
 
-function spendSince(now: number, dayMs: number, match: (flight: Flight) => boolean): { usd: number; ms: number } {
-  let usd = 0;
-  let ms = 0;
-  for (const flight of flights.values()) {
-    if (flight.startedAt < now - dayMs) continue;
-    if (!match(flight)) continue;
-    usd += flight.estCostUsd;
-    ms += flight.estMs > 0 ? flight.estMs : Math.max(0, (flight.endedAt ?? now) - flight.startedAt);
-  }
-  return { usd, ms };
+function intervalsOf(rows: SpendRow[], now: number): Array<[number, number]> {
+  return rows.map((row) => [row.start, row.end > row.start ? row.end : now]);
 }
 
+/** Dollars and one wall clock for this book. Parallel lanes overlap. */
 export function bookSpend(jobId: string, now = Date.now()): { usd: number; ms: number } {
-  return spendSince(now, 365 * 24 * 60 * 60_000, (flight) => flight.jobId === jobId);
+  const rows = spend.filter((row) => row.jobId === jobId);
+  return {
+    usd: rows.reduce((sum, row) => sum + row.usd, 0),
+    ms: mergedIntervalMs(intervalsOf(rows, now)),
+  };
 }
 
 export function dailySpend(now = Date.now()): { usd: number; ms: number } {
-  return spendSince(now, 24 * 60 * 60_000, () => true);
+  const cutoff = now - 24 * 60 * 60_000;
+  const rows = spend.filter((row) => row.end >= cutoff || row.start >= cutoff);
+  return {
+    usd: rows.reduce((sum, row) => sum + row.usd, 0),
+    ms: mergedIntervalMs(intervalsOf(rows, now)),
+  };
 }
 
 /**
@@ -324,10 +379,21 @@ export function admitRemoteCall(
     const caps = { ...defaultBudgetCaps(), ...input.caps };
     const book = input.jobId ? bookSpend(input.jobId, now) : { usd: 0, ms: 0 };
     const day = dailySpend(now);
+    const bookRows = input.jobId ? spend.filter((row) => row.jobId === input.jobId) : [];
+    const bookWall = input.jobId
+      ? mergedIntervalMs([...intervalsOf(bookRows, now), [now, now + estMs]])
+      : 0;
+    const dayWall = mergedIntervalMs([
+      ...intervalsOf(
+        spend.filter((row) => row.start >= now - 24 * 60 * 60_000 || row.end >= now - 24 * 60 * 60_000),
+        now
+      ),
+      [now, now + estMs],
+    ]);
     const over =
-      (input.jobId && (book.usd + estCostUsd > caps.bookUsd || book.ms + estMs > caps.bookMs)) ||
+      (input.jobId && (book.usd + estCostUsd > caps.bookUsd || bookWall > caps.bookMs)) ||
       day.usd + estCostUsd > caps.dailyUsd ||
-      day.ms + estMs > caps.dailyMs;
+      dayWall > caps.dailyMs;
     if (over) {
       record({
         flightKey: key,
@@ -372,6 +438,7 @@ export function admitRemoteCall(
     startedAt: now,
     estCostUsd,
   });
+  rememberSpend(flight);
 
   let settled = false;
   const finish = (outcome: FlightStatus, error?: string) => {
@@ -379,6 +446,7 @@ export function admitRemoteCall(
     settled = true;
     flight.status = outcome;
     flight.endedAt = Date.now();
+    closeSpend(flight);
     if (outcome !== "still_live") flight.promise = undefined;
     const recorded: RemoteOutcome =
       outcome === "still_live" ? "still_live" : outcome === "running" ? "started" : outcome;
@@ -405,6 +473,11 @@ export type RunRemoteInput<T> = AdmitInput & {
   caps?: Partial<BudgetCaps>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * HTTP providers retry after an abort. A Modal spawn that may still be
+   * running stays `still_live` until its function-call id is terminal.
+   */
+  abortSettlesAs?: "still_live" | "failure";
   execute: (ctx: { signal: AbortSignal; setCallId: (id: string) => void }) => Promise<T>;
   classifyError?: (err: unknown) => FlightStatus;
 };
@@ -473,9 +546,17 @@ export async function runRemoteCall<T>(input: RunRemoteInput<T>): Promise<T> {
     return value;
   } catch (err) {
     const classified = input.classifyError?.(err);
+    const aborted = timeoutOutcome(err);
+    const abortAs = input.abortSettlesAs ?? "still_live";
     const outcome: FlightStatus =
       classified ??
-      (isBookHalted(input.jobId) ? "cancelled" : timeoutOutcome(err) ? "still_live" : "failure");
+      (isBookHalted(input.jobId)
+        ? "cancelled"
+        : aborted
+          ? abortAs === "failure"
+            ? "failure"
+            : "still_live"
+          : "failure");
     finish(outcome, err instanceof Error ? err.message : String(err));
     throw err;
   }
@@ -490,6 +571,81 @@ export function bindFlightAbort(key: string, abort: () => void): void {
 export function setFlightCallId(key: string, callId: string): void {
   const flight = flights.get(key);
   if (flight) flight.callId = callId;
+}
+
+/** Attach the Modal function-call id to this book's open flights. */
+export function noteModalFunctionCall(jobId: string, callId: string): void {
+  const id = callId.trim();
+  if (!jobId || !id) return;
+  for (const flight of flights.values()) {
+    if (flight.jobId !== jobId) continue;
+    if (flight.status !== "running" && flight.status !== "still_live") continue;
+    if (!flight.callId) flight.callId = id;
+  }
+}
+
+const LISTED_TERMINAL: Record<string, FlightStatus> = {
+  success: "success",
+  failure: "failure",
+  terminated: "cancelled",
+  cancelled: "cancelled",
+  canceled: "cancelled",
+  timeout: "timeout",
+  init_failure: "failure",
+  "1": "success",
+  "2": "failure",
+  "3": "timeout",
+  "4": "cancelled",
+  "5": "failure",
+};
+
+/**
+ * Move a still_live or running flight to a terminal outcome.
+ * A non-terminal observation leaves the flight still_live.
+ */
+export function settleFlightCall(
+  callId: string,
+  outcome: FlightStatus,
+  now = Date.now()
+): void {
+  if (outcome === "running" || outcome === "still_live") return;
+  for (const flight of flights.values()) {
+    if (flight.callId !== callId) continue;
+    if (flight.status !== "running" && flight.status !== "still_live") continue;
+    flight.status = outcome;
+    flight.endedAt = now;
+    flight.promise = undefined;
+    closeSpend(flight);
+    record({
+      flightKey: flight.key,
+      idempotencyKey: flight.idempotencyKey,
+      provider: flight.provider,
+      path: flight.path,
+      jobId: flight.jobId,
+      section: flight.sections.join(","),
+      callId,
+      outcome,
+      startedAt: flight.startedAt,
+      endedAt: now,
+    });
+  }
+}
+
+export type ListedCall = { callId: string; jobId?: string; status?: string | null };
+
+/** Reconcile a function-call listing. Terminal rows clear still_live. */
+export function applyListedCalls(rows: ListedCall[], now = Date.now()): void {
+  for (const row of rows) {
+    const id = row.callId.trim();
+    if (!id) continue;
+    if (row.jobId) noteModalFunctionCall(row.jobId, id);
+    const status = String(row.status ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/^inputstatus\./, "");
+    const outcome = LISTED_TERMINAL[status];
+    if (outcome) settleFlightCall(id, outcome, now);
+  }
 }
 
 /**
@@ -547,12 +703,13 @@ export type DrainStep =
  * leaves min_containers at 0.
  */
 export function planDrain(restoreMaxContainers: number): DrainStep[] {
-  const max = Math.max(0, Math.floor(restoreMaxContainers) || 0);
+  const raw = Math.floor(restoreMaxContainers);
+  const max = Number.isFinite(raw) && raw > 0 ? raw : 0;
   return [
     { step: "cancel_pending", terminateContainers: true },
     { step: "brake_autoscaler", maxContainers: 0, minContainers: 0 },
     { step: "confirm_zero_containers" },
-    { step: "restore_autoscaler", maxContainers: max === 0 ? 1 : max, minContainers: 0 },
+    { step: "restore_autoscaler", maxContainers: max, minContainers: 0 },
   ];
 }
 
@@ -560,6 +717,8 @@ export type DrainTarget = {
   app: string;
   jobId?: string;
   callIds: string[];
+  /** Other books that still have a running or still_live call. */
+  otherLiveBooks?: number;
 };
 
 export type DrainOps = {
@@ -567,6 +726,8 @@ export type DrainOps = {
   brake: (app: string) => Promise<void>;
   runningContainers: (app: string) => Promise<number>;
   restore: (app: string, maxContainers: number) => Promise<void>;
+  /** The cap in force before any brake. Falls back to the argument. */
+  readMax?: () => Promise<number>;
 };
 
 export type DrainReport = {
@@ -574,6 +735,8 @@ export type DrainReport = {
   verdicts: Array<{ callId: string; verdict: CancelVerdict }>;
   containersAfterBrake: number;
   restored: boolean;
+  braked: boolean;
+  savedMax: number;
   stillLive: string[];
 };
 
@@ -585,9 +748,12 @@ export type DrainReport = {
 export async function executeDrain(
   target: DrainTarget,
   ops: DrainOps,
-  restoreMaxContainers = 1
+  restoreMaxContainers = 0
 ): Promise<DrainReport> {
-  const steps = planDrain(restoreMaxContainers);
+  const saved = ops.readMax
+    ? await ops.readMax()
+    : Math.max(0, Math.floor(Number.isFinite(restoreMaxContainers) ? restoreMaxContainers : 0));
+  const steps = planDrain(saved);
   const verdicts: DrainReport["verdicts"] = [];
   for (const callId of target.callIds) {
     let obs: CancelObservation;
@@ -599,33 +765,61 @@ export async function executeDrain(
     const verdict = interpretCancelResult(obs);
     verdicts.push({ callId, verdict });
     const flight = [...flights.values()].find((row) => row.callId === callId);
-    if (flight) {
-      flight.status = verdict === "terminal" ? "cancelled" : "still_live";
-      flight.endedAt = Date.now();
-      record({
-        flightKey: flight.key,
-        idempotencyKey: flight.idempotencyKey,
-        provider: flight.provider,
-        path: flight.path,
-        jobId: flight.jobId,
-        section: flight.sections.join(","),
-        callId,
-        outcome: verdict === "terminal" ? "cancelled" : "still_live",
-        startedAt: flight.startedAt,
-        endedAt: flight.endedAt,
-        error: obs.threw || obs.status || undefined,
-      });
+    if (flight && (flight.status === "running" || flight.status === "still_live")) {
+      if (verdict === "terminal") {
+        flight.status = "cancelled";
+        flight.endedAt = Date.now();
+        flight.promise = undefined;
+        closeSpend(flight);
+        record({
+          flightKey: flight.key,
+          idempotencyKey: flight.idempotencyKey,
+          provider: flight.provider,
+          path: flight.path,
+          jobId: flight.jobId,
+          section: flight.sections.join(","),
+          callId,
+          outcome: "cancelled",
+          startedAt: flight.startedAt,
+          endedAt: flight.endedAt,
+          error: obs.threw || obs.status || undefined,
+        });
+      } else {
+        flight.status = "still_live";
+        flight.callId = flight.callId || callId;
+      }
     }
   }
-  await ops.brake(target.app);
-  const containersAfterBrake = await ops.runningContainers(target.app);
-  await ops.restore(target.app, steps[3] && steps[3].step === "restore_autoscaler" ? steps[3].maxContainers : 1);
+  const stillLive = verdicts.filter((row) => row.verdict === "still_live").map((row) => row.callId);
+  const other = target.otherLiveBooks ?? 0;
+  const braked = stillLive.length > 0 && other === 0;
+  let containersAfterBrake = 0;
+  let restored = false;
+  if (braked) {
+    await ops.brake(target.app);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      containersAfterBrake = await ops.runningContainers(target.app);
+      if (containersAfterBrake === 0) break;
+    }
+    if (containersAfterBrake === 0) {
+      const restore = steps.find((step) => step.step === "restore_autoscaler");
+      await ops.restore(
+        target.app,
+        restore && restore.step === "restore_autoscaler" ? restore.maxContainers : saved
+      );
+      restored = true;
+    }
+  } else {
+    containersAfterBrake = await ops.runningContainers(target.app);
+  }
   return {
     steps,
     verdicts,
     containersAfterBrake,
-    restored: true,
-    stillLive: verdicts.filter((row) => row.verdict === "still_live").map((row) => row.callId),
+    restored,
+    braked,
+    savedMax: saved,
+    stillLive,
   };
 }
 
@@ -745,12 +939,7 @@ export function planHealthCheck(probe: HealthProbe): HealthDecision {
     return { action: "ok", reason: `restore ${Math.round(probe.restoreMs / 1000)}s` };
   }
   if (probe.restoreMs == null) {
-    return {
-      action: "rewarm",
-      reason: "no restore sample",
-      maxGpus: 1,
-      budgetMs: Math.min(probe.app.restoreBudgetMs + 30_000, probe.app.healthDailyBudgetMs - probe.alreadySpentMs),
-    };
+    return { action: "skip", reason: "no restore sample" };
   }
   return {
     action: "rewarm",

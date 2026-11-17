@@ -50,7 +50,12 @@ def _install_torch_stub() -> None:
     order rather than on the code.
     """
     existing = sys.modules.get("torch")
-    if existing is not None and hasattr(existing, "no_grad"):
+    if (
+        existing is not None
+        and hasattr(existing, "no_grad")
+        and hasattr(existing, "inference_mode")
+        and hasattr(existing, "autocast")
+    ):
         return  # a real torch is installed; use it
     torch = existing if existing is not None else types.ModuleType("torch")
     # Every dtype `s2_batch` reads off `torch` must exist here, or the stub
@@ -63,6 +68,27 @@ def _install_torch_stub() -> None:
     torch.bfloat16 = "torch.bfloat16"
     torch.int64 = "torch.int64"
     torch.float16 = "torch.float16"
+
+    class _NullContext:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    def inference_mode(mode=True):
+        return _NullContext()
+
+    def autocast(*_args, **_kwargs):
+        return _NullContext()
+
+    def no_grad():
+        return _NullContext()
+
+    torch.inference_mode = inference_mode
+    torch.autocast = autocast
+    if not hasattr(torch, "no_grad"):
+        torch.no_grad = no_grad
 
     def zeros(shape, device=None, dtype=None):
         return _Tensor(tuple(shape))

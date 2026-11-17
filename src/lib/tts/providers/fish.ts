@@ -359,7 +359,6 @@ export async function openFishTtsStream(
     section: input.jobId
       ? remoteSectionKey(input.sectionIndex, input.text)
       : `preview:${input.catalogVoiceId}:${input.text.length}`,
-    timeoutMs: 120_000,
     estCostUsd: 0.02,
     url: `${FISH_API_BASE}/v1/tts`,
     init: {

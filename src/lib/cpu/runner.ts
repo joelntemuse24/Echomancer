@@ -273,14 +273,15 @@ async function postCpuPlacement(
   if (!claimed) return resultFromRow(taskId);
   const token = process.env.MODAL_CPU_TOKEN || process.env.WORKER_SECRET || "";
   const acceptMs = cpuDispatchAcceptMs();
+  const task = await getCpuTask(taskId);
   let response: Response;
   try {
     const { remoteFetch, remoteCallStillLive } = await import("@/lib/remote/http");
     try {
       response = await remoteFetch({
         provider: "modal-cpu",
+        jobId: task?.job_id ?? undefined,
         section: taskId,
-        timeoutMs: acceptMs,
         estCostUsd: 0.02,
         url,
         init: {

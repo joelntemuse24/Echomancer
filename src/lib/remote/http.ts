@@ -1,10 +1,10 @@
 /**
  * One fetch admission for Fish, Kokoro, and Modal CPU.
  *
- * A book section (or a CPU task) cannot have two of these in flight. A
- * timeout leaves the flight still_live so the retry loop cannot start a
- * second provider call. A completed HTTP response, including 429, is
- * terminal and a later attempt may proceed.
+ * A completed HTTP response, including 429 and 5xx, is retryable. An abort
+ * of these HTTP calls is also retryable: the section budget is the clock,
+ * and this wrapper does not add another one. still_live is reserved for a
+ * Modal spawn whose function-call id may still be running.
  */
 
 import { RemoteCallRefused, runRemoteCall, type RemotePath, type RemoteProvider } from "@/lib/remote/layer";
@@ -24,7 +24,6 @@ export async function remoteFetch(opts: {
   path?: RemotePath;
   jobId?: string;
   section: string;
-  timeoutMs: number;
   estCostUsd?: number;
   url: string;
   init: RequestInit;
@@ -34,19 +33,23 @@ export async function remoteFetch(opts: {
     path: opts.path ?? "book",
     jobId: opts.jobId,
     sections: [opts.section],
-    timeoutMs: opts.timeoutMs,
     estCostUsd: opts.estCostUsd,
     signal: opts.init.signal ?? undefined,
-    execute: ({ signal }) =>
-      fetch(opts.url, {
+    abortSettlesAs: "failure",
+    execute: async ({ signal, setCallId }) => {
+      const response = await fetch(opts.url, {
         ...opts.init,
         signal,
-      }),
+      });
+      const callId =
+        response.headers.get("x-modal-function-call-id") ||
+        response.headers.get("modal-function-call-id");
+      if (callId) setCallId(callId);
+      return response;
+    },
   });
 }
 
 export function remoteCallStillLive(err: unknown): boolean {
-  if (err instanceof RemoteCallRefused) return true;
-  const name = err instanceof Error ? err.name : "";
-  return name === "AbortError" || name === "TimeoutError";
+  return err instanceof RemoteCallRefused && err.code === "in_flight";
 }

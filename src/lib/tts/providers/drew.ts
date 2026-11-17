@@ -40,7 +40,6 @@ async function onePiece(
         provider: "kokoro",
         jobId: input.jobId,
         section: remoteSectionKey(input.sectionIndex, text),
-        timeoutMs: 120_000,
         estCostUsd: 0.01,
         url,
         init: {
