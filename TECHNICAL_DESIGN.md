@@ -466,7 +466,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`); then indexes (`idx_users_google_sub` unique) |
+| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent` and `bookmarks`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache`, `bookmarks` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`); then indexes (`idx_users_google_sub` unique, `idx_bookmarks_user_job`) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -2637,13 +2637,26 @@ soft tint, upcoming ones at normal weight.
 
 **Focus mode** (`read-along-focus.tsx`, `useReadAlongFocus`) expands the
 read-along to the viewport with a slim bar at the bottom: play/pause, ±15 s,
-scrubber, speed, and the chapter title. It asks the Fullscreen API, but the
+scrubber, a bookmark control, speed, and the chapter title. It asks the Fullscreen API, but the
 overlay is always `fixed inset-0` with `100dvh`, because iOS has no element
 fullscreen and a request can be refused — so the CSS path alone is
 complete. Esc, the Exit control, and leaving browser fullscreen all close
-it; a saved preference reopens it on the next visit. Scrolling is
+it; an open speed list or bookmark list takes Esc first. A saved preference reopens it on the next visit. Scrolling is
 `behavior: smooth` unless `prefers-reduced-motion` is set, in which case
 placement is immediate.
+
+**Bookmarks.** The same one-tap control sits beside playback speed on the
+main player and under the scrubber in focus mode. A tap stores the current
+playhead for this listener and this book (`POST /api/jobs/[id]/bookmarks`).
+The chevron opens a short list: each row is the timestamp (and the part,
+when the book is still playing a section file) plus a chapter name or a
+transcript snippet when that text is already on the page. A tap jumps
+there; a remove control deletes the row. There is no note field. A new mark
+within 2 seconds of an existing one on the same clock is that mark. The
+icon fills and a short status says Saved, or Already saved. Anonymous
+bookmarks move with the rest of that browser's library on sign-in. The
+table is `bookmarks` (`user_id`, `job_id`, `position_seconds`,
+`section_index`, `label`). Another person's book is 404.
 
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
 page (`/dashboard/player/[id]/markup`). The link is rendered only for a

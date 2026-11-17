@@ -23,6 +23,19 @@ describe("ensureTtsJobColumns", () => {
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
 
+  it("does not take the hot path when bookmarks are missing", async () => {
+    await resetDatabase();
+    await execute(`DROP TABLE bookmarks`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const tables = await query<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bookmarks'`
+    );
+    expect(tables).toHaveLength(1);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
   it("does not take the hot path when jobs.stream_timeline_json is missing", async () => {
     await resetDatabase();
     await execute(`ALTER TABLE jobs DROP COLUMN stream_timeline_json`);
