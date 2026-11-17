@@ -8,8 +8,14 @@ import { formatPlayClock } from "@/lib/player/seek";
 /** A second tap this close to an existing mark, on the same clock, is that mark. */
 export const BOOKMARK_DEDUPE_SECONDS = 2;
 
-/** How long the player shows "Saved" / "Already saved". */
-export const BOOKMARK_NOTICE_MS = 1600;
+/**
+ * How long the player shows "Saved" / "Already saved".
+ * Long enough to read a status that is not a dialog (about two seconds).
+ */
+export const BOOKMARK_NOTICE_MS = 2000;
+
+/** Focus mode asks the open list to close without leaving the view. */
+export const BOOKMARK_LIST_DISMISS_EVENT = "echomancer-bookmark-list-dismiss";
 
 export const BOOKMARK_LABEL_MAX = 120;
 export const BOOKMARK_SNIPPET_MAX = 96;
@@ -67,6 +73,67 @@ export function bookmarkLabel(input: {
   chapterTitle?: string | null;
 }): string | null {
   return cleanBookmarkLabel(input.passage) ?? cleanBookmarkLabel(input.chapterTitle);
+}
+
+/** Escape closes the bookmark list. Any other key leaves it alone. */
+export function bookmarkListKeyAction(key: string): "close" | "none" {
+  return key === "Escape" || key === "Esc" ? "close" : "none";
+}
+
+/**
+ * While the list is open, Escape belongs to the list. The surrounding view
+ * (focus mode) stays up.
+ */
+export function bookmarkEscapeTarget(listOpen: boolean): "list" | "view" {
+  return listOpen ? "list" : "view";
+}
+
+/**
+ * A duplicate response is "Already saved". A new row is "Saved".
+ * Anything else is a failure. Callers still drop a stale response so an
+ * in-flight "Saved" cannot replace a newer "Already saved".
+ */
+export function bookmarkNoticeFromResponse(input: {
+  ok: boolean;
+  duplicate?: boolean;
+}): BookmarkNotice {
+  if (!input.ok) return "error";
+  return input.duplicate === true ? "duplicate" : "saved";
+}
+
+/** A late response must not replace the notice from a newer tap. */
+export function bookmarkNoticeAfterResponse(input: {
+  httpOk: boolean;
+  hasBookmark: boolean;
+  duplicate?: boolean;
+  requestEpoch: number;
+  currentEpoch: number;
+}): BookmarkNotice | null {
+  if (input.requestEpoch !== input.currentEpoch) return null;
+  return bookmarkNoticeFromResponse({
+    ok: input.httpOk && input.hasBookmark,
+    duplicate: input.duplicate,
+  });
+}
+
+/**
+ * A second tap while a save is in flight, or within 2s of a mark already
+ * on this clock, is the existing mark. It does not start another request.
+ */
+export function bookmarkSaveTap(input: {
+  pending: boolean;
+  bookmarks: readonly { positionSeconds: number; sectionIndex: number | null }[];
+  positionSeconds: number;
+  sectionIndex: number | null;
+}): "duplicate" | "send" {
+  if (input.pending) return "duplicate";
+  const hit = input.bookmarks.some((row) =>
+    bookmarksAreDuplicates(row, {
+      positionSeconds: input.positionSeconds,
+      sectionIndex: input.sectionIndex,
+    })
+  );
+  return hit ? "duplicate" : "send";
 }
 
 export function bookmarksAreDuplicates(

@@ -67,13 +67,15 @@ export function isPersistableStandardVoiceId(id?: string | null): boolean {
 }
 
 /**
- * Walter's sample is a static file. Play is a separate control from the
- * selection, and a tap on play does not ask the server to synthesize.
+ * Every listed card is one control: previewing it selects it.
+ * Walter's sample is still the committed file (`stockPreviewUrl`); that
+ * does not give the row a second pressed state.
  */
 export function stockCardAudition(
   voice: PathVoice
 ): "play" | "select-only" | "static" {
-  return isListedWalterVoice(voice) ? "static" : "play";
+  void voice;
+  return "play";
 }
 
 /**

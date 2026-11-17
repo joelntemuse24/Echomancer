@@ -15,7 +15,11 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { cloneNameOrFallback } from "@/lib/clone-name";
+import {
+  cloneNameDraftFromFile,
+  cloneNameOrFallback,
+  cloneTitleFromDraft,
+} from "@/lib/clone-name";
 import {
   CloneQualityRiskError,
   completeCloneUpload,
@@ -55,11 +59,16 @@ import {
 } from "@/lib/tts/browser-speech";
 import {
   isEdgeStockVoice,
-  isSlimStockVoiceId,
   SLIM_STOCK_VOICE_IDS,
 } from "@/lib/tts/standard-voice";
 import { requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
+import {
+  classifyClonePreviewRead,
+  previewControlLabel,
+} from "@/lib/tts/clone-preview-phase";
+import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
+import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
   readStockVoicePick,
   resolveStockSelection,
@@ -248,6 +257,15 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");
 }
 
+async function previewErrorCode(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { code?: unknown };
+    return typeof data.code === "string" ? data.code : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function VoiceSelectionPage() {
   const router = useRouter();
   const searchParams = useClientSearchParams();
@@ -267,27 +285,8 @@ export default function VoiceSelectionPage() {
   /** After a clone, show only that voice until they ask for the rest. */
   const [soloVoiceId, setSoloVoiceId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameOfferId, setRenameOfferId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const renameCancelRef = useRef(false);
-
-  useEffect(() => {
-    if (!renameOfferId) return;
-    const onPointer = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest("[data-rename-offer]")) return;
-      setRenameOfferId(null);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setRenameOfferId(null);
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [renameOfferId]);
   const [creating, setCreating] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(
@@ -296,13 +295,16 @@ export default function VoiceSelectionPage() {
       : null
   );
   const [previewingId, setPreviewingId] = useState<string | null>(null);
+  const [previewPreparingId, setPreviewPreparingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const previewTokenRef = useRef(0);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
     DEFAULT_DELIVERY_PREF
   );
   const [cloneFile, setCloneFile] = useState<File | null>(null);
+  const [cloneNameDraft, setCloneNameDraft] = useState("");
   const [cloneQuality, setCloneQuality] = useState<CloneSampleQualityReport | null>(
     null
   );
@@ -606,6 +608,7 @@ export default function VoiceSelectionPage() {
   const clearPendingSample = () => {
     setCloneRisk(null);
     setCloneFile(null);
+    setCloneNameDraft("");
     setCloneQuality(null);
     setCloneQualityChecking(false);
     setCloneUploadPct(null);
@@ -692,99 +695,89 @@ export default function VoiceSelectionPage() {
    *
    * Returns null after showing its own message.
    */
-  const clonedPreviewUrl = async (voice: CatalogVoice): Promise<string | null> => {
+  const clonedPreviewUrl = async (
+    voice: CatalogVoice,
+    token: number
+  ): Promise<string | null> => {
     // A preview is immutable for a given clone and recipe, so a clip already
     // fetched in this session replays from memory with no request at all.
     const cached = previewCacheRef.current.get(voice.id);
     if (cached) return cached.url;
 
     const path = `/api/tts/clones/${encodeURIComponent(voice.id)}/preview`;
+    const current = () => previewTokenRef.current === token;
 
-    /** Read the stored take. Null means "nothing stored yet". */
-    const readStored = async (): Promise<string | null> => {
+    /** Read the stored take. `preparing` is 202 PREVIEW_PREPARING, not a failure. */
+    const readStored = async (): Promise<
+      { kind: "audio"; url: string } | { kind: "preparing" } | { kind: "failed" }
+    > => {
       const stored = await fetch(`${path}?_=${Date.now()}`);
-      if (!stored.ok) {
-        if (stored.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        return null;
-      }
+      if (stored.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+      const kind = classifyClonePreviewRead(
+        stored.status,
+        stored.ok ? null : await previewErrorCode(stored)
+      );
+      if (kind !== "audio") return { kind };
       const buf = await stored.arrayBuffer();
-      if (buf.byteLength < 256) return null;
+      if (buf.byteLength < 256) return { kind: "failed" };
       const mime = sniffPreviewMime(buf, stored.headers.get("content-type"));
       const url = URL.createObjectURL(new Blob([buf], { type: mime }));
       previewCacheRef.current.set(voice.id, { url, mime });
-      return url;
+      return { kind: "audio", url };
     };
 
     try {
-      const storedUrl = await readStored();
-      if (storedUrl) return storedUrl;
+      const first = await readStored();
+      if (!current()) return null;
+      if (first.kind === "audio") return first.url;
+      if (first.kind === "failed") return null;
 
       // The request path does not render. The worker bakes the clip.
+      setPreviewPreparingId(voice.id);
       toast.message("Preparing preview");
       for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
+        if (!current()) return null;
         const ready = await readStored();
-        if (ready) return ready;
+        if (!current()) return null;
+        if (ready.kind === "audio") return ready.url;
+        if (ready.kind === "failed") return null;
       }
       return null;
-    } catch (e: unknown) {
-      toast.error(
-        e instanceof Error ? e.message : "Couldn't play the sample. Try again."
-      );
+    } catch {
       return null;
     }
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
-    if (stockCardAudition(voice) === "static") {
-      const recorded = stockPreviewUrl(voice.id);
-      if (!recorded) return;
-      if (
-        previewingId === voice.id &&
-        (previewAudioRef.current?.active || previewLoading === voice.id)
-      ) {
-        stopPreviewPlayback();
-        setPreviewingId(null);
-        setPreviewLoading(null);
-        return;
-      }
-      if (Date.now() < previewCooldownUntil) {
-        toast.error("Wait a moment.");
-        return;
-      }
-      stopPreviewPlayback();
-      setPreviewingId(voice.id);
-      setPreviewLoading(voice.id);
-      const outcome = await getPreviewAudio().play([recorded], {
-        onStart: () => setPreviewLoading(null),
-        onEnd: () => {
-          setPreviewingId(null);
-          setPreviewLoading(null);
-        },
-        onError: () => {
-          setPreviewingId(null);
-          setPreviewLoading(null);
-          toast.error("Couldn't play the sample. Try again.");
-        },
+    const playingThis =
+      previewingId === voice.id &&
+      (previewAudioRef.current?.active ||
+        browserSpeechActiveRef.current ||
+        previewLoading === voice.id);
+    const preparingThis = previewPreparingId === voice.id;
+    if (playingThis || preparingThis) {
+      previewTokenRef.current += 1;
+      const kept = voiceIdAfterRowAction({
+        action: "stop-preview",
+        voiceId: voice.id,
+        selectedId: selectedVoiceId,
       });
-      if (outcome !== "played" && outcome !== "interrupted") {
-        setPreviewingId(null);
-        setPreviewLoading(null);
-      }
+      if (kept) setSelectedVoiceId(kept);
+      stopPreviewPlayback();
+      setPreviewingId(null);
+      setPreviewPreparingId(null);
+      setPreviewLoading(null);
       return;
     }
     if (stockCardAudition(voice) === "select-only") {
       stopPreviewPlayback();
-      selectVoice(voice.id, { dismissSample: true });
-      return;
-    }
-    if (
-      previewingId === voice.id &&
-      (previewAudioRef.current?.active ||
-        browserSpeechActiveRef.current ||
-        previewLoading === voice.id)
-    ) {
-      stopPreviewPlayback();
+      const next = voiceIdAfterRowAction({
+        action: "select",
+        voiceId: voice.id,
+        selectedId: selectedVoiceId,
+      });
+      if (next) selectVoice(next, { dismissSample: true });
       return;
     }
     if (Date.now() < previewCooldownUntil) {
@@ -792,32 +785,53 @@ export default function VoiceSelectionPage() {
       return;
     }
     stopPreviewPlayback();
-    selectVoice(voice.id, { dismissSample: true });
-    setPreviewingId(voice.id);
+    const next = voiceIdAfterRowAction({
+      action: "preview",
+      voiceId: voice.id,
+      selectedId: selectedVoiceId,
+    });
+    if (next) selectVoice(next, { dismissSample: !isClonedVoice(voice) });
+    const token = ++previewTokenRef.current;
+    setPreviewingId(null);
+    setPreviewPreparingId(isClonedVoice(voice) ? voice.id : null);
+    setPreviewLoading(voice.id);
 
     const audio = getPreviewAudio();
+    const still = () => previewTokenRef.current === token;
     // A pause we asked for is not an error, so only a real failure reaches the
     // toast. `onEnd` and `onError` both leave the row idle again.
-    const sampleFailed = () => {
+    const clearPreview = () => {
+      if (!still()) return;
       setPreviewingId(null);
+      setPreviewPreparingId(null);
       setPreviewLoading(null);
+    };
+    const sampleFailed = () => {
+      clearPreview();
       toast.error("Couldn't play the sample. Try again.");
     };
     const samplePlayed = () => {
-      setPreviewingId(null);
+      clearPreview();
+    };
+    const markPlaying = () => {
+      if (!still()) return;
       setPreviewLoading(null);
+      setPreviewPreparingId(null);
+      setPreviewingId(voice.id);
     };
 
-    const recorded = isSlimStockVoiceId(voice.id)
-      ? stockPreviewUrl(voice.id)
-      : null;
+    const recorded = isClonedVoice(voice) ? null : stockPreviewUrl(voice.id);
     if (recorded) {
-      setPreviewLoading(voice.id);
       const outcome = await audio.play([recorded], {
-        onStart: () => setPreviewLoading(null),
+        onStart: markPlaying,
         onEnd: samplePlayed,
       });
-      if (outcome === "played" || outcome === "interrupted") return;
+      if (!still()) return;
+      if (outcome === "played") {
+        markPlaying();
+        return;
+      }
+      if (outcome === "interrupted") return;
     }
 
     // Edge short sample — matching neural only (never a random system voice).
@@ -827,23 +841,23 @@ export default function VoiceSelectionPage() {
         const result = await speakPreviewForStockVoice(PREVIEW_TEXT, voice, {
           onEnd: () => {
             browserSpeechActiveRef.current = false;
-            setPreviewingId(null);
+            clearPreview();
           },
           onError: () => {
             browserSpeechActiveRef.current = false;
-            setPreviewingId(null);
+            clearPreview();
           },
         });
+        if (!still()) return;
         if (result === "played") {
           browserSpeechActiveRef.current = true;
-          setPreviewingId(voice.id);
-          setPreviewLoading(null);
+          markPlaying();
           return;
         }
       } catch (e: unknown) {
+        if (!still()) return;
         toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
-        setPreviewingId(null);
-        setPreviewLoading(null);
+        clearPreview();
         return;
       }
       // Matching neural isn't in this browser — server Edge TTS, not a system voice.
@@ -857,34 +871,40 @@ export default function VoiceSelectionPage() {
         // live synthesis. Live TTS on this route can wait on a cold GPU pool,
         // and a fallback there is how a different engine's take once got
         // stored as this clone's preview.
-        const url = await clonedPreviewUrl(voice);
+        const url = await clonedPreviewUrl(voice, token);
+        if (!still()) return;
         if (!url) {
-          setPreviewingId(null);
-          setPreviewLoading(null);
+          clearPreview();
+          toast.error("Couldn't play the sample. Try again.");
           return;
         }
-        await audio.play([url], {
-          onStart: () => setPreviewLoading(null),
+        const outcome = await audio.play([url], {
+          onStart: markPlaying,
           onEnd: samplePlayed,
           onError: sampleFailed,
         });
+        if (still() && outcome === "played") markPlaying();
         return;
       }
-      await audio.play([livePreviewUrl(voice)], {
-        onStart: () => setPreviewLoading(null),
+      const live = await audio.play([livePreviewUrl(voice)], {
+        onStart: markPlaying,
         onEnd: samplePlayed,
         onError: sampleFailed,
       });
+      if (still() && live === "played") markPlaying();
       return;
     }
 
     const cached = previewCacheRef.current.get(voice.id);
     if (cached) {
       const outcome = await audio.play([cached.url], {
+        onStart: markPlaying,
         onEnd: samplePlayed,
-        onError: () => toast.error("Couldn't play the sample. Try again."),
+        onError: sampleFailed,
       });
-      if (outcome !== "played") setPreviewingId(null);
+      if (!still()) return;
+      if (outcome === "played") markPlaying();
+      else if (outcome !== "interrupted") clearPreview();
       return;
     }
 
@@ -909,15 +929,16 @@ export default function VoiceSelectionPage() {
       const blob = new Blob([buf], { type: mime });
       const url = URL.createObjectURL(blob);
       previewCacheRef.current.set(voice.id, { url, mime });
-      await audio.play([url], {
+      const outcome = await audio.play([url], {
+        onStart: markPlaying,
         onEnd: samplePlayed,
-        onError: () => toast.error("Couldn't play the sample. Try again."),
+        onError: sampleFailed,
       });
+      if (still() && outcome === "played") markPlaying();
     } catch (e: unknown) {
-      setPreviewingId(null);
+      if (!still()) return;
+      clearPreview();
       toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
-    } finally {
-      setPreviewLoading(null);
     }
   };
 
@@ -971,6 +992,7 @@ export default function VoiceSelectionPage() {
     setCloneQuality(null);
     if (!file) {
       setCloneFile(null);
+      setCloneNameDraft("");
       setCloneQualityChecking(false);
       return;
     }
@@ -983,8 +1005,10 @@ export default function VoiceSelectionPage() {
       if (!verdict.ok) {
         toast.error(verdict.message);
         setCloneFile(null);
+        setCloneNameDraft("");
         return;
       }
+      setCloneNameDraft(cloneNameDraftFromFile(file.name));
       setCloneFile(file);
       const prepared = await prepareCloneSampleFile(file);
       // A video container the browser can't decode is not sent raw —
@@ -997,6 +1021,7 @@ export default function VoiceSelectionPage() {
         });
         toast.error(userFriendlyError(VIDEO_AUDIO_DECODE_FAILED_MESSAGE));
         setCloneFile(null);
+        setCloneNameDraft("");
         return;
       }
       setCloneFile(prepared.file);
@@ -1020,6 +1045,7 @@ export default function VoiceSelectionPage() {
       });
       toast.error(userFriendlyError(message));
       setCloneFile(null);
+      setCloneNameDraft("");
     } finally {
       setCloneQualityChecking(false);
     }
@@ -1064,7 +1090,7 @@ export default function VoiceSelectionPage() {
     const startBook = decision.type === "clone-and-start";
     try {
       const clone = await uploadCloneVoice(cloneFile, {
-        title: cloneNameOrFallback(cloneFile.name),
+        title: cloneTitleFromDraft(cloneNameDraft),
         accent: DEFAULT_CLONE_ACCENT,
         onPhase: (phase) => setCloneUploadPct(phase === "reading" ? 0 : 1),
         onProgress: (fraction) =>
@@ -1097,7 +1123,7 @@ export default function VoiceSelectionPage() {
     try {
       const clone = await completeCloneUpload(
         uploadId,
-        { title: cloneNameOrFallback(cloneFile?.name), accent: DEFAULT_CLONE_ACCENT },
+        { title: cloneTitleFromDraft(cloneNameDraft), accent: DEFAULT_CLONE_ACCENT },
         { acceptQualityRisk: true }
       );
       setCloneRisk(null);
@@ -1178,10 +1204,11 @@ export default function VoiceSelectionPage() {
     const cloned = isClonedVoice(voice);
     const audition = stockCardAudition(voice);
     const selectOnly = audition === "select-only";
-    const staticPreview = audition === "static";
     const isPlaying = previewingId === voice.id;
-    const isSelected = selectedVoiceId === voice.id && !pendingSample;
+    const isSelected = rowIsPressed(selectedVoiceId, voice.id) && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
+    const isPreparing =
+      previewPreparingId === voice.id || (isLoadingPreview && !isPlaying);
     const label = withNarratorRecommendation(
       voiceTitle(voice),
       narrator ? narratorMarksVoice(narrator, voice.id) : false
@@ -1190,6 +1217,11 @@ export default function VoiceSelectionPage() {
       voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
         ? "Warm US male delivery, generated on our own machine."
         : duplicateCloneDateLabel(cloneVoices, voice);
+    const previewLabel = previewControlLabel({
+      preparing: isPreparing,
+      playing: isPlaying && !isPreparing,
+      name: label,
+    });
     const previewBusyElsewhere =
       (!!previewLoading && previewLoading !== voice.id) ||
       (previewOnCooldown && previewingId !== voice.id);
@@ -1251,15 +1283,14 @@ export default function VoiceSelectionPage() {
               <button
                 type="button"
                 disabled={previewBusyElsewhere}
-                aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
+                aria-pressed={isSelected}
+                aria-label={previewLabel}
                 onClick={() => {
-                  setPinnedVoiceId(voice.id);
-                  setSelectedVoiceId(voice.id);
                   void previewVoice(voice);
                 }}
-                className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground"
               >
-                {glyph(isLoadingPreview, isPlaying)}
+                {glyph(isPreparing, isPlaying && !isPreparing)}
               </button>
               {renamingId === voice.id ? (
                 <input
@@ -1283,69 +1314,36 @@ export default function VoiceSelectionPage() {
                   className="min-w-0 flex-1 border-b border-foreground/40 bg-transparent font-serif text-lg outline-none"
                 />
               ) : (
-                <span className="flex min-w-0 flex-1 items-center" data-rename-offer="">
+                <span className="flex min-w-0 flex-1 items-center">
                   <button
                     type="button"
-                    className="min-w-0 flex-1 truncate text-left"
+                    aria-pressed={isSelected}
+                    className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-left"
                     onClick={() => {
-                      setPinnedVoiceId(voice.id);
-                      setSelectedVoiceId(voice.id);
-                      setRenameOfferId(null);
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setRenameOfferId(voice.id);
+                      const next = voiceIdAfterRowAction({
+                        action: "select",
+                        voiceId: voice.id,
+                        selectedId: selectedVoiceId,
+                      });
+                      if (next) selectVoice(next);
                     }}
                   >
                     {label}
                   </button>
-                  {renameOfferId === voice.id ? (
-                    <button
-                      type="button"
-                      aria-label={`Rename ${label}`}
-                      onClick={() => {
-                        renameCancelRef.current = false;
-                        setRenameDraft(voiceTitle(voice));
-                        setRenamingId(voice.id);
-                        setRenameOfferId(null);
-                      }}
-                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-                    >
-                      <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    aria-label={`Rename ${label}`}
+                    onClick={() => {
+                      renameCancelRef.current = false;
+                      setRenameDraft(voiceTitle(voice));
+                      setRenamingId(voice.id);
+                    }}
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+                  </button>
                 </span>
               )}
-              {isSelected ? (
-                <Check
-                  aria-hidden="true"
-                  className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
-                  strokeWidth={1.35}
-                />
-              ) : null}
-            </div>
-          ) : staticPreview ? (
-            <div className={lineClass(isSelected)} style={{ fontWeight: 300 }}>
-              <button
-                type="button"
-                disabled={previewBusyElsewhere}
-                aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
-                onClick={() => {
-                  void previewVoice(voice);
-                }}
-                className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
-              >
-                {glyph(isLoadingPreview, isPlaying)}
-              </button>
-              <button
-                type="button"
-                aria-pressed={isSelected}
-                aria-label={label}
-                onClick={() => selectVoice(voice.id, { dismissSample: true })}
-                className="min-w-0 flex-1 truncate text-left"
-              >
-                {label}
-              </button>
               {isSelected ? (
                 <Check
                   aria-hidden="true"
@@ -1359,11 +1357,7 @@ export default function VoiceSelectionPage() {
             type="button"
             disabled={selectOnly ? false : previewBusyElsewhere}
             aria-pressed={isSelected}
-            aria-label={
-              selectOnly
-                ? label
-                : `${isPlaying ? UX.liveListenStop : UX.preview} ${label}`
-            }
+            aria-label={selectOnly ? label : previewLabel}
             onClick={() => {
               void previewVoice(voice);
             }}
@@ -1371,7 +1365,7 @@ export default function VoiceSelectionPage() {
             style={{ fontWeight: 300 }}
           >
             <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
-              {selectOnly ? null : glyph(isLoadingPreview, isPlaying)}
+              {selectOnly ? null : glyph(isPreparing, isPlaying && !isPreparing)}
             </span>
             <span className="min-w-0 truncate">{label}</span>
             {isSelected ? (
@@ -1518,13 +1512,7 @@ export default function VoiceSelectionPage() {
 
       {!soloVoice && activePath === "clone" && fishCloneConfigured && (
         <div className="mx-auto mb-6 mt-8 max-w-sm space-y-6">
-          <p className="text-sm text-muted-foreground">{YOUTUBE_COPY.sampleGuide}</p>
-          <YoutubeClipPicker
-            disabled={cloning || creating}
-            onBusy={setCloning}
-            onCloned={adoptClonedVoice}
-            onUploadInstead={() => cloneFileRef.current?.click()}
-          />
+          <p className="text-sm text-muted-foreground">{cloneUploadLead(Boolean(cloneFile))}</p>
           <input
             ref={cloneFileRef}
             type="file"
@@ -1548,6 +1536,18 @@ export default function VoiceSelectionPage() {
             {YOUTUBE_COPY.orUpload}
           </button>
           {cloneFile && (
+            <label className="block space-y-2">
+              <span className="text-xs text-muted-foreground">Name</span>
+              <input
+                value={cloneNameDraft}
+                maxLength={80}
+                aria-label="Voice name"
+                onChange={(event) => setCloneNameDraft(event.target.value)}
+                className="w-full border-b border-foreground/40 bg-transparent font-serif text-lg outline-none"
+              />
+            </label>
+          )}
+          {cloneFile && (
             <p className="flex items-center gap-3 text-xs text-muted-foreground" data-testid="clone-pick-state">
               <span className="truncate">
                 {cloneFile.name} · {Math.round(cloneFile.size / 1024)} KB
@@ -1569,6 +1569,13 @@ export default function VoiceSelectionPage() {
               </button>
             </p>
           )}
+          <YoutubeClipPicker
+            disabled={cloning || creating}
+            hideUnavailable={Boolean(cloneFile)}
+            onBusy={setCloning}
+            onCloned={adoptClonedVoice}
+            onUploadInstead={() => cloneFileRef.current?.click()}
+          />
           {cloneQualityChecking && (
             <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />

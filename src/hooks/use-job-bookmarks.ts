@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BOOKMARK_NOTICE_MS,
+  bookmarkNoticeAfterResponse,
+  bookmarkSaveTap,
   sortBookmarks,
   withSavedBookmark,
   withoutBookmark,
@@ -20,6 +22,11 @@ export function useJobBookmarks(jobId: string) {
   const [notice, setNotice] = useState<BookmarkNotice | null>(null);
   const [pending, setPending] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bookmarksRef = useRef(bookmarks);
+  const pendingRef = useRef(false);
+  const epoch = useRef(0);
+  const inflight = useRef(0);
+  bookmarksRef.current = bookmarks;
 
   useEffect(() => {
     let cancelled = false;
@@ -29,7 +36,9 @@ export function useJobBookmarks(jobId: string) {
       .then(async (response) => (response.ok ? response.json() : null))
       .then((body: { bookmarks?: JobBookmark[] } | null) => {
         if (cancelled || !body || !Array.isArray(body.bookmarks)) return;
-        setBookmarks(sortBookmarks(body.bookmarks));
+        const next = sortBookmarks(body.bookmarks);
+        bookmarksRef.current = next;
+        setBookmarks(next);
       })
       .catch(() => {});
     return () => {
@@ -51,6 +60,22 @@ export function useJobBookmarks(jobId: string) {
 
   const save = useCallback(
     async (input: SaveBookmarkInput) => {
+      const tap = bookmarkSaveTap({
+        pending: pendingRef.current,
+        bookmarks: bookmarksRef.current,
+        positionSeconds: input.positionSeconds,
+        sectionIndex: input.sectionIndex,
+      });
+      if (tap === "duplicate") {
+        // The in-flight response must not replace this notice with "Saved".
+        epoch.current += 1;
+        flash("duplicate");
+        return;
+      }
+      const token = epoch.current + 1;
+      epoch.current = token;
+      inflight.current = token;
+      pendingRef.current = true;
       setPending(true);
       try {
         const response = await fetch(`/api/jobs/${jobId}/bookmarks`, {
@@ -58,25 +83,35 @@ export function useJobBookmarks(jobId: string) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(input),
         });
-        if (!response.ok) {
-          flash("error");
-          return;
+        const body = response.ok
+          ? ((await response.json()) as { bookmark?: JobBookmark; duplicate?: boolean })
+          : null;
+        if (body?.bookmark) {
+          const saved = body.bookmark;
+          bookmarksRef.current = withSavedBookmark(bookmarksRef.current, saved);
+          setBookmarks(bookmarksRef.current);
         }
-        const body = (await response.json()) as {
-          bookmark?: JobBookmark;
-          duplicate?: boolean;
-        };
-        if (!body.bookmark) {
-          flash("error");
-          return;
-        }
-        const saved = body.bookmark;
-        setBookmarks((rows) => withSavedBookmark(rows, saved));
-        flash(body.duplicate ? "duplicate" : "saved");
+        const next = bookmarkNoticeAfterResponse({
+          httpOk: response.ok,
+          hasBookmark: Boolean(body?.bookmark),
+          duplicate: body?.duplicate,
+          requestEpoch: token,
+          currentEpoch: epoch.current,
+        });
+        if (next) flash(next);
       } catch {
-        flash("error");
+        const next = bookmarkNoticeAfterResponse({
+          httpOk: false,
+          hasBookmark: false,
+          requestEpoch: token,
+          currentEpoch: epoch.current,
+        });
+        if (next) flash(next);
       } finally {
-        setPending(false);
+        if (inflight.current === token) {
+          pendingRef.current = false;
+          setPending(false);
+        }
       }
     },
     [jobId, flash]
@@ -84,7 +119,11 @@ export function useJobBookmarks(jobId: string) {
 
   const remove = useCallback(
     async (bookmarkId: string) => {
-      setBookmarks((rows) => withoutBookmark(rows, bookmarkId));
+      setBookmarks((rows) => {
+        const next = withoutBookmark(rows, bookmarkId);
+        bookmarksRef.current = next;
+        return next;
+      });
       try {
         const response = await fetch(`/api/jobs/${jobId}/bookmarks/${bookmarkId}`, {
           method: "DELETE",

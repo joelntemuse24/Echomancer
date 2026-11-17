@@ -125,6 +125,7 @@ function waitLabel(phase: ClipWaitPhase): string {
 export function YoutubeClipPicker({
   title = "",
   disabled,
+  hideUnavailable = false,
   onCloned,
   onBusy,
   onUploadInstead,
@@ -133,6 +134,8 @@ export function YoutubeClipPicker({
   title?: string;
   accent?: CloneAccent;
   disabled?: boolean;
+  /** A file is already chosen, so the YouTube outage is not part of that upload. */
+  hideUnavailable?: boolean;
   onCloned: (clone: UploadedCloneVoice) => void;
   onBusy?: (busy: boolean) => void;
   onUploadInstead: () => void;
@@ -777,7 +780,7 @@ export function YoutubeClipPicker({
         </div>
       ) : null}
 
-      {accessChecked && !proxyEnabled ? (
+      {accessChecked && !proxyEnabled && !hideUnavailable ? (
         <p role="status" className="text-sm">
           {clipReason === "sign-in"
             ? YOUTUBE_COPY.clippingNeedsSignIn

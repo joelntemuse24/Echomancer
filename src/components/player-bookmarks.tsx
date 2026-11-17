@@ -3,7 +3,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Bookmark, ChevronDown, X } from "lucide-react";
 import {
+  BOOKMARK_LIST_DISMISS_EVENT,
   BOOKMARK_NOTICE_TEXT,
+  bookmarkListKeyAction,
   bookmarkPlaceLabel,
   type BookmarkNotice,
   type JobBookmark,
@@ -11,7 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const controlButton =
-  "inline-flex items-center justify-center text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30";
+  "relative z-30 inline-flex items-center justify-center text-foreground transition-colors hover:bg-foreground/10 disabled:cursor-not-allowed disabled:opacity-30";
 
 export function BookmarkList({
   bookmarks,
@@ -107,24 +109,35 @@ export function PlayerBookmarks({
 
   useEffect(() => {
     if (!open) return;
+    const close = () => setOpen(false);
     const onPointer = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) close();
     };
+    // Capture runs before focus mode's window listener, which would otherwise
+    // keep the list open (it returns when the list is in the tree) or leave
+    // the view. Escape closes only the list.
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (bookmarkListKeyAction(event.key) !== "close") return;
+      event.preventDefault();
       event.stopPropagation();
-      setOpen(false);
+      close();
     };
     document.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener(BOOKMARK_LIST_DISMISS_EVENT, close);
     return () => {
       document.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener(BOOKMARK_LIST_DISMISS_EVENT, close);
     };
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative z-30 inline-flex items-center">
+    <div
+      ref={rootRef}
+      data-bookmark-open={open ? "true" : "false"}
+      className="relative z-30 inline-flex items-center"
+    >
       <button
         type="button"
         data-testid="save-bookmark"
@@ -133,7 +146,7 @@ export function PlayerBookmarks({
         aria-busy={pending || undefined}
         disabled={disabled || pending}
         onClick={onSave}
-        className={cn(controlButton, "min-h-11 min-w-11", notice === "saved" && "text-foreground")}
+        className={cn(controlButton, "min-h-11 min-w-11", open && "text-foreground")}
       >
         <Bookmark
           aria-hidden="true"
@@ -150,7 +163,11 @@ export function PlayerBookmarks({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         onClick={() => setOpen((value) => !value)}
-        className={cn(controlButton, "min-h-11 min-w-11 text-muted-foreground")}
+        className={cn(
+          controlButton,
+          "min-h-11 min-w-11",
+          open ? "text-foreground" : "text-muted-foreground"
+        )}
       >
         <ChevronDown
           aria-hidden="true"
@@ -158,15 +175,6 @@ export function PlayerBookmarks({
           strokeWidth={1.5}
         />
       </button>
-      <span
-        role="status"
-        className={cn(
-          "pointer-events-none absolute bottom-full left-0 z-30 mb-1 whitespace-nowrap font-sans text-[11px] text-foreground",
-          message ? "" : "sr-only"
-        )}
-      >
-        {message}
-      </span>
       {open ? (
         <>
           <div
@@ -186,6 +194,17 @@ export function PlayerBookmarks({
           />
         </>
       ) : null}
+      <span
+        role="status"
+        aria-live="polite"
+        data-testid="bookmark-notice"
+        className={cn(
+          "pointer-events-none absolute bottom-full left-1/2 z-40 mb-1 -translate-x-1/2 whitespace-nowrap rounded-md bg-background px-2 py-1 font-sans text-xs text-foreground",
+          message ? "border border-border/60 shadow-sm" : "sr-only"
+        )}
+      >
+        {message}
+      </span>
     </div>
   );
 }

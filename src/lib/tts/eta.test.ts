@@ -39,7 +39,7 @@ describe("computeJobEta", () => {
     );
 
     expect(eta.state).toBe("estimating");
-    expect(eta.label).toBe("Estimating…");
+    expect(eta.label).toBe("~5 min");
     expect(eta.seconds).not.toBeNull();
     expect(eta.seconds!).toBeGreaterThan(0);
   });

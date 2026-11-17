@@ -21,7 +21,6 @@ import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
-import { etaLabelSuffix } from "@/lib/tts/eta";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
   audiobookDownloadUrl,
@@ -30,6 +29,7 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
+import { acceptJobPoll, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import {
@@ -416,6 +416,17 @@ function PlayerPageInner({ id }: { id: string }) {
           delay,
           changed,
           hasPlayableAudio: hasPlayableAudio(jobRef.current),
+          urgent:
+            generationStatus({
+              status: jobRef.current?.status ?? "processing",
+              currentSection: jobRef.current?.current_section,
+              totalSections: jobRef.current?.total_sections,
+              segments: jobRef.current?.segments,
+              etaLabel: jobRef.current?.eta_label,
+              etaState: jobRef.current?.eta_state,
+              waitingForText: jobRef.current?.waiting_for_text,
+              provider: jobRef.current?.tts_provider,
+            }).phase === "finishing",
         });
       }
       schedule();
@@ -438,6 +449,7 @@ function PlayerPageInner({ id }: { id: string }) {
         if (stopped) return false;
         const prev = jobRef.current;
         const next = data.job as Job;
+        if (!acceptJobPoll(prev?.status, next.status)) return false;
 
         if (!prev ||
             prev.status !== next.status ||
@@ -1276,12 +1288,16 @@ function PlayerPageInner({ id }: { id: string }) {
     return <PlayerLoadingShell />;
   }
 
-  // While generating, the line reads "42% · ~2 min left" (or "… · Estimating…").
-  const etaSuffix = job.waiting_for_text
-    ? "Estimating…"
-    : smoothedEtaLabel
-      ? etaLabelSuffix(smoothedEtaLabel, job.eta_state)
-      : "Estimating…";
+  const narration = generationStatus({
+    status: job.status,
+    currentSection: job.current_section,
+    totalSections: job.total_sections,
+    segments: job.segments,
+    etaLabel: job.waiting_for_text ? "Estimating…" : smoothedEtaLabel,
+    etaState: job.waiting_for_text ? "estimating" : job.eta_state,
+    waitingForText: job.waiting_for_text,
+    provider: job.tts_provider,
+  });
 
   return (
     <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
@@ -1333,24 +1349,21 @@ function PlayerPageInner({ id }: { id: string }) {
           <p className="text-xs text-muted-foreground" role="status">
             {WAIT.startingEngine}
           </p>
-        ) : (job.status === "processing" ||
-          job.status === "queued" ||
-          job.status === "waiting") &&
-        job.progress < 100 ? (
+        ) : narration.line ? (
           <p className="text-xs text-muted-foreground" role="status">
-            {job.progress}% · {etaSuffix}
+            {narration.line}
           </p>
         ) : null}
         {job.status === "failed" ? (
           <p className="text-xs text-muted-foreground" role="alert">
             {customerBookStatus(job.error_message, "failed") ?? UX.failed}
           </p>
-        ) : customerBookStatus(job.warning, job.status) ? (
+        ) : job.status !== "cancelled" && customerBookStatus(job.warning, job.status) ? (
           <p className="text-xs text-muted-foreground" role="status">
             {customerBookStatus(job.warning, job.status)}
           </p>
         ) : null}
-        {job.status === "queued" || job.status === "processing" || job.status === "waiting" ? (
+        {narration.showStop ? (
           <button
             type="button"
             disabled={stopping}
@@ -1359,7 +1372,15 @@ function PlayerPageInner({ id }: { id: string }) {
               void fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" })
                 .then((response) => {
                   if (response.ok) {
-                    setJob((prev) => (prev ? { ...prev, status: "cancelled" } : prev));
+                    setJob((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            status: "cancelled",
+                            error_message: "Cancelled by user",
+                          }
+                        : prev
+                    );
                   }
                 })
                 .finally(() => setStopping(false));
@@ -1471,6 +1492,7 @@ function PlayerPageInner({ id }: { id: string }) {
           position={readAlongPosition}
           onSeek={isStreamMode ? undefined : seekToChar}
           bookTitle={job.book_title}
+          statusLine={narration.line}
           chapterTitle={chapterNav ? view.dragLabel : null}
           playing={isPlaying}
           speed={speed}

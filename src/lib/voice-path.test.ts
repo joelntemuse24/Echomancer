@@ -84,7 +84,7 @@ describe("voicesForPath", () => {
       "sowell",
     ]);
     expect(listed.at(-1)?.displayName).toBe("Walter");
-    expect(stockCardAudition(walter)).toBe("static");
+    expect(stockCardAudition(walter)).toBe("play");
     // The committed file keeps the internal id, so only the label moved.
     expect(stockPreviewUrl("sowell")).toBe("/voice-previews/sowell.mp3");
     expect(existsSync(path.join(process.cwd(), "public/voice-previews/sowell.mp3"))).toBe(

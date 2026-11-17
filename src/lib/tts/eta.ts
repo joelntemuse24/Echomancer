@@ -124,7 +124,9 @@ export function etaLabelSuffix(
   state?: string | null
 ): string {
   if (!label) return "";
-  return state === "estimating" ? label : `${label} left`;
+  if (state === "done") return label;
+  if (label === "Estimating…" || label.startsWith("usually ")) return label;
+  return `${label} left`;
 }
 
 /** Job fields that feed the estimate. All timestamps are epoch seconds. */
@@ -397,7 +399,11 @@ export function computeJobEta(
   const seconds = smoothEta(prev, capped, now);
 
   if (!live) {
-    return { seconds, label: "Estimating…", state: "estimating" };
+    return {
+      seconds,
+      label: knownTotal ? (formatEtaSeconds(seconds) ?? "Estimating…") : "Estimating…",
+      state: "estimating",
+    };
   }
   return {
     seconds,

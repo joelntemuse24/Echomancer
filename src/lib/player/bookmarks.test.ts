@@ -2,8 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   BOOKMARK_DEDUPE_SECONDS,
   BOOKMARK_LABEL_MAX,
+  BOOKMARK_NOTICE_MS,
+  BOOKMARK_NOTICE_TEXT,
+  bookmarkEscapeTarget,
   bookmarkLabel,
+  bookmarkListKeyAction,
+  bookmarkNoticeAfterResponse,
+  bookmarkNoticeFromResponse,
   bookmarkPlaceLabel,
+  bookmarkSaveTap,
   bookmarksAreDuplicates,
   cleanBookmarkLabel,
   passageSnippet,
@@ -110,5 +117,86 @@ describe("bookmark list updates", () => {
       mark({ id: "b", positionSeconds: 20 }),
     ];
     expect(withoutBookmark(rows, "a").map((row) => row.id)).toEqual(["b"]);
+  });
+});
+
+describe("bookmark status", () => {
+  it("keeps Saved and Already saved on screen for about two seconds", () => {
+    expect(BOOKMARK_NOTICE_MS).toBeGreaterThanOrEqual(1500);
+    expect(BOOKMARK_NOTICE_MS).toBeLessThanOrEqual(2000);
+    expect(BOOKMARK_NOTICE_MS).toBe(2000);
+  });
+
+  it("maps a duplicate response to Already saved and a new row to Saved", () => {
+    expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: true, duplicate: true })]).toBe(
+      "Already saved"
+    );
+    expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: true, duplicate: false })]).toBe(
+      "Saved"
+    );
+    expect(BOOKMARK_NOTICE_TEXT[bookmarkNoticeFromResponse({ ok: false, duplicate: true })]).toBe(
+      "Couldn't save bookmark"
+    );
+  });
+
+  it("does not let an in-flight Saved response replace Already saved", () => {
+    const started = 1;
+    const afterSecondTap = started + 1;
+    expect(
+      bookmarkNoticeAfterResponse({
+        httpOk: true,
+        hasBookmark: true,
+        duplicate: false,
+        requestEpoch: started,
+        currentEpoch: afterSecondTap,
+      })
+    ).toBeNull();
+    expect(
+      BOOKMARK_NOTICE_TEXT[
+        bookmarkNoticeAfterResponse({
+          httpOk: true,
+          hasBookmark: true,
+          duplicate: true,
+          requestEpoch: afterSecondTap,
+          currentEpoch: afterSecondTap,
+        })!
+      ]
+    ).toBe("Already saved");
+  });
+
+  it("treats a second tap within 2 seconds, including one still in flight, as Already saved", () => {
+    const existing = [{ positionSeconds: 10, sectionIndex: null as number | null }];
+    expect(
+      bookmarkSaveTap({
+        pending: true,
+        bookmarks: [],
+        positionSeconds: 10,
+        sectionIndex: null,
+      })
+    ).toBe("duplicate");
+    expect(
+      bookmarkSaveTap({
+        pending: false,
+        bookmarks: existing,
+        positionSeconds: 11.5,
+        sectionIndex: null,
+      })
+    ).toBe("duplicate");
+    expect(
+      bookmarkSaveTap({
+        pending: false,
+        bookmarks: existing,
+        positionSeconds: 14,
+        sectionIndex: null,
+      })
+    ).toBe("send");
+  });
+
+  it("closes the list on Escape and leaves the surrounding view up", () => {
+    expect(bookmarkListKeyAction("Escape")).toBe("close");
+    expect(bookmarkListKeyAction("Esc")).toBe("close");
+    expect(bookmarkListKeyAction("Enter")).toBe("none");
+    expect(bookmarkEscapeTarget(true)).toBe("list");
+    expect(bookmarkEscapeTarget(false)).toBe("view");
   });
 });

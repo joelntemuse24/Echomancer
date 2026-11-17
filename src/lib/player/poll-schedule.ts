@@ -30,7 +30,9 @@ export function nextJobPollDelay(input: {
   delay: number;
   changed: boolean;
   hasPlayableAudio: boolean;
+  /** Join still running after the last section. Stay brisk so Stop leaves with the job. */
+  urgent?: boolean;
 }): number {
-  if (input.changed || !input.hasPlayableAudio) return JOB_POLL_MIN_MS;
+  if (input.changed || !input.hasPlayableAudio || input.urgent) return JOB_POLL_MIN_MS;
   return Math.min(JOB_POLL_MAX_MS, Math.round(input.delay * JOB_POLL_BACKOFF));
 }
