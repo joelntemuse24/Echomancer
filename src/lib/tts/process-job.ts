@@ -106,6 +106,7 @@ import {
   resolveLegacyDramaPin,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
+import { CLONE_ENGINE_FAILED } from "@/lib/ux-copy";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
 import {
   loadFrozenScript,
@@ -2728,6 +2729,43 @@ async function runClaimedTick(
             console.log(`[Job ${jobId}] S2 cacheSkip=${skippedCached} render=0`);
           }
 
+          if (dispatch?.controlRejected) {
+            // A completed 5xx means the spawn threw. Leaving the book
+            // processing with no section keeps the player on "Starting
+            // the clone voice…" (a live book sat there for 4m26s). Fail
+            // the section and the book so that line is replaced.
+            const rejected = dispatch.missing;
+            if (rejected.length > 0) {
+              await writeLock(async () => {
+                for (const index of rejected) {
+                  const prev = segments.find((segment) => segment.index === index);
+                  segments = upsertSegment(segments, {
+                    index,
+                    path: prev?.path || "",
+                    status: "failed",
+                    attempts: prev?.attempts ?? 0,
+                    error: CLONE_ENGINE_FAILED,
+                  });
+                }
+                await writeWithLease(
+                  jobId,
+                  lease,
+                  `UPDATE jobs SET segments_json = ?, updated_at = unixepoch()
+                   WHERE id = ? AND processing_lease_token = ?`,
+                  [JSON.stringify(segments)]
+                );
+              });
+            }
+            console.error(
+              `[Job ${jobId}] s2 control rejected the submit: ${dispatch.controlRejected}`
+            );
+            await stopBook(jobId, lease, CLONE_ENGINE_FAILED, null);
+            return {
+              done: true,
+              nextIndex: job.next_section_index ?? 0,
+              total: job.total_sections ?? 0,
+            };
+          }
           if (dispatch?.budgetStop) {
             const { haltBook } = await import("@/lib/remote/layer");
             const { drainBookCalls } = await import("@/lib/remote/drain-book");

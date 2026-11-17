@@ -31,6 +31,7 @@ import {
   setS2StatusReaderForTests,
   S2_CONTROL_DEADLINE_MS,
   S2_NOT_FOUND_RECONCILE_MS,
+  S2ControlRejected,
   S2ControlUnavailable,
   S2NotFoundSettled,
   UNCONFIRMED_SUBMIT_LIMIT,
@@ -532,6 +533,90 @@ describe("remote book path", () => {
     expect(kickModalCloneSnapshotWarm("other book", Date.now(), "book-other")).toBe(true);
   });
 
+  it("brakes and restores through s2_control, and skips the brake when another book is live", async () => {
+    stubModalEndpoints(vi.stubEnv, { control: true });
+    vi.stubEnv("MODAL_S2_TOKEN", "tok");
+    vi.stubEnv("S2_DRAIN_HTTP_TEST", "1");
+    vi.stubEnv("MODAL_TOKEN_ID", "");
+    const posts: Array<Record<string, unknown>> = [];
+    const headers: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        posts.push(body);
+        headers.push(String(init?.headers && (init.headers as Record<string, string>).Authorization));
+        if (body.autoscaler === "read") {
+          return new Response(
+            JSON.stringify({
+              status: "ok",
+              max_containers: 20,
+              min_containers: 0,
+              source: "update_autoscaler",
+              app: "echomancer-s2-clone",
+            })
+          );
+        }
+        if (body.autoscaler === "count") {
+          return new Response(JSON.stringify({ status: "ok", running: 0 }));
+        }
+        if (body.autoscaler === "brake") {
+          return new Response(JSON.stringify({ status: "ok", max_containers: 0, min_containers: 0 }));
+        }
+        if (body.autoscaler === "restore") {
+          return new Response(
+            JSON.stringify({ status: "ok", max_containers: body.max_containers, min_containers: 0 })
+          );
+        }
+        if (body.cancel === true) {
+          return new Response(JSON.stringify({ status: "pending", call_id: body.call_id, terminal: false }));
+        }
+        return new Response("unexpected", { status: 500 });
+      })
+    );
+    setDrainHooksForTests(null);
+    const stuck = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "book-http",
+      sections: ["0"],
+      callId: "fc-http",
+    });
+    if (stuck.kind === "start") stuck.finish("still_live");
+    const report = await drainBookCalls("book-http", "cancelled");
+    expect(report?.braked).toBe(true);
+    expect(report?.restored).toBe(true);
+    expect(report?.savedMax).toBe(20);
+    const actions = posts.map((row) => row.autoscaler ?? (row.cancel ? "cancel" : "other"));
+    expect(actions).toEqual(["read", "cancel", "brake", "count", "restore"]);
+    expect(posts.find((row) => row.autoscaler === "restore")?.max_containers).toBe(20);
+    expect(posts.some((row) => "app" in row)).toBe(false);
+    expect(headers.every((value) => value === "Bearer tok")).toBe(true);
+
+    posts.length = 0;
+    resetRemoteLayerForTests();
+    const mine = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "book-http",
+      sections: ["0"],
+      callId: "fc-http",
+    });
+    if (mine.kind === "start") mine.finish("still_live");
+    const other = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "book-other",
+      sections: ["0"],
+      callId: "fc-other",
+    });
+    if (other.kind === "start") other.finish("still_live");
+    const skipped = await drainBookCalls("book-http", "cancelled");
+    expect(skipped?.braked).toBe(false);
+    expect(posts.some((row) => row.autoscaler === "brake")).toBe(false);
+    expect(posts.some((row) => row.autoscaler === "restore")).toBe(false);
+  });
+
   it("restores the saved max when containers stay up and when the brake throws", async () => {
     const restored: number[] = [];
     setDrainHooksForTests({
@@ -688,7 +773,7 @@ describe("remote book path", () => {
     expect(urls).toEqual([BATCH_HOST]);
   });
 
-  it("retries a slow control accept and does not post the GPU", async () => {
+  it("fails a control accept that keeps answering 5xx and does not post the GPU", async () => {
     await resetDatabase();
     stubModalEndpoints(vi.stubEnv, { control: true });
     vi.stubEnv("MODAL_S2_TOKEN", "test-token");
@@ -715,12 +800,12 @@ describe("remote book path", () => {
     await vi.advanceTimersByTimeAsync(S2_CONTROL_DEADLINE_MS + 1_000);
     const error = await settled;
     vi.useRealTimers();
-    expect(error).toBeInstanceOf(S2ControlUnavailable);
-    expect((error as S2ControlUnavailable).giveUp).toBe(false);
+    expect(error).toBeInstanceOf(S2ControlRejected);
+    expect((error as S2ControlRejected).status).toBe(503);
     expect(urls.length).toBeGreaterThan(1);
     expect(urls.every((url) => endpointOf(url) === "control")).toBe(true);
     expect(remoteFlights().find((flight) => flight.jobId === "book-slow-control")).toMatchObject({
-      status: "submit_unconfirmed",
+      status: "failure",
       idempotencyKey: "book-slow-control:0:0",
     });
   });
@@ -755,7 +840,7 @@ describe("remote book path", () => {
         if (payload.items) {
           keys.push(String(payload.idempotency_key));
           if (!stored) {
-            return new Response("busy", { status: 503 });
+            throw new Error("socket reset");
           }
           return new Response(
             JSON.stringify({ call_id: "fc-kept", status: "pending", idempotent: true }),
@@ -834,7 +919,7 @@ describe("remote book path", () => {
             headers: { "content-type": "application/json" },
           });
         }
-        return new Response("busy", { status: 503 });
+        throw new Error("no response");
       })
     );
     for (let n = 1; n < UNCONFIRMED_SUBMIT_LIMIT; n += 1) {
@@ -1226,9 +1311,10 @@ describe("remote book path", () => {
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
-  it("reads the live autoscaler max instead of MODAL_S2_MAX_GPUS", () => {
+  it("reads the live autoscaler max from s2_control, not the Modal CLI", () => {
     const source = readFileSync(new URL("./drain-book.ts", import.meta.url), "utf8");
-    expect(source).toContain("--print-max");
+    expect(source).toContain('s2Fleet("read")');
+    expect(source).not.toContain("--print-max");
     expect(source).not.toContain("MODAL_S2_MAX_GPUS");
     expect(source).not.toContain("--profile");
     expect(source).not.toContain("ntemusejoel");

@@ -49,7 +49,11 @@ import {
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
 import { ModalWorkspaceDisabledError } from "@/lib/modal/workspace-disabled";
-import { S2ControlUnavailable, S2NotFoundSettled } from "@/lib/tts/providers/modal-clone-call";
+import {
+  S2ControlRejected,
+  S2ControlUnavailable,
+  S2NotFoundSettled,
+} from "@/lib/tts/providers/modal-clone-call";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
   MODAL_CLONE_PUBLISH_MS,
@@ -242,6 +246,12 @@ export interface LaneDispatchResult {
   held: boolean;
   /** The book is over its remote-call budget. Fail it. Do not park it cold. */
   budgetStop: boolean;
+  /**
+   * The control function answered HTTP 5xx for the whole accept window.
+   * The spawn did not happen. Fail the book. Do not park it and do not
+   * leave it on the starting line.
+   */
+  controlRejected: string | null;
   /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
   firstLight: FirstLightReport | null;
 }
@@ -288,6 +298,7 @@ interface WaveOutcome {
   abortedWarm: boolean;
   held: boolean;
   budgetStop: boolean;
+  controlRejected: string | null;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -314,6 +325,7 @@ interface DispatchTally {
   abortedWarm: boolean;
   held: boolean;
   budgetStop: boolean;
+  controlRejected: string | null;
 }
 
 function emptyTally(): DispatchTally {
@@ -339,6 +351,7 @@ function emptyTally(): DispatchTally {
     abortedWarm: false,
     held: false,
     budgetStop: false,
+    controlRejected: null,
   };
 }
 
@@ -373,6 +386,9 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   if (wave.abortedWarm) tally.abortedWarm = true;
   if (wave.held) tally.held = true;
   if (wave.budgetStop) tally.budgetStop = true;
+  if (wave.controlRejected && !tally.controlRejected) {
+    tally.controlRejected = wave.controlRejected;
+  }
   for (const index of wave.abortedIndexes) {
     if (!tally.abortedIndexes.includes(index)) tally.abortedIndexes.push(index);
   }
@@ -583,7 +599,7 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
       warmBatch: call.shape === "warm",
     });
     mergeWave(tally, wave);
-    if (tally.busy > 0 || tally.providerFault) break;
+    if (tally.busy > 0 || tally.providerFault || tally.controlRejected) break;
     // A socket or any other throw is not "the container parsed a body and
     // every row failed". Stop. Do not mark the pool warm, and do not POST
     // the next section of the ramp.
@@ -796,6 +812,7 @@ async function finishDispatch(
     abortedWarm: tally.abortedWarm,
     held: tally.held,
     budgetStop: tally.budgetStop,
+    controlRejected: tally.controlRejected,
     firstLight,
   };
 }
@@ -851,6 +868,7 @@ async function runWave(
   let abortedWarm = false;
   let held = false;
   let budgetStop = false;
+  let controlRejected: string | null = null;
 
   if (attempted.length === 0) {
     return {
@@ -877,6 +895,7 @@ async function runWave(
       abortedWarm: false,
       held: false,
       budgetStop: false,
+      controlRejected: null,
     };
   }
 
@@ -1049,6 +1068,9 @@ async function runWave(
     } else if (err instanceof ModalCloneColdError) {
       poolCold = true;
       poolReason = err.message;
+    } else if (err instanceof S2ControlRejected) {
+      controlRejected = err.message;
+      log(`[S2 lanes] control rejected the submit (${err.status}): ${err.message}`);
     } else if (err instanceof S2ControlUnavailable && !err.giveUp) {
       for (const index of result.lane) {
         if (!staged.has(index) && !unconfirmedIndexes.includes(index)) {
@@ -1104,5 +1126,6 @@ async function runWave(
     abortedWarm,
     held,
     budgetStop,
+    controlRejected,
   };
 }

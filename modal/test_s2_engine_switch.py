@@ -271,6 +271,80 @@ def test_one_app_name_rule_for_every_entry_point(service):
     )
 
 
+def test_deploy_identity_is_stable_and_does_not_share_stores(service):
+    """A container re-import of the baked env must not flip to staging.
+
+    s2_control logged app=echomancer-s2-clone-staging and opened
+    echomancer-s2-clone-staging-s2-control because its function env had
+    neither S2C_APP_NAME nor S2C_ALLOW_PRODUCTION.
+    """
+    from s2_contract import (
+        PRODUCTION_APP_NAME,
+        STAGING_APP_NAME,
+        compile_rpc_timeout_s,
+        control_dict_name,
+        deploy_identity,
+        fresh_gap_s,
+        resolve_app_name,
+    )
+
+    prod = deploy_identity(
+        {"S2C_APP_NAME": PRODUCTION_APP_NAME, "S2C_ALLOW_PRODUCTION": "1"}
+    )
+    stage = deploy_identity({})
+    assert prod["S2C_APP_NAME"] == PRODUCTION_APP_NAME
+    assert prod["S2C_ALLOW_PRODUCTION"] == "1"
+    assert stage["S2C_APP_NAME"] == STAGING_APP_NAME
+    assert prod["S2C_CONTROL_DICT"] != stage["S2C_CONTROL_DICT"]
+    assert prod["S2C_HEARTBEAT_DICT"] != stage["S2C_HEARTBEAT_DICT"]
+    assert prod["S2C_CONTROL_DICT"] == f"{PRODUCTION_APP_NAME}-s2-control"
+    assert stage["S2C_CONTROL_DICT"] == f"{STAGING_APP_NAME}-s2-control"
+    # The production name alone is still staging. The baked pin is not.
+    assert resolve_app_name({"S2C_APP_NAME": PRODUCTION_APP_NAME}) == STAGING_APP_NAME
+    assert resolve_app_name(prod) == PRODUCTION_APP_NAME
+    assert deploy_identity(prod) == prod
+    assert control_dict_name(prod) == prod["S2C_CONTROL_DICT"]
+    assert service._IDENTITY == deploy_identity(os.environ)
+    assert service._BUILD_ENV["S2C_APP_NAME"] == service._IDENTITY["S2C_APP_NAME"]
+    assert service._BUILD_ENV["S2C_CONTROL_DICT"] == service._IDENTITY["S2C_CONTROL_DICT"]
+    # The cover client has to outlast a ~1350s compile. 1200s reported graphs=missing.
+    assert compile_rpc_timeout_s({}) > 1200
+    assert compile_rpc_timeout_s({}) >= 1350 + 180
+    assert fresh_gap_s(300) >= 345
+    _ = service
+
+
+def test_cover_polls_past_a_slice_timeout(service):
+    """A short get() timeout is not graphs=missing. The same call is polled."""
+    import s2_clone_warm
+    from s2_contract import cold_restore_counts
+
+    class Handle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, timeout):
+            self.calls += 1
+            if self.calls < 3:
+                raise TimeoutError(f"deadline {timeout}")
+            return {"graphs": "ok(24)", "container_id": "c-fresh"}
+
+    status, err = s2_clone_warm._await_handle(Handle(), 30, poll_s=1)
+    assert err is None
+    assert status["container_id"] == "c-fresh"
+    assert cold_restore_counts(status, {"c-compile"}) == "ok"
+    assert cold_restore_counts(status, {"c-fresh"}) == "same-container"
+
+    class Boom:
+        def get(self, timeout):
+            raise RuntimeError("auth failed")
+
+    status, err = s2_clone_warm._await_handle(Boom(), 5, poll_s=1)
+    assert status is None
+    assert "auth failed" in str(err)
+    _ = service
+
+
 def test_the_heartbeat_registry_follows_the_app(service):
     """A staging app must not read production's heartbeats, and vice versa."""
     from s2_contract import heartbeat_dict_name, resolve_app_name

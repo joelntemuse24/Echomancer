@@ -8,10 +8,13 @@
  *
  * A batch body uses that endpoint whenever `MODAL_S2_CONTROL_URL` is set.
  * A cold start is a slow accept: the same idempotency key is posted again
- * until the deadline. An accept that ends with no id is `submit_unconfirmed`:
- * the attempt does not move, and the next post of that key reads the Dict.
- * The section fails only after several empty lookups. The synchronous GPU
- * post is only for an unset URL, or a body that names a different protocol.
+ * until the deadline. A timeout (no HTTP status) that ends with no id is
+ * `submit_unconfirmed`: the attempt does not move, and the next post of
+ * that key reads the Dict. The section fails only after several empty
+ * lookups. A completed HTTP 5xx is the control function answering, so the
+ * spawn did not happen. Those retries stay inside the same deadline, then
+ * the book fails. The synchronous GPU post is only for an unset URL, or a
+ * body that names a different protocol.
  * A single-section `{text}` post stays on its own host.
  */
 
@@ -59,6 +62,7 @@ const TERMINAL_S2_STATUS = new Set([
 ]);
 
 let statusBudgetForTests: number | null = null;
+let acceptDeadlineForTests: number | null = null;
 let notFoundMarginForTests: number | null = null;
 let statusReaderForTests:
   | ((callId: string) => Promise<{ status?: string | null; error?: string | null }>)
@@ -70,6 +74,11 @@ const unresolvedKeys = new Set<string>();
 /** Shorten the poll budget. Production uses the call's own wait. */
 export function setS2StatusBudgetForTests(ms: number | null): void {
   statusBudgetForTests = ms;
+}
+
+/** Shorten the 45s accept window. Production always uses {@link S2_CONTROL_DEADLINE_MS}. */
+export function setS2AcceptDeadlineForTests(ms: number | null): void {
+  acceptDeadlineForTests = ms;
 }
 
 /** Reconcile tests report a stored id's status without an HTTP call. */
@@ -93,6 +102,7 @@ export function setS2NotFoundMarginForTests(ms: number | null): void {
 
 export function resetS2ControlForTests(): void {
   statusBudgetForTests = null;
+  acceptDeadlineForTests = null;
   notFoundMarginForTests = null;
   statusReaderForTests = null;
   keyLookupForTests = null;
@@ -161,6 +171,21 @@ export class S2ControlUnavailable extends Error {
 }
 
 /**
+ * The control function answered HTTP 5xx for the whole accept window and
+ * the Dict has no call id. The spawn did not happen. This is not
+ * {@link S2ControlUnavailable}: that one is a lost response, and retrying
+ * it keeps the book on "Starting the clone voice…".
+ */
+export class S2ControlRejected extends Error {
+  readonly status: number;
+  constructor(detail: string, status: number) {
+    super(detail);
+    this.name = "S2ControlRejected";
+    this.status = status;
+  }
+}
+
+/**
  * NotFound lasted through the render wait and the margin, after the one
  * same-key resubmit. The flight is terminal. The attempt does not move.
  */
@@ -213,6 +238,67 @@ export function s2ControlOrigin(): string | null {
   return control;
 }
 
+export type S2FleetAction = "read" | "brake" | "restore" | "count";
+
+export type S2FleetResult = {
+  maxContainers: number | null;
+  running: number | null;
+  source: string;
+  app: string;
+};
+
+/**
+ * Read, brake, restore, or count on the deployed S2 app.
+ *
+ * The body names the action. It does not name an app: the control container
+ * uses the identity it was deployed with, so a worker cannot brake staging
+ * by sending a different name. The same bearer as submit and cancel.
+ */
+export async function s2Fleet(
+  action: S2FleetAction,
+  maxContainers?: number
+): Promise<S2FleetResult> {
+  const origin = s2ControlOrigin();
+  if (!origin) throw new Error("MODAL_S2_CONTROL_URL is not configured");
+  const body: Record<string, unknown> = { autoscaler: action };
+  if (action === "restore") {
+    if (!Number.isInteger(maxContainers) || (maxContainers ?? 0) < 1) {
+      throw new Error("restore needs max_containers");
+    }
+    body.max_containers = maxContainers;
+  }
+  const response = await fetch(origin, {
+    method: "POST",
+    headers: callHeaders(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await response.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    const json = JSON.parse(text) as unknown;
+    if (json && typeof json === "object") parsed = json as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  if (!response.ok) {
+    const detail = parsed.detail;
+    const message =
+      detail && typeof detail === "object"
+        ? JSON.stringify(detail)
+        : text.trim() || `s2 control ${response.status}`;
+    throw new Error(message);
+  }
+  const max = parsed.max_containers;
+  const running = parsed.running;
+  return {
+    maxContainers: typeof max === "number" && Number.isInteger(max) && max >= 0 ? max : null,
+    running: typeof running === "number" && Number.isInteger(running) && running >= 0 ? running : null,
+    source: typeof parsed.source === "string" ? parsed.source : "",
+    app: typeof parsed.app === "string" ? parsed.app : "",
+  };
+}
+
 function callHeaders(): Record<string, string> {
   const token = process.env.MODAL_S2_TOKEN?.trim();
   if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
@@ -258,6 +344,7 @@ type SubmitHit =
   | { kind: "audio"; response: Response }
   | { kind: "call"; callId: string }
   | { kind: "protocol"; protocol: string }
+  | { kind: "rejected"; status: number; message: string }
   | { kind: "retry" };
 
 function parseJson(text: string): Record<string, unknown> | null {
@@ -281,8 +368,10 @@ function differentProtocol(data: Record<string, unknown> | null): string | null 
 }
 
 /**
- * One accept. A timeout or a 5xx is `retry` (the container is still
- * starting). A named protocol that is not this one is a positive mismatch.
+ * One accept. A thrown fetch (no status) is `retry`: the container may
+ * still be starting and the spawn may have landed. A completed HTTP 5xx
+ * is `rejected`: the function answered, so this spawn did not. A named
+ * protocol that is not this one is a positive mismatch.
  */
 async function postSubmit(
   url: string,
@@ -311,6 +400,14 @@ async function postSubmit(
   if (named && !data?.call_id) return { kind: "protocol", protocol: named };
   const callId = typeof data?.call_id === "string" ? data.call_id.trim() : "";
   if (submit.ok && callId) return { kind: "call", callId };
+  if (!submit.ok && submit.status >= 500) {
+    const detail =
+      (typeof data?.detail === "string" && data.detail.trim()) ||
+      (typeof data?.error === "string" && data.error.trim()) ||
+      text.trim().slice(0, 300) ||
+      `s2 control HTTP ${submit.status}`;
+    return { kind: "rejected", status: submit.status, message: detail };
+  }
   return { kind: "retry" };
 }
 
@@ -424,9 +521,10 @@ export async function submitThenPoll(opts: {
   waitMs: number;
   onCallId: (callId: string) => void;
 }): Promise<Response> {
-  const acceptUntil = Date.now() + S2_CONTROL_DEADLINE_MS;
+  const acceptUntil = Date.now() + (acceptDeadlineForTests ?? S2_CONTROL_DEADLINE_MS);
   const key = idempotencyKeyOf(opts.body);
   let callId = "";
+  let rejected: { status: number; message: string } | null = null;
 
   const recoverCallId = async (): Promise<string> => {
     const found = key
@@ -449,13 +547,36 @@ export async function submitThenPoll(opts: {
     throw new S2ControlUnavailable(note.giveUp);
   };
 
+  const finishAccept = async (): Promise<string> => {
+    if (!rejected) return recoverCallId();
+    const found = key
+      ? await lookupS2IdempotencyKey(key, {
+          url: opts.url,
+          headers: opts.headers,
+          signal: opts.signal,
+        })
+      : null;
+    if (opts.signal.aborted) {
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    }
+    if (found) {
+      if (key) clearSubmitUnconfirmed(key);
+      if (key) forgetUnresolvedS2Key(key);
+      return found;
+    }
+    // A completed 5xx stored nothing. Do not count it as an unconfirmed
+    // accept: that left the book processing with no section, and the
+    // player stayed on "Starting the clone voice…" (observed 4m26s).
+    throw new S2ControlRejected(rejected.message, rejected.status);
+  };
+
   while (!callId) {
     if (opts.signal.aborted) {
       throw Object.assign(new Error("aborted"), { name: "AbortError" });
     }
     const remaining = acceptUntil - Date.now();
     if (remaining <= 0) {
-      callId = await recoverCallId();
+      callId = await finishAccept();
       opts.onCallId(callId);
       break;
     }
@@ -472,7 +593,7 @@ export async function submitThenPoll(opts: {
       if (opts.signal.aborted) throw err;
       const wait = Math.min(CONTROL_BACKOFF_MS, acceptUntil - Date.now());
       if (wait <= 0) {
-        callId = await recoverCallId();
+        callId = await finishAccept();
         opts.onCallId(callId);
         break;
       }
@@ -489,9 +610,12 @@ export async function submitThenPoll(opts: {
       opts.onCallId(callId);
       break;
     }
+    if (hit.kind === "rejected") {
+      rejected = { status: hit.status, message: hit.message };
+    }
     const wait = Math.min(CONTROL_BACKOFF_MS, acceptUntil - Date.now());
     if (wait <= 0) {
-      callId = await recoverCallId();
+      callId = await finishAccept();
       opts.onCallId(callId);
       break;
     }

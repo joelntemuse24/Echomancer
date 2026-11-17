@@ -67,14 +67,25 @@ def query_call_id(request) -> str:
     return str(value or "").strip()
 
 
+_FLEET_ACTIONS = ("read", "brake", "restore", "count")
+
+
 def request_op(payload, query: str = "") -> str:
-    """``probe`` names the protocol. ``lookup`` reads the Dict. ``submit`` renders."""
+    """``probe`` names the protocol. ``lookup`` reads the Dict. ``submit`` renders.
+
+    ``autoscaler`` is read, brake, restore, or count. A body that still carries
+    the book is a submit, so those actions cannot spawn by being attached to
+    ``items``.
+    """
     body = payload if isinstance(payload, dict) else {}
     if body.get("probe") is True:
         return "probe"
     # A book body is never a lookup: items would spawn. Lookup is the key only.
     if body.get("lookup") is True and not body.get("items") and not body.get("text"):
         return "lookup"
+    action = str(body.get("autoscaler") or "").strip().lower()
+    if action in _FLEET_ACTIONS and not body.get("items") and not body.get("text"):
+        return "autoscaler"
     call_id = str(body.get("call_id") or query or "").strip()
     if body.get("cancel") is True and call_id:
         return "cancel"
@@ -260,11 +271,23 @@ def handle_remote_request(
     lookup=None,
     store=None,
     now=None,
+    fleet=None,
 ) -> dict:
     op = request_op(payload, query_call_id)
     if op == "probe":
         return protocol_body()
     body = payload if isinstance(payload, dict) else {}
+    if op == "autoscaler":
+        if not callable(fleet):
+            raise RemoteCallError(
+                500, "autoscaler_unavailable", "autoscaler control is not available"
+            )
+        result = fleet(body)
+        if not isinstance(result, dict):
+            raise RemoteCallError(
+                500, "autoscaler_unavailable", "autoscaler control returned nothing"
+            )
+        return result
     if op == "lookup":
         key = str(body.get("idempotency_key") or "").strip()
         moment = time.time() if now is None else float(now)

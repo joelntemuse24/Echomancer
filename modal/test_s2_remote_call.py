@@ -6,6 +6,8 @@ can return a dict or bytes. There is no CLI listing and no request-body
 field, because ``modal function calls --json`` does not print one.
 """
 
+import pytest
+
 import s2_remote_call as remote
 
 
@@ -101,6 +103,34 @@ def test_a_repeated_submit_returns_the_stored_id():
     )
     assert third["call_id"] == "fc-2"
     assert len(spawned) == 2
+
+
+def test_autoscaler_action_does_not_spawn():
+    spawned = []
+
+    def spawn(payload):
+        spawned.append(payload)
+        return _Call(object_id="fc-should-not")
+
+    result = remote.handle_remote_request(
+        {"autoscaler": "brake"},
+        spawn=spawn,
+        fleet=lambda _body: {
+            "status": "ok",
+            "max_containers": 0,
+            "min_containers": 0,
+            "terminal": True,
+        },
+    )
+    assert spawned == []
+    assert result["max_containers"] == 0
+    assert remote.request_op({"autoscaler": "count"}) == "autoscaler"
+    # A book body stays a submit. The fleet action must not swallow it.
+    assert remote.request_op({"autoscaler": "brake", "items": [{"text": "Hello."}]}) == "submit"
+    with pytest.raises(remote.RemoteCallError) as raised:
+        remote.handle_remote_request({"autoscaler": "count"}, spawn=spawn)
+    assert raised.value.code == "autoscaler_unavailable"
+    assert spawned == []
 
 
 def test_lookup_by_key_returns_the_stored_id_and_does_not_spawn():

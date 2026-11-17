@@ -13,6 +13,7 @@ from __future__ import annotations
 import array
 import hashlib
 import math
+import os
 import queue
 import re
 import struct
@@ -1223,6 +1224,121 @@ def heartbeat_dict_name(env) -> str:
     return f"{resolve_app_name(env)}-heartbeats"
 
 
+def control_dict_name(env) -> str:
+    """The idempotency Dict for the app this command is pointed at.
+
+    Same rule as the heartbeat registry. Production and staging must not
+    share the store that maps ``job:sections:attempt`` to a function-call id.
+    """
+    explicit = str(env.get("S2C_CONTROL_DICT") or "").strip()
+    if explicit:
+        return explicit
+    return f"{resolve_app_name(env)}-s2-control"
+
+
+def deploy_identity(env) -> dict:
+    """App name and Dict names, resolved once, for every function in the app.
+
+    ``@app.function(env=...)`` and ``@app.cls(env=...)`` replace the process
+    environment. A container that re-imports this module without
+    ``S2C_APP_NAME`` and ``S2C_ALLOW_PRODUCTION`` resolves the app as staging
+    and opens ``echomancer-s2-clone-staging-s2-control``. These four strings
+    are the deploy-time resolution. Baking them into every function is what
+    makes a re-import return the same names, so production and staging cannot
+    share stores.
+    """
+    app = resolve_app_name(env)
+    return {
+        "S2C_APP_NAME": app,
+        "S2C_ALLOW_PRODUCTION": "1" if app == PRODUCTION_APP_NAME else "0",
+        "S2C_HEARTBEAT_DICT": heartbeat_dict_name(env),
+        "S2C_CONTROL_DICT": control_dict_name(env),
+    }
+
+
+def _settings_max(settings):
+    """``max_containers`` from a Modal settings object or a plain dict."""
+    if settings is None:
+        return None
+    if isinstance(settings, dict):
+        value = settings.get("max_containers")
+    else:
+        value = getattr(settings, "max_containers", None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def read_autoscaler_max(worker):
+    """The live max, from whichever reader this Modal client actually has.
+
+    Modal 1.6.1 has no ``get_autoscaler``. ``autoscaler.settings()`` is a
+    read on newer clients. ``update_autoscaler()`` with no arguments returns
+    the current settings and leaves them unchanged. The second value is how
+    the number was read, or why it was not.
+
+    Returns ``(max_or_none, detail)``. Never invents a cap.
+    """
+    errors = []
+    autoscaler = getattr(worker, "autoscaler", None)
+    settings_fn = getattr(autoscaler, "settings", None) if autoscaler is not None else None
+    if callable(settings_fn):
+        try:
+            value = _settings_max(settings_fn())
+            if value is not None:
+                return value, "autoscaler.settings"
+        except Exception as err:
+            errors.append(f"autoscaler.settings: {err}")
+    getter = getattr(worker, "get_autoscaler", None)
+    if callable(getter):
+        try:
+            value = _settings_max(getter())
+            if value is not None:
+                return value, "get_autoscaler"
+        except Exception as err:
+            errors.append(f"get_autoscaler: {err}")
+    update = getattr(worker, "update_autoscaler", None)
+    if callable(update):
+        try:
+            # No arguments. On 1.6 an omitted field keeps its current value,
+            # and the return value is that current settings object.
+            value = _settings_max(update())
+            if value is not None:
+                return value, "update_autoscaler"
+        except Exception as err:
+            errors.append(f"update_autoscaler: {err}")
+    if callable(autoscaler):
+        try:
+            value = _settings_max(autoscaler())
+            if value is not None:
+                return value, "autoscaler"
+        except Exception as err:
+            errors.append(f"autoscaler: {err}")
+    detail = "; ".join(errors) or "no autoscaler reader on this modal client"
+    return None, detail
+
+
+def running_container_count(stats):
+    """Runners reported by ``get_current_stats`` / ``stats``. None if absent."""
+    if stats is None:
+        return None
+    names = ("num_total_runners", "total_runners", "running")
+    if isinstance(stats, dict):
+        source = stats
+        read = source.get
+    else:
+        read = lambda name: getattr(stats, name, None)
+    for name in names:
+        value = read(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value >= 0:
+            return value
+    return None
+
+
 def container_limits(env) -> dict:
     """Autoscaler knobs, read once so health output and the decorator agree.
 
@@ -1512,6 +1628,69 @@ RESTORE_WALL_S = 150.0
 #: At or above this, the call built a snapshot. An 8 min compile is well past
 #: it, and `boot=` is not an input: that label is often wrong (pid 2 on a restore).
 COMPILE_WALL_S = 300.0
+#: A production cold compile measured 1290–1350s. The client wait has to
+#: clear that, or the first status() returns before graphs exist.
+COMPILE_MEASURED_S = 1350
+COMPILE_RPC_MARGIN_S = 180
+
+
+def compile_rpc_timeout_s(env=None) -> int:
+    """How long one cover ``status()`` may run while a snapshot compiles.
+
+    The wait is the init budget (``S2C_INIT_TIMEOUT``, default 1800) and the
+    measured compile, whichever is longer, plus margin. It stays under the
+    class timeout (``S2C_TIMEOUT``, default 3600) so the client is not still
+    blocked after Modal has already killed the call.
+    """
+    source = os.environ if env is None else env
+
+    def _int(name: str, default: int) -> int:
+        raw = str(source.get(name, "")).strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError:
+            return default
+
+    budget = max(_int("S2C_INIT_TIMEOUT", 1800), COMPILE_MEASURED_S)
+    timeout = budget + COMPILE_RPC_MARGIN_S
+    ceiling = max(1, _int("S2C_TIMEOUT", 3600) - 60)
+    if timeout > ceiling:
+        return ceiling
+    return timeout
+
+
+#: Extra idle past ``scaledown_window`` before the next cover round.
+#: Five seconds was landing on the container that had just compiled.
+FRESH_CONTAINER_MARGIN_S = 45
+
+
+def fresh_gap_s(scaledown: int) -> int:
+    """Seconds to leave a container idle before the next cover round."""
+    try:
+        window = int(scaledown)
+    except (TypeError, ValueError):
+        window = 0
+    if window < 0:
+        window = 0
+    return window + FRESH_CONTAINER_MARGIN_S
+
+
+def cold_restore_counts(status, seen_ids) -> str:
+    """Whether this row is a cold restore on a container this cover has not used.
+
+    ``ok`` counts. ``same-container`` is the warm container from an earlier
+    round and does not count. ``graphs`` is a fast wall with no captured
+    graph. ``failed`` is an error row.
+    """
+    if not isinstance(status, dict) or status.get("error"):
+        return "failed"
+    cid = str(status.get("container_id") or "")
+    if cid and cid in seen_ids:
+        return "same-container"
+    graphs = str(status.get("graphs") or "")
+    if not graphs.startswith(("ok(", "recaptured(")):
+        return "graphs"
+    return "ok"
 
 
 def placement_kind(

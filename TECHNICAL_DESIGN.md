@@ -1405,6 +1405,13 @@ cover is the production path. `scripts/s2/cancel-unstarted-pending.py` keeps a
 production default on purpose — it cancels a pending input, and an unnamed
 invocation there means the live app.
 
+`deploy_identity` is that resolution plus the heartbeat Dict and the control
+Dict. Every function in the S2 app (the GPU class, `s2_control`, and `ready`)
+bakes those four strings into its env. A function env replaces the process
+environment, so a container that re-imports the module without them resolves
+as staging and opens `echomancer-s2-clone-staging-s2-control`. The baked names
+are what a re-import sees. Production and staging do not share those stores.
+
 Why `v9` is the default: the worker and the Modal app ship separately, and the
 app is a ~15-minute snapshot rebuild, so there is always a window where one has
 changed and the other has not. A `modal deploy` with no new env vars must
@@ -2886,7 +2893,8 @@ provider, book, and section: a second start joins the running call or is
 refused while that call is still live. A refusal is `ModalCloneHeldError`.
 It does not kick `::cover` and it does not start the Fish clock. The S2 book path is submit-then-poll on the CPU function `s2_control`
 (`MODAL_S2_CONTROL_URL`). That function has no GPU. It spawns
-`S2CloneWorker.render_batch` and returns `{call_id, status:"pending"}`
+`S2CloneWorker().render_batch` (the class is instantiated; a method read
+on the Cls raises) and returns `{call_id, status:"pending"}`
 immediately. The worker writes that id on the flight before it polls. The
 same endpoint with `{call_id}` or `?call_id=` returns status via
 `FunctionCall.get(timeout=1)`, and `{call_id, cancel:true}` calls
@@ -2914,12 +2922,17 @@ never puts response bytes into JSON.
 Deploy the Modal app, run `::cover`, then restart the worker with
 `MODAL_S2_CONTROL_URL`. The deploy rebuilds `S2CloneWorker` GPU snapshots,
 so `::cover` after the deploy is mandatory. A batch body uses submit-poll
-whenever that URL is set. A timeout or a 5xx retries the same idempotency
-key until the control deadline. The window then reads the Dict with
-`{lookup:true, idempotency_key}` and does not spawn. No id is
+whenever that URL is set. A timeout (no HTTP status) retries the same
+idempotency key until the control deadline. The window then reads the
+Dict with `{lookup:true, idempotency_key}` and does not spawn. No id is
 `submit_unconfirmed`: the attempt stays, and the next tick posts the same
 key. Three empty lookups, or 135s, fail the section, and that last lookup
-is stored when it finds an id. Reconcile and drain resolve a key that has
+is stored when it finds an id. A completed HTTP 5xx is the function
+answering, so nothing was spawned. Those responses retry only inside the
+45s deadline. The Dict is still read once. With no id, the section is
+`failed` and the book is `failed` with "The voice engine didn't start.
+Try again." A processing book with no section would otherwise keep
+showing "Starting the clone voice…". Reconcile and drain resolve a key that has
 no stored id the same way. The GPU post is used when the URL is unset, or
 when the control body names a different protocol. A `{text}` post stays on
 `MODAL_S2_SYNTHESIZE_URL`. A body that already contains `items` inside the
@@ -2929,20 +2942,22 @@ accept window is still the finished audio.
 read. A pending read, or a thrown NotFound with no terminal status, is
 still live. `expired` and `init failure` are terminal. `not_found` is not:
 the input may still be pending, so the attempt does not move.
-The drain cancels through the HTTP endpoint, using `MODAL_TOKEN_ID` /
-`MODAL_TOKEN_SECRET`. It does not pass a Modal profile. It brakes the shared
-autoscaler only when that cancel is still spawning and, re-checked
-immediately before the brake, no other S2 book has a live call. It waits
-until the extra containers are gone, or until that wait expires, and then
-restores the live max read with `--print-max` before the brake. A throw
-after the brake restores the same max. The hourly heal restores a brake row
-only when the live max is still 0. Any other live cap is left alone and the
-row is cleared, so a later hour does not overwrite a cap set after the drain.
-`min_containers` stays 0. It does not stop a container first, and it does not
-stop the Modal app. `planDrain(0)` restores 0, not 1. Autoscaler CLI calls
-are single-flight. `::cover` is blocked for every book by an S2 flight that
-has a function-call id and is `running` or `still_live`. A flight with no id
-yet blocks cover only for its own book.
+The drain cancels through the HTTP endpoint. Brake, restore, and the running
+container count are the same endpoint (`{autoscaler:"read"|"brake"|"restore"|"count"}`),
+with the same bearer. The control container applies them to the app it was
+deployed as. The request does not choose an app. The worker does not run the
+Modal CLI and does not need the `modal` package. It brakes only when that
+cancel is still non-terminal and, re-checked immediately before the brake, no
+other S2 book has a live call. It waits until the extra containers are gone,
+or until that wait expires, and then restores the live max read before the
+brake. A throw after the brake restores the same max. The hourly heal restores
+a brake row only when the live max is still 0. Any other live cap is left
+alone and the row is cleared, so a later hour does not overwrite a cap set
+after the drain. `min_containers` stays 0. It does not stop a container first,
+and it does not stop the Modal app. `planDrain(0)` restores 0, not 1.
+`::cover` is blocked for every book by an S2 flight that has a function-call
+id and is `running` or `still_live`. A flight with no id yet blocks cover only
+for its own book.
 
 A budget breach fails that book. It does not park it as cold and it does
 not switch narrator. Dollars come from persisted `remote_calls` rows, stored

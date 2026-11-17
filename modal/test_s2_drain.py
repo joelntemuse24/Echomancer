@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -180,3 +181,64 @@ def test_cover_script_restores_with_the_real_flag():
     assert "|| true" not in text
     assert "--scaledown-window" in text
     assert "--scaledown 15" not in text
+    assert "resolve_modal_python" in text
+    assert "python3 scripts" not in text
+    assert "python3 -m modal" not in text
+
+
+def test_modal_python_uses_MODAL_PYTHON_or_a_detected_interpreter(tmp_path):
+    good = tmp_path / "good"
+    good.mkdir()
+    py = good / "python3"
+    py.write_text("#!/bin/sh\nexit 0\n")
+    py.chmod(0o755)
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    missing = bad / "python3"
+    missing.write_text("#!/bin/sh\nexit 1\n")
+    missing.chmod(0o755)
+    script = "source scripts/s2/modal-python.sh && resolve_modal_python"
+    bash = shutil.which("bash") or "/bin/bash"
+    env = {k: v for k, v in os.environ.items() if k != "MODAL_PYTHON"}
+    found = subprocess.run(
+        [bash, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**env, "PATH": str(good)},
+    )
+    assert found.returncode == 0
+    assert found.stdout.strip() == str(py)
+    missed = subprocess.run(
+        [bash, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**env, "PATH": str(bad)},
+    )
+    assert missed.returncode != 0
+    assert "No Python on PATH can import modal" in missed.stderr
+    explicit = subprocess.run(
+        [bash, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**env, "PATH": str(bad), "MODAL_PYTHON": str(py)},
+    )
+    assert explicit.returncode == 0
+    assert explicit.stdout.strip() == str(py)
+    absent = subprocess.run(
+        [bash, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**env, "MODAL_PYTHON": str(tmp_path / "no-such-python")},
+    )
+    assert absent.returncode != 0
+    assert "not an executable" in absent.stderr
+
+

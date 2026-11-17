@@ -7,9 +7,13 @@ import {
   type DrainOps,
   type DrainReport,
 } from "@/lib/remote/layer";
-import { runModalCli } from "@/lib/remote/modal-cli";
 import { clearActiveBrake, saveActiveBrake } from "@/lib/remote/store";
-import { cancelS2Call, resolveOpenS2Keys } from "@/lib/tts/providers/modal-clone-call";
+import {
+  cancelS2Call,
+  resolveOpenS2Keys,
+  s2ControlOrigin,
+  s2Fleet,
+} from "@/lib/tts/providers/modal-clone-call";
 
 let testHooks: DrainOps | null = null;
 
@@ -39,69 +43,42 @@ export function otherLiveBookCount(jobId: string): number {
   return books.size;
 }
 
-function lastLine(text: string): string {
-  return text
-    .trim()
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .pop() ?? "";
-}
-
-/** The live autoscaler cap. Never the env default, and never a guessed 1. */
-async function printLiveMax(app: string): Promise<number> {
-  const { code, out } = await runModalCli([
-    "scripts/s2/set-live-autoscaler.py",
-    "--print-max",
-    "--app",
-    app,
-  ]);
-  const n = Number(lastLine(out));
-  if (code !== 0 || !Number.isInteger(n) || n < 1) {
-    throw new Error(out.trim() || "live max unread");
-  }
-  return n;
-}
-
 async function cancelOne(callId: string): Promise<CancelObservation> {
   return cancelS2Call(callId);
 }
 
-async function setMax(app: string, max: number): Promise<void> {
-  const args = [
-    "scripts/s2/set-live-autoscaler.py",
-    "--app",
-    app,
-    "--scaledown-window",
-    "15",
-  ];
-  if (max === 0) args.push("--brake");
-  else args.push("--max-containers", String(max));
-  const { code, out } = await runModalCli(args);
-  if (code !== 0) throw new Error(out.trim() || "autoscaler update failed");
+/** The live cap from s2_control. A missing number is a failure, not 1. */
+async function printLiveMax(): Promise<number> {
+  const row = await s2Fleet("read");
+  if (row.maxContainers == null || row.maxContainers < 1) {
+    throw new Error("live max unread");
+  }
+  return row.maxContainers;
 }
 
-async function runningCount(app: string): Promise<number> {
-  const { code, out } = await runModalCli([
-    "scripts/s2/drain-stuck-calls.py",
-    "--running-count",
-    "--app",
-    app,
-  ]);
-  const n = Number(lastLine(out));
-  if (code !== 0 || !Number.isInteger(n) || n < 0) {
-    throw new Error(out.trim() || "container count unread");
+async function setMax(max: number): Promise<void> {
+  if (max === 0) {
+    await s2Fleet("brake");
+    return;
   }
-  return n;
+  await s2Fleet("restore", max);
+}
+
+async function runningCount(): Promise<number> {
+  const row = await s2Fleet("count");
+  if (row.running == null || row.running < 0) {
+    throw new Error("container count unread");
+  }
+  return row.running;
 }
 
 function productionOps(app: string): DrainOps {
   return {
-    readMax: () => printLiveMax(app),
+    readMax: () => printLiveMax(),
     cancel: (callId) => cancelOne(callId),
-    brake: () => setMax(app, 0),
-    runningContainers: () => runningCount(app),
-    restore: (_name, max) => setMax(app, max),
+    brake: () => setMax(0),
+    runningContainers: () => runningCount(),
+    restore: (_name, max) => setMax(max),
     containerWaitMs: 120_000,
     containerPollMs: 5_000,
     onBrake: (max) => saveActiveBrake(app, max),
@@ -109,21 +86,27 @@ function productionOps(app: string): DrainOps {
   };
 }
 
+function controlPlaneReady(): boolean {
+  return Boolean(s2ControlOrigin() && process.env.MODAL_S2_TOKEN?.trim());
+}
+
 /**
  * Stop one book's stored function calls.
  *
  * The shared autoscaler is braked only when a cancel stays non-terminal
  * and, re-checked immediately before the brake, no other S2 book has a
- * live call. The restored max is the live cap read with `--print-max`
- * before the brake. Every brake is restored, including when the wait
- * expires or the brake throws.
+ * live call. Brake, restore, and the container count are posts to
+ * `s2_control`. The restored max is the live cap read before the brake.
+ * Every brake is restored, including when the wait expires or the brake
+ * throws. The worker does not run the Modal CLI.
  */
 export async function drainBookCalls(jobId: string, reason: string): Promise<DrainReport | null> {
   haltBook(jobId, reason);
   await resolveOpenS2Keys(jobId).catch(() => undefined);
   const callIds = bookCallIds(jobId);
   const app = process.env.S2C_APP_NAME?.trim() || "echomancer-s2-clone";
-  if (!testHooks && (process.env.VITEST || !process.env.MODAL_TOKEN_ID)) return null;
+  const httpTest = process.env.S2_DRAIN_HTTP_TEST === "1";
+  if (!testHooks && ((process.env.VITEST && !httpTest) || !controlPlaneReady())) return null;
   const ops = testHooks ?? productionOps(app);
   const report = await executeDrain(
     { app, jobId, callIds },
