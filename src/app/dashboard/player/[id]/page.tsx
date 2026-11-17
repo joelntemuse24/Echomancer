@@ -20,7 +20,7 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { UX, voiceEngineStarting } from "@/lib/ux-copy";
+import { UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
@@ -186,6 +186,7 @@ function PlayerPageInner({ id }: { id: string }) {
   const processorInitialized = useRef(false);
 
   const [job, setJob] = useState<Job | null>(() => peekJob<Job>(id));
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -1249,7 +1250,7 @@ function PlayerPageInner({ id }: { id: string }) {
         ) : null}
         {voiceEngineStarting(job) ? (
           <p className="text-xs text-muted-foreground" role="status">
-            Starting voice engine
+            {WAIT.startingEngine}
           </p>
         ) : (job.status === "processing" ||
           job.status === "queued" ||
@@ -1267,6 +1268,25 @@ function PlayerPageInner({ id }: { id: string }) {
           <p className="text-xs text-muted-foreground" role="status">
             {customerBookStatus(job.warning, job.status)}
           </p>
+        ) : null}
+        {job.status === "queued" || job.status === "processing" || job.status === "waiting" ? (
+          <button
+            type="button"
+            disabled={stopping}
+            onClick={() => {
+              setStopping(true);
+              void fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" })
+                .then((response) => {
+                  if (response.ok) {
+                    setJob((prev) => (prev ? { ...prev, status: "cancelled" } : prev));
+                  }
+                })
+                .finally(() => setStopping(false));
+            }}
+            className="tap text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+          >
+            {stopping ? "Stopping…" : "Stop"}
+          </button>
         ) : null}
         {notice ? (
           <p className="text-xs text-muted-foreground" role="status">

@@ -35,6 +35,7 @@
 
 import {
   ModalCloneColdError,
+  ModalCloneHeldError,
   ModalCloneLaneBusyError,
   ModalCloneProviderError,
   modalCloneBookHasSpareContainer,
@@ -48,6 +49,7 @@ import {
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
 import { ModalWorkspaceDisabledError } from "@/lib/modal/workspace-disabled";
+import { S2ControlUnavailable, S2NotFoundSettled } from "@/lib/tts/providers/modal-clone-call";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
   MODAL_CLONE_PUBLISH_MS,
@@ -219,10 +221,27 @@ export interface LaneDispatchResult {
    * post because the book is in its own backoff. Still not a failed take.
    */
   abortedIndexes: number[];
+  /**
+   * The accept window ended with no id and the Dict was empty, inside the
+   * bound. The attempt does not move. The next tick posts the same key.
+   */
+  unconfirmedIndexes: number[];
+  /**
+   * NotFound lasted past the render wait. The flight is terminal and the
+   * attempt does not move, so the same key cannot spawn a second call.
+   */
+  settledNotFoundIndexes: number[];
   /** The throw was this book's backoff, not an empty pool. */
   selfBackoff: boolean;
   /** A client timeout happened on a warm-budget call. */
   abortedWarm: boolean;
+  /**
+   * The layer refused a new POST. The book waits on the call it already
+   * has. This does not kick a compile and does not start the Fish clock.
+   */
+  held: boolean;
+  /** The book is over its remote-call budget. Fail it. Do not park it cold. */
+  budgetStop: boolean;
   /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
   firstLight: FirstLightReport | null;
 }
@@ -263,8 +282,12 @@ interface WaveOutcome {
    */
   aborted: boolean;
   abortedIndexes: number[];
+  unconfirmedIndexes: number[];
+  settledNotFoundIndexes: number[];
   selfBackoff: boolean;
   abortedWarm: boolean;
+  held: boolean;
+  budgetStop: boolean;
 }
 
 /** Everything one dispatch accumulates across its waves. */
@@ -285,8 +308,12 @@ interface DispatchTally {
   /** A client timeout happened in some wave of this dispatch. */
   aborted: boolean;
   abortedIndexes: number[];
+  unconfirmedIndexes: number[];
+  settledNotFoundIndexes: number[];
   selfBackoff: boolean;
   abortedWarm: boolean;
+  held: boolean;
+  budgetStop: boolean;
 }
 
 function emptyTally(): DispatchTally {
@@ -306,8 +333,12 @@ function emptyTally(): DispatchTally {
     generateSeconds: 0,
     aborted: false,
     abortedIndexes: [],
+    unconfirmedIndexes: [],
+    settledNotFoundIndexes: [],
     selfBackoff: false,
     abortedWarm: false,
+    held: false,
+    budgetStop: false,
   };
 }
 
@@ -340,8 +371,16 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   if (wave.aborted) tally.aborted = true;
   if (wave.selfBackoff) tally.selfBackoff = true;
   if (wave.abortedWarm) tally.abortedWarm = true;
+  if (wave.held) tally.held = true;
+  if (wave.budgetStop) tally.budgetStop = true;
   for (const index of wave.abortedIndexes) {
     if (!tally.abortedIndexes.includes(index)) tally.abortedIndexes.push(index);
+  }
+  for (const index of wave.unconfirmedIndexes) {
+    if (!tally.unconfirmedIndexes.includes(index)) tally.unconfirmedIndexes.push(index);
+  }
+  for (const index of wave.settledNotFoundIndexes) {
+    if (!tally.settledNotFoundIndexes.includes(index)) tally.settledNotFoundIndexes.push(index);
   }
 }
 
@@ -712,7 +751,7 @@ async function finishDispatch(
     // Only a restore-budget miss kicks the compile RPC. A warm wait that
     // expired is a slow container, and the one-row retry after a warm miss
     // is sent with compile suppressed so it cannot start a compile either.
-    kickModalCloneSnapshotWarm("placement exceeded restore budget");
+    kickModalCloneSnapshotWarm("placement exceeded restore budget", Date.now(), jobId);
   }
 
   if (publishing) {
@@ -751,8 +790,12 @@ async function finishDispatch(
     boot: [...new Set(tally.boot)],
     generateSeconds: Math.round(tally.generateSeconds * 10) / 10,
     abortedIndexes: [...tally.abortedIndexes],
+    unconfirmedIndexes: [...tally.unconfirmedIndexes],
+    settledNotFoundIndexes: [...tally.settledNotFoundIndexes],
     selfBackoff: tally.selfBackoff,
     abortedWarm: tally.abortedWarm,
+    held: tally.held,
+    budgetStop: tally.budgetStop,
     firstLight,
   };
 }
@@ -802,8 +845,12 @@ async function runWave(
   let transport = false;
   let aborted = false;
   const abortedIndexes: number[] = [];
+  const unconfirmedIndexes: number[] = [];
+  const settledNotFoundIndexes: number[] = [];
   let selfBackoff = false;
   let abortedWarm = false;
+  let held = false;
+  let budgetStop = false;
 
   if (attempted.length === 0) {
     return {
@@ -824,8 +871,12 @@ async function runWave(
       transport,
       aborted: false,
       abortedIndexes: [],
+      unconfirmedIndexes: [],
+      settledNotFoundIndexes: [],
       selfBackoff: false,
       abortedWarm: false,
+      held: false,
+      budgetStop: false,
     };
   }
 
@@ -929,7 +980,11 @@ async function runWave(
         // A 429 means the lane is busy, not that the pool went cold.
         // A socket or other unclassified throw is not a reason to forget
         // a container that already answered: warmth stays where it was.
+        const sameKeyMiss =
+          (error instanceof S2ControlUnavailable && !error.giveUp) ||
+          error instanceof S2NotFoundSettled;
         const unclassified =
+          !sameKeyMiss &&
           !(error instanceof ModalCloneColdError) &&
           !(error instanceof ModalCloneLaneBusyError) &&
           !(error instanceof ModalCloneProviderError);
@@ -958,6 +1013,11 @@ async function runWave(
     if (result.transport) transport = true;
     const err = result.error;
     if (!err) continue;
+    if (err instanceof ModalCloneHeldError) {
+      if (err.reason === "budget") budgetStop = true;
+      else held = true;
+      continue;
+    }
     if (err instanceof ModalCloneColdError && err.clientAborted) {
       aborted = true;
       if (err.waitKind === "warm") abortedWarm = true;
@@ -989,6 +1049,20 @@ async function runWave(
     } else if (err instanceof ModalCloneColdError) {
       poolCold = true;
       poolReason = err.message;
+    } else if (err instanceof S2ControlUnavailable && !err.giveUp) {
+      for (const index of result.lane) {
+        if (!staged.has(index) && !unconfirmedIndexes.includes(index)) {
+          unconfirmedIndexes.push(index);
+        }
+      }
+      log("[S2 lanes] control accept unconfirmed; the next tick posts the same key");
+    } else if (err instanceof S2NotFoundSettled) {
+      for (const index of result.lane) {
+        if (!staged.has(index) && !settledNotFoundIndexes.includes(index)) {
+          settledNotFoundIndexes.push(index);
+        }
+      }
+      log("[S2 lanes] call was not published; the flight is settled and the key stays");
     } else if (err instanceof ModalCloneLaneBusyError) {
       // Backstop. The deployed class places a second POST on another
       // container instead of answering 429. A `lane_busy` body is still
@@ -1024,7 +1098,11 @@ async function runWave(
     transport,
     aborted,
     abortedIndexes,
+    unconfirmedIndexes,
+    settledNotFoundIndexes,
     selfBackoff,
     abortedWarm,
+    held,
+    budgetStop,
   };
 }

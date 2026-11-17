@@ -30,7 +30,7 @@ export const UX = {
 export const WAIT = {
   ingest: ["Reading your book"],
   generating: ["Making the audiobook"],
-  startingEngine: ["Starting voice engine"],
+  startingEngine: ["Starting the clone voice…"],
 } as const;
 
 /**

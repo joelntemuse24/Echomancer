@@ -359,8 +359,18 @@ stops only when `streak` calls in a row finish inside the restore budget.
 
 ```bash
 # Default: 3 containers, 6 rounds, streak 3, 300s scale-to-zero between rounds.
-modal run modal/s2_clone_warm.py::cover --containers 3 --rounds 6 --streak 3 --scaledown 300
+# The wrapper exits non-zero if the streak is missed and always restores
+# the autoscaler with min_containers=0.
+bash scripts/s2/post-deploy-cover.sh
 ```
+
+Each row prints `wall=` and `graphs=`. A restore counts toward the streak
+only when `graphs` starts with `ok(` or `recaptured(`. A stuck call is
+drained with `scripts/s2/drain-stuck-calls.py`: cancel with
+`terminate_containers=True`, treat NotFound as still live, brake
+`max_containers` to 0, confirm zero containers, then restore the previous
+max. `min_containers` stays 0. `modal container stop` is not a step.
+`modal app stop` wipes snapshots and is the last resort.
 
 | `kind` | Wall time | What it means |
 |---|---|---|

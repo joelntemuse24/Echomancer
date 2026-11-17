@@ -722,7 +722,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   leaves the rest for the next tick, and never kicks a snapshot compile for
   it. A warm miss also forgets the warmth bit, so the retry is cold-sized.
   Only a **single-section** placement that never came back on a cold wait is
-  a compile, which is still what fires the off-path `::cover`.
+  a compile. `::cover` waits while an S2 flight that already has a
+  function-call id is `running` or `still_live`, because that id is the input
+  still compiling. A flight with no id yet does not block cover for other books.
 - **Section 0 goes first, alone.** Nothing is playable until section 0 is, and
   a container answers a whole batch of rows together — so a fan-out that
   batches section 0 beside a neighbour holds the first audio back until that
@@ -779,10 +781,29 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   figure, about **68s** (57s restore + 14s synth + ~2s loudnorm). Later calls
   stay on that same container while the worker posts them back to back.
   `min_containers` stays 0. A placement that already missed its restore
-  budget still kicks `::cover` off the book path so the snapshot can finish.
+  budget does not kick `::cover` for that book while its flight is `running`
+  or `still_live`. Once the flight has a function-call id, that call also
+  blocks cover for every other book.   The book path is submit-then-poll on
+  the CPU endpoint `s2_control` (`MODAL_S2_CONTROL_URL`): it spawns the H100
+  `render_batch`, returns the FunctionCall id before any waiting, and Stop
+  cancels that id on the same CPU host. Poll and cancel never enter the GPU
+  class. A batch body uses that host whenever the URL is set. A cold start
+  retries the same idempotency key until the control deadline. An accept
+  that ends with no id is `submit_unconfirmed`: the attempt does not move,
+  the next tick posts that same key, and `{lookup:true}` reads the Dict
+  without spawning. The section fails only after three empty lookups or
+  135s, and that failure looks the key up once more so a late id is stored
+  for cancel. NotFound stays on that key. After the render wait plus 30s
+  it settles like `expired` and cover is free. The synchronous GPU post is
+  used when the URL is unset, or when the control body names a different
+  protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
+  this app rebuilds the H100 snapshots, because `render_batch` is on
+  `S2CloneWorker`. Run `::cover` after that deploy, then restart the worker.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
-  (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or
+  unless that book's flight is still `running` or `still_live`, or any S2
+  flight already holds a function-call id. That kick is one RPC
+  `status()`, with no proxy limit, if `MODAL_TOKEN_ID` or
   `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables the kick. That
   process may sit through the 8–16 min compile so the variant gets a sticky
   snapshot; the book does not. After a deploy, run `::cover` with scale-to-zero
@@ -820,10 +841,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   runbook rather than hidden.
 - **Each Modal endpoint is its own hostname.** `@modal.fastapi_endpoint` serves
   at the root of `https://<workspace>--<app>-<fn>.modal.run`, so there is no base
-  to append paths to. Configure `MODAL_S2_TTS_URL` (batch),
-  `MODAL_S2_SYNTHESIZE_URL` (single, optional), and `MODAL_S2_READY_URL`
-  (probe, optional). A URL with a path is rejected by both the client and
-  `scripts/s2/staging-smoke.mjs`; `ready` is never derived from the batch URL.
+  to append paths to. Configure `MODAL_S2_TTS_URL` (batch, the GPU render),
+  `MODAL_S2_CONTROL_URL` (CPU submit/poll/cancel, optional until the app
+  that serves `s2_control` is deployed), `MODAL_S2_SYNTHESIZE_URL` (single,
+  optional), and `MODAL_S2_READY_URL` (probe, optional). A URL with a path
+  is rejected by both the client and `scripts/s2/staging-smoke.mjs`; `ready`
+  and `s2_control` are never derived from the batch URL.
 - **History re-anchors to the row's first take, not the previous one.**
   `job 12534aaa` (2026-11-06, VDH clone) drifted *inside* every section and
   reset at each boundary: similarity to the reference fell 0.93 → 0.70 over

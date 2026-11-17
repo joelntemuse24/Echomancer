@@ -1,9 +1,9 @@
 /**
- * First-light placement stays on the original POST.
+ * First light submits, stores the function-call id, then polls that id.
  *
- * The pack abort is still the short first-light wait. The HTTP client waits
- * the placement budget (default 6 minutes) on that same call, and does not
- * cancel a container that has already started.
+ * The accept retries on the CPU host. Once the id is stored, the poll runs
+ * to the proxy ceiling and Stop is the thing that cancels it. A submit that
+ * never returns an id fails the section and does not post the GPU.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,12 +14,12 @@ import {
   renderModalCloneBatch,
   resetModalCloneRuntimeForTests,
   setModalClonePlacementProbeForTests,
-  type ModalPlacementState,
 } from "./modal-clone";
 import { setModalCloneCallCancellerForTests } from "./modal-clone-cancel";
 import { setModalCloneWarmSpawnerForTests } from "./modal-clone-warm";
 import { MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS } from "./modal-clone-guard";
-import { endpointOf, stubModalEndpoints } from "./modal-endpoints.fixture";
+import { S2_CONTROL_DEADLINE_MS, S2ControlUnavailable } from "./modal-clone-call";
+import { BATCH_HOST, endpointOf, stubModalEndpoints } from "./modal-endpoints.fixture";
 import { execute, queryOne } from "@/lib/turso";
 
 vi.mock("@/lib/turso", () => ({
@@ -36,12 +36,22 @@ const reference = {
   catalogVoiceId: "clone:saved",
 };
 
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function setup(opts?: {
-  delayMs?: number;
-  hang?: boolean;
-  probe?: ModalPlacementState;
+  /** Status stays pending until this much fake time has passed, then the audio arrives. */
+  pendingForMs?: number;
+  /** The accept never returns an id. */
+  hangSubmit?: boolean;
+  /** The id is stored and every status stays pending. */
+  hangStatus?: boolean;
 }) {
-  stubModalEndpoints(vi.stubEnv);
+  stubModalEndpoints(vi.stubEnv, { control: true });
   vi.stubEnv("MODAL_S2_TOKEN", "test-token");
   vi.stubEnv("MODAL_S2_READY", "0");
   vi.mocked(queryOne).mockResolvedValue(null);
@@ -52,49 +62,60 @@ function setup(opts?: {
     return true;
   });
   setModalCloneWarmSpawnerForTests(() => undefined);
-  setModalClonePlacementProbeForTests(async () => opts?.probe ?? "pending");
-  let batchPosts = 0;
+  setModalClonePlacementProbeForTests(async () => "pending");
+  let submits = 0;
+  let acceptedAt = 0;
   let markEntered: () => void = () => undefined;
   const entered = new Promise<void>((resolve) => {
     markEntered = resolve;
   });
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
     if (endpointOf(String(url)) === "ready") {
-      return new Response(JSON.stringify({ ready: true, warm_containers: 0 }), { status: 200 });
+      return jsonResponse({ ready: true, warm_containers: 0 });
     }
-    batchPosts += 1;
-    markEntered();
+    const payload = JSON.parse(String(init?.body ?? "{}")) as {
+      items?: unknown;
+      call_id?: string;
+      probe?: boolean;
+      lookup?: boolean;
+    };
+    if (payload.probe) {
+      return jsonResponse({ protocol: "s2-submit-poll", protocol_version: 1, status: "ok" });
+    }
+    if (payload.lookup) {
+      return jsonResponse({ status: "absent", terminal: false });
+    }
     const signal = init?.signal;
-    if (opts?.hang) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, 60 * 60_000);
-        signal?.addEventListener("abort", () => {
-          clearTimeout(timer);
-          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    if (payload.items) {
+      submits += 1;
+      markEntered();
+      acceptedAt = Date.now();
+      if (opts?.hangSubmit) {
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
         });
-      });
-    } else if (opts?.delayMs) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, opts.delayMs);
-        signal?.addEventListener("abort", () => {
-          clearTimeout(timer);
-          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-        });
-      });
+      }
+      return jsonResponse({ call_id: "fc-place", status: "pending" });
     }
-    return new Response(
-      JSON.stringify({
+    if (opts?.hangStatus || (opts?.pendingForMs && Date.now() - acceptedAt < opts.pendingForMs)) {
+      return jsonResponse({ call_id: payload.call_id, status: "pending" });
+    }
+    return jsonResponse({
+      call_id: payload.call_id ?? "fc-place",
+      status: "success",
+      result: {
         items: [{ key: "0", audio_b64: mp3, duration_s: 12, truncated_units: 0 }],
         build: "abc",
-      }),
-      { status: 200 }
-    );
+      },
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
   return {
     fetchMock,
     cancelled,
-    posts: () => batchPosts,
+    posts: () => submits,
     entered,
   };
 }
@@ -114,15 +135,15 @@ describe("first-light placement budget", () => {
     expect(MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS).toBe(360_000);
   });
 
-  it("finishes a 150s placement on the original call", async () => {
+  it("finishes a 150s placement on the spawned call", async () => {
     vi.useFakeTimers();
-    const harness = setup({ delayMs: 150_000, probe: "pending" });
+    const harness = setup({ pendingForMs: 150_000 });
     const pending = renderModalCloneBatch(item, reference, undefined, "job-slow", {
       raceForFirstAudio: true,
       workMs: 70_000,
     });
     await harness.entered;
-    await vi.advanceTimersByTimeAsync(150_000);
+    await vi.advanceTimersByTimeAsync(152_000);
     const result = await pending.then(
       (value) => ({ ok: true as const, value }),
       (err: unknown) => ({ ok: false as const, err })
@@ -133,9 +154,9 @@ describe("first-light placement budget", () => {
     expect(harness.posts()).toBe(1);
   }, 20_000);
 
-  it("cancels and parks a call Modal never places", async () => {
+  it("fails a control accept that never returns an id and does not post the GPU", async () => {
     vi.useFakeTimers();
-    const harness = setup({ hang: true, probe: "pending" });
+    const harness = setup({ hangSubmit: true });
     const pending = renderModalCloneBatch(item, reference, undefined, "job-never", {
       raceForFirstAudio: true,
       workMs: 70_000,
@@ -144,24 +165,21 @@ describe("first-light placement budget", () => {
       () => "ok" as const,
       (err: unknown) => err
     );
-    await vi.advanceTimersByTimeAsync(MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS);
+    await harness.entered;
+    await vi.advanceTimersByTimeAsync(S2_CONTROL_DEADLINE_MS + 1_000);
     const error = await settled;
-    expect(error).toBeInstanceOf(ModalCloneColdError);
-    expect((error as ModalCloneColdError).clientAborted).toBe(true);
-    expect(harness.cancelled).toEqual(["first-light wait aborted"]);
-    expect(harness.posts()).toBe(1);
-    harness.fetchMock.mockClear();
-    await expect(
-      renderModalCloneBatch(item, reference, undefined, "job-never", {
-        raceForFirstAudio: true,
-      })
-    ).rejects.toBeInstanceOf(ModalCloneColdError);
-    expect(harness.posts()).toBe(1);
+    expect(error).toBeInstanceOf(S2ControlUnavailable);
+    expect(harness.cancelled).toEqual([]);
+    expect(harness.posts()).toBeGreaterThan(1);
+    const urls = harness.fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => endpointOf(url) === "batch" || url.startsWith(BATCH_HOST))).toBe(
+      false
+    );
   });
 
-  it("does not open a second POST while the first call is in flight", async () => {
+  it("does not open a second submit while the first call is in flight", async () => {
     vi.useFakeTimers();
-    const harness = setup({ delayMs: 150_000, probe: "started" });
+    const harness = setup({ pendingForMs: 150_000 });
     const first = renderModalCloneBatch(item, reference, undefined, "job-one", {
       raceForFirstAudio: true,
       workMs: 70_000,
@@ -170,7 +188,8 @@ describe("first-light placement budget", () => {
       raceForFirstAudio: true,
       workMs: 70_000,
     });
-    await vi.advanceTimersByTimeAsync(150_000);
+    await harness.entered;
+    await vi.advanceTimersByTimeAsync(152_000);
     const [a, b] = await Promise.all([first, second]);
     expect(a.audio.get("0")?.audio.byteLength).toBeGreaterThan(0);
     expect(b.audio.get("0")?.audio).toEqual(a.audio.get("0")?.audio);
@@ -178,19 +197,10 @@ describe("first-light placement budget", () => {
     expect(harness.cancelled).toEqual([]);
   });
 
-  it("does not cancel a placement that has already started", async () => {
+  it("does not cancel a spawned call when the placement budget passes", async () => {
     vi.useFakeTimers();
-    const harness = setup({ hang: true, probe: "started" });
-    let aborted = false;
-    harness.fetchMock.mockImplementation(async (_url, init) => {
-      await new Promise<void>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => {
-          aborted = true;
-          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-        });
-      });
-      return new Response("{}", { status: 200 });
-    });
+    const harness = setup({ hangStatus: true });
+    let statusAborted = false;
     const pending = renderModalCloneBatch(item, reference, undefined, "job-started", {
       raceForFirstAudio: true,
       workMs: 70_000,
@@ -199,19 +209,25 @@ describe("first-light placement budget", () => {
       () => "ok" as const,
       (err: unknown) => err
     );
+    await harness.entered;
+    const original = harness.fetchMock.getMockImplementation();
+    harness.fetchMock.mockImplementation(async (url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { call_id?: string; items?: unknown };
+      if (payload.call_id && !payload.items) {
+        init?.signal?.addEventListener("abort", () => {
+          statusAborted = true;
+        });
+      }
+      return original?.(url, init) as Promise<Response>;
+    });
     await vi.advanceTimersByTimeAsync(MODAL_CLONE_PLACEMENT_BUDGET_DEFAULT_MS + 5_000);
-    expect(aborted).toBe(false);
+    expect(statusAborted).toBe(false);
     expect(harness.cancelled).toEqual([]);
-    // Still the original request. Drop it so the test can finish.
-    const calls = harness.fetchMock.mock.calls;
-    const signal = calls[0]?.[1]?.signal;
-    if (signal && "throwIfAborted" in signal) {
-      // The owned controller is not the caller's. Abort by exceeding the ceiling.
-    }
     await vi.advanceTimersByTimeAsync(200_000);
     const error = await settled;
     expect(error).toBeInstanceOf(ModalCloneColdError);
     expect(harness.cancelled).toEqual([]);
+    expect(harness.posts()).toBe(1);
   });
 });
 

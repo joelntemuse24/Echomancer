@@ -14,7 +14,7 @@
  *      nothing was stored under the key the client needed.
  *   4. The next tap repeated all of it.
  *
- * These tests pin the fix at the route boundary:
+ * The request route no longer renders. These tests pin the worker bake:
  *
  *   - a stored clip is served with **no** provider call at all (the normal case
  *     after the first render, and the case that must be instant);
@@ -266,8 +266,8 @@ describe("a cold pool never becomes a request that waits", () => {
     );
     const started = Date.now();
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     const elapsed = Date.now() - started;
 
     expect(res.status).toBe(503);
@@ -292,8 +292,8 @@ describe("a cold pool never becomes a request that waits", () => {
     });
     recordFetch((call) => (call.url === READY_HOST ? coldReady() : batchOk()));
 
-    const { POST } = await route();
-    await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    await bakeClonePreview(clone.id);
 
     expect(spawned.length).toBe(1);
     expect(spawned[0]!.join(" ")).toContain("s2_clone_warm.py::cover");
@@ -311,8 +311,8 @@ describe("a cold pool never becomes a request that waits", () => {
     delete process.env.MODAL_S2_READY_URL;
     const { synthesisCalls } = recordFetch(() => batchOk());
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
 
     expect(res.status).toBe(503);
     expect((await res.json()).code).toBe("PREVIEW_ENGINE_COLD");
@@ -327,8 +327,8 @@ describe("a cold pool never becomes a request that waits", () => {
       return batchOk();
     });
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(503);
     expect((await res.json()).code).toBe("PREVIEW_ENGINE_COLD");
     expect(synthesisCalls()).toHaveLength(0);
@@ -344,8 +344,8 @@ describe("a cold pool never becomes a request that waits", () => {
         : batchOk()
     );
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(503);
     expect(synthesisCalls()).toHaveLength(0);
   });
@@ -359,8 +359,9 @@ describe("a warm render is bounded and stored once", () => {
       call.url === READY_HOST ? warmReady() : batchOk(13)
     );
 
-    const { POST, GET } = await route();
-    const first = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const first = await bakeClonePreview(clone.id);
+    const { GET } = await route();
     expect(first.status).toBe(200);
     expect(first.headers.get("x-echomancer-preview")).toBe("generated");
     const bytes = Buffer.from(await first.arrayBuffer());
@@ -385,8 +386,8 @@ describe("a warm render is bounded and stored once", () => {
       call.url === READY_HOST ? warmReady() : batchOk()
     );
 
-    const { POST } = await route();
-    await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    await bakeClonePreview(clone.id);
 
     const post = synthesisCalls()[0]!;
     expect(post.url).toBe(BATCH_HOST);
@@ -409,8 +410,8 @@ describe("a warm render is bounded and stored once", () => {
       throw new Error("a stored take must not synthesize");
     });
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-echomancer-preview")).toBe("stored");
     expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
@@ -428,10 +429,10 @@ describe("a warm render is bounded and stored once", () => {
       return batchOk(17);
     });
 
-    const { POST } = await route();
-    const first = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const first = await bakeClonePreview(clone.id);
     expect(first.status).toBe(200);
-    const second = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const second = await bakeClonePreview(clone.id);
     expect(second.status).toBe(200);
     expect(second.headers.get("x-echomancer-preview")).toBe("stored");
     expect(synthesisCalls()).toHaveLength(1);
@@ -448,8 +449,8 @@ describe("a warm render is bounded and stored once", () => {
       );
     });
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(502);
     const body = await res.json();
     expect(body.code).toBe("PREVIEW_RENDER_FAILED");
@@ -471,8 +472,8 @@ describe("a warm render is bounded and stored once", () => {
       });
     });
 
-    const { POST } = await route();
-    const res = await POST(await previewRequest("POST"), routeParams({ id: clone.id }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(502);
     expect(await findStoredClonePreview(voiceOf(clone), planFor(clone))).toBeNull();
   });

@@ -9,7 +9,9 @@
  *
  * Uses the same Modal credentials as the off-path snapshot warm hook
  * (`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`). Never throws into the book path.
- * Never passes terminate_containers=True, and never stops a container.
+ * The script cancels with terminate_containers=True and treats NotFound as
+ * still live. The drain brakes the autoscaler after that. This module does
+ * not stop a container and does not stop the app.
  */
 import { spawn } from "node:child_process";
 

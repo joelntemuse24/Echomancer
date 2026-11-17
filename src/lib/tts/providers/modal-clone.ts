@@ -66,6 +66,7 @@ import { mapPool } from "@/lib/async-pool";
 import {
   cloneTakeIsTruncated,
   modalCloneBatchItems,
+  modalCloneBookCallTimeoutMs,
   modalCloneCallTimeoutMs,
   modalCloneFirstLightHttpWaitMs,
   modalClonePlacementBudgetMs,
@@ -104,6 +105,23 @@ import {
   holdModalCloneLaneSlot,
   ProviderSlotBusyError,
 } from "@/lib/tts/provider-slots";
+import {
+  admitRemoteCall,
+  bindFlightAbort,
+  flightKey,
+  isBookHalted,
+  noteDrainRequested,
+  setFlightCallId,
+  resetRemoteLayerForTests,
+} from "@/lib/remote/layer";
+import {
+  resetS2ControlForTests,
+  s2ControlOrigin,
+  s2IdempotencyKey,
+  S2ControlUnavailable,
+  S2ProtocolMismatch,
+  submitThenPoll,
+} from "@/lib/tts/providers/modal-clone-call";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -160,6 +178,28 @@ export class ModalCloneColdError extends Error {
     this.waitKind = waitKind;
     this.clientAborted = clientAborted;
     this.selfBackoff = selfBackoff;
+  }
+}
+
+/**
+ * The remote-call layer refused this POST. The original call is still
+ * the one in flight, the book is over budget, or it was stopped.
+ *
+ * This is not a cold placement. It must not kick `::cover` and it must
+ * not start the Fish defer clock.
+ */
+export class ModalCloneHeldError extends Error {
+  readonly reason: "in_flight" | "sealed" | "cancelled" | "budget";
+  readonly retryAfterMs: number;
+  constructor(
+    reason: "in_flight" | "sealed" | "cancelled" | "budget",
+    message: string,
+    retryAfterMs = COLD_BACKOFF_MS
+  ) {
+    super(message);
+    this.name = "ModalCloneHeldError";
+    this.reason = reason;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -252,11 +292,13 @@ export function resetModalCloneRuntimeForTests(): void {
   bookAnsweredAt.clear();
   inflightRenders.clear();
   sealedRenderUntil.clear();
+  resetRemoteLayerForTests();
   placementProbe = null;
   resetModalCloneGuardForTests();
   resetModalCloneWarmForTests();
   resetModalCloneCancelForTests();
   resetModalCloneAudioTransportForTests();
+  resetS2ControlForTests();
 }
 
 export function noteModalClonePoolAnswered(
@@ -461,9 +503,19 @@ export async function loadCloneReference(
       "Clone reference must be between 1 byte and 15 MiB"
     );
   }
+  let transcript = (clone.reference_transcript ?? "").trim();
+  if (!transcript) {
+    const { ensureCloneReferenceTranscript } = await import(
+      "@/lib/tts/clone-reference-transcript"
+    );
+    transcript = await ensureCloneReferenceTranscript({
+      cloneId: catalogVoiceId.slice("clone:".length),
+      audio,
+    });
+  }
   return {
     audio,
-    transcript: clone.reference_transcript ?? "",
+    transcript,
     userId: clone.user_id || "anonymous",
     catalogVoiceId,
   };
@@ -557,25 +609,70 @@ export async function renderModalCloneBatch(
     warmBatch?: boolean;
   }
 ): Promise<CloneBatchOutcome> {
+  const sections = items.map((item) => String(item.key));
   if (jobId) {
-    const existing = inflightRenders.get(jobId);
-    if (existing) return existing;
     const until = sealedRenderUntil.get(jobId) ?? 0;
     if (Date.now() < until) {
-      throw new ModalCloneColdError(
+      throw new ModalCloneHeldError(
+        "sealed",
         "Modal clone is still waiting on the original placement",
-        until - Date.now(),
-        "placement",
-        "restore",
-        true,
-        true
+        until - Date.now()
       );
     }
   }
+  const admitted = jobId
+    ? admitRemoteCall({
+        provider: "s2-clone",
+        path: opts?.warmBatch ? "warm" : "book",
+        jobId,
+        sections,
+        estMs: opts?.workMs,
+        // H100 list price is about $0.001097/s. The estimate is for the
+        // budget, not an invoice.
+        estCostUsd: opts?.workMs ? (opts.workMs / 1000) * 0.001097 : 0.05,
+        idempotencyKey: s2IdempotencyKey(jobId, sections, opts?.seedEpoch ?? 0),
+      })
+    : null;
+  if (admitted?.kind === "join") return admitted.promise as Promise<CloneBatchOutcome>;
+  if (admitted?.kind === "blocked") {
+    const reason =
+      admitted.reason === "budget"
+        ? "budget"
+        : admitted.reason === "cancelled" || isBookHalted(jobId)
+          ? "cancelled"
+          : "in_flight";
+    throw new ModalCloneHeldError(
+      reason,
+      reason === "budget"
+        ? "This book is over its remote-call budget."
+        : reason === "cancelled"
+          ? "This book was stopped."
+          : "Modal clone is still waiting on the original placement",
+      reason === "cancelled" ? 0 : COLD_BACKOFF_MS
+    );
+  }
   const run = renderModalCloneBatchBody(items, reference, signal, jobId, opts);
+  if (admitted) admitted.flight.promise = run;
   if (jobId) inflightRenders.set(jobId, run);
   try {
-    return await run;
+    const result = await run;
+    admitted?.finish("success");
+    return result;
+  } catch (err) {
+    const stopped = Boolean(jobId && isBookHalted(jobId));
+    const aborted = err instanceof ModalCloneColdError && err.clientAborted;
+    const unconfirmed = err instanceof S2ControlUnavailable && !err.giveUp;
+    if (aborted && jobId) noteDrainRequested(jobId);
+    // A client abort, including Stop, means the Modal input may still be
+    // compiling. cancelled would let the next process POST again. The id
+    // stays still_live until a terminal cancel. An accept with no id is
+    // submit_unconfirmed: the same key is posted again, and the attempt
+    // does not move. giveUp is the bounded miss after an empty lookup.
+    admitted?.finish(
+      unconfirmed ? "submit_unconfirmed" : aborted ? "still_live" : stopped ? "cancelled" : "failure",
+      err instanceof Error ? err.message : String(err)
+    );
+    throw err;
   } finally {
     if (jobId && inflightRenders.get(jobId) === run) inflightRenders.delete(jobId);
   }
@@ -639,6 +736,15 @@ async function renderModalCloneBatchBody(
       sampling: MODAL_S2_SAMPLING,
       ...(jobId ? { job_id: jobId } : {}),
       seed_epoch: Math.max(0, Math.floor(opts?.seedEpoch ?? 0)),
+      ...(jobId
+        ? {
+            idempotency_key: s2IdempotencyKey(
+              jobId,
+              items.map((item) => item.key),
+              opts?.seedEpoch ?? 0
+            ),
+          }
+        : {}),
     },
     signal,
     wait
@@ -1517,7 +1623,13 @@ export function rememberModalCloneCold(jobId?: string): void {
 function coldFromWait(
   kind: "restore" | "steady" | "warm",
   message: string,
-  ctx: { jobId?: string; appWide?: boolean; clientAborted?: boolean } = {}
+  ctx: {
+    jobId?: string;
+    appWide?: boolean;
+    clientAborted?: boolean;
+    /** The probe said this placement had started. Do not kick a second GPU. */
+    placementStarted?: boolean;
+  } = {}
 ): ModalCloneColdError {
   const aborted = ctx.clientAborted === true;
   if (kind === "warm") {
@@ -1537,7 +1649,7 @@ function coldFromWait(
     );
   }
   if (kind === "restore") {
-    kickModalCloneSnapshotWarm(message);
+    if (!ctx.placementStarted) kickModalCloneSnapshotWarm(message, Date.now(), ctx.jobId);
     if (aborted) rememberModalCloneCold(ctx.jobId);
     return new ModalCloneColdError(
       message,
@@ -1670,6 +1782,24 @@ function nextSeed(): number {
  * another lane can try a different container. A steady-state miss is `pool`.
  * Only a real provider answer surfaces as a normal error.
  */
+function modalFlightKey(
+  jobId: string | undefined,
+  body: Record<string, unknown>
+): { key: string; jobId: string; sections: string[] } | null {
+  if (!jobId) return null;
+  const items = Array.isArray(body.items) ? body.items : null;
+  if (!items || items.length === 0) return null;
+  const sections = items
+    .map((item) => String((item as { key?: unknown }).key ?? ""))
+    .filter(Boolean);
+  if (sections.length === 0) return null;
+  return {
+    key: flightKey({ provider: "s2-clone", jobId, sections }),
+    jobId,
+    sections,
+  };
+}
+
 async function postModal(
   url: string,
   body: Record<string, unknown>,
@@ -1680,7 +1810,9 @@ async function postModal(
   const armed = wait && wait.ms > 0 ? wait.ms : modalCloneCallTimeoutMs();
   const kind = wait?.kind ?? "steady";
   const firstLight = wait?.firstLight === true;
-  const limit = firstLight ? modalCloneFirstLightHttpWaitMs(armed) : armed;
+  const limit = firstLight
+    ? Math.min(modalCloneFirstLightHttpWaitMs(armed), modalCloneBookCallTimeoutMs())
+    : armed;
   const controller = new AbortController();
   const onExternalAbort = () => controller.abort();
   signal?.addEventListener("abort", onExternalAbort, { once: true });
@@ -1729,32 +1861,74 @@ async function postModal(
     const timeout = AbortSignal.timeout(limit);
     timeout.addEventListener("abort", onExternalAbort, { once: true });
   }
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  const tracked = modalFlightKey(wait?.jobId, body);
+  if (tracked) {
+    bindFlightAbort(tracked.key, () => controller.abort());
+  }
+  const headers = {
+    ...authHeaders(requireToken()),
+    "Content-Type": "application/json",
+  };
+  // Batch bodies with a control URL always submit-poll. A cold CPU
+  // container retries that submit. The GPU post is the unset-URL path,
+  // or a body that names a different protocol. `{text}` stays on `url`.
+  const batchItems = Array.isArray(body.items) && body.items.length > 0;
+  const control = tracked && batchItems ? s2ControlOrigin() : null;
+  if (control) {
+    // The long timer is the GPU wait. A book polls by the stored call id,
+    // so that timer must not abort the control accept.
+    clearTimer();
+  }
+  const postGpu = () =>
+    fetch(url, {
       method: "POST",
-      headers: {
-        ...authHeaders(requireToken()),
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+  let response: Response;
+  try {
+    if (control && tracked) {
+      try {
+        response = await submitThenPoll({
+          url: control,
+          body,
+          headers,
+          signal: controller.signal,
+          // The id is stored before this wait. First light keeps polling until
+          // the proxy ceiling. A submit that never returns an id fails the
+          // section after the control deadline; it does not post the GPU.
+          waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
+          onCallId: (id) => setFlightCallId(tracked.key, id),
+        });
+      } catch (err) {
+        if (!(err instanceof S2ProtocolMismatch)) throw err;
+        if (firstLight) armAbort(limit);
+        else {
+          const timeout = AbortSignal.timeout(limit);
+          timeout.addEventListener("abort", onExternalAbort, { once: true });
+        }
+        response = await postGpu();
+      }
+    } else {
+      response = await postGpu();
+    }
   } catch (err) {
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      // The worker dropped the wait. Cancel the unstarted PENDING Modal
-      // input so abandoned calls do not pile up and get served after the
-      // next enter. A call that has already started is left alone: the
-      // first-light path only aborts after the probe says it never started,
-      // and a started container is waited out to the proxy ceiling.
-      if (!containerStarted) {
+      // A book with a stored id is cancelled by Stop through the HTTP
+      // endpoint. The CLI cancel has no id to aim at, and cancelling here
+      // would drop the compile this wait is holding as still_live.
+      if (!tracked && !containerStarted) {
         cancelAbandonedModalCallsAfterAbort({
           jobId: wait?.jobId,
           reason: "first-light wait aborted",
         });
         if (firstLight) sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
+      }
+      if (tracked && firstLight) {
+        sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
       }
       throw coldFromWait(
         kind,
@@ -1763,6 +1937,7 @@ async function postModal(
           jobId: wait?.jobId,
           appWide: wait?.appWideCold,
           clientAborted: true,
+          placementStarted: containerStarted,
         }
       );
     }
@@ -1772,6 +1947,10 @@ async function postModal(
     clearTimer();
     signal?.removeEventListener("abort", onExternalAbort);
   }
+  const callHeader =
+    response.headers.get("x-modal-function-call-id") ||
+    response.headers.get("modal-function-call-id");
+  if (callHeader && tracked) setFlightCallId(tracked.key, callHeader);
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     const refused = modalPlatformRefusal(response.status, detail);

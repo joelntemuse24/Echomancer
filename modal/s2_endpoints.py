@@ -68,7 +68,7 @@ def endpoint_kind(url: str, *, app_name: str = "") -> str:
         label = label.split(f"--{app_name}-", 1)[1]
     elif "--" in label:
         label = label.split("--", 1)[1]
-    for kind in ("synthesize-batch", "synthesize", "ready"):
+    for kind in ("synthesize-batch", "synthesize", "s2-control", "ready"):
         if label == kind or label.startswith(f"{kind}-"):
             return kind
     return label or "unknown"
@@ -106,4 +106,15 @@ def endpoints_from_env(env) -> dict:
             "MODAL_S2_READY_URL points at the synthesize host. The ready probe is "
             "a separate @modal.fastapi_endpoint with its own hostname."
         )
-    return {"batch": batch, "single": single, "ready": ready}
+    control_raw = (env.get("MODAL_S2_CONTROL_URL") or "").strip()
+    control = (
+        normalize_endpoint_url(control_raw, label="MODAL_S2_CONTROL_URL")
+        if control_raw
+        else None
+    )
+    if control and control == batch:
+        raise EndpointUrlError(
+            "MODAL_S2_CONTROL_URL points at the synthesize host. Submit, poll, and "
+            "cancel are a CPU @modal.fastapi_endpoint with its own hostname."
+        )
+    return {"batch": batch, "single": single, "ready": ready, "control": control}

@@ -12,15 +12,14 @@
  *   2. the legacy engine-free preview key, which holds the Fish 2.1 Pro MP3s
  *      written before the S2 pool existed.
  *
- * Both are this clone's voice. A `404` therefore means "nothing is stored", and
- * says so with `PREVIEW_NOT_STORED`; the picker only then asks for a render.
+ * Both are this clone's voice. When nothing is stored the route answers
+ * `202 PREVIEW_PREPARING` and asks the worker to bake the clip. It does not
+ * synthesize, and it does not call `/api/tts/live`.
  *
- * ## POST: render once, on the engine that speaks this clone
+ * ## POST: enqueue the same bake
  *
- * An explicit render is the one moment a preview is allowed to cost synthesis.
- * It goes through the clone's real engine with `allowFallback: false`, so a
- * Modal failure surfaces instead of being answered by a different voice. The
- * take is stored under an engine-named key; nothing else may write one.
+ * A stored take is replayed. A missing take is the worker's job. The request
+ * path never renders a clone preview.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -35,7 +34,6 @@ import { isFishConfigured } from "@/lib/tts/providers/fish";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { resolveStockAdapter } from "@/lib/tts/providers";
 import {
   clonePreviewEngine,
   clonePreviewReadPaths,
@@ -44,12 +42,7 @@ import {
   planClonePreview,
   previewAudioResponse,
 } from "@/lib/tts/clone-preview";
-import { storeClonePreview } from "@/lib/tts/clone-preview-store";
-import {
-  ModalCloneColdError,
-  synthesizeModalClonePreview,
-} from "@/lib/tts/providers/modal-clone";
-import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
+import { enqueueClonePreviewBake } from "@/lib/tts/clone-preview-job";
 
 export const runtime = "nodejs";
 /**
@@ -59,17 +52,6 @@ export const runtime = "nodejs";
  * `PREVIEW_RENDER_BUDGET_MS` wait, with room for the storage write.
  */
 export const maxDuration = 60;
-
-/**
- * How long one warm container may take to render this one line.
- *
- * Sized so a warm render cannot run past the function: the measured warm figure
- * is ~14 s for a 300-character take plus a few seconds of mastering, so 35 s is
- * several times the real cost and still leaves the route ~20 s of headroom
- * before Vercel's 60 s ceiling. It is deliberately *not*
- * `MODAL_S2_COLD_WAIT_MS` — that is the book budget, and it cannot fit here.
- */
-const PREVIEW_RENDER_BUDGET_MS = 35_000;
 
 // A cache probe is far cheaper than a synthesis call, so this limit is only
 // abuse cover. The render below has its own, much tighter, meter.
@@ -149,11 +131,12 @@ export async function GET(
     );
     if (stored) return previewAudioResponse(stored.audio, "stored");
 
-    // Nothing stored yet. Distinct code so the caller knows a render is next
-    // rather than a failure, and there is nothing to retry.
+    // Nothing stored yet. The worker bakes the clip. This request does not
+    // synthesize, and it does not fall through to `/api/tts/live`.
+    await enqueueClonePreviewBake(catalog.id);
     return NextResponse.json(
-      { error: "No saved sample yet.", code: "PREVIEW_NOT_STORED", render: true },
-      { status: 404 }
+      { error: "Preparing preview", code: "PREVIEW_PREPARING" },
+      { status: 202 }
     );
   } catch (error) {
     return handleApiError(error);
@@ -219,70 +202,12 @@ export async function POST(
     const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT, engine);
     if (existing) return previewAudioResponse(existing.audio, "stored");
 
-    // A preview is somebody waiting on a tap inside a function Vercel kills at
-    // 60 s. A book may park for a snapshot restore; this may not. On the S2
-    // engine the render therefore refuses to open a cold-restore wait, reports
-    // `PREVIEW_ENGINE_COLD` immediately, and kicks a restore so the next tap is
-    // a storage read. See `synthesizeModalClonePreview`.
-    const previewBudgetMs = PREVIEW_RENDER_BUDGET_MS;
-    let result;
-    try {
-      result = engine === "s2-pro"
-        ? await synthesizeModalClonePreview({
-            text: plan.script,
-            voiceId: catalog.providerVoiceId,
-            catalogVoiceId: catalog.id,
-            language: catalog.locale,
-            model: catalog.model,
-            speed: plan.speed,
-            allowFallback: false,
-            budgetMs: previewBudgetMs,
-          })
-        : await resolveStockAdapter({
-            provider: catalog.provider,
-            model: catalog.model,
-            catalogVoiceId: catalog.id,
-          }).synthesize({
-            text: plan.script,
-            voiceId: catalog.providerVoiceId,
-            catalogVoiceId: catalog.id,
-            language: catalog.locale,
-            model: catalog.model,
-            speed: plan.speed,
-            // The whole point: no substitution. A failure is reported, never
-            // answered by another engine's take.
-            allowFallback: false,
-          });
-    } catch (err) {
-      console.error(
-        `[clone-preview] render failed for ${catalog.id} on ${engine}:`,
-        err instanceof Error ? err.message : err
-      );
-      // A cold pool is a wait, not a broken voice. Both cases say plainly that
-      // nothing was substituted, and neither leaks the provider's own wording.
-      const cold = err instanceof ModalCloneColdError;
-      const busy = err instanceof ProviderSlotBusyError;
-      return NextResponse.json(
-        {
-          error: cold
-            ? "Your cloned voice is starting up. Try again in a moment — nothing else was substituted."
-            : busy
-              ? "That voice is busy right now. Nothing else was substituted."
-              : "That voice's sample couldn't be made right now. Nothing else was substituted.",
-          code: cold
-            ? "PREVIEW_ENGINE_COLD"
-            : busy
-              ? "PREVIEW_CAPACITY"
-              : "PREVIEW_RENDER_FAILED",
-          engine,
-        },
-        { status: cold || busy ? 503 : 502 }
-      );
-    }
-
-    // Store before answering, so the next play is a plain read.
-    await storeClonePreview(writePath, result.audio);
-    return previewAudioResponse(result.audio, "generated");
+    // The 60s request path does not render. The worker bakes the clip.
+    await enqueueClonePreviewBake(catalog.id);
+    return NextResponse.json(
+      { error: "Preparing preview", code: "PREVIEW_PREPARING", engine },
+      { status: 202 }
+    );
   } catch (error) {
     return handleApiError(error);
   }

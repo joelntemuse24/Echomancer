@@ -352,10 +352,15 @@ def test_web_endpoints_declare_a_method(service):
         assert entry["kwargs"].get("docs") is False
 
 
-def test_the_ready_probe_is_a_cpu_function(service):
-    (function,) = _service_only(service._recorder.functions)
-    assert "gpu" not in function, "the readiness probe must not start a GPU"
-    assert function["timeout"] <= 30
+def test_ready_and_control_are_cpu_functions(service):
+    functions = _service_only(service._recorder.functions)
+    assert len(functions) == 2, "ready and s2_control are the only module-level functions"
+    for function in functions:
+        assert "gpu" not in function, "control traffic must not start a GPU"
+        assert function["timeout"] <= 30
+        assert function.get("min_containers", 0) == 0
+        assert function["cpu"] <= 0.125
+        assert function["memory"] <= 256
 
 
 def test_no_multi_gpu_or_replica_wide_gpu_request(service):
@@ -786,3 +791,125 @@ def test_a_single_oversized_unit_is_sliced_not_rejected(service):
         service.make_units = original
     assert max(len(u["text"]) for u in units) <= s2_contract.UNIT_MAX_CHARS
     assert "".join(u["text"] for u in units) == oversized
+
+
+def test_control_endpoint_spawns_polls_and_cancels_off_the_gpu(service, monkeypatch):
+    """Submit, status, and cancel run on the CPU function and spawn the GPU method."""
+    import inspect
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "tok")
+    gpu_source = inspect.getsource(service.S2CloneWorker.synthesize_batch)
+    assert "spawn" not in gpu_source
+    assert "handle_remote_request" not in gpu_source
+    assert "spawn" in inspect.getsource(service.s2_control)
+
+    seen: dict = {"spawns": 0}
+
+    class OutputExpiredError(TimeoutError):
+        pass
+
+    class NotFoundError(Exception):
+        pass
+
+    class _Call:
+        def __init__(self, object_id="fc-spawned"):
+            self.object_id = object_id
+
+        def get(self, timeout=0):
+            seen["timeout"] = timeout
+            error = seen.get("get_error")
+            if error:
+                raise error
+            result = seen.get("get_result", {"items": [{"key": "0", "audio_b64": "QQ=="}]})
+            return result
+
+        def cancel(self, terminate_containers=False):
+            seen["terminate"] = terminate_containers
+
+    def spawn(payload):
+        seen["spawns"] += 1
+        seen["items"] = payload.get("items")
+        seen["key"] = payload.get("idempotency_key")
+        return _Call()
+
+    class _FunctionCall:
+        @staticmethod
+        def from_id(call_id):
+            seen["from_id"] = call_id
+            return _Call()
+
+    class _Memory:
+        def __init__(self):
+            self.rows = {}
+
+        def get(self, key):
+            return self.rows.get(key)
+
+        def put(self, key, value):
+            self.rows[key] = value
+
+    import modal
+
+    modal.FunctionCall = _FunctionCall
+    service.S2CloneWorker.render_batch.spawn = spawn
+    memory = _Memory()
+    monkeypatch.setattr(service, "control_store", lambda: memory)
+    request = _FakeRequest("tok")
+    try:
+        probed = service.s2_control({"probe": True}, request)
+        assert probed.content["protocol"] == "s2-submit-poll"
+        assert seen["spawns"] == 0
+
+        payload = {
+            "items": [{"key": "0", "text": "Hello."}],
+            "reference_audio_base64": "YQ==",
+            "reference_text": "hello",
+            "idempotency_key": "book:0:0",
+        }
+        accepted = service.s2_control(payload, request)
+        assert accepted.content["call_id"] == "fc-spawned"
+        assert accepted.content["status"] == "pending"
+        assert seen["spawns"] == 1
+        assert seen["items"][0]["text"] == "Hello."
+        assert "timeout" not in seen
+
+        again = service.s2_control(payload, request)
+        assert again.content["call_id"] == "fc-spawned"
+        assert again.content["idempotent"] is True
+        assert seen["spawns"] == 1
+
+        status = service.s2_control({"call_id": "fc-spawned"}, request)
+        assert seen["from_id"] == "fc-spawned"
+        assert seen["timeout"] == 1.0
+        assert status.content["status"] == "success"
+        assert isinstance(status.content["result"], dict)
+        assert status.content["result"]["items"][0]["key"] == "0"
+
+        seen["get_result"] = b"\xff not-json"
+        unknown = service.s2_control({"call_id": "fc-spawned"}, request)
+        assert unknown.content["status"] == "unknown"
+        assert "result" not in unknown.content
+
+        seen["get_error"] = OutputExpiredError("gone")
+        expired = service.s2_control({"call_id": "fc-spawned"}, request)
+        assert expired.content["status"] == "expired"
+        assert expired.content["terminal"] is True
+
+        seen["get_error"] = NotFoundError("missing")
+        missing = service.s2_control({"call_id": "fc-spawned"}, request)
+        assert missing.content["status"] == "unknown"
+        assert missing.content["terminal"] is False
+
+        seen["get_error"] = TimeoutError("running")
+        cancelled = service.s2_control({"call_id": "fc-spawned", "cancel": True}, request)
+        assert seen["terminate"] is True
+        assert cancelled.content["status"] == "pending"
+        assert cancelled.content["terminal"] is False
+
+        seen["get_error"] = NotFoundError("gone after cancel")
+        confirmed = service.s2_control({"call_id": "fc-spawned", "cancel": True}, request)
+        assert confirmed.content["status"] == "unknown"
+        assert confirmed.content["terminal"] is False
+    finally:
+        if hasattr(service.S2CloneWorker.render_batch, "spawn"):
+            del service.S2CloneWorker.render_batch.spawn

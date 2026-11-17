@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Cancel abandoned *unstarted* S2 FunctionCalls after a first-light abort.
+"""Cancel abandoned S2 FunctionCalls after a first-light abort.
 
-Only PENDING inputs with no started_at are cancelled, and never with
-terminate_containers=True. A call that has already entered or compiled is left
-alone so snapshot publish is not interrupted.
+cancel(terminate_containers=True) is step 1 of the drain. NotFound, or any
+status that is not terminal, means the call is still live. Do not follow
+this with `modal container stop`. Run scripts/s2/drain-stuck-calls.py so
+the autoscaler is braked (max_containers=0, min_containers stays 0).
 
     python3 scripts/s2/cancel-unstarted-pending.py
     python3 scripts/s2/cancel-unstarted-pending.py --dry-run
@@ -45,14 +46,22 @@ def probe_placement(rows: list[dict]) -> str:
 
 def cancel_call(function_call_id: str, *, dry_run: bool) -> None:
     if dry_run:
-        print(f"dry-run: would cancel {function_call_id} (terminate_containers=False)")
+        print(f"dry-run: would cancel {function_call_id} (terminate_containers=True)")
+        print("verdict: still_live until a terminal status is read")
         return
     # Imported lazily so offline tests can import this file's helpers without
     # a Modal client.
     from modal.functions import FunctionCall
 
-    FunctionCall.from_id(function_call_id).cancel(terminate_containers=False)
-    print(f"cancelled unstarted pending input {function_call_id}")
+    try:
+        FunctionCall.from_id(function_call_id).cancel(terminate_containers=True)
+    except Exception as err:
+        name = type(err).__name__
+        print(f"cancel {function_call_id}: still_live ({name})")
+        print("NotFound is not proof the call is gone. Brake with drain-stuck-calls.py.")
+        return
+    print(f"cancel {function_call_id}: requested (terminate_containers=True)")
+    print("verdict: still_live until a terminal status is read. Then drain-stuck-calls.py.")
 
 
 def main(argv: list[str] | None = None) -> int:

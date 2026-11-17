@@ -96,21 +96,29 @@ async function onePiece(
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
     const sentAt = Date.now();
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "audio/wav",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        text,
-        speed: 1,
-        ...(input.jobId ? { jobId: input.jobId } : {}),
-        ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
-      }),
-      signal: input.signal,
-    });
+    const { remoteFetch, remoteSectionKey } = await import("@/lib/remote/http");
+    const res = await remoteFetch({
+        provider: "kokoro",
+        jobId: input.jobId,
+        section: remoteSectionKey(input.sectionIndex, text),
+        estCostUsd: 0.01,
+        url,
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "audio/wav",
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            text,
+            speed: 1,
+            ...(input.jobId ? { jobId: input.jobId } : {}),
+            ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
+          }),
+          signal: input.signal,
+        },
+      });
     const headerMs = Date.now() - sentAt;
     if (res.status === 429 && attempt < 3) {
       console.info(

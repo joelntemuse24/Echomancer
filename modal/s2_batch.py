@@ -32,8 +32,10 @@ Snapshots exist only for deployed apps:
     modal run modal/s2_batch.py::book   --ref-audio ref.wav --ref-text-file ref.txt --gpus 4
 
 Environment overrides (read at deploy time):
-    S2B_GPU          default "H100!" (the "!" stops Modal upgrading to H200, which
-                     would need its own snapshots)
+    S2B_GPU          default "H100!" (the "!" stops Modal upgrading to H200.
+                     Snapshots are per GPU type. An H200 has no H100 snapshot,
+                     so the first call there is a full compile. That is the
+                     2026-11-17 incident. Do not drop the "!".)
     S2B_BATCH        most rows decoded together per GPU, default 32
     S2B_MAX_SEQ_LEN  per-row context, default 4096
     S2B_CUDAGRAPHS   1 = compile with CUDA graphs (default), 0 = plain inductor

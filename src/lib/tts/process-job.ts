@@ -39,6 +39,7 @@ import {
   loadCloneReference,
   modalCloneBatchSize,
   ModalCloneColdError,
+  ModalCloneHeldError,
   ModalCloneProviderError,
   ModalCloneReferenceError,
   forgetModalCloneJob,
@@ -792,7 +793,11 @@ async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boole
     `SELECT status, deleted_at, processing_lease_token FROM jobs WHERE id = ?`,
     [jobId]
   );
-  if (!row || row.deleted_at != null || row.status === "cancelled") return true;
+  if (!row || row.deleted_at != null || row.status === "cancelled") {
+    const { haltBook } = await import("@/lib/remote/layer");
+    haltBook(jobId, row?.deleted_at != null ? "deleted" : "cancelled");
+    return true;
+  }
   return row.processing_lease_token !== lease;
 }
 
@@ -970,6 +975,10 @@ export interface SynthesisFailure {
   cold?: boolean;
   fatal?: boolean;
   providerFault?: boolean;
+  /** Waiting on a call that is already in flight. Not a cold pool. */
+  held?: boolean;
+  /** Over the remote-call budget. The book stops. */
+  budget?: boolean;
 }
 
 /**
@@ -2074,6 +2083,8 @@ async function runClaimedTick(
      * worker reuses what is stored and re-claims only unfinished sections.
      */
     let cloneColdSeen = false;
+    let cloneHeld = false;
+    let cloneBudgetStop = false;
     // Set when this tick already rendered and published the clone batch.
     // The generic claim below would otherwise speak the same sections again,
     // one row per call, including takes that are already in the section cache.
@@ -2163,6 +2174,14 @@ async function runClaimedTick(
           speechRate
         );
         if (!synthesized.ok) {
+          if (synthesized.budget) {
+            cloneBudgetStop = true;
+            return { result: synthesized, store: async () => {} };
+          }
+          if (synthesized.held) {
+            cloneHeld = true;
+            return { result: synthesized, store: async () => {} };
+          }
           if (synthesized.cold) {
             // A cold pool is not this section's fault, so it must not spend
             // one of the section's two attempts. The caller parks the book.
@@ -2709,6 +2728,65 @@ async function runClaimedTick(
             console.log(`[Job ${jobId}] S2 cacheSkip=${skippedCached} render=0`);
           }
 
+          if (dispatch?.budgetStop) {
+            const { haltBook } = await import("@/lib/remote/layer");
+            const { drainBookCalls } = await import("@/lib/remote/drain-book");
+            haltBook(jobId, "budget");
+            await drainBookCalls(jobId, "budget").catch(() => undefined);
+            await stopBook(jobId, lease, "This book is over its remote-call budget.", null);
+            return {
+              done: true,
+              nextIndex: job.next_section_index ?? 0,
+              total: job.total_sections ?? 0,
+            };
+          }
+          if (
+            dispatch?.held &&
+            dispatch.abortedIndexes.length === 0 &&
+            !dispatch.cold &&
+            !dispatch.selfBackoff
+          ) {
+            // The original call is still the one in flight. Do not start
+            // the Fish clock from this refusal. A clock a real miss already
+            // started can still expire and switch.
+            const started = Number(job.clone_wait_started_at ?? 0);
+            if (started > 0) {
+              const outcome = await deferForColdClonePool({
+                jobId,
+                lease,
+                job,
+                stagedCount: dispatch.staged,
+                reason: "timeout",
+                notBeforeSec: 30,
+              });
+              if (outcome.park) {
+                return {
+                  done: false,
+                  busy: true,
+                  deferred: true,
+                  nextIndex: job.next_section_index ?? 0,
+                  total: job.total_sections ?? 0,
+                };
+              }
+              if (outcome.switched || modalCloneDeferMs() <= 0) clonePin = "fish";
+            } else {
+              const remain = modalCloneJobBackoffRemainingMs(jobId);
+              const notBeforeSec = Math.max(30, Math.ceil(remain / 1000));
+              await releaseLease(jobId, lease, {
+                status: "queued",
+                notBeforeSec,
+                sealLease: true,
+              }).catch(() => {});
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+          }
+
           if (
             dispatch &&
             (dispatch.abortedIndexes.length > 0 || dispatch.selfBackoff)
@@ -2721,7 +2799,13 @@ async function runClaimedTick(
             // followed by audio does not accumulate.
             await publishChain.catch(() => undefined);
             const aborted = new Set(dispatch.abortedIndexes);
-            const charge = dispatch.missing.filter((index) => !aborted.has(index));
+            const sameKey = new Set([
+              ...dispatch.unconfirmedIndexes,
+              ...dispatch.settledNotFoundIndexes,
+            ]);
+            const charge = dispatch.missing.filter(
+              (index) => !aborted.has(index) && !sameKey.has(index)
+            );
             if (charge.length > 0 && !dispatch.cold && !dispatch.providerFault) {
               await writeLock(async () => {
                 for (const index of charge) {
@@ -2842,6 +2926,34 @@ async function runClaimedTick(
             }
           }
 
+          if (
+            dispatch &&
+            clonePin === "modal" &&
+            dispatch.settledNotFoundIndexes.length > 0 &&
+            dispatch.staged === 0
+          ) {
+            // The call is settled and the key stays. Park so cover is free
+            // and a book that keeps missing still reaches the Fish clock.
+            const outcome = await deferForColdClonePool({
+              jobId,
+              lease,
+              job,
+              stagedCount: dispatch.staged,
+              notBeforeSec: 30,
+              reason: "timeout",
+            });
+            if (outcome.park) {
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+            if (outcome.switched || modalCloneDeferMs() <= 0) clonePin = "fish";
+          }
+
           if (clonePin === "modal") {
             // Nothing was staged at the start of the tick, so the player still
             // needs a window of the takes this GPU call just wrote. Later
@@ -2867,15 +2979,22 @@ async function runClaimedTick(
             // backoff holds the next POST. A 429 is busy, not cold. Falling
             // through into per-section synthesizeModalClone used to hold up
             // to modalCloneLanes() slots and start more H100s.
+            // An unconfirmed accept and a settled NotFound keep the same key.
+            const sameKeyMiss = new Set([
+              ...(dispatch?.unconfirmedIndexes ?? []),
+              ...(dispatch?.settledNotFoundIndexes ?? []),
+            ]);
             if (
               dispatch &&
+              clonePin === "modal" &&
               !dispatch.cold &&
               !dispatch.providerFault &&
               dispatch.busy === 0 &&
-              dispatch.missing.length > 0
+              dispatch.missing.some((index) => !sameKeyMiss.has(index))
             ) {
               await writeLock(async () => {
                 for (const index of dispatch.missing) {
+                  if (sameKeyMiss.has(index)) continue;
                   const prev = segments.find((segment) => segment.index === index);
                   const ledger = cloneDropLedger(prev);
                   segments = upsertSegment(segments, {
@@ -3100,6 +3219,33 @@ async function runClaimedTick(
     // A section that could not be placed inside the restore budget must not
     // open another compile-length wait. Park the book here, with its sections
     // already stored. The snapshot, if one was abandoned, is the off-path RPC.
+    if (cloneBudgetStop) {
+      const { haltBook } = await import("@/lib/remote/layer");
+      const { drainBookCalls } = await import("@/lib/remote/drain-book");
+      haltBook(jobId, "budget");
+      await drainBookCalls(jobId, "budget").catch(() => undefined);
+      await stopBook(jobId, lease, "This book is over its remote-call budget.", null);
+      return {
+        done: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+    if (cloneHeld && !cloneColdSeen) {
+      await releaseLease(jobId, lease, {
+        status: "queued",
+        notBeforeSec: 30,
+        sealLease: true,
+      }).catch(() => {});
+      return {
+        done: false,
+        busy: true,
+        deferred: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+
     if (cloneColdSeen) {
       const outcome = await deferForColdClonePool({
         jobId,
@@ -3660,7 +3806,21 @@ async function synthesizeChecked(
   rate: SpeechRate
 ): Promise<SynthesisFailure | SynthesisSuccess> {
   const { squeakGuard, ...sectionArgs } = args;
-  const checked = await synthesizeSettled(sectionArgs, rate);
+  let checked: SynthesisFailure | SynthesisSuccess;
+  try {
+    checked = await synthesizeSettled(sectionArgs, rate);
+  } catch (err) {
+    if (err instanceof ModalCloneHeldError) {
+      if (err.reason === "budget") return { ok: false, error: err.message, budget: true };
+      return { ok: false, error: err.message, held: true };
+    }
+    const { RemoteCallRefused } = await import("@/lib/remote/layer");
+    if (err instanceof RemoteCallRefused) {
+      if (err.code === "budget") return { ok: false, error: err.message, budget: true };
+      return { ok: false, error: err.message, held: true };
+    }
+    throw err;
+  }
   if (!checked.ok || !squeakGuard) return checked;
   const guarded = await guardSectionSqueaks({
     jobId: args.jobId,
@@ -3964,6 +4124,10 @@ async function synthesizeSection(args: {
           cover.until(Date.now() + err.retryAfterMs + budgetMs);
           await new Promise((r) => setTimeout(r, err.retryAfterMs));
           continue;
+        }
+        if (err instanceof ModalCloneHeldError) {
+          if (err.reason === "budget") return { ok: false, error: err.message, budget: true };
+          return { ok: false, error: err.message, held: true };
         }
         if (err instanceof ModalCloneColdError) {
           // The pool is empty, not broken. Stop retrying this section in this
