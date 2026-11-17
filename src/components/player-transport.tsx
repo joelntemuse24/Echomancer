@@ -1,7 +1,7 @@
 "use client";
 
 import { Play, SkipBack, SkipForward } from "lucide-react";
-import { SKIP_SECONDS } from "@/lib/player/seek";
+import { SKIP_SECONDS, skipAriaLabel } from "@/lib/player/seek";
 
 function ThinPause({ className }: { className?: string }) {
   return (
@@ -85,7 +85,7 @@ export function PlayerTransport({
       {audioReady ? (
         <button
           type="button"
-          aria-label="Back 10 seconds"
+          aria-label={skipAriaLabel("back")}
           onClick={() => onSkip(-SKIP_SECONDS)}
           disabled={skipDisabled}
           className={`${buttonClass} ${target}`}
@@ -109,7 +109,7 @@ export function PlayerTransport({
       {audioReady ? (
         <button
           type="button"
-          aria-label="Forward 10 seconds"
+          aria-label={skipAriaLabel("forward")}
           onClick={() => onSkip(SKIP_SECONDS)}
           disabled={skipDisabled}
           className={`${buttonClass} ${target}`}

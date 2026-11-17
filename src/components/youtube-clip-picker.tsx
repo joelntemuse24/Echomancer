@@ -624,6 +624,7 @@ export function YoutubeClipPicker({
             placeholder={YOUTUBE_COPY.searchPlaceholder}
             maxLength={200}
             disabled={disabled || busy}
+            aria-describedby={clipNotice ? "youtube-clip-notice" : undefined}
             className="min-h-12 w-full border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
           />
           <button
@@ -635,6 +636,12 @@ export function YoutubeClipPicker({
           </button>
         </div>
       </form>
+
+      {clipNotice ? (
+        <p id="youtube-clip-notice" role="status" className="text-sm">
+          {clipNotice}
+        </p>
+      ) : null}
 
       {results && results.length > 0 ? (
         <ul className="space-y-1" aria-label={YOUTUBE_COPY.results}>
@@ -788,11 +795,6 @@ export function YoutubeClipPicker({
         </div>
       ) : null}
 
-      {clipNotice ? (
-        <p role="status" className="text-sm">
-          {clipNotice}
-        </p>
-      ) : null}
       {sampleUrl ? (
         <div className="space-y-2">
           <p className="text-sm">Prepared voice sample</p>

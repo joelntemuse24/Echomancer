@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import { cloneUploadLead, youtubeClipNotice } from "./clone-upload-copy";
@@ -21,5 +22,16 @@ describe("clone upload copy", () => {
     expect(
       youtubeClipNotice({ fileSelected: false, clipsEnabled: false, needsSignIn: true })
     ).toBe(YOUTUBE_COPY.clippingNeedsSignIn);
+  });
+
+  it("renders the outage on the YouTube field, not under the rest of the clone panel", () => {
+    const source = readFileSync("src/components/youtube-clip-picker.tsx", "utf8");
+    const form = source.indexOf("</form>");
+    const notice = source.indexOf('id="youtube-clip-notice"');
+    const results = source.indexOf("aria-label={YOUTUBE_COPY.results}");
+    expect(form).toBeGreaterThan(0);
+    expect(notice).toBeGreaterThan(form);
+    expect(results).toBeGreaterThan(notice);
+    expect(source.indexOf('id="youtube-clip-notice"', notice + 1)).toBe(-1);
   });
 });

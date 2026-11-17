@@ -21,6 +21,7 @@ import {
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { drewReady } from "@/lib/tts/drew-voice";
+import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs, pollSweepDue } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -125,6 +126,19 @@ export async function POST(request: NextRequest) {
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
+    // A stale or someone else's `clone:` id used to fall through to the
+    // default narrator while the row kept the clone id. Reject it instead.
+    if (
+      (isFishCloneCatalogId(requestedVoiceId) ||
+        isFishCloneCatalogId(coercedVoiceId)) &&
+      !catalog
+    ) {
+      throw new AppError(
+        "CLONE_NOT_FOUND",
+        "That cloned voice isn't available. Choose it again.",
+        404
+      );
+    }
     const namesGoogle =
       parsed.ttsProvider === "google" ||
       /en-gb-neural2-[ob]/i.test(parsed.providerVoiceId || "");

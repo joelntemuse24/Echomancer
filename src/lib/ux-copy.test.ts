@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { libraryStatus, playerStatusLine, voiceEngineStarting, WAIT } from "./ux-copy";
+import { libraryStatus, NAV, playerStatusLine, VOICE_PATH, voiceEngineStarting, WAIT } from "./ux-copy";
 
 describe("voiceEngineStarting", () => {
   it("is the clone book before the first section", () => {
@@ -61,6 +61,13 @@ describe("playerStatusLine", () => {
     expect(
       playerStatusLine({ catalog_voice_id: "drew", status: "cancelled" }, "Stopped")
     ).toBe("Stopped");
+  });
+});
+
+describe("voice and new-book labels", () => {
+  it("marks a clone and names the header plus", () => {
+    expect(VOICE_PATH.cloneMark).toBe("Your clone");
+    expect(NAV.newBook).toBe("New book");
   });
 });
 

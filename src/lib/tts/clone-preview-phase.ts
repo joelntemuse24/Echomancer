@@ -10,6 +10,9 @@ export function classifyClonePreviewRead(
   return "failed";
 }
 
+/** Visible caption beside the spinner while a clone sample is baking. */
+export const PREVIEW_PREPARING_LABEL = "Preparing preview…";
+
 export type PreviewControl = "play" | "preparing" | "stop";
 
 export function previewControl(input: {

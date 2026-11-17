@@ -153,8 +153,8 @@ export class ModalCloneColdError extends Error {
   /**
    * The worker dropped the HTTP wait (`TimeoutError` / `AbortError`).
    * The sync Modal handler keeps rendering that input. A second POST of
-   * the same sections is another container (`max_inputs=1` does not
-   * answer 429) and bills the text twice, so dispatch must not send
+   * the same sections bills the text twice. Production `max_containers`
+   * stays 1, so it does not open a second GPU. Dispatch must not send
    * them again in this wave.
    */
   readonly clientAborted: boolean;
@@ -214,9 +214,10 @@ export class ModalCloneReferenceError extends Error {
 /**
  * The container answered 429: its lane is already rendering.
  *
- * The deployed class is `@modal.concurrent(max_inputs=1)`, so Modal places
- * a second input on another container instead of returning 429. This error
- * stays as the backstop for a container that still answers `lane_busy`.
+ * The deployed class is `@modal.concurrent(max_inputs=1)`. Production
+ * `max_containers` stays 1, so a second book queues on that GPU and does
+ * not open a second container. This error stays as the backstop for a
+ * container that still answers `lane_busy`.
  * It is busy, not cold, and must not start a cold backoff.
  */
 export class ModalCloneLaneBusyError extends Error {
@@ -1293,7 +1294,8 @@ export function warmClonePoolForPreview(reason: string): boolean {
  * placement that turns out to be compiling, the 150 s budget is 150 s spent
  * before the player gets anything, and the compile is finished off-path anyway
  * (#237). Racing for first audio therefore gives up early and lets the retry
- * wave try another container, which is exactly what a cold pool needs.
+ * wave try the placement again. Production `max_containers` stays 1, so
+ * that retry queues on the same GPU.
  *
  * `workMs` is how long the narration in this call is planned to take. The wait
  * has to cover it, or the packer and the timeout disagree: a lane planned
@@ -1615,7 +1617,8 @@ export function rememberModalCloneCold(jobId?: string): void {
 /**
  * A restore-budget miss is one placement: kick the RPC that is allowed to
  * finish a compile. A gateway miss leaves the backoff unset so dispatch can
- * try another container once. A client timeout sets this book's backoff and
+ * retry once. Production `max_containers` stays 1, so that retry queues on
+ * the same GPU. A client timeout sets this book's backoff and
  * dispatch does not post those sections again — the handler is still
  * rendering them. A steady-state miss freezes this book. It freezes every
  * book only when the pool itself is empty, or the call has no book.
@@ -1982,9 +1985,9 @@ async function postModal(
       );
     }
     if (response.status === 429) {
-      // Backstop. The deployed class is `@modal.concurrent(max_inputs=1)`,
-      // so Modal places a second POST on another container instead of
-      // answering 429. A container that still returns `lane_busy` is busy,
+      // Backstop. Production max_containers stays 1, so a second book queues
+      // on that GPU and does not open a second container. A container that
+      // still returns `lane_busy` is busy,
       // not cold, and must not start a backoff.
       throw new ModalCloneLaneBusyError(
         `Modal clone lane busy${detail ? `: ${detail.slice(0, 200)}` : ""}`

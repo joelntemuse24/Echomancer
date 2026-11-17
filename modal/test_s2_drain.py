@@ -15,6 +15,23 @@ ROOT = Path(__file__).resolve().parents[1]
 DRAIN = ROOT / "scripts" / "s2" / "drain-stuck-calls.py"
 AUTOSCALER = ROOT / "scripts" / "s2" / "set-live-autoscaler.py"
 COVER = ROOT / "scripts" / "s2" / "post-deploy-cover.sh"
+MODAL_CRED_KEYS = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MODAL_PROFILE")
+
+
+def child_env(**extra: str) -> dict[str, str]:
+    """Subprocess env with live Modal auth removed.
+
+    The conftest already strips these. This repeats the strip on the mapping
+    the child inherits, including when a test passes its own ``env``.
+    """
+    env = {key: value for key, value in os.environ.items() if key not in MODAL_CRED_KEYS}
+    env.update(extra)
+    for key in MODAL_CRED_KEYS:
+        env.pop(key, None)
+        assert key not in env
+    assert os.environ.get("MODAL_CONFIG_PATH")
+    env["MODAL_CONFIG_PATH"] = os.environ["MODAL_CONFIG_PATH"]
+    return env
 
 
 def load(path: Path, name: str):
@@ -63,6 +80,7 @@ def test_dry_run_does_not_import_modal(monkeypatch):
         check=False,
         capture_output=True,
         text=True,
+        env=child_env(),
     )
     assert completed.returncode == 0
     assert "dry-run: no Modal calls" in completed.stdout
@@ -70,22 +88,87 @@ def test_dry_run_does_not_import_modal(monkeypatch):
     assert "max_containers=1" not in completed.stdout
 
 
+def test_script_parsers_do_not_abbreviate_flags():
+    """Every argparse CLI under scripts/s2 disables prefix matching.
+
+    ``modal/*.py`` has no ArgumentParser. A new one must set
+    ``allow_abbrev=False`` too, which this scan enforces for both trees.
+    """
+    for root in (ROOT / "scripts" / "s2", ROOT / "modal"):
+        for path in root.glob("*.py"):
+            text = path.read_text()
+            if "ArgumentParser(" not in text:
+                continue
+            assert "allow_abbrev=False" in text, path
+
+
+def test_live_modal_credentials_are_stripped():
+    """The suite, and any child it starts, must not see live Modal auth."""
+    for key in MODAL_CRED_KEYS:
+        assert key not in os.environ
+    config = Path(os.environ["MODAL_CONFIG_PATH"])
+    assert config.is_file()
+    assert config.read_text() == ""
+    child = child_env()
+    for key in MODAL_CRED_KEYS:
+        assert key not in child
+
+
 def test_autoscaler_help_and_bad_flag():
+    env = child_env()
     help_run = subprocess.run(
         [sys.executable, str(AUTOSCALER), "--help"],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     assert help_run.returncode == 0
     assert "--scaledown-window" in help_run.stdout
     bad = subprocess.run(
-        [sys.executable, str(AUTOSCALER), "--scaledown", "15", "--max-containers", "20"],
+        [sys.executable, str(AUTOSCALER), "--not-a-flag"],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     assert bad.returncode != 0
+    assert "unrecognized arguments" in bad.stderr
+    assert "live autoscaler now" not in bad.stdout
+    abbreviated = subprocess.run(
+        [sys.executable, str(AUTOSCALER), "--scaledown", "15"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert abbreviated.returncode != 0
+    assert "unrecognized arguments" in abbreviated.stderr
+    assert "live autoscaler now" not in abbreviated.stdout
+
+
+def test_production_apply_above_one_exits_before_modal():
+    """The spelled-out apply that the old abbreviation test performed."""
+    refused = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--max-containers",
+            "20",
+            "--scaledown-window",
+            "15",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=child_env(),
+    )
+    assert refused.returncode != 0
+    assert "refusing max_containers=20" in refused.stderr
+    assert "S2_ALLOW_PROD_CAP_ABOVE_1" in refused.stderr
+    assert "live autoscaler now" not in refused.stdout
 
 
 def test_print_max_from_env_does_not_guess(monkeypatch):
@@ -96,7 +179,7 @@ def test_print_max_from_env_does_not_guess(monkeypatch):
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "MODAL_S2_MAX_GPUS": "20"},
+        env=child_env(MODAL_S2_MAX_GPUS="20"),
     )
     assert completed.returncode == 0
     assert completed.stdout.strip() == "20"
@@ -108,7 +191,7 @@ def test_run_drain_restores_when_containers_stay_up():
     code = mod.run_drain(
         call_ids=["fc"],
         other_live_books=0,
-        restore_max=20,
+        restore_max=1,
         cancel=lambda _id: "still_live",
         brake=lambda: None,
         wait_idle=lambda: 3,
@@ -116,7 +199,7 @@ def test_run_drain_restores_when_containers_stay_up():
         recheck_other=lambda: 0,
     )
     assert code == 2
-    assert restored == [20]
+    assert restored == [1]
 
 
 def test_run_drain_restores_when_brake_raises():
@@ -130,14 +213,14 @@ def test_run_drain_restores_when_brake_raises():
         mod.run_drain(
             call_ids=["fc"],
             other_live_books=0,
-            restore_max=12,
+            restore_max=1,
             cancel=lambda _id: "still_live",
             brake=boom,
             wait_idle=lambda: 0,
             restore=lambda maxc: restored.append(maxc),
             recheck_other=lambda: 0,
         )
-    assert restored == [12]
+    assert restored == [1]
 
 
 def test_run_drain_rechecks_other_books_before_braking():
@@ -146,7 +229,7 @@ def test_run_drain_rechecks_other_books_before_braking():
     code = mod.run_drain(
         call_ids=["fc"],
         other_live_books=0,
-        restore_max=20,
+        restore_max=1,
         cancel=lambda _id: "still_live",
         brake=lambda: braked.append(1),
         wait_idle=lambda: 0,
@@ -155,6 +238,81 @@ def test_run_drain_rechecks_other_books_before_braking():
     )
     assert braked == []
     assert code == 2
+
+
+def test_production_restore_above_one_does_not_brake():
+    mod = load(DRAIN, "drain_refuse_before_brake")
+    braked = []
+    with pytest.raises(SystemExit, match="before any brake"):
+        mod.run_drain(
+            call_ids=["fc"],
+            other_live_books=0,
+            restore_max=20,
+            cancel=lambda _id: "still_live",
+            brake=lambda: braked.append(1),
+            wait_idle=lambda: 0,
+            restore=lambda _max: None,
+            recheck_other=lambda: 0,
+            app="echomancer-s2-clone",
+        )
+    assert braked == []
+
+
+def test_staging_restore_above_one_is_allowed():
+    mod = load(DRAIN, "drain_staging_restore")
+    assert mod.require_restorable_max("echomancer-s2-clone-staging", 20) == 20
+
+
+def test_restore_failure_prints_the_command_for_one(capsys):
+    mod = load(DRAIN, "drain_restore_loud")
+
+    def boom(_max):
+        raise RuntimeError("restore refused")
+
+    with pytest.raises(SystemExit) as caught:
+        mod.run_drain(
+            call_ids=["fc"],
+            other_live_books=0,
+            restore_max=1,
+            cancel=lambda _id: "still_live",
+            brake=lambda: None,
+            wait_idle=lambda: 0,
+            restore=boom,
+            recheck_other=lambda: 0,
+            app="echomancer-s2-clone",
+        )
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "max_containers=0" in err
+    assert (
+        "python3 scripts/s2/set-live-autoscaler.py "
+        "--app echomancer-s2-clone --max-containers 1 --scaledown-window 15"
+    ) in err
+
+
+def test_apply_restore_max_20_exits_before_modal():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(DRAIN),
+            "--apply",
+            "--call-id",
+            "fc-1",
+            "--restore-max",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=child_env(),
+    )
+    assert completed.returncode != 0
+    assert "before any brake" in completed.stderr
+    assert "--restore-max 1" in completed.stderr
+    assert "live autoscaler now" not in completed.stdout
+    assert "cancel fc-1" not in completed.stdout
 
 
 def test_a_missing_profile_keeps_the_worker_token(monkeypatch):
@@ -184,6 +342,68 @@ def test_cover_script_restores_with_the_real_flag():
     assert "resolve_modal_python" in text
     assert "python3 scripts" not in text
     assert "python3 -m modal" not in text
+    assert "--clamp-restore" in text
+    assert "S2_ALLOW_PROD_CAP_ABOVE_1" in text
+    assert text.index("--clamp-restore") < text.index("trap restore")
+    cancel = (ROOT / "scripts" / "s2" / "cancel-unstarted-pending.py").read_text()
+    assert "does not brake or restore" in cancel
+    assert "update_autoscaler" not in cancel
+    assert "--restore-max" in cancel and "--restore-max 1" in cancel
+
+
+def test_clamp_restore_cli_caps_production_without_calling_modal(monkeypatch):
+    """--clamp-restore exits before Modal. Production cannot restore 20."""
+    monkeypatch.delenv("S2_ALLOW_PROD_CAP_ABOVE_1", raising=False)
+    base = child_env()
+    base.pop("S2_ALLOW_PROD_CAP_ABOVE_1", None)
+    locked = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=base,
+    )
+    assert locked.returncode == 0
+    assert locked.stdout.strip() == "1"
+    staging = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone-staging",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=base,
+    )
+    assert staging.returncode == 0
+    assert staging.stdout.strip() == "20"
+    opened = subprocess.run(
+        [
+            sys.executable,
+            str(AUTOSCALER),
+            "--clamp-restore",
+            "20",
+            "--app",
+            "echomancer-s2-clone",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**base, "S2_ALLOW_PROD_CAP_ABOVE_1": "1"},
+    )
+    assert opened.returncode == 0
+    assert opened.stdout.strip() == "20"
 
 
 def test_modal_python_uses_MODAL_PYTHON_or_a_detected_interpreter(tmp_path):
@@ -199,7 +419,8 @@ def test_modal_python_uses_MODAL_PYTHON_or_a_detected_interpreter(tmp_path):
     missing.chmod(0o755)
     script = "source scripts/s2/modal-python.sh && resolve_modal_python"
     bash = shutil.which("bash") or "/bin/bash"
-    env = {k: v for k, v in os.environ.items() if k != "MODAL_PYTHON"}
+    env = child_env()
+    env.pop("MODAL_PYTHON", None)
     found = subprocess.run(
         [bash, "-c", script],
         check=False,

@@ -22,6 +22,63 @@
 > a cold GPU pool parks the book rather than switching narrator. See
 > `docs/s2-gpu-staging-runbook.md`.
 
+## Modal access for agents
+
+Workspace `ntemusejoel` credentials are the environment variables
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The normal shape is
+`MODAL_TOKEN_ID` holding only the `ak-` value and `MODAL_TOKEN_SECRET`
+holding only the `as-` value. The Modal CLI and the Python SDK read those
+two variables. Never print them.
+
+If both variables arrive as the same combined string, a read-only command
+may split it: the `ak-` field is the id and the `as-` field is the secret.
+Do not write that split to disk.
+
+Allowed without further approval (read-only):
+
+- `modal token info` and `modal profile current`
+- `modal app list`
+- `modal container list`
+- `modal app logs` (read)
+- billing and usage reads
+
+Forbidden unless the owner explicitly approves that command:
+
+- `modal deploy`, `modal run`, `modal serve`
+- `modal app stop`, `modal container stop`
+- autoscaler changes, including `min_containers` and `max_containers`
+- any call that starts a GPU, including production HTTP endpoints and
+  `modal run …::cover`
+
+The production clone app is `echomancer-s2-clone`. It stays
+`min_containers` 0 and `max_containers` 1. Any change to that cap needs
+explicit owner approval. Never leave a GPU running. Do not
+change the live cap to enforce that; report what a read-only list shows.
+`MODAL_S2_MAX_GPUS` (the worker lease count, default 20) is not permission
+to set `max_containers`. Do not run `scripts/s2/set-live-autoscaler.py`
+or the runbook's step 8c to raise it.
+A container count above zero is a report, not a reason to stop or scale
+anything from an agent.
+
+`scripts/s2/post-deploy-cover.sh` unsets `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET` and forces `MODAL_PROFILE` (default `ntemusejoel`).
+That script also runs `modal run` and writes the autoscaler, so agents do
+not run it. `scripts/s2/set-live-autoscaler.py` and
+`scripts/s2/drain-stuck-calls.py` drop those env vars only when `--profile`
+is passed. The drain refuses `--restore-max` above 1 on production before
+it brakes, so a refused restore cannot leave the cap at 0. Pass
+`--restore-max 1`. With no profile, plain `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
+are what they use. Do not pass `--profile` to make a token work, and do not
+run those scripts to change the fleet.
+
+Do not run a Modal-touching script, or a test that invokes one, with live
+credentials unless that command is explicitly read-only (`--help`,
+`--print-max`, `--clamp-restore`, `--dry-run`, `--from-env`). An apply
+flag writes the production autoscaler. Pytest strips `MODAL_TOKEN_ID`,
+`MODAL_TOKEN_SECRET`, and `MODAL_PROFILE`, points `MODAL_CONFIG_PATH` at
+an empty file, and fails a socket to Modal. Vitest strips the same
+variables before a test file loads. Do not put the credentials back.
+
 ## Product pricing
 
 - **Target:** ~**€4.50** per typical take-home book (a target, not a hard ceiling).
@@ -464,18 +521,22 @@ One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
-not open a fleet. After that deploy an operator sets the live cap to
-`MODAL_S2_MAX_GPUS` (default **20**) with
-`update_autoscaler(min_containers=0, max_containers=N, scaledown_window=15)`
-(`scripts/s2/set-live-autoscaler.py`). That call does not deploy and does
-not wipe snapshots. Restart the worker first so its 10s warm hold is under
-the 15s window. A later `modal deploy` resets the override and must be
-followed by the script again.
+not open a fleet. Production `echomancer-s2-clone` stays
+`min_containers` 0 and `max_containers` 1. Raising that cap needs explicit
+owner approval. `scripts/s2/set-live-autoscaler.py` refuses to apply a
+cap unless `--max-containers` is passed (`--brake` sets 0). On production
+that flag is 1. When `--print-max` cannot read the live autoscaler for
+`echomancer-s2-clone`, it prints 1 and does not use `MODAL_S2_MAX_GPUS`.
+Staging still uses that lease count. `scripts/s2/post-deploy-cover.sh`
+restores at most 1 on production unless `S2_ALLOW_PROD_CAP_ABOVE_1=1`.
+The historical runbook command that set the cap to 20 is not the current
+8c step. The script does not deploy and does not wipe snapshots, and it
+is still not an agent command.
 `/ready` still reports the deploy-time value, so the printed settings are
-the check. `min_containers` stays 0. The deployed class already has
-`@modal.concurrent(max_inputs=1)`, so a second book's POST is placed on
-another container (that container restores its own snapshot) rather than
-answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
+the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
+means one call at a time on that GPU. A second book queues on the same
+GPU and never opens a second container. A 429 `lane_busy` body stays a
+busy-not-cold backstop.
 
 - **A warm container is not a free container.** `/ready` reporting
   `warm_containers > 0` means some container finished restoring. Spare
@@ -544,7 +605,8 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
   wait is dropped (`ModalCloneColdError` `scope: "placement"`). A gateway
-  miss tries the unstaged sections once on another container. A client
+  miss is retried once. Production stays at `max_containers` 1, so that
+  retry queues on the same GPU and does not open a second one. A client
   timeout does not: the handler is still rendering. A warm-budget timeout
   parks for that HTTP wait (400s). A first-light timeout parks for the
   rest of the restore plus the opening section (~106s). A backoff that
@@ -566,8 +628,11 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
 - **One H100 per book.** `min_containers` stays 0. A book does not keep a
   GPU waiting, and it does not open a second one for itself.
   `planModalCloneBookWave` sends one call at a time. Another book, from
-  any user or the same user, gets its own GPU until `MODAL_S2_MAX_GPUS`
-  (default 20) and `MODAL_S2_MAX_GPUS_PER_USER` (default 5). Those counts
+  any user or the same user, queues on that same GPU and never opens a
+  second one. `echomancer-s2-clone` stays `max_containers` 1 until the
+  owner approves a change. `MODAL_S2_MAX_GPUS` (default 20) and `MODAL_S2_MAX_GPUS_PER_USER`
+  (default 5) are worker lease counters. They do not raise the Modal
+  autoscaler. Those counts
   are rows in `modal_gpu_leases`, renewed by the take-home heartbeat and
   deleted when the tick ends or the worker shuts down. A dead worker stops
   heartbeating and the row expires, so the GPU is not stuck. Past either
@@ -604,20 +669,12 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   (`MODAL_S2_WARM_HOLD_MS`, default 10s, under the 15s autoscaler target)
   is one cold-sized call again, then the even pages resume.
   Warmth is in-process memory: a worker restart costs one cold call.
-  Under the ceiling, two 10-hour books are two of those ramps at once,
-  peak **2** GPUs. Ten books from ten users stay on that same ramp, peak
-  10. Three books from one user do too (the per-user ceiling is 5). A
-  sixth book from that user shares the oldest holder's GPU: peak stays 5.
-  A 10-hour book plus a 40-minute article at 5 minutes is two GPUs when
-  both are long enough to keep their own. A book of 20,000 characters or
-  less (~21 minutes) shares the oldest running GPU even when the ceiling
-  still has room, one call at a time, so a short article does not pay its
-  own restore and idle while another book already holds an H100. Younger
-  short books wait. A longer book under the ceiling still gets its own
-  GPU. When the ready probe reports a spare warm container, that share
-  uses the warm budget. With the global ceiling at 2, three 10-hour books
-  use 2 GPUs: the oldest and the third share, and the middle book stays on
-  its own GPU. One `synthesize_batch` still has one reference and one
+  Production `echomancer-s2-clone` stays `min_containers` 0 and
+  `max_containers` 1. A second book queues on that same GPU and does not
+  open another container. `MODAL_S2_MAX_GPUS` (default 20) and
+  `MODAL_S2_MAX_GPUS_PER_USER` (default 5) count worker leases. They do
+  not raise the container cap. Raising `max_containers` needs explicit
+  owner approval. One `synthesize_batch` still has one reference and one
   seed, so rows from two books cannot share a call until the container
   reads a reference per item. That is a Modal redeploy.
   `MODAL_S2_MIXED_BOOK_BATCH` defaults off and the tick does not send
@@ -942,8 +999,9 @@ answered 429. A 429 `lane_busy` body stays a busy-not-cold backstop.
   remain real errors and surface with the provider's own message.
 - **`ready` means the whole book.** Assembly requires every index; a book with
   holes is published `failed` with `"N of M sections could not be narrated… not
-  a complete audiobook"`, `progress < 100`, and its audio intact (the section
-  zip / section-by-section player still work). The old rule accepted
+  a complete audiobook"`, `progress < 100`, and its audio files intact.
+  Download of those files is still allowed. The player does not play a
+  failed book, including the parts list. The old rule accepted
   `mostIndexesReady` (over half) or `doneCount > 0`, which is how 5 of 11
   sections shipped as a finished book.
 - **The section cache is ON in production and was OFF in tests.** The harness
@@ -1316,7 +1374,7 @@ src/lib/paragraph-spans.ts # Blank-line paragraph offsets, one copy
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 in 0.05 steps, default 1× (not Fish speed)
-src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
+src/lib/player/seek.ts # ±10s skip (main player and focus) + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop + POST /extract

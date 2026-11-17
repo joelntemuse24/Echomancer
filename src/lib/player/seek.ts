@@ -1,5 +1,19 @@
-/** Listen-time skip for the player. Does not re-synthesize. */
+/**
+ * Listen-time skip for the main player and focus mode. Does not re-synthesize.
+ * Ten seconds is the product value (this constant, the media-session fallback,
+ * and the transport labels). Focus mode uses it too.
+ */
 export const SKIP_SECONDS = 10;
+
+/** Focus mode and the inline transport share {@link SKIP_SECONDS}. */
+export const FOCUS_SKIP_SECONDS = SKIP_SECONDS;
+
+export function skipAriaLabel(
+  direction: "back" | "forward",
+  seconds = SKIP_SECONDS
+): string {
+  return `${direction === "back" ? "Back" : "Forward"} ${seconds} seconds`;
+}
 
 /**
  * A finger on the full-length bar covers minutes; this window is two

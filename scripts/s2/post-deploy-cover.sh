@@ -23,6 +23,9 @@ fi
 PY="$(resolve_modal_python)"
 
 SAVED_MAX="$("$PY" scripts/s2/set-live-autoscaler.py --print-max --app "$APP" --profile "$MODAL_PROFILE")"
+# Production stays at most 1. S2_ALLOW_PROD_CAP_ABOVE_1=1 is the only override.
+# Staging is not clamped. This call does not touch Modal.
+SAVED_MAX="$("$PY" scripts/s2/set-live-autoscaler.py --clamp-restore "$SAVED_MAX" --app "$APP")"
 echo "cover will restore max_containers=$SAVED_MAX (min_containers=0)"
 
 restore() {

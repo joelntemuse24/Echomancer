@@ -3,8 +3,9 @@
 
 cancel(terminate_containers=True) is step 1 of the drain. NotFound, or any
 status that is not terminal, means the call is still live. Do not follow
-this with `modal container stop`. Run scripts/s2/drain-stuck-calls.py so
-the autoscaler is braked (max_containers=0, min_containers stays 0).
+this with `modal container stop`. This script does not brake or restore
+the autoscaler. Run scripts/s2/drain-stuck-calls.py for that, with
+`--restore-max 1` on production so the brake is not left at 0.
 
     python3 scripts/s2/cancel-unstarted-pending.py
     python3 scripts/s2/cancel-unstarted-pending.py --dry-run
@@ -65,7 +66,7 @@ def cancel_call(function_call_id: str, *, dry_run: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     # Deliberately **not** `s2_contract.resolve_app_name`. That resolver sends an
     # unnamed target to staging, which is right for a deploy (it must not evict
     # production's snapshots) but wrong here: this tool cancels a PENDING input,

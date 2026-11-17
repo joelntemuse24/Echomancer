@@ -23,6 +23,16 @@ import types
 
 import pytest
 
+# Load by path so this works whether pytest's rootdir is `modal/` or the repo.
+_guard_spec = importlib.util.spec_from_file_location(
+    "no_live_modal",
+    __import__("pathlib").Path(__file__).with_name("no_live_modal.py"),
+)
+assert _guard_spec and _guard_spec.loader
+_no_live_modal_mod = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_no_live_modal_mod)
+install_guard = _no_live_modal_mod.install_guard
+
 MODAL_DIR = __import__("pathlib").Path(__file__).parent
 
 #: Every switch this build reads at import. Cleared before each engine import so
@@ -134,6 +144,18 @@ def engine(request, monkeypatch):
         sys.path.remove(str(MODAL_DIR))
         for key in _ENGINE_ENV:
             os.environ.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_modal(monkeypatch):
+    """Tests and their subprocesses must not authenticate to Modal.
+
+    ``MODAL_TOKEN_ID``, ``MODAL_TOKEN_SECRET``, and ``MODAL_PROFILE`` are
+    removed. ``MODAL_CONFIG_PATH`` points at an empty file so the SDK does
+    not read ``~/.modal.toml``. A socket to ``modal.com`` / ``modal.run``
+    fails the test.
+    """
+    install_guard(monkeypatch)
 
 
 def pytest_configure(config) -> None:

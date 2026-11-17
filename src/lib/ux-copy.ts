@@ -83,6 +83,8 @@ export const VOICE_PATH = {
   title: "Voice",
   cloneTitle: "Clone a voice",
   yourVoices: "Your voices",
+  /** Visible mark on a `clone:` row in the main list and the clone panel. */
+  cloneMark: "Your clone",
   cloneUnavailable: "Cloning isn't available right now.",
   stockUnavailable: "Voices aren't available right now.",
 } as const;
@@ -127,6 +129,8 @@ export const NAV = {
   library: "Library",
   darkMode: "Dark mode",
   signOut: "Sign out",
+  /** Header plus. Accessible name, tooltip, and visible label. */
+  newBook: "New book",
 } as const;
 
 /**

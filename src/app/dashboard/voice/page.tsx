@@ -66,13 +66,15 @@ import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   classifyClonePreviewRead,
   clonePreparingAfterTokenCheck,
+  PREVIEW_PREPARING_LABEL,
   previewControlLabel,
 } from "@/lib/tts/clone-preview-phase";
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
 import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
+  clearStockVoicePick,
   readStockVoicePick,
-  resolveStockSelection,
+  rememberedCloneOnRestore,
   writeStockVoicePick,
 } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
@@ -98,7 +100,9 @@ import {
   isPersistableStandardVoiceId,
   isUserCloneVoice,
   parseVoicePath,
+  selectionOnStandardPath,
   stockCardAudition,
+  voicesForMainList,
   voicesForPath,
   withVoicePathParam,
   type VoicePath,
@@ -281,6 +285,7 @@ export default function VoiceSelectionPage() {
     cachedVoices?.voices ?? []
   );
   const [loading, setLoading] = useState(!cachedVoices);
+  const [voicesLoadError, setVoicesLoadError] = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   /** After a clone, show only that voice until they ask for the rest. */
@@ -352,7 +357,13 @@ export default function VoiceSelectionPage() {
 
   useLayoutEffect(() => {
     const pick = readStockVoicePick();
-    if (!pick || !isPersistableStandardVoiceId(pick.catalogVoiceId)) return;
+    if (!pick) return;
+    if (pick.catalogVoiceId.startsWith("clone:")) {
+      stockPickRef.current = pick;
+      narratorTouchedRef.current = true;
+      return;
+    }
+    if (!isPersistableStandardVoiceId(pick.catalogVoiceId)) return;
     stockPickRef.current = pick;
     narratorTouchedRef.current = true;
     setSelectedVoiceId(pick.catalogVoiceId);
@@ -501,6 +512,7 @@ export default function VoiceSelectionPage() {
     loadScreen<VoicesPayload>(SCREEN_VOICES, "/api/tts/voices")
       .then((data) => {
         if (cancelled) return;
+        setVoicesLoadError(false);
         setAllVoices(data.voices || []);
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
@@ -509,9 +521,8 @@ export default function VoiceSelectionPage() {
         );
       })
       .catch(() => {
-        if (!cancelled && !peekScreen(SCREEN_VOICES)) {
-          toast.error("Couldn't load voices. Refresh and try again.");
-        }
+        if (cancelled) return;
+        setVoicesLoadError(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -548,11 +559,16 @@ export default function VoiceSelectionPage() {
     () => voicesForPath(allVoices, "clone"),
     [allVoices]
   );
+  const mainVoices = useMemo(
+    () => voicesForMainList(allVoices),
+    [allVoices]
+  );
   const soloVoice = soloVoiceId
     ? (allVoices.find((voice) => voice.id === soloVoiceId) ?? null)
     : null;
+  const selectableVoices = activePath === "clone" ? pathVoices : mainVoices;
   const selectedVoice =
-    pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
+    selectableVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
   const pendingSample =
     activePath === "clone" && fishCloneConfigured === true && cloneFile != null;
 
@@ -568,29 +584,51 @@ export default function VoiceSelectionPage() {
       setPinnedVoiceId(null);
       return;
     }
-    if (loading) return;
+    if (loading || voicesLoadError) return;
+    const cloneIds = cloneVoices.map((voice) => voice.id);
+    const restored = rememberedCloneOnRestore({
+      selectedId: selectedVoiceId,
+      rememberedId: stockPickRef.current?.catalogVoiceId ?? null,
+      cloneIds,
+      loaded: !voicesLoadError,
+      loadFailed: voicesLoadError,
+    });
+    if (restored.dropRemembered) {
+      stockPickRef.current = null;
+      clearStockVoicePick();
+    }
+    if (restored.clearTouched) narratorTouchedRef.current = false;
+    const selectedId = restored.selectedId;
     if (activePath === "clone") {
       // Opening the clone list does not select the first clone.
       const next = voiceIdAfterPathChange({
         path: "clone",
-        selectedId: selectedVoiceId,
+        selectedId,
         pathIds: pathVoices.map((voice) => voice.id),
       });
       if (next !== selectedVoiceId) setSelectedVoiceId(next);
       return;
     }
-    const explicitId = narratorTouchedRef.current
-      ? pathVoices.some((voice) => voice.id === selectedVoiceId)
-        ? selectedVoiceId
-        : stockPickRef.current?.catalogVoiceId
-      : null;
-    const next = resolveStockSelection({
-      availableIds: pathVoices.map((voice) => voice.id),
-      explicitId,
+    const next = selectionOnStandardPath({
+      selectedId,
+      stockIds: stockVoices.map((voice) => voice.id),
+      cloneIds,
+      explicitStockId: stockPickRef.current?.catalogVoiceId,
       suggestedId: narrator?.catalogVoiceId,
+      narratorTouched: narratorTouchedRef.current,
     });
     if (next !== selectedVoiceId) setSelectedVoiceId(next);
-  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading, activePath, narrator]);
+  }, [
+    pathVoices,
+    stockVoices,
+    cloneVoices,
+    selectedVoiceId,
+    pinnedVoiceId,
+    loading,
+    voicesLoadError,
+    activePath,
+    narrator,
+  ]);
 
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
@@ -617,14 +655,8 @@ export default function VoiceSelectionPage() {
     if (cloneFileRef.current) cloneFileRef.current.value = "";
   };
 
-  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
-    setPinnedVoiceId(null);
-    setSelectedVoiceId(id);
-    if (opts?.dismissSample) clearPendingSample();
-    if (id.startsWith("clone:")) {
-      requestCapacityWarm({ voiceId: id, reason: "voice" });
-    }
-    if (!isPersistableStandardVoiceId(id)) return;
+  const rememberVoice = (id: string) => {
+    if (!isPersistableStandardVoiceId(id) && !id.startsWith("clone:")) return;
     narratorTouchedRef.current = true;
     const pick = {
       catalogVoiceId: id,
@@ -632,11 +664,19 @@ export default function VoiceSelectionPage() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
-    // Drew, Walter, and George all live on the Kokoro CPU app.
-    if (isKokoroCpuVoiceId(id)) {
+  };
+
+  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
+    setPinnedVoiceId(null);
+    setSelectedVoiceId(id);
+    if (opts?.dismissSample) clearPendingSample();
+    rememberVoice(id);
+    if (id.startsWith("clone:") || isKokoroCpuVoiceId(id)) {
       requestCapacityWarm({ voiceId: id, reason: "voice" });
     }
-    if (activePath === "clone") setVoicePath(null);
+    if (activePath === "clone" && isPersistableStandardVoiceId(id)) {
+      setVoicePath(null);
+    }
   };
 
   const stopPreviewPlayback = () => {
@@ -1001,14 +1041,7 @@ export default function VoiceSelectionPage() {
 
   const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
-      if (isPersistableStandardVoiceId(voice.id)) {
-        const pick = {
-          catalogVoiceId: voice.id,
-          delivery: "standard" as const,
-        };
-        stockPickRef.current = pick;
-        writeStockVoicePick(pick);
-      }
+      rememberVoice(voice.id);
       router.push("/");
       return;
     }
@@ -1116,6 +1149,11 @@ export default function VoiceSelectionPage() {
     busy: creating || cloning,
     hasSelectedVoice: selectedVoice != null,
     hasBook: Boolean(pdfPath),
+    voicesLoading: loading || voicesLoadError,
+    cloneMissing:
+      !loading &&
+      Boolean(selectedVoiceId?.startsWith("clone:")) &&
+      !cloneVoices.some((voice) => voice.id === selectedVoiceId),
   });
 
   const continueVoiceStep = async () => {
@@ -1245,6 +1283,16 @@ export default function VoiceSelectionPage() {
         throw new Error(data.error || "Couldn't delete that clone. Try again.");
       }
       toast.success("Clone removed.");
+      setAllVoices((prev) => prev.filter((item) => item.id !== voice.id));
+      if (stockPickRef.current?.catalogVoiceId === voice.id) {
+        stockPickRef.current = null;
+        clearStockVoicePick();
+      }
+      if (selectedVoiceId === voice.id) {
+        narratorTouchedRef.current = false;
+        setSelectedVoiceId(null);
+      }
+      setLoading(true);
       setVoicesReloadToken((n) => n + 1);
     } catch (err) {
       toast.error(
@@ -1270,10 +1318,13 @@ export default function VoiceSelectionPage() {
       voiceTitle(voice),
       narrator ? narratorMarksVoice(narrator, voice.id) : false
     );
-    const voiceNote =
-      voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
+    const voiceNote = cloned
+      ? [VOICE_PATH.cloneMark, duplicateCloneDateLabel(cloneVoices, voice)]
+          .filter(Boolean)
+          .join(" · ")
+      : voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
         ? "Warm US male delivery, generated on our own machine."
-        : duplicateCloneDateLabel(cloneVoices, voice);
+        : null;
     const previewLabel = previewControlLabel({
       preparing: isPreparing,
       playing: isPlaying && !isPreparing,
@@ -1290,7 +1341,13 @@ export default function VoiceSelectionPage() {
       }`;
     const glyph = (loading: boolean, playing: boolean) =>
       loading ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <span
+          className="inline-flex items-center gap-1.5 font-sans text-xs"
+          role="status"
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          <span>{PREVIEW_PREPARING_LABEL}</span>
+        </span>
       ) : playing ? (
         <Square className="h-3.5 w-3.5" />
       ) : (
@@ -1345,7 +1402,9 @@ export default function VoiceSelectionPage() {
                 onClick={() => {
                   void previewVoice(voice);
                 }}
-                className="inline-flex h-11 w-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground"
+                className={`inline-flex h-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground ${
+                  isPreparing ? "w-auto gap-1 px-1" : "w-11"
+                }`}
               >
                 {glyph(isPreparing, isPlaying && !isPreparing)}
               </button>
@@ -1421,7 +1480,11 @@ export default function VoiceSelectionPage() {
             className={lineClass(isSelected)}
             style={{ fontWeight: 300 }}
           >
-            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
+            <span
+              className={`inline-flex h-11 shrink-0 items-center justify-center text-muted-foreground ${
+                isPreparing ? "w-auto px-1" : "w-11"
+              }`}
+            >
               {selectOnly ? null : glyph(isPreparing, isPlaying && !isPreparing)}
             </span>
             <span className="min-w-0 truncate">{label}</span>
@@ -1462,16 +1525,21 @@ export default function VoiceSelectionPage() {
 
   const showNarratorWait =
     Boolean(uploadId) && narratorPending && !narratorSettled;
-  const stockUnavailable = !loading && stockVoices.length === 0;
+  const stockUnavailable = !loading && !voicesLoadError && mainVoices.length === 0;
   const continueDecision = resolveVoiceContinue(voiceContinueInput());
   const continueLabel =
     continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
+  const submitBlocked =
+    continueDecision.type === "blocked" &&
+    (continueDecision.reason === "voices-loading" ||
+      continueDecision.reason === "clone-missing");
   const showContinue =
     !loading &&
+    !submitBlocked &&
     (pendingSample ||
       (activePath === "clone"
         ? cloneVoices.length > 0
-        : stockVoices.length > 0));
+        : mainVoices.length > 0));
 
   return (
     <div className="mx-auto max-w-xl px-2 pb-28 pt-10 font-sans md:pb-20">
@@ -1521,6 +1589,22 @@ export default function VoiceSelectionPage() {
         </div>
       ) : null}
 
+      {voicesLoadError ? (
+        <p role="alert" className="mb-8 text-center text-sm text-muted-foreground">
+          Couldn&apos;t load voices.{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setLoading(true);
+              setVoicesReloadToken((n) => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        </p>
+      ) : null}
+
       {!soloVoice && loading ? (
         <div className="flex justify-center py-20">
           {extractStatus === "preparing" ? (
@@ -1544,7 +1628,7 @@ export default function VoiceSelectionPage() {
             </div>
           ) : null}
           <div className="mx-auto max-w-sm divide-y divide-border/40">
-            {stockVoices.map((voice) => renderVoiceCard(voice))}
+            {mainVoices.map((voice) => renderVoiceCard(voice))}
           </div>
         </>
       ) : null}

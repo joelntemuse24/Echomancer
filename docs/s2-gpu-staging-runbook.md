@@ -15,16 +15,17 @@ not prove the live `/ready` body. Cover calls that answer from an already-warm
 container id do not prove that every GPU type has a snapshot of this recipe.
 There are no always-on GPUs.
 
-The live cap matches `MODAL_S2_MAX_GPUS` (default **20**): one container per
-active clone book, and one call in flight per book. The code default is
-`max_containers=1`, so a plain `modal deploy` does not open that fleet by
-itself. Step 8c sets the live cap after every production deploy and checks
-the printed settings. `min_containers` stays 0. The deployed
-`echomancer-s2-clone` image already has `@modal.concurrent(max_inputs=1)`
-on `S2CloneWorker`, so a second book's POST is placed on another container
-(that container restores its own snapshot) rather than queued onto the busy
-one. A 429 `lane_busy` answer is a backstop for an older image and is busy,
-not cold. Do not redeploy to change that: a redeploy wipes GPU snapshots.
+The current owner rule for production `echomancer-s2-clone` is
+`min_containers` 0 and `max_containers` 1. Any change needs explicit owner
+approval. `MODAL_S2_MAX_GPUS` (default **20**) is the worker lease count,
+not permission to raise the autoscaler. The code default is
+`max_containers=1`, so a plain `modal deploy` does not open a fleet.
+The production post-deploy step (8c) sets and keeps `max_containers` 1.
+`min_containers` stays 0. `@modal.concurrent(max_inputs=1)` on
+`S2CloneWorker` means one call at a time on that GPU. A second book queues
+on the same GPU and never opens a second container. A 429 `lane_busy`
+answer is a backstop for an older image and is busy, not cold. Do not
+redeploy to change that: a redeploy wipes GPU snapshots.
 
 Target shape. The table is the intended shape, not a record that every box
 was ticked for the current image:
@@ -32,9 +33,9 @@ was ticked for the current image:
 | Property | Target |
 |---|---|
 | App | one frozen deployment (`echomancer-s2-clone`) |
-| Containers | one GPU per active clone book, up to `MODAL_S2_MAX_GPUS` (default 20) |
+| Containers | production stays at one GPU (`max_containers` 1) until the owner approves more |
 | `min_containers` | `0` (scale to zero when idle) |
-| `max_containers` | live override N = `MODAL_S2_MAX_GPUS` after each deploy (the deploy-time env stays 1) |
+| `max_containers` | `1` on production. A higher live override needs explicit owner approval |
 | Cold start | snapshot restore. ~90 s is a planning figure, not a measured duration of every cold start. A measured restore cited for the 2026-11-06 books was ~57 s. |
 | User-facing | book generation is asynchronous; the browser never waits |
 
@@ -373,7 +374,8 @@ Python on `PATH` that can import `modal`. A stuck call is
 drained with `scripts/s2/drain-stuck-calls.py`: cancel with
 `terminate_containers=True`, treat NotFound as still live, brake
 `max_containers` to 0, confirm zero containers, then restore the previous
-max. `min_containers` stays 0. `modal container stop` is not a step.
+max. On production that restore is `--restore-max 1`. A higher value is
+refused before the brake. `min_containers` stays 0. `modal container stop` is not a step.
 `modal app stop` wipes snapshots and is the last resort.
 
 | `kind` | Wall time | What it means |
@@ -728,7 +730,7 @@ While the pool is cold, a tick must:
   opening three more calls on a pool that just missed one
 - drop a placement that is still cold at `MODAL_S2_COLD_WAIT_MS` (never sit
   for an 8–16 min compile)
-- retry that placement once on another container when a lane is free
+- retry that placement once. Production `max_containers` stays 1, so the retry queues on the same GPU and does not open a second one
 - release the lease and set the row back to `queued` when nothing was staged
 - set `clone_wait_started_at`
 - **not** consume one of the section's two attempts
@@ -746,10 +748,12 @@ than substituting a voice.
 
 ## 8. Set the live cap to one GPU per book
 
-**Set the live cap to `MODAL_S2_MAX_GPUS` (default 20).** Each active clone
-book sends one `synthesize_batch` at a time on its own H100 (see
-`docs/s2-lane-budget.md`). The worker will not start a 21st GPU; the
-autoscaler has to allow the ones it does start. `min_containers` stays 0.
+**Production stays at `max_containers` 1.** Do not raise it to
+`MODAL_S2_MAX_GPUS` (default 20) without explicit owner approval. The
+commands later in this section that set 20 are historical and are not the
+current rule. Each active clone book sends one `synthesize_batch` at a time.
+A second book queues on that same GPU and never opens a second one.
+`min_containers` stays 0.
 `scaledown_window` is 15s (`scripts/s2/set-live-autoscaler.py`). The worker
 treats the pool as warm for 10s after the last answer
 (`MODAL_S2_WARM_HOLD_MS`), which is under that window. Restart the worker
@@ -759,27 +763,31 @@ previous value until this script is run.
 
 **Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
 already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
-book's POST is placed on another container. It is not queued onto the busy
-one, and it is not answered 429. A 429 `lane_busy` body is only the
-backstop if an older image is still serving, and the worker treats it as
-busy, not cold. A `modal deploy` wipes the GPU memory snapshots. This
-runbook does not deploy.
+book's POST queues on that same GPU. It does not open a second container,
+and it is not answered 429. A 429 `lane_busy` body is only the backstop if
+an older image is still serving, and the worker treats it as busy, not
+cold. A `modal deploy` wipes the GPU memory snapshots. This runbook does
+not deploy.
 
 8a deploys with the baked cap at 1. 8b warms snapshots while that cap is
-still 1. 8c then raises the live cap. The `max_containers=4` command further
-down is the old four-lane promote. Do not run it.
+still 1. 8c then sets the live cap back to 1, because a deploy resets the
+autoscaler. Raising it needs explicit owner approval. The `max_containers=4`
+and `max_containers=20` commands further down are old promotes. Do not run
+them.
 
 Only with every box above ticked and evidence pasted into the PR.
 
-**The primary path raises the cap at runtime, after the deploy.** Staging
-proved a runtime override on `2c43f284208e` (`e4e2d54`): the app was deployed
-with `S2C_MAX_CONTAINERS=1`, and `update_autoscaler` changed the live cap
-without another deploy, with the GPU memory snapshots surviving it. The
-deploy still does **not** bake `S2C_MAX_CONTAINERS` above 1. The number 8c
-applies is `MODAL_S2_MAX_GPUS`.
+**The primary path keeps the cap at 1 after the deploy.** Staging proved a
+runtime override on `2c43f284208e` (`e4e2d54`): the app was deployed with
+`S2C_MAX_CONTAINERS=1`, and `update_autoscaler` changed the live cap without
+another deploy, with the GPU memory snapshots surviving it. The deploy still
+does **not** bake `S2C_MAX_CONTAINERS` above 1. The number 8c applies on
+production is 1. `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count
+and is not the container cap. Raising `max_containers` above 1 needs explicit
+owner approval.
 
-Order matters: deploy → warm the new production snapshots → raise the cap. Each
-step is below.
+Order matters: deploy → warm the new production snapshots → set
+`max_containers` back to 1. Each step is below.
 
 ### 8a. Deploy production at one lane
 
@@ -804,7 +812,7 @@ step 1. The `build=` id comes from the warm run in 8b.
 
 ### 8b. Warm and verify the new production snapshots
 
-Do this **before** raising the cap, while the app is still one lane: the first
+Do this while the app is still one lane: the first
 call on a fresh deploy is the one that compiles (`~15 min`), and a fanout over
 unbuilt snapshots is how four simultaneous compiles exhausted the budget on
 25 Oct.
@@ -820,21 +828,21 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 - [ ] `scripts/s2/staging-smoke.mjs` passes against the production `ready` and
       `synthesize_batch` hosts (same checks as step 5)
 
-### 8c. Set the live cap to `MODAL_S2_MAX_GPUS`
+### 8c. Keep the live cap at 1
 
 Do this after every production deploy, including a deploy that left
-`S2C_MAX_CONTAINERS` unset, and only after the image with
-`@modal.concurrent(max_inputs=1)` is the one that was just deployed. A plain
-`modal deploy` resets the live autoscaler to the baked env (1). `/ready`
-still reports that deploy-time value either way. The printout from
+`S2C_MAX_CONTAINERS` unset. A plain `modal deploy` resets the live
+autoscaler to the baked env. The post-deploy step sets it back to
+`max_containers` 1 and `min_containers` 0. Raising `max_containers` above 1
+needs explicit owner approval. `MODAL_S2_MAX_GPUS` (default 20) is the
+worker lease count and is not this number.
+
+`/ready` still reports the deploy-time value. The printout from
 `update_autoscaler` is the live cap.
 
 Run this from a checkout with the Modal client configured for the Echomancer
 workspace. It talks to the deployed app; it does not deploy or rebuild
-anything. **Do not run it from CI or from this change.** N is the worker's
-`MODAL_S2_MAX_GPUS` (default 20). `min_containers` stays 0. Pass the same N
-the worker is configured with; a higher autoscaler cap does not raise the
-worker's lease ceiling, and a lower one 429s books the worker already leased.
+anything. **Do not run it from CI.**
 
 ```bash
 cd <repo> && python3 - <<'PY'
@@ -843,37 +851,41 @@ import modal
 worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
 settings = worker.update_autoscaler(
     min_containers=0,        # scale to zero when idle; do not leave GPUs up
-    max_containers=20,       # MODAL_S2_MAX_GPUS; one H100 per active clone book
+    max_containers=1,        # production cap; raising it needs owner approval
     scaledown_window=15,     # 15 s idle before a container is released
 )
 print("live autoscaler now:", settings)
-assert settings.max_containers == 20, settings
+assert settings.max_containers == 1, settings
 assert settings.min_containers == 0, settings
 assert settings.scaledown_window == 15, settings
 PY
 ```
 
-The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15`.
+The same call is `python3 scripts/s2/set-live-autoscaler.py --max-containers 1 --scaledown-window 15`.
 Restart the take-home worker before this, so its 10s warm hold is already
 under 15s. This does not deploy and does not wipe snapshots. Scaledown
 applies once the container has no input. It does not cancel a call that is
 still restoring or compiling.
 
-Pass condition: the printed settings show `max_containers` 20 (or whatever
-`MODAL_S2_MAX_GPUS` is on the worker), `scaledown_window` 15, and
-`min_containers` 0. A book wave still posts one call. A second book posts
-on a second container. After the last book, the container releases in about
-15s. A gap longer than 15s mid-book costs one restore.
+Pass condition: the printed settings show `max_containers` 1,
+`scaledown_window` 15, and `min_containers` 0. A book wave still posts one
+call. A second book queues on that same GPU and does not open a second
+container. After the last book, the container releases in about 15s. A gap
+longer than 15s mid-book costs one restore.
 
 #### Historical — do not run
 
-An older promote raised the live cap after the deploy. That command started
-four H100s for a book that only ever has one call in flight. It is recorded
-here so a search for it does not look like the current step. Do not run it.
+Older promotes raised the live cap after the deploy, to 4 and then to
+`MODAL_S2_MAX_GPUS` (20). Those commands opened more H100s than production
+is allowed to run. They are recorded here so a search for them does not
+look like the current step. Do not run them. Raising the cap needs explicit
+owner approval.
 
 ```bash
-# DO NOT RUN. Historical four-lane promote, superseded by 8c above.
+# DO NOT RUN. Historical raises, superseded by the max_containers=1 step above.
 # worker.update_autoscaler(min_containers=0, max_containers=4, scaledown_window=180)
+# worker.update_autoscaler(min_containers=0, max_containers=20, scaledown_window=15)
+# python3 scripts/s2/set-live-autoscaler.py --max-containers 20 --scaledown-window 15
 ```
 
 ### 8d. Cold first audio, from a scaled-to-zero pool
@@ -1084,8 +1096,8 @@ not change that environment, so after 8c:
 
 - `/ready` still answers `max_containers: 1` (the deploy-time env)
 - `status()` on a container still reports `max_containers: 1`
-- the live cap is the 8c printout (default 20). Trust that printout and the
-  Modal dashboard's Containers tab, not the label.
+- the live cap is the 8c printout, which must also be 1. Trust that printout
+  and the Modal dashboard's Containers tab, not a stale lease-count note.
 
 This is expected, not a failed override. Do not "fix" it by calling
 `update_autoscaler` again.
@@ -1093,15 +1105,15 @@ This is expected, not a failed override. Do not "fix" it by calling
 ### Re-apply after every deploy
 
 A plain `modal deploy` resets the live autoscaler to the values baked into the
-deployment environment. Production's baked env stays at 1. The live cap
-this schedule uses is `MODAL_S2_MAX_GPUS` (default 20), applied again after
-the deploy. After each production deploy, in this order:
+deployment environment. Production's baked env stays at 1, and the live cap
+stays at 1 as well. `MODAL_S2_MAX_GPUS` (default 20) is the worker lease
+count and is not applied here. After each production deploy, in this order:
 
 1. `modal run modal/s2_clone_warm.py --verify --containers 3` (the deploy
    invalidated the snapshots — 8b)
-2. re-run the 8c `update_autoscaler(min_containers=0, max_containers=N, …)`
-   call and read the printed settings. N is `MODAL_S2_MAX_GPUS`. If
-   `max_containers` is anything else, 8c is what sets it.
+2. re-run the 8c `update_autoscaler(min_containers=0, max_containers=1, …)`
+   call and read the printed settings. If `max_containers` is anything other
+   than 1, 8c is what sets it back. Raising it needs explicit owner approval.
 
 Treat step 2 as part of the deploy, not as an optional follow-up. `/ready`
 will not tell you the live cap.
@@ -1124,11 +1136,12 @@ Existing containers finish the calls in flight and drain; new calls queue behind
 the single cap. The one-GPU schedule does not raise it again. The historical
 four-lane call is under 8c and is not a current step.
 
-### Alternate: bake `S2C_MAX_CONTAINERS=4` into the deploy
+### Alternate: bake a higher `S2C_MAX_CONTAINERS` into the deploy
 
-Only if you want the health labels to be correct, or want the cap to survive a
-deploy without a manual step. Slower and more expensive than 8a–8c, and 8c is
-not needed on this path because the cap is already in the deployment env:
+Do not run this. Production stays at `max_containers` 1. Raising it needs
+explicit owner approval. The block is the old four-lane bake, kept so a
+search does not treat it as the current step. It is slower than 8a–8c, and
+a deploy rebuilds snapshots:
 
 ```bash
 unset S2C_APP_NAME               # production app, named explicitly below
@@ -1156,7 +1169,7 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 | Clone path errors | remove `MODAL_S2_TTS_URL` → a book that is not already pinned uses direct Fish. An existing `modal` pin is kept. |
 | Cost or container runaway | live: `update_autoscaler(max_containers=1)` on `echomancer-s2-clone.S2CloneWorker` (see "Rolling the lane count back") — no redeploy, snapshots survive. The dashboard's autoscaler panel does the same thing. |
 | Books stuck parked | `MODAL_S2_DEFER_MS=0` skips the park and continues the tick. It does not rewrite `provider_pin` on that branch and it does not call Drama 3. After the normal defer budget, with `FISH_API_KEY` set, the rest of the book is pinned to direct Fish (the same voice). With no Fish key the book stays parked. |
-| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply the runtime override (or redeploy with the env you want). |
+| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply 8c so `max_containers` stays 1 (raising it needs explicit owner approval). |
 
 A book that is already `ready` is never re-synthesized by any of these.
 
@@ -1434,8 +1447,8 @@ Production app:     echomancer-s2-clone
 Build id:           __________  (same build validated on staging)
 Deploy env:         S2C_MAX_CONTAINERS unset (1)
 Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
-Runtime override:   update_autoscaler(max_containers=N, scaledown_window=15, min_containers=0)
-Live cap printed:   max_containers=N (N = MODAL_S2_MAX_GPUS, default 20; not the /ready label)
+Runtime override:   update_autoscaler(max_containers=1, scaledown_window=15, min_containers=0)
+Live cap printed:   max_containers=1 (raising it needs explicit owner approval; not MODAL_S2_MAX_GPUS)
 Health labels:      /ready max_containers still ____ (deploy-time env; live cap is the 8c printout)
 ```
 
@@ -1462,5 +1475,5 @@ Health labels:      /ready max_containers still ____ (deploy-time env; live cap 
 | **`Section 0: Modal clone already retried`** | a bare HTTP 500 was retried like a transient blip, spending the section's attempt ledger, so the retry policy became the error message | a 5xx is `ModalCloneProviderError`, gets one extra take, then surfaces the provider's own text; the tick parks on the defer clock and takes the documented fallback instead of failing the book |
 | **Inferring a restore from a pid** | Modal runs the app as **pid 2** both before and after a restore, so pid equality reported every real restore as `compiled` | `boot` is `restored` only on a backwards host monotonic clock, else `unknown`; Modal's log line is authoritative |
 | **`warm_containers` > `max_containers`** | an entry outlived its container; the old 420 s TTL was needed because heartbeats only happened on a call | timer refresh + `@modal.exit()` removal, TTL 90 s; a brief overshoot during a replace is genuine and documented |
-| **Health label disagrees with the live cap** | `max_containers` in `/ready` and `status()` is read from the deploy-time `S2C_*` env, so a runtime `update_autoscaler` leaves it at the old value | expected; confirm lanes from the fanout's distinct-container count and the dashboard. A plain `modal deploy` resets the live cap too, so re-apply the override after every deploy |
-| **Promoting by copying staging's snapshots** | staging and production are separate Modal apps | deploy the validated build to `echomancer-s2-clone` and warm its own snapshots (8a–8b) before raising the cap |
+| **Health label disagrees with the live cap** | `max_containers` in `/ready` and `status()` is read from the deploy-time `S2C_*` env, so a runtime `update_autoscaler` leaves it at the old value | expected; confirm the live cap from the 8c printout and the dashboard. A plain `modal deploy` resets the live cap too, so re-apply 8c (`max_containers` 1) after every deploy. Raising it needs explicit owner approval |
+| **Promoting by copying staging's snapshots** | staging and production are separate Modal apps | deploy the validated build to `echomancer-s2-clone`, warm its own snapshots (8a–8b), then keep `max_containers` 1 (8c). Raising it needs explicit owner approval |

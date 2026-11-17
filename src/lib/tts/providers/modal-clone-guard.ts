@@ -353,9 +353,10 @@ export const MODAL_CLONE_DEFER_MAX_MS = 6 * 60 * 60_000;
  * section 0 is different: its wait is wall clock the person is sitting in
  * front of, and a placement that is *compiling* will not answer inside any
  * budget a book may use (#237). Giving up earlier loses nothing — the retry
- * wave tries another container, and the off-path RPC finishes the compile —
- * while it turns "stuck behind a 150 s compile wait" into "retried on another
- * container in 75 s".
+ * wave tries the placement again, and the off-path RPC finishes the compile.
+ * Production `max_containers` stays 1, so that retry queues on the same GPU
+ * and does not open a second one. It turns "stuck behind a 150 s compile
+ * wait" into a retry in 75 s.
  *
  * Default 75 s: a measured restore is ~57 s, so this still covers a real
  * restore with ~18 s of margin, and it is half the normal budget so a bad

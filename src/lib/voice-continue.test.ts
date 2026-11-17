@@ -106,4 +106,25 @@ describe("resolveVoiceContinue", () => {
       })
     ).toEqual({ type: "blocked", reason: "nothing" });
   });
+
+  it("does not start a book while the voice list is loading", () => {
+    expect(
+      resolveVoiceContinue({
+        ...ready,
+        path: "standard",
+        voicesLoading: true,
+      })
+    ).toEqual({ type: "blocked", reason: "voices-loading" });
+  });
+
+  it("does not start a book when the selected clone is gone", () => {
+    expect(
+      resolveVoiceContinue({
+        ...ready,
+        path: "standard",
+        hasSelectedVoice: false,
+        cloneMissing: true,
+      })
+    ).toEqual({ type: "blocked", reason: "clone-missing" });
+  });
 });

@@ -10,7 +10,9 @@ import {
   isPersistableStandardVoiceId,
   isUserCloneVoice,
   parseVoicePath,
+  selectionOnStandardPath,
   stockCardAudition,
+  voicesForMainList,
   voicesForPath,
   withVoicePathParam,
 } from "@/lib/voice-path";
@@ -135,6 +137,15 @@ describe("voicesForPath", () => {
     expect(voicesForPath(voices, "clone").map((v) => v.id)).toEqual(["clone:1"]);
   });
 
+  it("puts the person's clones on the main list after stock, still selectable", () => {
+    const listed = voicesForMainList(voices);
+    expect(listed.map((voice) => voice.id)).toEqual([
+      ...SLIM_STOCK_VOICE_IDS,
+      "clone:1",
+    ]);
+    expect(listed.at(-1)?.id.startsWith("clone:")).toBe(true);
+  });
+
   it("treats Clara as stock, not a user clone", () => {
     expect(isUserCloneVoice({ id: "clara", provider: "fish", tags: ["stock"] })).toBe(
       false
@@ -142,6 +153,49 @@ describe("voicesForPath", () => {
     expect(isUserCloneVoice({ id: "clone:1", provider: "fish", tags: ["cloned"] })).toBe(
       true
     );
+  });
+});
+
+describe("selectionOnStandardPath", () => {
+  const stockIds = ["drew", "ava", "libby"];
+  const cloneIds = ["clone:abc"];
+
+  it("keeps a chosen clone instead of snapping back to stock", () => {
+    expect(
+      selectionOnStandardPath({
+        selectedId: "clone:abc",
+        stockIds,
+        cloneIds,
+        explicitStockId: "drew",
+        suggestedId: "ava",
+        narratorTouched: false,
+      })
+    ).toBe("clone:abc");
+  });
+
+  it("does not default a fresh list to a clone", () => {
+    expect(
+      selectionOnStandardPath({
+        selectedId: null,
+        stockIds,
+        cloneIds,
+        suggestedId: null,
+        narratorTouched: false,
+      })
+    ).toBe("drew");
+  });
+
+  it("still prefers a touched stock voice over the suggestion", () => {
+    expect(
+      selectionOnStandardPath({
+        selectedId: "libby",
+        stockIds,
+        cloneIds,
+        explicitStockId: "libby",
+        suggestedId: "ava",
+        narratorTouched: true,
+      })
+    ).toBe("libby");
   });
 });
 

@@ -1,10 +1,9 @@
 /**
  * Two clone books that start seconds apart on one Modal app.
  *
- * The deployed class is `@modal.concurrent(max_inputs=1)`. A warm container
- * that is already rendering book A does not take book B's POST; Modal places
- * B on another container, and that container still has to restore (30–81s,
- * or much longer when the host has no snapshot). Treating `warm_containers > 0`
+ * The deployed class is `@modal.concurrent(max_inputs=1)`. Production
+ * `max_containers` stays 1, so book B queues on the same GPU and does not
+ * open a second container. Treating `warm_containers > 0`
  * as "this call is warm" arms the steady budget (~60s) and aborts that restore.
  * A steady miss used to freeze every book in the process for 30s.
  *
