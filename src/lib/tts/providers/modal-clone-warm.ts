@@ -110,12 +110,20 @@ export function modalCloneWarmConfigured(
  * process has no Modal credentials. Never throws: a book must not fail because
  * the warm could not be started.
  */
-export function kickModalCloneSnapshotWarm(reason: string, now = Date.now()): boolean {
-  const busy = remoteFlights().some(
-    (flight) =>
-      flight.provider === "s2-clone" &&
-      (flight.status === "running" || flight.status === "still_live")
-  );
+export function kickModalCloneSnapshotWarm(
+  reason: string,
+  now = Date.now(),
+  jobId?: string
+): boolean {
+  // A stored function-call id is a real Modal input, so it blocks cover for
+  // every book. A flight that has not received an id yet is only this book's
+  // own submit; it must not keep every other book from compiling.
+  const busy = remoteFlights().some((flight) => {
+    if (flight.provider !== "s2-clone") return false;
+    if (flight.status !== "running" && flight.status !== "still_live") return false;
+    if (flight.callId) return true;
+    return Boolean(jobId && flight.jobId === jobId);
+  });
   if (busy) {
     console.log(
       `[modal-clone] snapshot warm skipped (${reason}): an S2 call is still in flight`

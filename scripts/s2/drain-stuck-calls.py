@@ -249,6 +249,20 @@ def list_calls_json(app: str, cls: str) -> int:
     return 0
 
 
+def apply_worker_credentials(profile: str | None) -> None:
+    """A profile replaces the worker token. No profile leaves the token in place.
+
+    The worker authenticates with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET. Only an
+    explicit ``--profile`` (the operator scripts) may drop those variables.
+    ``MODAL_PROFILE`` in the environment is not that request.
+    """
+    if not profile:
+        return
+    os.environ["MODAL_PROFILE"] = profile
+    os.environ.pop("MODAL_TOKEN_ID", None)
+    os.environ.pop("MODAL_TOKEN_SECRET", None)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", default="echomancer-s2-clone")
@@ -262,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-json", action="store_true")
     parser.add_argument("--cancel-only", action="store_true")
     parser.add_argument("--running-count", action="store_true")
-    parser.add_argument("--profile", default=os.environ.get("MODAL_PROFILE"))
+    parser.add_argument("--profile", default=None)
     args = parser.parse_args(argv)
 
     if args.list_json:
@@ -288,10 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         print("dry-run: no Modal calls")
         return 0
 
-    if args.profile:
-        os.environ["MODAL_PROFILE"] = args.profile
-        os.environ.pop("MODAL_TOKEN_ID", None)
-        os.environ.pop("MODAL_TOKEN_SECRET", None)
+    apply_worker_credentials(args.profile)
 
     if args.running_count:
         print(running_containers(args.app))

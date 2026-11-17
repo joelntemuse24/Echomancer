@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import {
   executeDrain,
   haltBook,
@@ -8,7 +7,9 @@ import {
   type DrainOps,
   type DrainReport,
 } from "@/lib/remote/layer";
+import { runModalCli } from "@/lib/remote/modal-cli";
 import { clearActiveBrake, saveActiveBrake } from "@/lib/remote/store";
+import { cancelS2Call } from "@/lib/tts/providers/modal-clone-call";
 
 let testHooks: DrainOps | null = null;
 
@@ -38,21 +39,6 @@ export function otherLiveBookCount(jobId: string): number {
   return books.size;
 }
 
-function runPy(args: string[]): Promise<{ code: number; out: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("python3", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      out += String(chunk);
-    });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      out += String(chunk);
-    });
-    child.on("error", () => resolve({ code: 1, out }));
-    child.on("close", (status) => resolve({ code: status ?? 1, out }));
-  });
-}
-
 function lastLine(text: string): string {
   return text
     .trim()
@@ -64,13 +50,11 @@ function lastLine(text: string): string {
 
 /** The live autoscaler cap. Never the env default, and never a guessed 1. */
 async function printLiveMax(app: string): Promise<number> {
-  const { code, out } = await runPy([
+  const { code, out } = await runModalCli([
     "scripts/s2/set-live-autoscaler.py",
     "--print-max",
     "--app",
     app,
-    "--profile",
-    "ntemusejoel",
   ]);
   const n = Number(lastLine(out));
   if (code !== 0 || !Number.isInteger(n) || n < 1) {
@@ -79,21 +63,8 @@ async function printLiveMax(app: string): Promise<number> {
   return n;
 }
 
-async function cancelOne(app: string, callId: string): Promise<CancelObservation> {
-  const { code, out } = await runPy([
-    "scripts/s2/drain-stuck-calls.py",
-    "--cancel-only",
-    "--app",
-    app,
-    "--profile",
-    "ntemusejoel",
-    "--call-id",
-    callId,
-  ]);
-  const match = /cancel\s+\S+:\s+(terminal|still_live)/.exec(out);
-  if (match?.[1] === "terminal") return { status: "terminated" };
-  if (match?.[1] === "still_live") return { status: "pending", threw: out.trim() };
-  return { threw: out.trim() || `exit ${code}` };
+async function cancelOne(callId: string): Promise<CancelObservation> {
+  return cancelS2Call(callId);
 }
 
 async function setMax(app: string, max: number): Promise<void> {
@@ -103,23 +74,19 @@ async function setMax(app: string, max: number): Promise<void> {
     app,
     "--scaledown-window",
     "15",
-    "--profile",
-    "ntemusejoel",
   ];
   if (max === 0) args.push("--brake");
   else args.push("--max-containers", String(max));
-  const { code, out } = await runPy(args);
+  const { code, out } = await runModalCli(args);
   if (code !== 0) throw new Error(out.trim() || "autoscaler update failed");
 }
 
 async function runningCount(app: string): Promise<number> {
-  const { code, out } = await runPy([
+  const { code, out } = await runModalCli([
     "scripts/s2/drain-stuck-calls.py",
     "--running-count",
     "--app",
     app,
-    "--profile",
-    "ntemusejoel",
   ]);
   const n = Number(lastLine(out));
   if (code !== 0 || !Number.isInteger(n) || n < 0) {
@@ -131,7 +98,7 @@ async function runningCount(app: string): Promise<number> {
 function productionOps(app: string): DrainOps {
   return {
     readMax: () => printLiveMax(app),
-    cancel: (callId) => cancelOne(app, callId),
+    cancel: (callId) => cancelOne(callId),
     brake: () => setMax(app, 0),
     runningContainers: () => runningCount(app),
     restore: (_name, max) => setMax(app, max),

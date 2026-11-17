@@ -16,8 +16,22 @@ section and joins the MP3s.
     {"items": [{"key": "12", "text": "..."}], "reference_audio_base64": "...",
      "reference_text": "...", "sampling": "0.9,0.9", "job_id": "...",
      "seed": 123, "seed_epoch": 0}
-    -> {"items": [{"key", "audio_b64", "duration_s", "units", ...}],
-        "build", "container_id", "seed", "performance"}
+    -> {"call_id", "status": "pending"}
+       The handler spawns `render_batch` and returns that id in well under a
+       second. It does not wait for the GPU.
+
+    POST /synthesize_batch  {"call_id": "..."}     or  ?call_id=...
+    -> {"call_id", "status": "pending"}
+       or {"call_id", "status": "success", "result": {the audio JSON above}}
+
+    POST /synthesize_batch  {"call_id": "...", "cancel": true}
+    -> {"call_id", "status": "cancelled"}
+       FunctionCall.cancel(terminate_containers=True). NotFound stays pending.
+
+    Deploy this app before the worker. A worker that expects `call_id` will
+    time out its short submit against an older container that holds the HTTP
+    body until the GPU finishes. A body that already contains `items` is the
+    finished audio and is still accepted.
 
 Units: the text is split the way the batch pipeline splits a book — a whole
 paragraph is one generation, and only a paragraph past the model's frame
@@ -341,6 +355,16 @@ def _max_containers() -> int:
 def _token_ok(request: Request) -> bool:
     expected = os.environ.get("MODAL_S2_TOKEN", "").strip()
     return bool(expected) and request.headers.get("x-echomancer-token") == expected
+
+
+class _SpawnRequest:
+    """The spawned GPU method has no HTTP request. The web handler already
+    checked the caller's token; this presents the container's own secret so
+    the existing body check passes."""
+
+    def __init__(self) -> None:
+        self.headers = {"x-echomancer-token": os.environ.get("MODAL_S2_TOKEN", "")}
+        self.query_params = {}
 
 
 def _apply_seed(seed) -> int:
@@ -967,8 +991,63 @@ class S2CloneWorker:
             },
         )
 
+    @modal.method()
+    def render_batch(self, payload: dict):
+        """GPU render for one spawned FunctionCall.
+
+        The web handler spawns this and returns the id. Calling it directly
+        runs the same body the tests call when Modal's `.spawn` is absent.
+        """
+        response = self._synthesize_batch_body(payload, _SpawnRequest())
+        return getattr(response, "content", response)
+
     @modal.fastapi_endpoint(method="POST", docs=False)
     def synthesize_batch(self, payload: dict, request: Request):
+        """Accept a book, or poll/cancel the FunctionCall id from a previous accept.
+
+        When this method can `.spawn()`, the book is not rendered on the
+        request that accepted it. The id comes back immediately. Status and
+        cancel are this same endpoint: `{"call_id"}` or `?call_id=`, and
+        `{"call_id", "cancel": true}`. A process whose method has no
+        `.spawn` (the unit tests) still runs the render inline and returns
+        the audio JSON.
+        """
+        from fastapi import HTTPException
+        from fastapi.responses import JSONResponse
+
+        from s2_remote_call import (
+            RemoteCallError,
+            handle_remote_request,
+            query_call_id,
+            request_op,
+        )
+
+        if not _token_ok(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        body = payload if isinstance(payload, dict) else {}
+        op = request_op(body, query_call_id(request))
+        spawn = getattr(type(self).render_batch, "spawn", None)
+        if op != "submit" or callable(spawn):
+            def lookup(call_id: str):
+                import modal
+
+                return modal.FunctionCall.from_id(call_id)
+
+            try:
+                result = handle_remote_request(
+                    body,
+                    query_call_id=query_call_id(request),
+                    spawn=spawn,
+                    lookup=lookup,
+                )
+            except RemoteCallError as err:
+                raise HTTPException(
+                    status_code=err.status, detail={"error": err.code, "message": str(err)}
+                ) from err
+            return JSONResponse(result)
+        return self._synthesize_batch_body(body, request)
+
+    def _synthesize_batch_body(self, payload: dict, request: Request):
         """Many sections in one call; one batch row per section.
 
         Each section is its own row, so every row hears only the reference and

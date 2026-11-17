@@ -156,16 +156,19 @@ def test_run_drain_rechecks_other_books_before_braking():
     assert code == 2
 
 
-def test_identity_from_row_reads_a_nested_tag():
-    mod = load(DRAIN, "drain_identity")
-    job, tag = mod.identity_from_row(
-        {
-            "function_call_id": "fc-1",
-            "input": '{"job_id": "book-1", "echo_call_tag": "echo:book-1:0:ab"}',
-        }
-    )
-    assert job == "book-1"
-    assert tag == "echo:book-1:0:ab"
+def test_a_missing_profile_keeps_the_worker_token(monkeypatch):
+    mod = load(DRAIN, "drain_creds")
+    monkeypatch.setenv("MODAL_TOKEN_ID", "id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "secret")
+    monkeypatch.setenv("MODAL_PROFILE", "ntemusejoel")
+    mod.apply_worker_credentials(None)
+    assert os.environ["MODAL_TOKEN_ID"] == "id"
+    assert os.environ["MODAL_TOKEN_SECRET"] == "secret"
+    mod.apply_worker_credentials("ntemusejoel")
+    assert "MODAL_TOKEN_ID" not in os.environ
+    assert "MODAL_TOKEN_SECRET" not in os.environ
+    source = DRAIN.read_text()
+    assert 'default=os.environ.get("MODAL_PROFILE")' not in source
 
 
 def test_cover_script_restores_with_the_real_flag():

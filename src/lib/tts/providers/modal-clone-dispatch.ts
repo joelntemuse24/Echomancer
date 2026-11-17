@@ -728,7 +728,7 @@ async function finishDispatch(
     // Only a restore-budget miss kicks the compile RPC. A warm wait that
     // expired is a slow container, and the one-row retry after a warm miss
     // is sent with compile suppressed so it cannot start a compile either.
-    kickModalCloneSnapshotWarm("placement exceeded restore budget");
+    kickModalCloneSnapshotWarm("placement exceeded restore budget", Date.now(), jobId);
   }
 
   if (publishing) {

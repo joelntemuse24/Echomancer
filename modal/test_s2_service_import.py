@@ -786,3 +786,66 @@ def test_a_single_oversized_unit_is_sliced_not_rejected(service):
         service.make_units = original
     assert max(len(u["text"]) for u in units) <= s2_contract.UNIT_MAX_CHARS
     assert "".join(u["text"] for u in units) == oversized
+
+
+def test_batch_endpoint_spawns_and_cancels_by_function_call_id(service, monkeypatch):
+    """The web handler returns the spawned id and does not render inline."""
+    monkeypatch.setenv("MODAL_S2_TOKEN", "tok")
+    seen: dict = {}
+
+    class _Call:
+        object_id = "fc-spawned"
+
+        def get(self, timeout=0):
+            seen["timeout"] = timeout
+            return {"items": [{"key": "0", "audio_b64": "QQ=="}]}
+
+        def cancel(self, terminate_containers=False):
+            seen["terminate"] = terminate_containers
+
+    def spawn(payload):
+        seen["items"] = payload.get("items")
+        return _Call()
+
+    class _FunctionCall:
+        @staticmethod
+        def from_id(call_id):
+            seen["from_id"] = call_id
+            return _Call()
+
+    import modal
+
+    modal.FunctionCall = _FunctionCall
+    service.S2CloneWorker.render_batch.spawn = spawn
+    worker = service.S2CloneWorker.__new__(service.S2CloneWorker)
+    request = _FakeRequest("tok")
+    try:
+        accepted = service.S2CloneWorker.synthesize_batch(
+            worker,
+            {
+                "items": [{"key": "0", "text": "Hello."}],
+                "reference_audio_base64": "YQ==",
+                "reference_text": "hello",
+            },
+            request,
+        )
+        assert accepted.content == {"call_id": "fc-spawned", "status": "pending"}
+        assert seen["items"][0]["text"] == "Hello."
+        assert "timeout" not in seen
+
+        status = service.S2CloneWorker.synthesize_batch(
+            worker, {"call_id": "fc-spawned"}, request
+        )
+        assert seen["from_id"] == "fc-spawned"
+        assert seen["timeout"] == 1.0
+        assert status.content["status"] == "success"
+        assert status.content["result"]["items"][0]["key"] == "0"
+
+        cancelled = service.S2CloneWorker.synthesize_batch(
+            worker, {"call_id": "fc-spawned", "cancel": True}, request
+        )
+        assert cancelled.content["status"] == "cancelled"
+        assert seen["terminate"] is True
+    finally:
+        if hasattr(service.S2CloneWorker.render_batch, "spawn"):
+            del service.S2CloneWorker.render_batch.spawn

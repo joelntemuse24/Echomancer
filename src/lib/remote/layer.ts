@@ -595,14 +595,6 @@ export function bindFlightAbort(key: string, abort: () => void): void {
   if (flight) flight.abort = abort;
 }
 
-export function noteFlightTag(key: string, tag: string): void {
-  const flight = flights.get(key);
-  const value = tag.trim();
-  if (!flight || !value) return;
-  flight.tag = value;
-  stampSink?.(flight);
-}
-
 export function setFlightCallId(key: string, callId: string): void {
   const flight = flights.get(key);
   const id = callId.trim();
@@ -610,41 +602,6 @@ export function setFlightCallId(key: string, callId: string): void {
   flight.callId = id;
   stampSink?.(flight);
 }
-
-/**
- * Attach a function-call id to the one open flight of this book that
- * does not have one. Several open flights stay untagged: one listing
- * must not be copied onto every section.
- */
-export function noteModalFunctionCall(jobId: string, callId: string): void {
-  const id = callId.trim();
-  if (!jobId || !id) return;
-  const open = [...flights.values()].filter(
-    (flight) =>
-      flight.jobId === jobId &&
-      (flight.status === "running" || flight.status === "still_live") &&
-      !flight.callId
-  );
-  const only = open[0];
-  if (open.length !== 1 || !only) return;
-  only.callId = id;
-  stampSink?.(only);
-}
-
-const LISTED_TERMINAL: Record<string, FlightStatus> = {
-  success: "success",
-  failure: "failure",
-  terminated: "cancelled",
-  cancelled: "cancelled",
-  canceled: "cancelled",
-  timeout: "timeout",
-  init_failure: "failure",
-  "1": "success",
-  "2": "failure",
-  "3": "timeout",
-  "4": "cancelled",
-  "5": "failure",
-};
 
 /**
  * Move a still_live or running flight to a terminal outcome.
@@ -679,91 +636,6 @@ export function settleFlightCall(
   }
 }
 
-export type ListedCall = {
-  callId: string;
-  jobId?: string;
-  tag?: string;
-  status?: string | null;
-  /** Serialized listing row, searched for the client tag when no field is set. */
-  raw?: string;
-};
-
-function listedStatus(status: string | null | undefined): string {
-  return String(status ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^inputstatus\./, "");
-}
-
-function rowMatchesTag(row: ListedCall, tag: string): boolean {
-  if (!tag) return false;
-  if (row.tag === tag) return true;
-  return Boolean(row.raw && row.raw.includes(tag));
-}
-
-/**
- * The one unclaimed, non-terminal call that belongs to this request.
- * A tag match wins. A job id matches only when that book has one open call.
- * Anything else is left unmatched so two books cannot swap ids.
- */
-export function matchListedCall(
-  rows: ListedCall[],
-  query: { tag?: string; jobId?: string; claimed?: ReadonlySet<string> }
-): string | null {
-  const claimed = query.claimed ?? new Set<string>();
-  const open = rows.filter((row) => {
-    const id = row.callId.trim();
-    if (!id || claimed.has(id)) return false;
-    const status = listedStatus(row.status);
-    if (status && LISTED_TERMINAL[status]) return false;
-    return true;
-  });
-  if (query.tag) {
-    const tagged = open.filter((row) => rowMatchesTag(row, query.tag!));
-    if (tagged.length === 1) return tagged[0]!.callId.trim();
-  }
-  if (query.jobId) {
-    const mine = open.filter((row) => row.jobId === query.jobId);
-    if (mine.length === 1) return mine[0]!.callId.trim();
-  }
-  return null;
-}
-
-function attachListedId(row: ListedCall, id: string): void {
-  const open = remoteFlights().filter(
-    (flight) =>
-      (flight.status === "running" || flight.status === "still_live") && !flight.callId
-  );
-  if (row.tag) {
-    const tagged = open.filter((flight) => flight.tag === row.tag);
-    const taggedFlight = tagged[0];
-    if (tagged.length === 1 && taggedFlight) {
-      taggedFlight.callId = id;
-      stampSink?.(taggedFlight);
-      return;
-    }
-  }
-  if (row.jobId) {
-    const mine = open.filter((flight) => flight.jobId === row.jobId);
-    const mineFlight = mine[0];
-    if (mine.length === 1 && mineFlight) {
-      mineFlight.callId = id;
-      stampSink?.(mineFlight);
-    }
-  }
-}
-
-/** Reconcile a function-call listing. Terminal rows clear still_live. */
-export function applyListedCalls(rows: ListedCall[], now = Date.now()): void {
-  for (const row of rows) {
-    const id = row.callId.trim();
-    if (!id) continue;
-    attachListedId(row, id);
-    const outcome = LISTED_TERMINAL[listedStatus(row.status)];
-    if (outcome) settleFlightCall(id, outcome, now);
-  }
-}
-
 /**
  * What a cancel RPC actually proved.
  *
@@ -785,6 +657,7 @@ const CANCEL_TERMINAL = new Set([
   "terminated",
   "timeout",
   "init_failure",
+  "init failure",
   "cancelled",
   "canceled",
   "1",

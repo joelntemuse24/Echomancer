@@ -114,7 +114,7 @@ import {
   setFlightCallId,
   resetRemoteLayerForTests,
 } from "@/lib/remote/layer";
-import { s2CallTag, startS2CallWatch } from "@/lib/remote/s2-call-watch";
+import { submitThenPoll } from "@/lib/tts/providers/modal-clone-call";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -1628,7 +1628,7 @@ function coldFromWait(
     );
   }
   if (kind === "restore") {
-    if (!ctx.placementStarted) kickModalCloneSnapshotWarm(message);
+    if (!ctx.placementStarted) kickModalCloneSnapshotWarm(message, Date.now(), ctx.jobId);
     if (aborted) rememberModalCloneCold(ctx.jobId);
     return new ModalCloneColdError(
       message,
@@ -1841,40 +1841,54 @@ async function postModal(
     timeout.addEventListener("abort", onExternalAbort, { once: true });
   }
   const tracked = modalFlightKey(wait?.jobId, body);
-  const tag = tracked ? s2CallTag(tracked.jobId, tracked.sections) : "";
-  const payload = tag ? { ...body, echo_call_tag: tag } : body;
-  if (tracked) bindFlightAbort(tracked.key, () => controller.abort());
-  const watch = tracked
-    ? startS2CallWatch({ tag, jobId: tracked.jobId, flightKey: tracked.key })
-    : null;
+  if (tracked) {
+    bindFlightAbort(tracked.key, () => controller.abort());
+    // The long timer is the single-section probe. A book polls by the stored
+    // call id instead, so that probe must not abort the submit.
+    clearTimer();
+  }
+  const headers = {
+    ...authHeaders(requireToken()),
+    "Content-Type": "application/json",
+  };
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        ...authHeaders(requireToken()),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+    if (tracked) {
+      response = await submitThenPoll({
+        url,
+        body,
+        headers,
+        signal: controller.signal,
+        // The id is stored before this wait. First light keeps polling until
+        // the proxy ceiling, which is the old "container has started" extension,
+        // without a CLI probe. A submit that never returns an id stops at 10s.
+        waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
+        onCallId: (id) => setFlightCallId(tracked.key, id),
+      });
+    } else {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    }
   } catch (err) {
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      watch?.stop();
-      await watch?.done;
-      // The worker dropped the wait. Cancel the unstarted PENDING Modal
-      // input so abandoned calls do not pile up and get served after the
-      // next enter. A call that has already started is left alone: the
-      // first-light path only aborts after the probe says it never started,
-      // and a started container is waited out to the proxy ceiling.
-      if (!containerStarted) {
+      // A book with a stored id is cancelled by Stop through the HTTP
+      // endpoint. The CLI cancel has no id to aim at, and cancelling here
+      // would drop the compile this wait is holding as still_live.
+      if (!tracked && !containerStarted) {
         cancelAbandonedModalCallsAfterAbort({
           jobId: wait?.jobId,
           reason: "first-light wait aborted",
         });
         if (firstLight) sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
+      }
+      if (tracked && firstLight) {
+        sealModalCloneRender(wait?.jobId, modalClonePlacementBudgetMs());
       }
       throw coldFromWait(
         kind,
@@ -1892,9 +1906,7 @@ async function postModal(
     settled = true;
     clearTimer();
     signal?.removeEventListener("abort", onExternalAbort);
-    watch?.stop();
   }
-  await watch?.done;
   const callHeader =
     response.headers.get("x-modal-function-call-id") ||
     response.headers.get("modal-function-call-id");

@@ -8,10 +8,8 @@
  */
 
 import { query } from "@/lib/turso";
-import { spawn } from "node:child_process";
 import { drainBookCalls } from "@/lib/remote/drain-book";
 import {
-  applyListedCalls,
   dailySpend,
   defaultBudgetCaps,
   haltBook,
@@ -23,8 +21,8 @@ import {
   setRemoteEventSink,
   setRemoteFlightStamp,
   takeDrainRequests,
-  type ListedCall,
 } from "@/lib/remote/layer";
+import { runModalCli } from "@/lib/remote/modal-cli";
 import {
   clearActiveBrake,
   hydrateOpenRemoteCalls,
@@ -34,11 +32,19 @@ import {
 } from "@/lib/remote/store";
 
 let brakeHealer: ((app: string, savedMax: number) => Promise<void>) | null = null;
+let liveMaxReader: ((app: string) => Promise<number | null>) | null = null;
 
 export function setBrakeHealerForTests(
   fn: ((app: string, savedMax: number) => Promise<void>) | null
 ): void {
   brakeHealer = fn;
+}
+
+/** Tests report the live autoscaler cap. Null means it could not be read. */
+export function setBrakeMaxReaderForTests(
+  fn: ((app: string) => Promise<number | null>) | null
+): void {
+  liveMaxReader = fn;
 }
 
 async function restoreBrake(app: string, savedMax: number): Promise<void> {
@@ -49,29 +55,45 @@ async function restoreBrake(app: string, savedMax: number): Promise<void> {
   if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) {
     throw new Error("brake restore is not configured");
   }
-  const child = spawn(
-    "python3",
-    [
-      "scripts/s2/set-live-autoscaler.py",
-      "--app",
-      app,
-      "--max-containers",
-      String(savedMax),
-      "--scaledown-window",
-      "15",
-      "--profile",
-      "ntemusejoel",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] }
-  );
-  const code = await new Promise<number>((resolve) => {
-    child.on("error", () => resolve(1));
-    child.on("close", (status) => resolve(status ?? 1));
-  });
-  if (code !== 0) throw new Error(`brake restore exited ${code}`);
+  const { code, out } = await runModalCli([
+    "scripts/s2/set-live-autoscaler.py",
+    "--app",
+    app,
+    "--max-containers",
+    String(savedMax),
+    "--scaledown-window",
+    "15",
+  ]);
+  if (code !== 0) throw new Error(out.trim() || `brake restore exited ${code}`);
 }
 
-/** Put back a max that a crashed drain left at 0. */
+async function readLiveMax(app: string): Promise<number | null> {
+  if (liveMaxReader) return liveMaxReader(app);
+  if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) return null;
+  const { code, out } = await runModalCli([
+    "scripts/s2/set-live-autoscaler.py",
+    "--print-max",
+    "--app",
+    app,
+  ]);
+  const line = out
+    .trim()
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .pop();
+  const n = Number(line);
+  if (code !== 0 || !Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+/**
+ * Put back a max that a crashed drain left at 0.
+ *
+ * The row is one this process wrote. Restore only while the live cap is
+ * still 0. Any other cap was set after the drain — leave it, and drop the
+ * row so the next hour does not overwrite it.
+ */
 export async function healStuckBrakes(): Promise<number> {
   let rows: Array<{ app: string; savedMax: number }> = [];
   try {
@@ -82,6 +104,13 @@ export async function healStuckBrakes(): Promise<number> {
   let healed = 0;
   for (const row of rows) {
     if (!Number.isInteger(row.savedMax) || row.savedMax < 1) continue;
+    const live = await readLiveMax(row.app);
+    if (live !== 0) {
+      if (live !== null) {
+        await clearActiveBrake(row.app).catch(() => undefined);
+      }
+      continue;
+    }
     try {
       await restoreBrake(row.app, row.savedMax);
       await clearActiveBrake(row.app);
@@ -97,48 +126,6 @@ export async function healStuckBrakes(): Promise<number> {
   return healed;
 }
 
-/**
- * List function calls only when this process may talk to Modal.
- * Tests and a worker with no token get an empty list.
- */
-export async function listModalFunctionCalls(): Promise<ListedCall[]> {
-  if (process.env.VITEST || !process.env.MODAL_TOKEN_ID) return [];
-  const child = spawn(
-    "python3",
-    ["scripts/s2/drain-stuck-calls.py", "--list-json", "--profile", "ntemusejoel"],
-    { stdio: ["ignore", "pipe", "pipe"] }
-  );
-  let out = "";
-  let errText = "";
-  child.stdout?.on("data", (chunk: Buffer | string) => {
-    out += String(chunk);
-  });
-  child.stderr?.on("data", (chunk: Buffer | string) => {
-    errText += String(chunk);
-  });
-  const code = await new Promise<number>((resolve) => {
-    child.on("error", () => resolve(1));
-    child.on("close", (status) => resolve(status ?? 1));
-  });
-  if (code !== 0) {
-    console.warn("[remote] function-call list failed", errText.trim().slice(0, 200));
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(out) as ListedCall[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((row) => ({
-      callId: String(row.callId ?? ""),
-      jobId: row.jobId || undefined,
-      tag: row.tag || undefined,
-      status: row.status,
-      raw: row.raw,
-    }));
-  } catch {
-    return [];
-  }
-}
-
 export async function reconcileRemoteCalls(): Promise<void> {
   setRemoteEventSink((event) => {
     void persistRemoteEvent(event);
@@ -148,8 +135,6 @@ export async function reconcileRemoteCalls(): Promise<void> {
   });
   await hydrateOpenRemoteCalls();
   await healStuckBrakes();
-  const listed = await listModalFunctionCalls();
-  if (listed.length > 0) applyListedCalls(listed);
   for (const jobId of takeDrainRequests()) {
     await drainBookCalls(jobId, "drain").catch((err) => {
       console.warn("[remote] drain failed", jobId, err instanceof Error ? err.message : err);

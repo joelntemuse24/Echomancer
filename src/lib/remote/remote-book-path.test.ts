@@ -6,7 +6,6 @@ import { resetDatabase } from "@/test/harness";
 import {
   admitRemoteCall,
   bookSpend,
-  haltBook,
   mergedIntervalMs,
   planDrain,
   remoteEvents,
@@ -14,11 +13,16 @@ import {
   replacePersistedSpend,
   resetRemoteLayerForTests,
   runRemoteCall,
+  interpretCancelResult,
 } from "@/lib/remote/layer";
 import { drainBookCalls, setDrainHooksForTests } from "@/lib/remote/drain-book";
 import { prewarmS2Clone, setPrewarmSpawnForTests } from "@/lib/remote/prewarm";
-import { reconcileRemoteCalls, setBrakeHealerForTests } from "@/lib/remote/reconcile";
-import { setS2CallListerForTests } from "@/lib/remote/s2-call-watch";
+import {
+  reconcileRemoteCalls,
+  setBrakeHealerForTests,
+  setBrakeMaxReaderForTests,
+} from "@/lib/remote/reconcile";
+import { cancelS2Call, setS2StatusBudgetForTests } from "@/lib/tts/providers/modal-clone-call";
 import {
   hydrateOpenRemoteCalls,
   loadActiveBrakes,
@@ -58,9 +62,10 @@ afterEach(() => {
   setDrainHooksForTests(null);
   setModalCloneWarmSpawnerForTests(null);
   setModalCloneCallCancellerForTests(null);
-  setS2CallListerForTests(null);
   setPrewarmSpawnForTests(null);
   setBrakeHealerForTests(null);
+  setBrakeMaxReaderForTests(null);
+  setS2StatusBudgetForTests(null);
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -380,25 +385,18 @@ describe("remote book path", () => {
     expect(blocked.kind).toBe("blocked");
   });
 
-  it("stores a function-call id when the response times out before headers, and Stop cancels it", async () => {
+  it("stores the spawned call id before the poll, and Stop cancels that id", async () => {
     await resetDatabase();
     stubModalEndpoints(vi.stubEnv);
     vi.stubEnv("MODAL_S2_TOKEN", "test-token");
     vi.stubEnv("MODAL_TOKEN_ID", "test-token");
-    setS2CallListerForTests(async (query) => [
-      {
-        callId: "fc-before-headers",
-        jobId: query.jobId,
-        tag: query.tag,
-        status: "pending",
-        raw: query.tag,
-      },
-    ]);
+    setS2StatusBudgetForTests(250);
     const kicks: string[] = [];
     setModalCloneWarmSpawnerForTests(() => {
       kicks.push("cover");
     });
-    let aborted = false;
+    let idStoredBeforePoll = false;
+    const httpCancels: string[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
@@ -408,11 +406,29 @@ describe("remote book path", () => {
             headers: { "content-type": "application/json" },
           });
         }
-        haltBook("book-timeout", "cancelled");
-        aborted = init?.signal?.aborted === true;
-        const err = new Error("timed out before headers");
-        err.name = "TimeoutError";
-        throw err;
+        const payload = JSON.parse(String(init?.body ?? "{}")) as {
+          items?: unknown;
+          call_id?: string;
+          cancel?: boolean;
+        };
+        if (payload.cancel) {
+          httpCancels.push(String(payload.call_id));
+          return new Response(
+            JSON.stringify({ call_id: payload.call_id, status: "cancelled" }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+        if (payload.call_id && !payload.items) {
+          const flight = remoteFlights().find((row) => row.jobId === "book-timeout");
+          idStoredBeforePoll = flight?.callId === "fc-1";
+          const err = new Error("status timed out");
+          err.name = "TimeoutError";
+          throw err;
+        }
+        return new Response(JSON.stringify({ call_id: "fc-1", status: "pending" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       })
     );
     await expect(
@@ -423,27 +439,25 @@ describe("remote book path", () => {
         "book-timeout"
       )
     ).rejects.toBeInstanceOf(ModalCloneColdError);
-    expect(aborted).toBe(true);
+    expect(idStoredBeforePoll).toBe(true);
     expect(kicks).toEqual([]);
-    expect(kickModalCloneSnapshotWarm("while the call was live")).toBe(false);
+    expect(kickModalCloneSnapshotWarm("while the call was live", Date.now(), "other-book")).toBe(
+      false
+    );
     const live = remoteFlights().find((flight) => flight.jobId === "book-timeout");
-    expect(live).toMatchObject({ status: "still_live", callId: "fc-before-headers" });
+    expect(live).toMatchObject({ status: "still_live", callId: "fc-1" });
     const still = remoteEvents().find((event) => event.outcome === "still_live");
-    expect(still?.callId).toBe("fc-before-headers");
+    expect(still?.callId).toBe("fc-1");
     await persistRemoteEvent(still!);
     resetRemoteLayerForTests();
     expect(await hydrateOpenRemoteCalls()).toBe(1);
     expect(remoteFlights()[0]).toMatchObject({
       status: "still_live",
-      callId: "fc-before-headers",
+      callId: "fc-1",
     });
 
-    const cancelled: string[] = [];
     setDrainHooksForTests({
-      cancel: async (callId) => {
-        cancelled.push(callId);
-        return { status: "terminated" };
-      },
+      cancel: (callId) => cancelS2Call(callId),
       brake: async () => {
         throw new Error("must not brake a terminal cancel");
       },
@@ -452,10 +466,10 @@ describe("remote book path", () => {
       readMax: async () => 20,
     });
     await drainBookCalls("book-timeout", "cancelled");
-    expect(cancelled).toEqual(["fc-before-headers"]);
-    expect(
-      remoteFlights().find((flight) => flight.callId === "fc-before-headers")?.status
-    ).toBe("cancelled");
+    expect(httpCancels).toEqual(["fc-1"]);
+    expect(remoteFlights().find((flight) => flight.callId === "fc-1")?.status).toBe(
+      "cancelled"
+    );
   });
 
   it("does not spawn cover while an S2 flight is running or still live", async () => {
@@ -489,8 +503,11 @@ describe("remote book path", () => {
       )
     ).rejects.toBeInstanceOf(ModalCloneColdError);
     expect(kicks).toEqual([]);
-    expect(remoteFlights().some((flight) => flight.status === "still_live")).toBe(true);
-    expect(kickModalCloneSnapshotWarm("placement exceeded restore budget")).toBe(false);
+    const live = remoteFlights().find((flight) => flight.jobId === "book-cover");
+    expect(live).toMatchObject({ status: "still_live" });
+    expect(live?.callId).toBeFalsy();
+    expect(kickModalCloneSnapshotWarm("own book", Date.now(), "book-cover")).toBe(false);
+    expect(kickModalCloneSnapshotWarm("other book", Date.now(), "book-other")).toBe(true);
   });
 
   it("restores the saved max when containers stay up and when the brake throws", async () => {
@@ -579,16 +596,28 @@ describe("remote book path", () => {
     expect(braked).toBe(false);
   });
 
-  it("heals a brake that was left active", async () => {
+  it("heals a brake that was left active only while the live max is still 0", async () => {
     await resetDatabase();
     await saveActiveBrake("echomancer-s2-clone", 17);
     const restored: number[] = [];
     setBrakeHealerForTests(async (_app, max) => {
       restored.push(max);
     });
+    setBrakeMaxReaderForTests(async () => 0);
     await reconcileRemoteCalls();
     expect(restored).toEqual([17]);
     expect(await loadActiveBrakes()).toEqual([]);
+
+    await saveActiveBrake("echomancer-s2-clone", 17);
+    setBrakeMaxReaderForTests(async () => 12);
+    await reconcileRemoteCalls();
+    expect(restored).toEqual([17]);
+    expect(await loadActiveBrakes()).toEqual([]);
+  });
+
+  it("treats a spaced init failure as a terminal cancel", () => {
+    expect(interpretCancelResult({ status: "init failure" })).toBe("terminal");
+    expect(interpretCancelResult({ status: "pending", threw: "NotFound" })).toBe("still_live");
   });
 
   it("does not double-count dollars after a reload", async () => {
@@ -672,5 +701,10 @@ describe("remote book path", () => {
     const source = readFileSync(new URL("./drain-book.ts", import.meta.url), "utf8");
     expect(source).toContain("--print-max");
     expect(source).not.toContain("MODAL_S2_MAX_GPUS");
+    expect(source).not.toContain("--profile");
+    expect(source).not.toContain("ntemusejoel");
+    const reconcile = readFileSync(new URL("./reconcile.ts", import.meta.url), "utf8");
+    expect(reconcile).not.toContain("--profile");
+    expect(reconcile).not.toContain("ntemusejoel");
   });
 });

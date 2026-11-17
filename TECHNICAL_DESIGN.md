@@ -1191,7 +1191,7 @@ for that one recovery.
 | `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at about 2.9× realtime against 35–65× for a full one. Those multiples are audio-seconds per wall-second, measured, not a rate the next book is guaranteed to hit. `modalLaneCharCap` is the cold-wait generation budget (`modalCloneColdWaitMs` minus `MODAL_LANE_RESTORE_MARGIN_MS`, 70 s) times `MODAL_LANE_CHARS_PER_SECOND` (100). It is not the steady-state 60 s timeout. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a cold lane. `planModalCloneBookWave` is the book schedule: section 0 alone and cold-sized, except a short piece (about 1,959 characters / ~2.1 minutes) whose whole remaining book adds no generation beyond that section and so goes out as one call, then the largest proxy-safe batch while `clonePoolStillWarm` (default hold 10s) — each call after section 0 is the largest prefix that fits the warm character cap, the response body, and the 400s wait, and one cold-sized call again after that hold. It is not sized so playback at 1.5× stays ahead. Warm calls plan one row at `MODAL_S2_NARROW_FPS` (default 60), four rows at `MODAL_S2_WIDE_FPS` (default 190), and a 24-row call at the measured 528 chars/s (~33×), with the widths between four and 24 interpolated. Transfer is 12s per 43,907 characters. The wait is `modalCloneWarmWaitMs` (400s, under the 542s proxy kill). The 1.5× buffer is reported and does not choose the page. A book of 20,000 characters or less shares an already-running GPU even when the ceiling has room. The warm character cap is one batch of the widest section (24 × 6,000), then the warm wait and, while audio is inline, the 80 MiB body. Section width comes from `planCloneSectionChars`: 1,000 for section 0, one call for a book of 20,000 characters or less, then a 1–2 minute page, a 5–6 minute page, and even pages inside 2,500–6,000 characters. While the container returns `audio_b64` the 80 MiB body keeps a 10-hour book at 22-row pages. An `audio_transport: r2` container uploads the MP3s, so that book is 24-row pages. `simulateClonePlayback` plays a 10-hour book at 1× and is what fails if that ramp stalls. `simulateCloneFleet` gives each book that ramp until the GPU ceilings, then one overflow pair. `chooseCloneGpuTurn` is that overflow schedule: the next unstarted book gets one section once every playing listener keeps slack, then each turn is the feeding call with the least silence and the highest characters per wall second. A one-row call does not feed two 1.5× listeners. `simulateCloneListeners` replays that loop for two and three books. `planMixedCloneBatch` packs rows from several books into one call, each with its own reference; the deployed container takes one reference for the call, so `MODAL_S2_MIXED_BOOK_BATCH` stays off and the tick does not send that payload. `modalWarmLaneCharLimit` is the minimum of that batch page, the warm-wait budget at the width's realtime factor, and an 80 MiB base64 body estimate; `MODAL_S2_WARM_LANE_MAX_CHARS` can only lower it. `sectionSeedEpoch` turns a retry into a different take. |
 | `tts/providers/modal-clone-prefetch.ts` | `selectCloneRenderIndexes` fills the batch with cache misses and steps over takes already stored. `selectClonePublishBatch` walks claimable indexes in order and stops at the publish window (8), at an index still on the GPU, and at the first uncached index. |
  | `tts/providers/modal-clone-dispatch.ts` | Runs the lanes and stages every rendered section. `bookWave` forces one lane even when the caller passed a fan-out, does not take the old cap-1 `modal-clone` slot (the durable cap is `modal_gpu_leases`), and pipelines the ramp: the next call starts when the previous returns, and `publishStaged` masters that call's audio without holding the GPU. `firstLight` renders section 0 alone (or the whole short piece, when that one call is no slower), publishes it through the real per-section path, and only then starts the ramp on that same GPU. A container answers a whole batch together, so a section 0 batched beside a neighbour is exactly as late as that neighbour, and a 24-row call behind one minute of audio stalls the listener. If section 0 cannot be placed the ramp is skipped. A gateway miss on a warm call is retried as one cold section and does not kick `::cover`. A gateway miss (502/503/504) that misses the restore budget is retried once on another container; a pool that is already empty is not. A client timeout (`clientAborted`) is not retried in the same dispatch: the sync handler keeps rendering those sections, and the book parks. A warm-budget call parks for the warm HTTP wait (400s). A first-light HTTP wait is `MODAL_S2_PLACEMENT_BUDGET_MS` (default 360s, capped at 482s). The 75s figure stays the pack abort only. A timeout after that budget parks for the rest of the restore plus opening generation at the narrow rate (~98s), inside the 180s scaledown. A started container is not aborted and is not cancelled. An unstarted pending call is cancelled and the job is sealed so the retry does not open a second GPU. A backoff that posted nothing parks only for the remaining 30s. A positive hold leaves the row `processing` with a lease token this process does not hold, expiring with that hold, because a claim that lists `queued` rows and does not read `sched_not_before` would take a queued park early; the VM claim waits for the same lease. That park starts `clone_wait_started_at` when unset and switches to Fish once `MODAL_S2_DEFER_MS` is spent. A published section clears the stored clock and the in-memory copy, so a later timeout in the same tick does not switch a book that already published. `cold` is set when nothing was staged, so the tick can park instead of switching. A missed placement kicks the off-path RPC warm only when no S2 flight is `running` or `still_live`. `committedCall` posts the indexes `chooseCloneGpuTurn` already sized, so a growth call wider than the buffer is not re-planned down to one row. |
- | `tts/providers/modal-clone-warm.ts` | `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` after a placement misses the restore budget (20 min cooldown, off the book path, may sit through a compile). It returns false while any S2 flight is `running` or `still_live`. `prewarmModalCloneSnapshot` does not spawn: a side cover is a second container under `max_inputs=1` and the book's `/synthesize_batch` does not join it. `MODAL_S2_WARM_HOOK=0` disables the kick. |
+ | `tts/providers/modal-clone-warm.ts` | `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` after a placement misses the restore budget (20 min cooldown, off the book path, may sit through a compile). It returns false while an S2 flight that already has a function-call id is `running` or `still_live`, and while this book's own flight is in those states before an id is stored. A flight with no id does not block another book. `prewarmModalCloneSnapshot` does not spawn: a side cover is a second container under `max_inputs=1` and the book's `/synthesize_batch` does not join it. `MODAL_S2_WARM_HOOK=0` disables the kick. |
  | `tts/providers/modal-clone-pool-warm.ts` | `prewarmClonePoolForUpload` and `prewarmClonePoolForUser` (`POST /clone-prewarm` from the voice list) return false and do not start a GPU. A cover started before the book posts `/synthesize_batch` is a spare container. The synthesize call is the one the book uses. |
 | `tts/process-job.ts` | `admitModalCloneGpu` leases one GPU per book (`modal_gpu_leases`) and only then calls `chooseCloneGpuTurn`, when a ceiling is already full. `resolveCloneProviderPin` makes the one engine decision; `deferForColdClonePool` parks the book, arms `clone_wait_started_at`, and only after `MODAL_S2_DEFER_MS` pins it to `fish` (the same voice) with a warning — or, with no `FISH_API_KEY`, parks again rather than substituting anything. A cold section does not burn one of the section's attempts. `takehomeSectionCacheKey` is the single content-addressed key for a take — section-0 `balanced` latency plus the per-engine variant — shared by the lane prefetch and the per-section read, so a prefetched take is always found rather than paid for twice. The prefetch skips indexes that already hit that key (`selectCloneRenderIndexes`); `S2 lane staged` is only a GPU row that was just written. Already-staged indexes are mastered while the next uncached batch renders, and a tick with nothing staged still publishes one window of 8 afterwards. `narrationSpeed` is not calibrated on a Modal tick, because the batch request does not send it and a changed speed would miss the take just staged. |
 | `modal/s2_contract.py` | Reference-clip and transcript validation, sampling parsing, lane planning, snapshot fingerprint, per-call seeding, container limits, the `GpuExecutor` that owns the CUDA context, boot provenance, the **clone conditioning recipe**: `history_anchor` (anchor each unit to the row's first take), `inserted_pause_s` (clause / sentence / paragraph ladder), the `UNIT_MAX_CHARS` / `MERGE_PARA_MAX_CHARS` / pause constants, `units_summary` (the unit shape a section went out as), and **`split_long_text`** — the total unit splitter (whole paragraph → balanced sentence takes → clause → word → raw slice), which can never emit an over-long unit and therefore can never make a section fail. Stdlib only, so the GPU image gains no dependency and every rule runs in tests. |
@@ -2871,26 +2871,39 @@ S2, Fish, Kokoro (Drew, Walter, George), Modal CPU, clone previews, and the
 S2 prewarm all enter through `src/lib/remote/layer.ts`. One flight per
 provider, book, and section: a second start joins the running call or is
 refused while that call is still live. A refusal is `ModalCloneHeldError`.
-It does not kick `::cover` and it does not start the Fish clock. A Modal
-spawn that may still be running stays `still_live` until its stored
-function-call id is terminal. The book path tags the request and reads that
-id from the function-call listing while the HTTP body is still outstanding,
-so a timeout before response headers still has an id. Stop aborts that
-fetch (`bindFlightAbort`) and cancels the stored id. A completed HTTP
-response, including an abort of Fish, Kokoro, or Modal CPU, is retryable.
-`still_live` is not cleared by Stop; it clears when that id is terminal.
+It does not kick `::cover` and it does not start the Fish clock. The S2 book
+path is submit-then-poll. `POST /synthesize_batch` spawns the GPU render and
+returns `{call_id, status:"pending"}` immediately. The worker writes that id
+on the flight before it polls. The same endpoint with `{call_id}` or
+`?call_id=` returns status via `FunctionCall.get(timeout=1)`, and
+`{call_id, cancel:true}` calls `.cancel(terminate_containers=True)`. Stop
+and the drain cancel by that HTTP call. There is no function-call listing
+and no tag match: the CLI listing does not include the request body. A
+timeout after the id is stored stays `still_live` until that id is terminal.
+A completed HTTP response, including an abort of Fish, Kokoro, or Modal CPU,
+is retryable. `still_live` is not cleared by Stop.
+
+Deploy the Modal app before the worker. The worker's accept wait is 10s. An
+older container that holds the connection until the GPU finishes times out
+that accept with no id. A body that already contains `items` inside the
+accept window is the finished audio.
 
 `FunctionCall.cancel(terminate_containers=True)` that returns NotFound, or
-any status that is not terminal, is still live. The drain brakes the shared
+any status that is not terminal (`init failure` included), is still live.
+The drain cancels through the HTTP endpoint, using `MODAL_TOKEN_ID` /
+`MODAL_TOKEN_SECRET`. It does not pass a Modal profile. It brakes the shared
 autoscaler only when that cancel is still spawning and, re-checked
 immediately before the brake, no other S2 book has a live call. It waits
 until the extra containers are gone, or until that wait expires, and then
 restores the live max read with `--print-max` before the brake. A throw
-after the brake restores the same max. A brake that is still marked active
-after a restart is healed by the hourly reconcile. `min_containers` stays 0.
-It does not stop a container first, and it does not stop the Modal app.
-`planDrain(0)` restores 0, not 1. `::cover` is not started while any S2
-flight is `running` or `still_live`.
+after the brake restores the same max. The hourly heal restores a brake row
+only when the live max is still 0. Any other live cap is left alone and the
+row is cleared, so a later hour does not overwrite a cap set after the drain.
+`min_containers` stays 0. It does not stop a container first, and it does not
+stop the Modal app. `planDrain(0)` restores 0, not 1. Autoscaler CLI calls
+are single-flight. `::cover` is blocked for every book by an S2 flight that
+has a function-call id and is `running` or `still_live`. A flight with no id
+yet blocks cover only for its own book.
 
 A budget breach fails that book. It does not park it as cold and it does
 not switch narrator. Dollars come from persisted `remote_calls` rows, stored
@@ -2900,8 +2913,7 @@ Vitest budgets are off unless `REMOTE_ENFORCE_BUDGETS=1`.
 
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal
 CPU apps. Each has `min_containers: 0`. Startup and the hourly pass load
-the newest row per `flight_key` and settle listed function calls that are
-already terminal. A health check with no restore sample skips. The clone
+the newest row per `flight_key`. A health check with no restore sample skips. The clone
 prewarm is one restore-only RPC that cancels itself on timeout. The
 post-deploy cover reads the live max, forces the `ntemusejoel` profile,
 and restores that max with `--scaledown-window`.
