@@ -76,7 +76,7 @@ describe("GET /api/tts/live", () => {
     const { GET } = await import("@/app/api/tts/live/route");
     const response = await GET(
       await buildRequest(
-        `/api/tts/live?catalogVoiceId=${catalogIdForClone(clone.id)}`,
+        `/api/tts/live?catalogVoiceId=${catalogIdForClone(clone.id)}&text=${encodeURIComponent("The harbor was quiet at dawn, and the bell rang twice.")}`,
         { userId: USER_A, method: "GET" }
       )
     );

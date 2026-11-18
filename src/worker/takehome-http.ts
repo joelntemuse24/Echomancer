@@ -42,7 +42,10 @@ export interface RouteTakehomeWorkerInput {
    */
   prewarmClonePool?: (userId: string) => Promise<boolean> | boolean;
   drainBook?: (jobId: string) => Promise<void> | void;
-  bakeClonePreview?: (catalogVoiceId: string) => Promise<void> | void;
+  bakeClonePreview?: (
+    catalogVoiceId: string,
+    opts?: { force?: boolean }
+  ) => Promise<void> | void;
   /**
    * One no-task POST per pool. The caller already holds the shared lease.
    * Busy is reported as ready. This does not insert a task.
@@ -240,14 +243,19 @@ export async function routeTakehomeWorkerRequest(
       return json(401, { ok: false, error: "Unauthorized" });
     }
     let catalogVoiceId = "";
+    let force = false;
     try {
-      const parsed = JSON.parse(input.bodyText || "{}") as { catalogVoiceId?: unknown };
+      const parsed = JSON.parse(input.bodyText || "{}") as {
+        catalogVoiceId?: unknown;
+        force?: unknown;
+      };
       if (typeof parsed.catalogVoiceId === "string") catalogVoiceId = parsed.catalogVoiceId.trim();
+      force = parsed.force === true;
     } catch {
       catalogVoiceId = "";
     }
     if (!catalogVoiceId) return json(400, { ok: false, error: "catalogVoiceId is required" });
-    void Promise.resolve(input.bakeClonePreview?.(catalogVoiceId)).catch((err) => {
+    void Promise.resolve(input.bakeClonePreview?.(catalogVoiceId, { force })).catch((err) => {
       console.warn("[takehome-worker] clone preview bake failed", err);
     });
     return json(202, { ok: true, catalogVoiceId });

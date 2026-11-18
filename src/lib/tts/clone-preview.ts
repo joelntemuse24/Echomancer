@@ -17,11 +17,10 @@
  *
  * ## Engine
  *
- * A clone preview is rendered by the engine that renders the clone's books —
- * S2-Pro when the pool is configured, direct Fish otherwise. There is no
- * Drama 3 rung: its take is a different voice, and storing one under this
- * clone's key is exactly the 2026-11-06 incident. So a preview either comes
- * from the right engine or the request fails visibly.
+ * Books may use the S2 pool. The preview bake does not. It is one Fish render
+ * of `PREVIEW_TEXT` with this clone's `reference_id`, stored under the `fish`
+ * key. Lookup still finds an older `s2-pro` take, that fish take, and the
+ * legacy Fish 2.1 file. Drama 3 has no key.
  */
 
 import type { DeliveryUserInput } from "@/lib/tts/delivery-settings";

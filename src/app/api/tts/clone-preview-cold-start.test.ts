@@ -16,28 +16,19 @@
  *
  * The request route no longer renders. These tests pin the worker bake:
  *
- *   - a stored clip is served with **no** provider call at all (the normal case
- *     after the first render, and the case that must be instant);
- *   - a render against a pool that is not **provably** warm is refused at once
- *     with `PREVIEW_ENGINE_COLD`, opens no synthesis request, and starts a
- *     restore;
- *   - a render against a warm pool is bounded by the route's own budget, never
- *     by the book's cold-restore budget;
- *   - concurrent taps produce one stored take, not one per request;
- *   - a failed or empty render stores nothing, so no take from a substitute
- *     engine can ever be served.
+ *   - a stored clip is served with **no** provider call at all;
+ *   - a missing clip is baked by Fish (`reference_id` of this clone) and
+ *     stored under the fish key, even when the S2 pool is cold or unprobed;
+ *   - that bake does not call a Modal host and does not start a restore;
+ *   - concurrent bakes share one Fish call;
+ *   - a failure is terminal until Retry, and Retry waits out the backoff.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { USER_A, buildRequest, resetDatabase, routeParams } from "@/test/harness";
 import { insertClonedVoice } from "@/lib/turso/cloned-voices";
 import { catalogIdForClone } from "@/lib/tts/fish-clone";
-import {
-  clonePreviewReadPaths,
-  clonePreviewWritePath,
-  findStoredClonePreview,
-  planClonePreview,
-} from "@/lib/tts/clone-preview";
+import { clonePreviewWritePath, planClonePreview } from "@/lib/tts/clone-preview";
 import {
   clonePreviewStoragePath,
   legacyClonePreviewStoragePath,
@@ -46,12 +37,15 @@ import {
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { uploadFile } from "@/lib/storage";
 import { resetModalCloneRuntimeForTests } from "@/lib/tts/providers/modal-clone";
-import { resetModalCloneWarmForTests } from "@/lib/tts/providers/modal-clone-warm";
 import {
-  MODAL_CLONE_COLD_WAIT_DEFAULT_MS,
-  MODAL_CLONE_TIMEOUT_MAX_MS,
-} from "@/lib/tts/providers/modal-clone-guard";
-import { setModalCloneWarmSpawnerForTests } from "@/lib/tts/providers/modal-clone-warm";
+  resetModalCloneWarmForTests,
+  setModalCloneWarmSpawnerForTests,
+} from "@/lib/tts/providers/modal-clone-warm";
+import {
+  CLONE_PREVIEW_BACKOFF_MS,
+  resetClonePreviewBakeForTests,
+  setClonePreviewNowForTests,
+} from "@/lib/tts/clone-preview-job";
 
 const CLONE_ID = "e552d5a5-8f2f-484d-9399-800ddacba85c";
 const BATCH_HOST = "https://acme--echomancer-s2-clone-synthesize-batch.modal.run";
@@ -120,32 +114,11 @@ function recordFetch(handler: (call: Call) => Response | Promise<Response>) {
   return { calls, fn, synthesisCalls: () => calls.filter((c) => c.method === "POST") };
 }
 
-/** The ready probe says the pool has a live container of this build. */
-function warmReady() {
-  return new Response(JSON.stringify({ ready: true, warm_containers: 1, build: "abc123" }), {
+function fishMp3(fill = 9) {
+  return new Response(fakeMp3(fill), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "audio/mpeg" },
   });
-}
-
-/** The ready probe says nothing is warm (the normal state after idle). */
-function coldReady() {
-  return new Response(
-    JSON.stringify({ ready: false, warm_containers: 0, build: "abc123" }),
-    { status: 503, headers: { "content-type": "application/json" } }
-  );
-}
-
-function batchOk(fill = 9) {
-  return new Response(
-    JSON.stringify({
-      items: [{ key: "preview", audio_b64: fakeMp3(fill).toString("base64"), duration_s: 5.2, units: 1 }],
-      build: "abc123",
-      container_id: "c1",
-      boot: "restored",
-    }),
-    { status: 200, headers: { "content-type": "application/json" } }
-  );
 }
 
 function configureModal() {
@@ -183,16 +156,22 @@ afterEach(() => {
   delete process.env.MODAL_S2_READY_URL;
   delete process.env.MODAL_S2_SYNTHESIZE_URL;
   delete process.env.CLONE_TTS_PROVIDER;
+  delete process.env.WORKER_URL;
+  delete process.env.WORKER_SECRET;
   resetModalCloneRuntimeForTests();
   resetModalCloneWarmForTests();
+  resetClonePreviewBakeForTests();
 });
 
 describe("a stored preview is a storage read", () => {
   it("serves the S2 take with zero outbound calls", async () => {
     const clone = await makeClone();
-    const stored = fakeMp3(11);
-    await putObject(clonePreviewWritePath(voiceOf(clone), planFor(clone))!, stored);
     configureModal();
+    const stored = fakeMp3(11);
+    await putObject(
+      clonePreviewWritePath(voiceOf(clone), planFor(clone), PREVIEW_TEXT, "s2-pro")!,
+      stored
+    );
     const { calls } = recordFetch(() => {
       throw new Error("no outbound call may happen for a stored preview");
     });
@@ -257,224 +236,184 @@ describe("a stored preview is a storage read", () => {
   });
 });
 
-describe("a cold pool never becomes a request that waits", () => {
-  it("refuses instantly instead of waiting out a restore", async () => {
+describe("a cold S2 pool does not block the Fish preview", () => {
+  function fishKey(clone: { id: string; fish_voice_id: string; model: string }) {
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    return clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish")!;
+  }
+
+  it("bakes through Fish and stores only the fish key", async () => {
     const clone = await makeClone();
     configureModal();
-    const { calls, synthesisCalls } = recordFetch((call) =>
-      call.url === READY_HOST ? coldReady() : batchOk()
-    );
-    const started = Date.now();
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-    const elapsed = Date.now() - started;
-
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.code).toBe("PREVIEW_ENGINE_COLD");
-    expect(body.error).toMatch(/starting up/i);
-    expect(body.error).toMatch(/nothing else was substituted/i);
-    // Not a synthesis call, and not even close to the book's restore budget.
-    expect(synthesisCalls()).toHaveLength(0);
-    expect(elapsed).toBeLessThan(2_000);
-    // The probe is the only call, and it was the ready host.
-    expect(calls.map((c) => c.url)).toEqual([READY_HOST]);
-  });
-
-  it("starts a restore so the next tap can read storage", async () => {
-    const clone = await makeClone();
-    configureModal();
-    process.env.MODAL_TOKEN_ID = "tok";
+    delete process.env.MODAL_S2_READY_URL;
     const spawned: string[][] = [];
     setModalCloneWarmSpawnerForTests((command, args) => {
       spawned.push([command, ...args]);
     });
-    recordFetch((call) => (call.url === READY_HOST ? coldReady() : batchOk()));
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    await bakeClonePreview(clone.id);
-
-    expect(spawned.length).toBe(1);
-    expect(spawned[0]!.join(" ")).toContain("s2_clone_warm.py::cover");
-    expect(await findStoredClonePreview(voiceOf(clone), planFor(clone))).toBeNull();
-    delete process.env.MODAL_TOKEN_ID;
-  });
-
-  it("reports a missing ready URL as cold instead of assuming warm", async () => {
-    // This was live production config on 2026-11-06: Vercel had the batch URL
-    // and the token but no `MODAL_S2_READY_URL`. The old code treated that as
-    // "assume reachable", so the preview opened a 150 s restore wait inside a
-    // 60 s function. Unprovable warmth must mean no synthesis.
-    const clone = await makeClone();
-    configureModal();
-    delete process.env.MODAL_S2_READY_URL;
-    const { synthesisCalls } = recordFetch(() => batchOk());
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-
-    expect(res.status).toBe(503);
-    expect((await res.json()).code).toBe("PREVIEW_ENGINE_COLD");
-    expect(synthesisCalls()).toHaveLength(0);
-  });
-
-  it("reports a probe timeout as cold", async () => {
-    const clone = await makeClone();
-    configureModal();
-    const { synthesisCalls } = recordFetch((call) => {
-      if (call.url === READY_HOST) throw new DOMException("timed out", "TimeoutError");
-      return batchOk();
-    });
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-    expect(res.status).toBe(503);
-    expect((await res.json()).code).toBe("PREVIEW_ENGINE_COLD");
-    expect(synthesisCalls()).toHaveLength(0);
-  });
-
-  it("refuses when the probe answer is not JSON", async () => {
-    // A reverse proxy's HTML error page is not a warm pool.
-    const clone = await makeClone();
-    configureModal();
-    const { synthesisCalls } = recordFetch((call) =>
-      call.url === READY_HOST
-        ? new Response("<html>bad gateway</html>", { status: 200 })
-        : batchOk()
-    );
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-    expect(res.status).toBe(503);
-    expect(synthesisCalls()).toHaveLength(0);
-  });
-});
-
-describe("a warm render is bounded and stored once", () => {
-  it("renders, stores under the engine key, and then replays from storage", async () => {
-    const clone = await makeClone();
-    configureModal();
-    const { synthesisCalls } = recordFetch((call) =>
-      call.url === READY_HOST ? warmReady() : batchOk(13)
-    );
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const first = await bakeClonePreview(clone.id);
-    const { GET } = await route();
-    expect(first.status).toBe(200);
-    expect(first.headers.get("x-echomancer-preview")).toBe("generated");
-    const bytes = Buffer.from(await first.arrayBuffer());
-    expect(synthesisCalls()).toHaveLength(1);
-
-    // The take is where GET and the live route look for it.
-    const stored = await readStoredClonePreview(
-      clonePreviewWritePath(voiceOf(clone), planFor(clone))!
-    );
-    expect(stored?.equals(bytes)).toBe(true);
-
-    const second = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
-    expect(second.status).toBe(200);
-    expect(second.headers.get("x-echomancer-preview")).toBe("stored");
-    expect(synthesisCalls()).toHaveLength(1);
-  });
-
-  it("uses a bounded wait, never the book's cold-restore budget", async () => {
-    const clone = await makeClone();
-    configureModal();
-    const { synthesisCalls } = recordFetch((call) =>
-      call.url === READY_HOST ? warmReady() : batchOk()
-    );
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    await bakeClonePreview(clone.id);
-
-    const post = synthesisCalls()[0]!;
-    expect(post.url).toBe(BATCH_HOST);
-    // The batch contract is used because no single-section host is configured —
-    // a single-section body posted at the batch host is a guaranteed 400.
-    expect((post.body as { items: unknown[] }).items).toHaveLength(1);
-    // And the wait this call could have been given is under a compile by a wide
-    // margin: it is the route budget, not `MODAL_S2_COLD_WAIT_MS`.
-    const routeBudget = 35_000;
-    expect(routeBudget).toBeLessThan(MODAL_CLONE_COLD_WAIT_DEFAULT_MS);
-    expect(routeBudget).toBeGreaterThan(MODAL_CLONE_TIMEOUT_MAX_MS / 2);
-  });
-
-  it("does not re-render when the take already exists", async () => {
-    const clone = await makeClone();
-    const stored = fakeMp3(21);
-    await putObject(clonePreviewWritePath(voiceOf(clone), planFor(clone))!, stored);
-    configureModal();
-    const { calls } = recordFetch(() => {
-      throw new Error("a stored take must not synthesize");
+    const { calls } = recordFetch((call) => {
+      if (call.url.includes("modal.run")) {
+        return new Response("upstream unavailable", { status: 503 });
+      }
+      return fishMp3(13);
     });
 
     const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
     const res = await bakeClonePreview(clone.id);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-echomancer-preview")).toBe("stored");
-    expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
+    expect(res.headers.get("x-echomancer-preview")).toBe("generated");
+    const bytes = Buffer.from(await res.arrayBuffer());
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.fish.audio/v1/tts");
+    expect((calls[0]!.body as { reference_id?: string }).reference_id).toBe("fish-ref-vdh");
+    expect(JSON.stringify(calls[0]!.body)).not.toMatch(/drama/i);
+    expect(spawned).toHaveLength(0);
+
+    const fishPath = fishKey(clone);
+    const s2Path = clonePreviewWritePath(voiceOf(clone), planFor(clone), PREVIEW_TEXT, "s2-pro")!;
+    expect((await readStoredClonePreview(fishPath))?.equals(bytes)).toBe(true);
+    expect(await readStoredClonePreview(s2Path)).toBeNull();
+
+    const { GET } = await route();
+    const replay = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("x-echomancer-preview")).toBe("stored");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not render on Play when a bake is already claimed", async () => {
+    const clone = await makeClone();
+    configureModal();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    const { calls } = recordFetch(() => new Response("{}", { status: 202 }));
+    const { GET } = await route();
+    const first = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    const second = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(first.status).toBe(202);
+    expect((await first.json()).code).toBe("PREVIEW_PREPARING");
+    expect(second.status).toBe(202);
+    expect((await second.json()).code).toBe("PREVIEW_PREPARING");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://worker.test/clone-preview");
+  });
+
+  it("shares one Fish call across overlapping bakes", async () => {
+    const clone = await makeClone();
+    configureModal();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { calls } = recordFetch(async (call) => {
+      if (call.url.includes("modal.run")) {
+        return new Response("cold", { status: 503 });
+      }
+      await gate;
+      return fishMp3(17);
+    });
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const first = bakeClonePreview(clone.id);
+    const second = bakeClonePreview(clone.id);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(calls.filter((call) => call.url.includes("fish.audio"))).toHaveLength(1);
+  });
+
+  it("stops after one failure until Retry's backoff has elapsed", async () => {
+    const clone = await makeClone();
+    configureModal();
+    let now = 1_700_000_000_000;
+    setClonePreviewNowForTests(() => now);
+    let attempts = 0;
+    const { calls } = recordFetch(() => {
+      attempts += 1;
+      if (attempts === 1) return new Response("no", { status: 422 });
+      return fishMp3(4);
+    });
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    const failed = await bakeClonePreview(clone.id);
+    expect(failed.status).toBe(409);
+    expect((await failed.json()).code).toBe("PREVIEW_BAKE_FAILED");
+    expect(calls).toHaveLength(1);
+
+    const again = await bakeClonePreview(clone.id);
+    expect(again.status).toBe(409);
+    expect(calls).toHaveLength(1);
+
+    const early = await bakeClonePreview(clone.id, { force: true });
+    expect(early.status).toBe(409);
+    expect((await early.json()).retryAfterMs).toBeGreaterThan(0);
+    expect(calls).toHaveLength(1);
+
+    now += CLONE_PREVIEW_BACKOFF_MS[0];
+    const retried = await bakeClonePreview(clone.id, { force: true });
+    expect(retried.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.url.includes("fish.audio"))).toBe(true);
+    expect(
+      await readStoredClonePreview(
+        clonePreviewWritePath(voiceOf(clone), planFor(clone), PREVIEW_TEXT, "s2-pro")!
+      )
+    ).toBeNull();
+    expect(await readStoredClonePreview(fishKey(clone))).not.toBeNull();
+  });
+
+  it("answers Play with the failure and does not enqueue again", async () => {
+    const clone = await makeClone();
+    let now = 1_700_000_000_000;
+    setClonePreviewNowForTests(() => now);
+    recordFetch(() => new Response("no", { status: 500 }));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    await bakeClonePreview(clone.id);
+
+    const { calls } = recordFetch(() => {
+      throw new Error("a failed preview must not bake again on GET");
+    });
+    const { GET, POST } = await route();
+    const get = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(get.status).toBe(409);
+    expect((await get.json()).code).toBe("PREVIEW_BAKE_FAILED");
+
+    const post = await POST(
+      await buildRequest(`/api/tts/clones/${CLONE_ID}/preview`, {
+        userId: USER_A,
+        method: "POST",
+        body: { retry: true },
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(post.status).toBe(409);
     expect(calls).toHaveLength(0);
+
+    now += CLONE_PREVIEW_BACKOFF_MS[0];
+    const later = await POST(
+      await buildRequest(`/api/tts/clones/${CLONE_ID}/preview`, {
+        userId: USER_A,
+        method: "POST",
+        body: { retry: true },
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(later.status).toBe(202);
+    expect(calls.filter((call) => String(call.url).includes("fish.audio"))).toHaveLength(0);
   });
 
-  it("answers concurrent taps with one synthesis and one stored file", async () => {
-    // Two taps a moment apart must not bill two renders. The first stores; the
-    // rest find that take.
+  it("asks the worker once when a clone is created", async () => {
     const clone = await makeClone();
-    configureModal();
-    const { synthesisCalls } = recordFetch(async (call) => {
-      if (call.url === READY_HOST) return warmReady();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      return batchOk(17);
-    });
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const first = await bakeClonePreview(clone.id);
-    expect(first.status).toBe(200);
-    const second = await bakeClonePreview(clone.id);
-    expect(second.status).toBe(200);
-    expect(second.headers.get("x-echomancer-preview")).toBe("stored");
-    expect(synthesisCalls()).toHaveLength(1);
-  });
-
-  it("stores nothing when the render fails", async () => {
-    const clone = await makeClone();
-    configureModal();
-    recordFetch((call) => {
-      if (call.url === READY_HOST) return warmReady();
-      return new Response(
-        JSON.stringify({ items: [{ key: "preview", error: "section has no speakable text" }] }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
-    });
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-    expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(body.code).toBe("PREVIEW_RENDER_FAILED");
-    expect(body.error).toMatch(/nothing else was substituted/i);
-    // Not anywhere: no substitute engine's bytes can be found later.
-    for (const path of clonePreviewReadPaths(voiceOf(clone), planFor(clone))) {
-      expect(await readStoredClonePreview(path)).toBeNull();
-    }
-  });
-
-  it("stores nothing when the render returns non-audio", async () => {
-    const clone = await makeClone();
-    configureModal();
-    recordFetch((call) => {
-      if (call.url === READY_HOST) return warmReady();
-      return new Response(JSON.stringify({ items: [{ key: "preview", audio_b64: "", duration_s: 5 }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
-
-    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-    const res = await bakeClonePreview(clone.id);
-    expect(res.status).toBe(502);
-    expect(await findStoredClonePreview(voiceOf(clone), planFor(clone))).toBeNull();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    const { calls } = recordFetch(() => new Response("{}", { status: 202 }));
+    const { enqueueClonePreviewBake } = await import("@/lib/tts/clone-preview-job");
+    await enqueueClonePreviewBake(catalogIdForClone(clone.id));
+    await enqueueClonePreviewBake(catalogIdForClone(clone.id));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://worker.test/clone-preview");
+    expect((calls[0]!.body as { force?: boolean }).force).toBe(false);
+    expect(calls[0]!.url).not.toContain("fish.audio");
   });
 });

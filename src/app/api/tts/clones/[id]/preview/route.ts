@@ -12,14 +12,17 @@
  *   2. the legacy engine-free preview key, which holds the Fish 2.1 Pro MP3s
  *      written before the S2 pool existed.
  *
- * Both are this clone's voice. When nothing is stored the route answers
- * `202 PREVIEW_PREPARING` and asks the worker to bake the clip. It does not
- * synthesize, and it does not call `/api/tts/live`.
+ * Both are this clone's voice. When nothing is stored, Play asks the worker
+ * for one Fish bake of `PREVIEW_TEXT` (the clone's own reference, never the
+ * S2 pool). A bake already running answers `202 PREVIEW_PREPARING` and does
+ * not start another. A failed bake answers `409 PREVIEW_BAKE_FAILED` until
+ * Retry. This route does not synthesize.
  *
- * ## POST: enqueue the same bake
+ * ## POST: the Retry button
  *
- * A stored take is replayed. A missing take is the worker's job. The request
- * path never renders a clone preview.
+ * `{ retry: true }` asks for one more Fish bake after the backoff. A stored
+ * take is still replayed, so Retry does not render a second time once the
+ * clip exists.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -35,22 +38,19 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import {
-  clonePreviewEngine,
   clonePreviewReadPaths,
-  clonePreviewWritePath,
   findStoredClonePreview,
   planClonePreview,
   previewAudioResponse,
 } from "@/lib/tts/clone-preview";
-import { enqueueClonePreviewBake } from "@/lib/tts/clone-preview-job";
+import {
+  claimClonePreviewBake,
+  CLONE_PREVIEW_BAKE_ENGINE,
+  dispatchClaimedClonePreviewBake,
+} from "@/lib/tts/clone-preview-job";
 
 export const runtime = "nodejs";
-/**
- * A cold S2 restore plus one line has to fit inside this. The render path does
- * not attempt a cold restore at all any more — it reports `PREVIEW_ENGINE_COLD`
- * and warms the pool instead — so this covers a warm container plus the
- * `PREVIEW_RENDER_BUDGET_MS` wait, with room for the storage write.
- */
+/** The request only reads storage or enqueues. The worker renders the line. */
 export const maxDuration = 60;
 
 // A cache probe is far cheaper than a synthesis call, so this limit is only
@@ -80,6 +80,36 @@ function storagePathOr404(): NextResponse {
   return NextResponse.json(
     { error: "That sample isn't available.", code: "NOT_FOUND" },
     { status: 404 }
+  );
+}
+
+/** One Fish bake, or the ledger's answer when one is already running or failed. */
+async function answerUnstoredPreview(
+  catalogVoiceId: string,
+  force: boolean
+): Promise<NextResponse> {
+  const claim = await claimClonePreviewBake(catalogVoiceId, { force });
+  if (claim.kind === "failed") {
+    return NextResponse.json(
+      {
+        error: "Couldn't prepare the preview.",
+        code: "PREVIEW_BAKE_FAILED",
+        retryAfterMs: claim.retryAfterMs,
+        engine: CLONE_PREVIEW_BAKE_ENGINE,
+      },
+      { status: 409 }
+    );
+  }
+  if (claim.kind === "start") {
+    await dispatchClaimedClonePreviewBake(catalogVoiceId, { force });
+  }
+  return NextResponse.json(
+    {
+      error: "Preparing preview",
+      code: "PREVIEW_PREPARING",
+      engine: CLONE_PREVIEW_BAKE_ENGINE,
+    },
+    { status: 202 }
   );
 }
 
@@ -131,26 +161,14 @@ export async function GET(
     );
     if (stored) return previewAudioResponse(stored.audio, "stored");
 
-    // Nothing stored yet. The worker bakes the clip. This request does not
-    // synthesize, and it does not fall through to `/api/tts/live`.
-    await enqueueClonePreviewBake(catalog.id);
-    return NextResponse.json(
-      { error: "Preparing preview", code: "PREVIEW_PREPARING" },
-      { status: 202 }
-    );
+    // Nothing stored yet. Play enqueues one Fish bake. A later poll does not.
+    return answerUnstoredPreview(catalog.id, false);
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-/**
- * Render the preview once, on the clone's own engine, and store it.
- *
- * The caller is the voice screen, after GET said `PREVIEW_NOT_STORED` or after
- * the person explicitly asked for a fresh sample. `allowFallback: false` is the
- * point of this route: a Modal fault surfaces here instead of being answered by
- * a hosted model that only approximates the voice.
- */
+/** Retry one Fish bake after a failed Play. A stored take is replayed as-is. */
 export async function POST(
   request: NextRequest,
   ctx: { params: Promise<{ id: string }> }
@@ -188,26 +206,21 @@ export async function POST(
       catalogVoiceId: catalog.id,
       text: PREVIEW_TEXT,
     });
-    const engine = clonePreviewEngine(catalog.id);
-    const writePath = clonePreviewWritePath(catalog, plan, PREVIEW_TEXT, engine);
-    if (!writePath) {
-      return NextResponse.json(
-        { error: "That sample isn't available.", code: "NOT_FOUND" },
-        { status: 404 }
-      );
-    }
+    const paths = clonePreviewReadPaths(catalog, plan);
+    if (paths.length === 0) return storagePathOr404();
 
-    // A render that lands twice must not bill twice: if the take is already
-    // there (including the legacy Fish 2.1 file), answer with it.
-    const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT, engine);
+    // A clip that already exists is the preview. Retry does not render it again.
+    const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT);
     if (existing) return previewAudioResponse(existing.audio, "stored");
 
-    // The 60s request path does not render. The worker bakes the clip.
-    await enqueueClonePreviewBake(catalog.id);
-    return NextResponse.json(
-      { error: "Preparing preview", code: "PREVIEW_PREPARING", engine },
-      { status: 202 }
-    );
+    let force = false;
+    try {
+      const body = (await request.json()) as { retry?: unknown };
+      force = body?.retry === true;
+    } catch {
+      force = false;
+    }
+    return answerUnstoredPreview(catalog.id, force);
   } catch (error) {
     return handleApiError(error);
   }

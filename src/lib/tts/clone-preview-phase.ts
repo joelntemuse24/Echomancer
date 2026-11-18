@@ -1,10 +1,18 @@
 export type ClonePreviewRead = "audio" | "preparing" | "failed";
 
-/** `202 PREVIEW_PREPARING` is a bake in progress. Anything else that is not audio failed. */
+/**
+ * Waits between re-reading storage after one Fish bake was enqueued.
+ * Each step is longer than the last, and the list ends. A poll does not
+ * start another render.
+ */
+export const CLONE_PREVIEW_POLL_MS = [2_000, 4_000, 8_000, 12_000] as const;
+
+/** `202 PREVIEW_PREPARING` is a bake in progress. `409 PREVIEW_BAKE_FAILED` is terminal. */
 export function classifyClonePreviewRead(
   status: number,
   code?: string | null
 ): ClonePreviewRead {
+  if (code === "PREVIEW_BAKE_FAILED" || status === 409) return "failed";
   if (status === 202 || code === "PREVIEW_PREPARING") return "preparing";
   if (status >= 200 && status < 300) return "audio";
   return "failed";
@@ -13,13 +21,17 @@ export function classifyClonePreviewRead(
 /** Visible caption beside the spinner while a clone sample is baking. */
 export const PREVIEW_PREPARING_LABEL = "Preparing preview…";
 
-export type PreviewControl = "play" | "preparing" | "stop";
+export type PreviewControl = "play" | "preparing" | "stop" | "retry";
+
+export const PREVIEW_RETRY_LABEL = "Try again";
 
 export function previewControl(input: {
   preparing: boolean;
   playing: boolean;
+  failed?: boolean;
 }): PreviewControl {
   if (input.preparing) return "preparing";
+  if (input.failed) return "retry";
   if (input.playing) return "stop";
   return "play";
 }
@@ -28,10 +40,12 @@ export function previewControl(input: {
 export function previewControlLabel(input: {
   preparing: boolean;
   playing: boolean;
+  failed?: boolean;
   name: string;
 }): string {
   const control = previewControl(input);
   if (control === "preparing") return `Preparing ${input.name}`;
+  if (control === "retry") return `Try ${input.name} again`;
   if (control === "stop") return `Stop ${input.name}`;
   return `Play ${input.name}`;
 }

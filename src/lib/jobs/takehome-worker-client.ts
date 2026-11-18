@@ -197,7 +197,10 @@ export async function requestBookDrain(jobId: string): Promise<boolean> {
 }
 
 /** Ask the worker to bake one clone preview. The request path does not render it. */
-export async function requestClonePreviewBake(catalogVoiceId: string): Promise<boolean> {
+export async function requestClonePreviewBake(
+  catalogVoiceId: string,
+  opts?: { force?: boolean }
+): Promise<boolean> {
   const url = takehomeWorkerUrl();
   const secret = takehomeWorkerSecret();
   if (!url || !secret || !catalogVoiceId.trim()) return false;
@@ -208,7 +211,7 @@ export async function requestClonePreviewBake(catalogVoiceId: string): Promise<b
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ catalogVoiceId }),
+      body: JSON.stringify({ catalogVoiceId, force: opts?.force === true }),
       signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     });
     return res.status >= 200 && res.status < 300;
