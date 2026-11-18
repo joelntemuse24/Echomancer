@@ -330,8 +330,21 @@ def test_class_shape_matches_the_documented_autoscaler_options(service):
     assert kwargs["min_containers"] == 0
     assert kwargs["enable_memory_snapshot"] is True
     assert kwargs["experimental_options"] == {"enable_gpu_snapshot": True}
-    # Hard cap is 1 until staging signs off four lanes.
+    # Hard cap is 1 until staging signs off four lanes. H100! stays pinned.
     assert kwargs["max_containers"] == 1
+    assert kwargs["min_containers"] == 0
+    assert str(kwargs["gpu"]) in {"H100!", "H100"}
+    assert ":" not in str(kwargs["gpu"])
+    volumes = kwargs["volumes"]
+    assert "/compile-cache" in volumes
+    env = kwargs["env"]
+    assert env["TORCHINDUCTOR_CACHE_DIR"].startswith("/compile-cache/")
+    assert env["TRITON_CACHE_DIR"].startswith("/compile-cache/")
+    assert env["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
+    assert env["TORCHINDUCTOR_AUTOGRAD_CACHE"] == "1"
+    assert env["S2C_COMPILE_CACHE"] == "1"
+    assert service.COMPILE_CACHE_VOLUME_NAME == "echomancer-compile-cache"
+    assert service.COMPILE_CACHE_MOUNT == "/compile-cache"
 
 
 def test_only_one_snapshot_hook_and_one_post_restore_hook(service):

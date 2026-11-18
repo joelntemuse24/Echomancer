@@ -796,7 +796,8 @@ class _BatchEngine:
         clearing `fn_cache`, so the next `self.step(...)` raises `TypeError`.
         Resetting Dynamo and re-wrapping `_decode_step` attaches a fresh
         `CUDAGraphTreeManager` while Inductor's warm disk cache
-        (`/opt/torchinductor`) reuses the compiled Triton kernels.
+        (`TORCHINDUCTOR_CACHE_DIR`; the clone app mounts that on the
+        compile-cache volume) reuses the compiled Triton kernels.
         """
         import torch
 

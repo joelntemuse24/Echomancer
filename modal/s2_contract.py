@@ -1716,3 +1716,113 @@ def placement_kind(
     return "slow"
 
 
+#: A ``status()`` answered this soon after ``ready_at`` was set on this process.
+#: Larger than that, the container was already up and the call was not a cold
+#: restore. A real restore prints ``status`` immediately after ``publish``.
+COLD_SINCE_READY_S = 20.0
+
+
+def graphs_captured(status) -> bool:
+    """True when boot replayed or recaptured the warmed decode graphs."""
+    if not isinstance(status, dict):
+        return False
+    graphs = str(status.get("graphs") or "")
+    return graphs.startswith(("ok(", "recaptured("))
+
+
+def restore_check_decision(
+    status,
+    *,
+    restore_s: float = RESTORE_WALL_S,
+    compile_s: float = COMPILE_WALL_S,
+    cold_since_ready_s: float = COLD_SINCE_READY_S,
+) -> str:
+    """What one ``max_containers=1`` placement means for the post-deploy check.
+
+    ``pass`` — cold restore and graphs captured. Stop.
+    ``compiled`` — graphs captured, but the wall clock built a snapshot or sat
+    in the slow band. After scale-to-zero, one more placement must ``pass``.
+    ``warm`` — graphs captured inside the restore budget, on a container that
+    was already up. Same follow-up as ``compiled``.
+    ``fail`` — error, or graphs were not captured.
+    """
+    if not isinstance(status, dict) or status.get("error"):
+        return "fail"
+    if not graphs_captured(status):
+        return "fail"
+    try:
+        wall = float(status.get("wall_s") or 0)
+    except (TypeError, ValueError):
+        return "fail"
+    kind = placement_kind(wall, restore_s=restore_s, compile_s=compile_s)
+    if kind != "restore":
+        return "compiled"
+    since = status.get("since_ready_s")
+    try:
+        since_s = 0.0 if since is None else float(since)
+    except (TypeError, ValueError):
+        since_s = 0.0
+    if since_s > cold_since_ready_s:
+        return "warm"
+    return "pass"
+
+
+def run_restore_check(
+    place: Callable[[], dict],
+    *,
+    scaledown: int = 15,
+    restore_s: float = RESTORE_WALL_S,
+    compile_s: float = COMPILE_WALL_S,
+    sleep: Callable[[float], None] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """One container at a time. At most one compile, then one cold restore.
+
+    ``place`` is a single ``status()`` RPC. This never starts a second call
+    until the first has returned, so it is safe while ``max_containers`` is 1.
+    A first call that is already a cold restore with captured graphs passes
+    without a second placement. A follow-up that does not restore fails; it
+    does not loop.
+    """
+    write = log or print
+    pause = sleep or time.sleep
+    first = place()
+    decision = restore_check_decision(
+        first, restore_s=restore_s, compile_s=compile_s
+    )
+    write(_restore_check_row(1, first, decision))
+    if decision == "pass":
+        write("[S2C] restore_check pass calls=1")
+        return True
+    if decision not in ("compiled", "warm"):
+        write("[S2C] restore_check fail calls=1")
+        return False
+    wait = fresh_gap_s(scaledown)
+    write(
+        f"[S2C] restore_check waiting {wait}s for scale-to-zero "
+        "before one cold restore"
+    )
+    pause(wait)
+    second = place()
+    decision2 = restore_check_decision(
+        second, restore_s=restore_s, compile_s=compile_s
+    )
+    write(_restore_check_row(2, second, decision2))
+    if decision2 == "pass":
+        write("[S2C] restore_check pass calls=2")
+        return True
+    write("[S2C] restore_check fail calls=2")
+    return False
+
+
+def _restore_check_row(index: int, status, decision: str) -> str:
+    if not isinstance(status, dict):
+        return f"[S2C] restore_check call={index} decision={decision} status=invalid"
+    return (
+        f"[S2C] restore_check call={index} decision={decision} "
+        f"wall={status.get('wall_s')} graphs={status.get('graphs') or 'missing'} "
+        f"boot={status.get('boot')} since_ready_s={status.get('since_ready_s')} "
+        f"id={status.get('container_id')} {status.get('error') or ''}"
+    ).rstrip()
+
+

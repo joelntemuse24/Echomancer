@@ -60,10 +60,11 @@ or the runbook's step 8c to raise it.
 A container count above zero is a report, not a reason to stop or scale
 anything from an agent.
 
-`scripts/s2/post-deploy-cover.sh` unsets `MODAL_TOKEN_ID` and
-`MODAL_TOKEN_SECRET` and forces `MODAL_PROFILE` (default `ntemusejoel`).
-That script also runs `modal run` and writes the autoscaler, so agents do
-not run it. `scripts/s2/set-live-autoscaler.py` and
+`scripts/s2/post-deploy-cover.sh` (and `scripts/s2/cover-max1.sh`, which
+execs it) unsets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` and forces
+`MODAL_PROFILE` (default `ntemusejoel`). It runs `modal run
+…::restore_check` — one container at a time, never a 3-wide fan-out —
+and writes the autoscaler, so agents do not run it. `scripts/s2/set-live-autoscaler.py` and
 `scripts/s2/drain-stuck-calls.py` drop those env vars only when `--profile`
 is passed. The drain refuses `--restore-max` above 1 on production before
 it brakes, so a refused restore cannot leave the cap at 0. Pass
@@ -864,19 +865,30 @@ busy-not-cold backstop.
   used when the URL is unset, or when the control body names a different
   protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
   this app rebuilds the H100 snapshots, because `render_batch` is on
-  `S2CloneWorker`. Run `::cover` after that deploy, then restart the worker.
+  `S2CloneWorker`. Run `scripts/s2/post-deploy-cover.sh` (`::restore_check`,
+one cold restore at `max_containers` 1) after that deploy, then restart
+the worker. The compile-cache volume (`echomancer-compile-cache`) keeps
+Inductor, Triton, and the torch mega-cache across that rebuild, keyed by
+torch version, GPU name, compute capability, `S2C_ENGINE`, and the
+compiled source. `S2C_COMPILE_CACHE=0` skips the volume. An empty or
+corrupt cache compiles the ordinary way and logs `compile_cache hit=miss`.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2
   flight already holds a function-call id. That kick is one RPC
   `status()`, with no proxy limit, if `MODAL_TOKEN_ID` or
   `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables the kick. That
-  process may sit through the 8–16 min compile so the variant gets a sticky
-  snapshot; the book does not. After a deploy, run `::cover` with scale-to-zero
-  between rounds until consecutive calls restore by wall time
-  (`placement_kind`), not until `boot=restored`. Modal needs 2–3 snapshots per
-  GPU type; scale-to-zero does not invalidate them, a redeploy does. HTTP
-  still cannot finish a snapshot.
+  process may sit through a compile so the variant gets a sticky
+  snapshot; the book does not. After a deploy, run
+  `scripts/s2/post-deploy-cover.sh` (`::restore_check`): one placement,
+  and if that placement compiled, one cold restore after scale-to-zero.
+  Judge it by wall time (`placement_kind`) and `graphs=ok(` /
+  `graphs=recaptured(`, not by `boot=restored`. A different H100 worker
+  variant still builds its own memory snapshot; the volume cache is what
+  keeps that from repeating the full Inductor compile. `::cover` with a
+  multi-round fan-out is no longer the post-deploy step. Scale-to-zero
+  does not invalidate a snapshot; a redeploy does. HTTP still cannot
+  finish a snapshot.
 - **One GPU thread owns the CUDA context.** A restored snapshot is pinned to the
   thread that owned it when it was taken. Modal serves a sync
   `@modal.fastapi_endpoint` on a fresh worker thread per request, and a
