@@ -37,10 +37,15 @@ export interface SaveBookmarkInput {
 export type BookmarkNotice = "saved" | "duplicate" | "error";
 
 export const BOOKMARK_NOTICE_TEXT: Record<BookmarkNotice, string> = {
-  saved: "Saved",
-  duplicate: "Already saved",
+  saved: "Bookmarked",
+  duplicate: "Already bookmarked",
   error: "Couldn't save bookmark",
 };
+
+/** The one-tap confirmation. The clock is the book's, not the current part's. */
+export function bookmarkSavedText(positionSeconds: number): string {
+  return `Bookmarked ${formatPlayClock(positionSeconds)}`;
+}
 
 export function cleanBookmarkLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;

@@ -26,6 +26,7 @@ import {
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
 import { libraryCardCanOpen, libraryCardCanPlay } from "@/lib/library/card-play";
+import { libraryResumeLabel } from "@/lib/player/playback-position";
 import { generationStatus } from "@/lib/player/generation-status";
 import { libraryStatus, UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
 import { etaLabelSuffix } from "@/lib/tts/eta";
@@ -84,7 +85,14 @@ interface Job {
   job_kind?: string | null;
   generation_mode?: string | null;
   tts_provider?: string | null;
-  segments?: Array<{ index: number; path: string; status: string }> | null;
+  segments?: Array<{
+    index: number;
+    path: string;
+    status: string;
+    durationSeconds?: number | null;
+  }> | null;
+  resume_position_seconds?: number | null;
+  resume_section_index?: number | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
@@ -249,8 +257,18 @@ export default function QueuePage() {
   /** Open the player — including while generating, so progress is visible. */
   const canOpen = (job: Job): boolean => libraryCardCanOpen(job);
 
+  const listenLabel = (job: Job): string =>
+    libraryResumeLabel({
+      status: job.status,
+      jobKind: job.job_kind,
+      positionSeconds: job.resume_position_seconds,
+      sectionIndex: job.resume_section_index,
+      durationSeconds: job.duration_seconds,
+      segments: job.segments,
+    }) ?? "Listen";
+
   const openLabel = (job: Job): string => {
-    if (canPlay(job)) return "Listen";
+    if (canPlay(job)) return listenLabel(job);
     if (job.status === "processing" || job.status === "queued" || job.status === "waiting") {
       return "Progress";
     }
@@ -641,9 +659,9 @@ export default function QueuePage() {
                       <Link
                         href={playerHref(job)}
                         className="inline-flex min-h-11 items-center gap-2 text-sm font-medium rounded-sm"
-                        aria-label={`Listen to ${job.book_title}`}
+                        aria-label={`${listenLabel(job)} ${job.book_title}`}
                       >
-                        Listen
+                        {listenLabel(job)}
                         <ArrowRight aria-hidden="true" className="w-4 h-4" />
                       </Link>
                     )}

@@ -281,7 +281,8 @@ CREATE INDEX IF NOT EXISTS idx_youtube_clips_queue ON youtube_clips (status, cre
 CREATE INDEX IF NOT EXISTS idx_youtube_clips_user_day ON youtube_clips (user_id, created_at);
 
 -- ==================== BOOKMARKS ====================
--- One playhead mark per tap. label is a snippet, not a note.
+-- One playhead mark per tap. label is kept for rows already stored.
+-- New marks leave it empty and store the book-clock timestamp.
 CREATE TABLE IF NOT EXISTS bookmarks (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -294,6 +295,18 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job
   ON bookmarks (user_id, job_id, section_index, position_seconds);
+
+-- ==================== PLAYBACK POSITIONS ====================
+-- Automatic resume. One row per listener per book. section_index is set
+-- only when earlier part durations were still unknown.
+CREATE TABLE IF NOT EXISTS playback_positions (
+  user_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  position_seconds REAL NOT NULL,
+  section_index INTEGER,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (user_id, job_id)
+);
 
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.

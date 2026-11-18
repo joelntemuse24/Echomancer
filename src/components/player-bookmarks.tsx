@@ -19,12 +19,15 @@ export function BookmarkList({
   bookmarks,
   onJump,
   onRemove,
+  placeLabel = bookmarkPlaceLabel,
   className,
   id,
 }: {
   bookmarks: readonly JobBookmark[];
   onJump: (bookmark: JobBookmark) => void;
   onRemove: (id: string) => void;
+  /** Book-clock timestamp. Falls back to the stored part clock for an old mark. */
+  placeLabel?: (bookmark: JobBookmark) => string;
   className?: string;
   id?: string;
 }) {
@@ -45,7 +48,7 @@ export function BookmarkList({
       ) : (
         <ul className="max-h-[min(16rem,50vh)] overflow-y-auto py-1">
           {bookmarks.map((bookmark) => {
-            const place = bookmarkPlaceLabel(bookmark);
+            const place = placeLabel(bookmark);
             return (
               <li key={bookmark.id} className="flex items-center">
                 <button
@@ -54,11 +57,6 @@ export function BookmarkList({
                   className="min-h-11 min-w-0 flex-1 px-3 py-2 text-left hover:bg-accent"
                 >
                   <span className="block font-sans text-xs text-foreground">{place}</span>
-                  {bookmark.label ? (
-                    <span className="block truncate font-sans text-[11px] text-muted-foreground">
-                      {bookmark.label}
-                    </span>
-                  ) : null}
                 </button>
                 <button
                   type="button"
@@ -86,24 +84,29 @@ export function PlayerBookmarks({
   disabled,
   pending = false,
   notice,
+  noticeText = null,
   onSave,
   onJump,
   onRemove,
+  placeLabel,
   defaultOpen = false,
 }: {
   bookmarks: readonly JobBookmark[];
   disabled: boolean;
   pending?: boolean;
   notice: BookmarkNotice | null;
+  /** "Bookmarked 33:12" once a tap has a clock. The notice kind picks the fallback. */
+  noticeText?: string | null;
   onSave: () => void;
   onJump: (bookmark: JobBookmark) => void;
   onRemove: (id: string) => void;
+  placeLabel?: (bookmark: JobBookmark) => string;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const rootRef = useRef<HTMLDivElement>(null);
   const listId = useId();
-  const message = notice ? BOOKMARK_NOTICE_TEXT[notice] : "";
+  const message = noticeText ?? (notice ? BOOKMARK_NOTICE_TEXT[notice] : "");
   const countLabel =
     bookmarks.length > 0 ? `Bookmarks, ${bookmarks.length}` : "Bookmarks";
 
@@ -190,6 +193,7 @@ export function PlayerBookmarks({
               setOpen(false);
             }}
             onRemove={onRemove}
+            placeLabel={placeLabel}
             className="absolute bottom-full left-1/2 mb-2 -translate-x-1/2"
           />
         </>
