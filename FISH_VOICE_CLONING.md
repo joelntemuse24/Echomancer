@@ -84,16 +84,17 @@ Two key families, and why:
 | `clone-preview-v2-<engine>` (`s2-pro` / `fish`) | A take from a known engine | New bakes write `fish` only. An older `s2-pro` file is still read. |
 | `clone-preview-v1` (engine-free, legacy) | The Fish 2.1 Pro previews rendered before the S2 pool existed | Nothing, today — read-only |
 
-Lookup tries the current engine's v2 key, then the legacy engine-free key. The
-legacy files are genuinely this clone's voice (Fish 2.1 trained the reference),
-already paid for, and already in storage, so an older clone plays instantly
-instead of paying a cold GPU restore to re-render the same line on S2. That is
-why there is no migration: reproducing the old hash makes them findable.
+Lookup tries the current engine's v2 key, then the other real engine's v2
+key (`fish` or `s2-pro`), then the legacy engine-free key. Both real engines
+speak the reference Fish trained. The legacy files are this clone's voice
+(Fish 2.1 trained the reference), already paid for, and already in storage, so
+an older clone plays instantly. There is no migration: reproducing the old
+hash makes those files findable.
 
-The engine name is in the current key precisely so a take from another engine
-can never be served as this clone's preview. On 2026-11-06 a Drama 3 fallback
-render was stored under an S2 key and then served as "the S2 preview"; the
-recipe bump and the single write path make that recurrence impossible.
+Drama 3 has no key, so a take from that path can never be served as this
+clone's preview. On 2026-11-06 a Drama 3 fallback render was stored under an
+S2 key and then served as "the S2 preview"; the recipe bump and the single
+write path (`fish` only) make that recurrence impossible.
 
 `tts/clone-preview.ts` owns the text and speed both routes derive, so the key
 always matches. A clone's one-liner ignores the person's delivery preferences

@@ -47,6 +47,7 @@ import {
   claimClonePreviewBake,
   CLONE_PREVIEW_BAKE_ENGINE,
   dispatchClaimedClonePreviewBake,
+  readClonePreviewBakeStatus,
 } from "@/lib/tts/clone-preview-job";
 
 export const runtime = "nodejs";
@@ -83,26 +84,19 @@ function storagePathOr404(): NextResponse {
   );
 }
 
-/** One Fish bake, or the ledger's answer when one is already running or failed. */
-async function answerUnstoredPreview(
-  catalogVoiceId: string,
-  force: boolean
-): Promise<NextResponse> {
-  const claim = await claimClonePreviewBake(catalogVoiceId, { force });
-  if (claim.kind === "failed") {
-    return NextResponse.json(
-      {
-        error: "Couldn't prepare the preview.",
-        code: "PREVIEW_BAKE_FAILED",
-        retryAfterMs: claim.retryAfterMs,
-        engine: CLONE_PREVIEW_BAKE_ENGINE,
-      },
-      { status: 409 }
-    );
-  }
-  if (claim.kind === "start") {
-    await dispatchClaimedClonePreviewBake(catalogVoiceId, { force });
-  }
+function bakeFailed(retryAfterMs: number): NextResponse {
+  return NextResponse.json(
+    {
+      error: "Couldn't prepare the preview.",
+      code: "PREVIEW_BAKE_FAILED",
+      retryAfterMs,
+      engine: CLONE_PREVIEW_BAKE_ENGINE,
+    },
+    { status: 409 }
+  );
+}
+
+function bakePreparing(): NextResponse {
   return NextResponse.json(
     {
       error: "Preparing preview",
@@ -111,6 +105,30 @@ async function answerUnstoredPreview(
     },
     { status: 202 }
   );
+}
+
+/** Polls only read the ledger. They do not reserve or start a Fish bake. */
+async function answerBakeStatus(catalogVoiceId: string): Promise<NextResponse> {
+  const claim = await readClonePreviewBakeStatus(catalogVoiceId);
+  if (claim.kind === "preparing") return bakePreparing();
+  return bakeFailed(claim.kind === "failed" ? claim.retryAfterMs : 0);
+}
+
+/** One Fish bake, or the ledger's answer when one is already running or failed. */
+async function answerUnstoredPreview(
+  catalogVoiceId: string,
+  force: boolean
+): Promise<NextResponse> {
+  const claim = await claimClonePreviewBake(catalogVoiceId, { force });
+  if (claim.kind === "failed") return bakeFailed(claim.retryAfterMs);
+  if (claim.kind === "start") {
+    const sent = await dispatchClaimedClonePreviewBake(catalogVoiceId, {
+      force,
+      ifUnsent: "fail",
+    });
+    if (!sent.ok) return bakeFailed(sent.retryAfterMs);
+  }
+  return bakePreparing();
 }
 
 export async function GET(
@@ -161,7 +179,10 @@ export async function GET(
     );
     if (stored) return previewAudioResponse(stored.audio, "stored");
 
-    // Nothing stored yet. Play enqueues one Fish bake. A later poll does not.
+    // Nothing stored yet. The first Play enqueues one Fish bake. A poll
+    // (`poll=1`) only reads the ledger, so it cannot start another.
+    const poll = new URL(request.url).searchParams.get("poll") === "1";
+    if (poll) return answerBakeStatus(catalog.id);
     return answerUnstoredPreview(catalog.id, false);
   } catch (error) {
     return handleApiError(error);

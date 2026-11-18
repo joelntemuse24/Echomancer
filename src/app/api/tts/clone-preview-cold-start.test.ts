@@ -416,4 +416,121 @@ describe("a cold S2 pool does not block the Fish preview", () => {
     expect((calls[0]!.body as { force?: boolean }).force).toBe(false);
     expect(calls[0]!.url).not.toContain("fish.audio");
   });
+
+  it("does not enqueue again when the worker rejects the bake", async () => {
+    const clone = await makeClone();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    const { calls } = recordFetch(() => new Response("no", { status: 500 }));
+    const { GET } = await route();
+    const first = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(first.status).toBe(409);
+    expect((await first.json()).code).toBe("PREVIEW_BAKE_FAILED");
+
+    const again = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(again.status).toBe(409);
+    const poll = await GET(
+      await buildRequest(`/api/tts/clones/${CLONE_ID}/preview?poll=1`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(poll.status).toBe(409);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://worker.test/clone-preview");
+    expect(calls.every((call) => !call.url.includes("fish.audio"))).toBe(true);
+    expect(calls.every((call) => !call.url.includes("modal.run"))).toBe(true);
+  });
+
+  it("a poll never starts a bake", async () => {
+    const clone = await makeClone();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    const { calls } = recordFetch(() => new Response("{}", { status: 202 }));
+    const { GET } = await route();
+    const poll = await GET(
+      await buildRequest(`/api/tts/clones/${clone.id}/preview?poll=1`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(poll.status).toBe(409);
+    expect((await poll.json()).code).toBe("PREVIEW_BAKE_FAILED");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lets the first Play bake after a create enqueue was not accepted", async () => {
+    const clone = await makeClone();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    let posts = 0;
+    const { calls } = recordFetch(() => {
+      posts += 1;
+      return new Response(posts === 1 ? "no" : "{}", { status: posts === 1 ? 500 : 202 });
+    });
+    const { enqueueClonePreviewBake } = await import("@/lib/tts/clone-preview-job");
+    await enqueueClonePreviewBake(catalogIdForClone(clone.id));
+    expect(calls).toHaveLength(1);
+
+    const { GET } = await route();
+    const play = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(play.status).toBe(202);
+    expect(calls).toHaveLength(2);
+
+    const poll = await GET(
+      await buildRequest(`/api/tts/clones/${CLONE_ID}/preview?poll=1`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(poll.status).toBe(202);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.url === "https://worker.test/clone-preview")).toBe(true);
+  });
+
+  it("keeps a retry refused by the worker clock from being started again", async () => {
+    const clone = await makeClone();
+    configureModal();
+    process.env.WORKER_URL = "https://worker.test";
+    process.env.WORKER_SECRET = "worker-secret";
+    let now = 1_700_000_000_000;
+    setClonePreviewNowForTests(() => now);
+    const { calls } = recordFetch((call) => {
+      if (call.url.includes("worker.test")) return new Response("{}", { status: 202 });
+      if (call.url.includes("modal.run")) return new Response("cold", { status: 503 });
+      return new Response("no", { status: 422 });
+    });
+    const { bakeClonePreview, claimClonePreviewBake } = await import(
+      "@/lib/tts/clone-preview-job"
+    );
+    const failed = await bakeClonePreview(clone.id);
+    expect(failed.status).toBe(409);
+    expect(calls.filter((call) => call.url.includes("fish.audio"))).toHaveLength(1);
+
+    now += CLONE_PREVIEW_BACKOFF_MS[0];
+    const claim = await claimClonePreviewBake(catalogIdForClone(clone.id), { force: true });
+    expect(claim.kind).toBe("start");
+    now -= 1_000;
+    const refused = await bakeClonePreview(clone.id, { force: true });
+    expect(refused.status).toBe(409);
+    expect(calls.filter((call) => call.url.includes("fish.audio"))).toHaveLength(1);
+
+    now += 1_000;
+    const { GET } = await route();
+    const play = await GET(await previewRequest("GET"), routeParams({ id: clone.id }));
+    expect(play.status).toBe(409);
+    const poll = await GET(
+      await buildRequest(`/api/tts/clones/${CLONE_ID}/preview?poll=1`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(poll.status).toBe(409);
+    expect(calls.filter((call) => call.url.includes("worker.test"))).toHaveLength(0);
+    expect(calls.filter((call) => call.url.includes("modal.run"))).toHaveLength(0);
+  });
 });

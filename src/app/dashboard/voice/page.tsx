@@ -249,12 +249,20 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");
 }
 
-async function previewErrorCode(response: Response): Promise<string | null> {
+async function previewFailure(
+  response: Response
+): Promise<{ code: string | null; retryAfterMs: number }> {
   try {
-    const data = (await response.json()) as { code?: unknown };
-    return typeof data.code === "string" ? data.code : null;
+    const data = (await response.json()) as { code?: unknown; retryAfterMs?: unknown };
+    return {
+      code: typeof data.code === "string" ? data.code : null,
+      retryAfterMs:
+        typeof data.retryAfterMs === "number" && data.retryAfterMs > 0
+          ? data.retryAfterMs
+          : 0,
+    };
   } catch {
-    return null;
+    return { code: null, retryAfterMs: 0 };
   }
 }
 
@@ -293,6 +301,8 @@ export default function VoiceSelectionPage() {
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const previewTokenRef = useRef(0);
   const previewOwnerRef = useRef(0);
+  /** Earliest time Retry may ask for another Fish bake, per clone. */
+  const previewRetryAtRef = useRef(new Map<string, number>());
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
@@ -767,10 +777,13 @@ export default function VoiceSelectionPage() {
       response: Response
     ): Promise<{ kind: "audio"; url: string } | { kind: "preparing" } | { kind: "failed" }> => {
       if (response.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-      const kind = classifyClonePreviewRead(
-        response.status,
-        response.ok ? null : await previewErrorCode(response)
-      );
+      const failure = response.ok
+        ? { code: null, retryAfterMs: 0 }
+        : await previewFailure(response);
+      const kind = classifyClonePreviewRead(response.status, failure.code);
+      if (kind === "failed" && failure.retryAfterMs > 0) {
+        previewRetryAtRef.current.set(voice.id, Date.now() + failure.retryAfterMs);
+      }
       if (kind !== "audio") return { kind };
       const buf = await response.arrayBuffer();
       if (buf.byteLength < 256) return { kind: "failed" };
@@ -810,7 +823,9 @@ export default function VoiceSelectionPage() {
           releasePreview(voice.id, token);
           return null;
         }
-        const ready = await clipFrom(await fetch(`${path}?_=${Date.now()}`));
+        const ready = await clipFrom(
+          await fetch(`${path}?poll=1&_=${Date.now()}`)
+        );
         if (!current()) {
           releasePreview(voice.id, token);
           return null;
@@ -860,6 +875,13 @@ export default function VoiceSelectionPage() {
       return;
     }
     if (Date.now() < previewCooldownUntil) {
+      toast.error("Wait a moment.");
+      return;
+    }
+    if (
+      retryingThis &&
+      Date.now() < (previewRetryAtRef.current.get(voice.id) ?? 0)
+    ) {
       toast.error("Wait a moment.");
       return;
     }

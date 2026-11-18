@@ -221,35 +221,58 @@ function failedPayload(retryAfterMs: number): BakePayload {
   };
 }
 
+export type DispatchBakeResult = { ok: true } | { ok: false; retryAfterMs: number };
+
 /**
  * The worker POST for a bake that `claimClonePreviewBake` already reserved.
  * No worker URL means this process is the worker (or local dev) and renders
  * here. Tests never render from this function, so creating a clone does not
  * call Fish.
+ *
+ * `ifUnsent: "fail"` (Play and Retry) records a terminal failure when the
+ * worker does not accept. A later poll must not start another Fish call.
+ * `ifUnsent: "release"` (clone creation) drops the claim so the first Play
+ * can bake it. A failed create enqueue does not fail the clone.
  */
 export async function dispatchClaimedClonePreviewBake(
   rawId: string,
-  opts?: { force?: boolean }
-): Promise<void> {
+  opts?: { force?: boolean; ifUnsent?: "fail" | "release" }
+): Promise<DispatchBakeResult> {
   const catalogVoiceId = catalogIdOf(rawId);
   const rowId = rowIdOf(catalogVoiceId);
+  const ifUnsent = opts?.ifUnsent ?? "fail";
+  const unsent = async (): Promise<DispatchBakeResult> => {
+    if (!rowId) return { ok: false, retryAfterMs: backoffMs(1) };
+    if (ifUnsent === "release") {
+      await releaseClonePreviewBake(rowId);
+      return { ok: false, retryAfterMs: 0 };
+    }
+    const now = nowMs();
+    await noteBakeFailure(rowId, now);
+    const after = await readLedger(rowId);
+    return {
+      ok: false,
+      retryAfterMs: Math.max(0, (after?.notBefore ?? now + backoffMs(1)) - now),
+    };
+  };
   try {
     if (takehomeWorkerUrl()) {
       const ok = await requestClonePreviewBake(catalogVoiceId, { force: opts?.force === true });
-      if (!ok && rowId) await releaseClonePreviewBake(rowId);
-      return;
+      if (!ok) return unsent();
+      return { ok: true };
     }
     if (process.env.VITEST) {
       if (rowId) await releaseClonePreviewBake(rowId);
-      return;
+      return { ok: true };
     }
     await bakeClonePreview(catalogVoiceId, opts);
+    return { ok: true };
   } catch (err) {
-    if (rowId) await releaseClonePreviewBake(rowId);
     console.warn(
       "[clone-preview] enqueue failed:",
       err instanceof Error ? err.message : err
     );
+    return unsent();
   }
 }
 
@@ -260,7 +283,28 @@ export async function enqueueClonePreviewBake(
 ): Promise<void> {
   const claim = await claimClonePreviewBake(catalogIdOf(rawId), opts);
   if (claim.kind !== "start") return;
-  await dispatchClaimedClonePreviewBake(rawId, opts);
+  await dispatchClaimedClonePreviewBake(rawId, { ...opts, ifUnsent: "release" });
+}
+
+/**
+ * What a poll should show. This does not reserve a bake and does not call Fish.
+ * An idle row (the claim was dropped) is a failure, so the poll cannot loop.
+ */
+export async function readClonePreviewBakeStatus(
+  rawId: string,
+  opts?: { now?: number }
+): Promise<PreviewBakeClaim> {
+  const rowId = rowIdOf(catalogIdOf(rawId));
+  if (!rowId) return { kind: "failed", retryAfterMs: 0 };
+  await ensureTtsJobColumns();
+  const now = opts?.now ?? nowMs();
+  const ledger = await readLedger(rowId);
+  if (!ledger) return { kind: "failed", retryAfterMs: 0 };
+  if (ledger.runningUntil > now) return { kind: "preparing" };
+  if (ledger.terminal || ledger.notBefore > now) {
+    return { kind: "failed", retryAfterMs: Math.max(0, ledger.notBefore - now) };
+  }
+  return { kind: "failed", retryAfterMs: 0 };
 }
 
 async function renderFishPreview(input: {
@@ -328,7 +372,15 @@ async function runBake(rawId: string, opts?: { force?: boolean }): Promise<BakeP
 
   const ledger = await readLedger(rowId);
   if (ledger && ledger.notBefore > now) {
-    await clearRunning(rowId);
+    // A retry claim may already have cleared `terminal` on a clock that is
+    // ahead of this one. Put the failure back so a poll cannot start a
+    // second Fish call while the backoff is still running here.
+    await execute(
+      `UPDATE cloned_voices
+       SET preview_bake_terminal = 1, preview_bake_running_until = NULL
+       WHERE id = ?`,
+      [rowId]
+    ).catch(() => {});
     return failedPayload(ledger.notBefore - now);
   }
   if (ledger?.terminal && opts?.force !== true) {

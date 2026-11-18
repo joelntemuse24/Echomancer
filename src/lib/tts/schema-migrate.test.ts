@@ -97,6 +97,10 @@ describe("ensureTtsJobColumns", () => {
     "source_start_sec",
     "source_end_sec",
     "source_consented_at",
+    "preview_bake_attempts",
+    "preview_bake_not_before",
+    "preview_bake_terminal",
+    "preview_bake_running_until",
   ])("does not take the hot path when cloned_voices.%s is missing", async (column) => {
     // No clone column may be omitted from the check again.
     await resetDatabase();
@@ -176,6 +180,24 @@ describe("ensureTtsJobColumns", () => {
       `SELECT accent FROM cloned_voices WHERE id = 'shauna'`
     );
     expect(row[0]?.accent).toBe("american");
+    const kept = await query<{
+      fish_voice_id: string;
+      title: string;
+      preview_bake_attempts: number | null;
+      preview_bake_terminal: number | null;
+      preview_bake_not_before: number | null;
+      preview_bake_running_until: number | null;
+    }>(
+      `SELECT fish_voice_id, title, preview_bake_attempts, preview_bake_terminal,
+              preview_bake_not_before, preview_bake_running_until
+       FROM cloned_voices WHERE id = 'shauna'`
+    );
+    expect(kept[0]?.fish_voice_id).toBe("fish-shauna");
+    expect(kept[0]?.title).toBe("Shauna");
+    expect(Number(kept[0]?.preview_bake_attempts)).toBe(0);
+    expect(Number(kept[0]?.preview_bake_terminal)).toBe(0);
+    expect(kept[0]?.preview_bake_not_before ?? null).toBeNull();
+    expect(kept[0]?.preview_bake_running_until ?? null).toBeNull();
 
     resetSchemaMigrationCache();
     expect(await ensureTtsJobColumns()).toBe("hot");
