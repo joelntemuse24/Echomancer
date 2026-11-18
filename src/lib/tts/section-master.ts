@@ -2,8 +2,10 @@
  * Master one take-home section as soon as it is synthesized, then join
  * those MP3s at the end without running loudnorm over the book again.
  *
- * Each section gets the podcast chain (EQ, light de-esser, loudnorm to
- * −16 LUFS) and is stored as mono 128 kbps MP3. The loudnorm gain is
+ * Each section gets the podcast chain (EQ, light de-esser, the shared
+ * voice curve, loudnorm to −16 LUFS) and is stored as mono 128 kbps MP3.
+ * S2 sections use their spectral chain, the same voice curve, and −19.
+ * The loudnorm gain is
  * measured, then applied, so a short section does not sit quiet of −16.
  * Finish packet-copies those files and re-encodes only the crossfade
  * window (under two seconds). The cut is the frame whose splice step
