@@ -65,8 +65,10 @@ import { requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   classifyClonePreviewRead,
+  CLONE_PREVIEW_POLL_MS,
   clonePreparingAfterTokenCheck,
   PREVIEW_PREPARING_LABEL,
+  PREVIEW_RETRY_LABEL,
   previewControlLabel,
 } from "@/lib/tts/clone-preview-phase";
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
@@ -144,21 +146,6 @@ type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
 /** Narrator suggestions are a nicety: a slow poll that gives up after two minutes. */
 const NARRATOR_POLL_MS = 10_000;
 const NARRATOR_POLL_GIVE_UP_MS = 2 * 60_000;
-
-/**
- * Waits between re-reading storage after `PREVIEW_ENGINE_COLD`.
- *
- * The server refused to render because the GPU pool was cold and started a
- * restore instead, so the useful thing to do is wait for that restore and read
- * the stored clip — never to retry synthesis, which is the request that used to
- * sit through a second cold start.
- *
- * A restore is ~57 s and the one line is a few seconds after that, so these gaps
- * cover the common case inside the first two attempts and give a genuinely busy
- * pool a little longer. Nothing here blocks the page: the row shows its
- * spinner until one of the reads answers.
- */
-const CLONE_PREVIEW_WARM_RETRY_MS = [3_000, 6_000, 10_000, 15_000, 20_000];
 
 interface CatalogVoice {
   id: string;
@@ -262,12 +249,20 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");
 }
 
-async function previewErrorCode(response: Response): Promise<string | null> {
+async function previewFailure(
+  response: Response
+): Promise<{ code: string | null; retryAfterMs: number }> {
   try {
-    const data = (await response.json()) as { code?: unknown };
-    return typeof data.code === "string" ? data.code : null;
+    const data = (await response.json()) as { code?: unknown; retryAfterMs?: unknown };
+    return {
+      code: typeof data.code === "string" ? data.code : null,
+      retryAfterMs:
+        typeof data.retryAfterMs === "number" && data.retryAfterMs > 0
+          ? data.retryAfterMs
+          : 0,
+    };
   } catch {
-    return null;
+    return { code: null, retryAfterMs: 0 };
   }
 }
 
@@ -302,9 +297,12 @@ export default function VoiceSelectionPage() {
   );
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewPreparingId, setPreviewPreparingId] = useState<string | null>(null);
+  const [previewFailedId, setPreviewFailedId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const previewTokenRef = useRef(0);
   const previewOwnerRef = useRef(0);
+  /** Earliest time Retry may ask for another Fish bake, per clone. */
+  const previewRetryAtRef = useRef(new Map<string, number>());
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
@@ -749,31 +747,23 @@ export default function VoiceSelectionPage() {
     if (owner !== 0 && owner !== token) return;
     previewOwnerRef.current = 0;
     setPreviewPreparingId((current) => (current === voiceId ? null : current));
+    setPreviewFailedId((current) => (current === voiceId ? null : current));
     setPreviewLoading((current) => (current === voiceId ? null : current));
     setPreviewingId((current) => (current === voiceId ? null : current));
   };
 
   /**
-   * A saved clone's preview URL: the stored MP3, or one explicit render.
+   * A saved clone's preview URL.
    *
-   * `GET` never synthesizes. Only `404 PREVIEW_NOT_STORED` reaches `POST`, which
-   * renders once on the clone's own engine and stores the take. A plain page
-   * view therefore cannot start a GPU restore, and a failed render says so
-   * instead of playing a substitute voice.
-   *
-   * The render is refused rather than attempted when the GPU pool is cold
-   * (`503 PREVIEW_ENGINE_COLD`). That response means a container is now
-   * restoring, so this waits briefly and re-reads storage: if the restore
-   * finishes, the next request is a plain `GET` of the stored MP3 and no
-   * synthesis is retried. That is what stops a saved voice sitting through a
-   * cold model start — the 2026-11-06 report of "still doesn't load for like 2
-   * mins".
-   *
-   * Returns null after showing its own message.
+   * The first Play reads storage. A miss enqueues one Fish bake of the
+   * standard line. Later reads only poll. `PREVIEW_BAKE_FAILED` and a poll
+   * that ends still preparing both return null so the row can show Try again.
+   * Retry is `POST { retry: true }`, which is the only way to bake again.
    */
   const clonedPreviewUrl = async (
     voice: CatalogVoice,
-    token: number
+    token: number,
+    opts?: { retry?: boolean }
   ): Promise<string | null> => {
     // A preview is immutable for a given clone and recipe, so a clip already
     // fetched in this session replays from memory with no request at all.
@@ -783,27 +773,36 @@ export default function VoiceSelectionPage() {
     const path = `/api/tts/clones/${encodeURIComponent(voice.id)}/preview`;
     const current = () => previewTokenRef.current === token;
 
-    /** Read the stored take. `preparing` is 202 PREVIEW_PREPARING, not a failure. */
-    const readStored = async (): Promise<
-      { kind: "audio"; url: string } | { kind: "preparing" } | { kind: "failed" }
-    > => {
-      const stored = await fetch(`${path}?_=${Date.now()}`);
-      if (stored.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-      const kind = classifyClonePreviewRead(
-        stored.status,
-        stored.ok ? null : await previewErrorCode(stored)
-      );
+    const clipFrom = async (
+      response: Response
+    ): Promise<{ kind: "audio"; url: string } | { kind: "preparing" } | { kind: "failed" }> => {
+      if (response.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+      const failure = response.ok
+        ? { code: null, retryAfterMs: 0 }
+        : await previewFailure(response);
+      const kind = classifyClonePreviewRead(response.status, failure.code);
+      if (kind === "failed" && failure.retryAfterMs > 0) {
+        previewRetryAtRef.current.set(voice.id, Date.now() + failure.retryAfterMs);
+      }
       if (kind !== "audio") return { kind };
-      const buf = await stored.arrayBuffer();
+      const buf = await response.arrayBuffer();
       if (buf.byteLength < 256) return { kind: "failed" };
-      const mime = sniffPreviewMime(buf, stored.headers.get("content-type"));
+      const mime = sniffPreviewMime(buf, response.headers.get("content-type"));
       const url = URL.createObjectURL(new Blob([buf], { type: mime }));
       previewCacheRef.current.set(voice.id, { url, mime });
       return { kind: "audio", url };
     };
 
     try {
-      const first = await readStored();
+      const first = opts?.retry
+        ? await clipFrom(
+            await fetch(path, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ retry: true }),
+            })
+          )
+        : await clipFrom(await fetch(`${path}?_=${Date.now()}`));
       if (!current()) {
         releasePreview(voice.id, token);
         return null;
@@ -818,13 +817,15 @@ export default function VoiceSelectionPage() {
         return null;
       }
       toast.message("Preparing preview");
-      for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
+      for (const waitMs of CLONE_PREVIEW_POLL_MS) {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
         if (!current()) {
           releasePreview(voice.id, token);
           return null;
         }
-        const ready = await readStored();
+        const ready = await clipFrom(
+          await fetch(`${path}?poll=1&_=${Date.now()}`)
+        );
         if (!current()) {
           releasePreview(voice.id, token);
           return null;
@@ -846,6 +847,7 @@ export default function VoiceSelectionPage() {
         browserSpeechActiveRef.current ||
         previewLoading === voice.id);
     const preparingThis = previewPreparingId === voice.id;
+    const retryingThis = previewFailedId === voice.id;
     if (playingThis || preparingThis) {
       previewTokenRef.current += 1;
       previewOwnerRef.current = 0;
@@ -858,6 +860,7 @@ export default function VoiceSelectionPage() {
       stopPreviewPlayback();
       setPreviewingId(null);
       setPreviewPreparingId(null);
+      setPreviewFailedId(null);
       setPreviewLoading(null);
       return;
     }
@@ -875,6 +878,13 @@ export default function VoiceSelectionPage() {
       toast.error("Wait a moment.");
       return;
     }
+    if (
+      retryingThis &&
+      Date.now() < (previewRetryAtRef.current.get(voice.id) ?? 0)
+    ) {
+      toast.error("Wait a moment.");
+      return;
+    }
     stopPreviewPlayback();
     const next = voiceIdAfterRowAction({
       action: "preview",
@@ -885,6 +895,7 @@ export default function VoiceSelectionPage() {
     const token = ++previewTokenRef.current;
     previewOwnerRef.current = token;
     setPreviewingId(null);
+    setPreviewFailedId(null);
     setPreviewPreparingId(isClonedVoice(voice) ? voice.id : null);
     setPreviewLoading(voice.id);
 
@@ -964,15 +975,17 @@ export default function VoiceSelectionPage() {
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
       if (isClonedVoice(voice)) {
-        // A saved clone plays its stored MP3 or the explicit render — never a
-        // live synthesis. Live TTS on this route can wait on a cold GPU pool,
-        // and a fallback there is how a different engine's take once got
-        // stored as this clone's preview.
-        const url = await clonedPreviewUrl(voice, token);
+        // A saved clone plays its stored MP3. A miss is one Fish bake of the
+        // standard line. This screen does not stream that line, and it does
+        // not start the S2 pool.
+        const url = await clonedPreviewUrl(voice, token, { retry: retryingThis });
         if (stoppedDuringPreview()) return;
         if (!url) {
-          clearPreview();
-          toast.error("Couldn't play the sample. Try again.");
+          setPreviewPreparingId(null);
+          setPreviewLoading(null);
+          setPreviewingId(null);
+          setPreviewFailedId(voice.id);
+          toast.error("Couldn't prepare the preview.");
           return;
         }
         const outcome = await audio.play([url], {
@@ -1314,6 +1327,8 @@ export default function VoiceSelectionPage() {
     const isLoadingPreview = previewLoading === voice.id;
     const isPreparing =
       previewPreparingId === voice.id || (isLoadingPreview && !isPlaying);
+    const isPreviewFailed =
+      previewFailedId === voice.id && !isPreparing && !isPlaying;
     const label = withNarratorRecommendation(
       voiceTitle(voice),
       narrator ? narratorMarksVoice(narrator, voice.id) : false
@@ -1328,6 +1343,7 @@ export default function VoiceSelectionPage() {
     const previewLabel = previewControlLabel({
       preparing: isPreparing,
       playing: isPlaying && !isPreparing,
+      failed: isPreviewFailed,
       name: label,
     });
     const previewBusyElsewhere =
@@ -1339,7 +1355,7 @@ export default function VoiceSelectionPage() {
           ? "text-foreground"
           : "text-muted-foreground hover:text-foreground"
       }`;
-    const glyph = (loading: boolean, playing: boolean) =>
+    const glyph = (loading: boolean, playing: boolean, failed: boolean) =>
       loading ? (
         <span
           className="inline-flex items-center gap-1.5 font-sans text-xs"
@@ -1347,6 +1363,10 @@ export default function VoiceSelectionPage() {
         >
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
           <span>{PREVIEW_PREPARING_LABEL}</span>
+        </span>
+      ) : failed ? (
+        <span className="inline-flex items-center font-sans text-xs">
+          {PREVIEW_RETRY_LABEL}
         </span>
       ) : playing ? (
         <Square className="h-3.5 w-3.5" />
@@ -1403,10 +1423,10 @@ export default function VoiceSelectionPage() {
                   void previewVoice(voice);
                 }}
                 className={`inline-flex h-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground ${
-                  isPreparing ? "w-auto gap-1 px-1" : "w-11"
+                  isPreparing || isPreviewFailed ? "w-auto gap-1 px-1" : "w-11"
                 }`}
               >
-                {glyph(isPreparing, isPlaying && !isPreparing)}
+                {glyph(isPreparing, isPlaying && !isPreparing, isPreviewFailed)}
               </button>
               {renamingId === voice.id ? (
                 <input
@@ -1485,7 +1505,7 @@ export default function VoiceSelectionPage() {
                 isPreparing ? "w-auto px-1" : "w-11"
               }`}
             >
-              {selectOnly ? null : glyph(isPreparing, isPlaying && !isPreparing)}
+              {selectOnly ? null : glyph(isPreparing, isPlaying && !isPreparing, false)}
             </span>
             <span className="min-w-0 truncate">{label}</span>
             {isSelected ? (

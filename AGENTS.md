@@ -1147,16 +1147,19 @@ consent time, stay private, and are not shareable.
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
-adapter for listen streams. A saved clone's preview is a **stored MP3**:
-`GET /api/tts/clones/[id]/preview` serves it and never synthesizes, reading the
-current engine's take first and then the legacy engine-free key that holds the
-Fish 2.1 Pro previews from before the S2 pool, so older voices play instantly.
-Only `POST` to that route renders, once, on the clone's own engine with
-`allowFallback: false`; a failure is an error, never a substitute voice. That is
-also the only place a preview is written, which is what stops another engine's
-take from being served under this clone's key. Both routes derive the text and
-speed from `tts/clone-preview.ts`, so the key always matches, and a clone's
-fixed one-liner ignores delivery preferences for the same reason.
+adapter for listen streams. A saved clone's preview is a **stored MP3** of `PREVIEW_TEXT` spoken by that
+clone's Fish reference. `GET /api/tts/clones/[id]/preview` replays a stored
+take (s2-pro v2, fish v2, then the legacy engine-free key) and never
+synthesizes. A miss enqueues one Fish bake on the worker
+(`cloneProviderPin: "fish"`, `allowFallback: false`) and stores it only under
+the fish v2 key. The S2 pool is not consulted, so a cold pool cannot block
+the preview and the bake does not start a GPU. Creating a clone enqueues that
+same bake. An older clone with nothing stored bakes on the first Play, one
+at a time. A failure is terminal until Retry, which waits out a backoff.
+`GET /api/tts/live` for the same one-liner replays storage or answers
+`202` and does not render. Both routes derive the text and speed from
+`tts/clone-preview.ts`, so the key always matches, and a clone's fixed
+one-liner ignores delivery preferences for the same reason.
 Legacy
 `fish-narrator` jobs still resolve and use
 Fish’s default S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID

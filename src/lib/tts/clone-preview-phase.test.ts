@@ -18,6 +18,7 @@ describe("classifyClonePreviewRead", () => {
     expect(classifyClonePreviewRead(200, null)).toBe("audio");
     expect(classifyClonePreviewRead(500, "PREVIEW_FAILED")).toBe("failed");
     expect(classifyClonePreviewRead(404, "PREVIEW_NOT_STORED")).toBe("failed");
+    expect(classifyClonePreviewRead(409, "PREVIEW_BAKE_FAILED")).toBe("failed");
   });
 });
 
@@ -38,6 +39,10 @@ describe("previewControl", () => {
       "Stop Voice"
     );
     expect(previewControl({ preparing: false, playing: false })).toBe("play");
+    expect(previewControl({ preparing: false, playing: false, failed: true })).toBe("retry");
+    expect(
+      previewControlLabel({ preparing: false, playing: false, failed: true, name: "Voice" })
+    ).toBe("Try Voice again");
     expect(previewControlLabel({ preparing: false, playing: false, name: "Voice" })).toBe(
       "Play Voice"
     );

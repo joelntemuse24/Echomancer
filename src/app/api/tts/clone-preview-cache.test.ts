@@ -123,7 +123,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("answers 404 with PREVIEW_NOT_STORED before the first render", async () => {
+  it("enqueues one bake and does not render when nothing is stored", async () => {
     const clone = await makeClone();
     const fetchMock = providerMock();
     vi.stubGlobal("fetch", fetchMock);
@@ -190,7 +190,10 @@ describe("POST /api/tts/clones/[id]/preview", () => {
     // The take is on disk under the key the GET route reads.
     const voice = voiceOf(clone);
     const plan = planFor(clone);
-    const writePath = clonePreviewWritePath(voice, plan)!;
+    const writePath = clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish")!;
+    expect(
+      await readStoredClonePreview(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro")!)
+    ).toBeNull();
     const stored = await readStoredClonePreview(writePath);
     expect(stored?.equals(firstBytes)).toBe(true);
 
@@ -232,10 +235,10 @@ describe("POST /api/tts/clones/[id]/preview", () => {
     const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
     const res = await bakeClonePreview(clone.id);
 
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.code).toBe("PREVIEW_RENDER_FAILED");
-    expect(body.error).toMatch(/nothing else was substituted/i);
+    expect(body.code).toBe("PREVIEW_BAKE_FAILED");
+    expect(body.error).toMatch(/couldn't prepare the preview/i);
     // No provider wording leaks to the person.
     expect(body.error).not.toMatch(/422|reference not found|modal/i);
     // Nothing was stored under any key, so no substitute can ever be served.
@@ -249,38 +252,29 @@ describe("POST /api/tts/clones/[id]/preview", () => {
     );
   });
 
-  it("reports a cold pool as a wait, not a broken voice", async () => {
-    // A clone with a real reference, so the call reaches the pool at all.
-    const clone = await insertClonedVoice({
-      id: CLONE_ID,
-      userId: USER_A,
-      fishVoiceId: "fish-ref-wolfe",
-      title: "Tom Wolfe",
-      state: "trained",
-      model: "s2.1-pro-free",
-      sampleStoragePath: `clones/${CLONE_ID}/sample.wav`,
-    });
-    await putObject(`clones/${CLONE_ID}/sample.wav`, fakeMp3(3));
-
-    // The batch host answers a gateway timeout: the container is not serving.
+  it("stores a Fish take while the S2 pool would answer 503", async () => {
+    const clone = await makeClone();
     vi.stubEnv("MODAL_S2_TTS_URL", "https://acme--echomancer-s2-clone-synthesize-batch.modal.run");
     vi.stubEnv("MODAL_S2_TOKEN", "test-token");
     vi.stubEnv("MODAL_S2_READY", "0");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("upstream unavailable", { status: 503 }))
-    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("modal.run")) return new Response("upstream unavailable", { status: 503 });
+      return new Response(fakeMp3(13), {
+        status: 200,
+        headers: { "content-type": "audio/mpeg" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
     const res = await bakeClonePreview(clone.id);
 
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.code).toBe("PREVIEW_ENGINE_COLD");
-    expect(body.error).toMatch(/starting up/i);
-    expect(body.error).toMatch(/nothing else was substituted/i);
-    // Still nothing stored: a cold preview is not a take.
-    expect(await findStoredClonePreview(voiceOf(clone), planFor(clone))).toBeNull();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-echomancer-preview")).toBe("generated");
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("modal.run"))).toBe(true);
+    const fishPath = clonePreviewWritePath(voiceOf(clone), planFor(clone), PREVIEW_TEXT, "fish")!;
+    expect(await readStoredClonePreview(fishPath)).not.toBeNull();
   });
 
   it("is user-scoped", async () => {

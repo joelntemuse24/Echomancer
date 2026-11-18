@@ -352,9 +352,9 @@ async function handle(
         const { drainBookCalls } = await import("@/lib/remote/drain-book");
         await drainBookCalls(jobId, "cancelled");
       },
-      bakeClonePreview: async (catalogVoiceId) => {
+      bakeClonePreview: async (catalogVoiceId, opts) => {
         const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
-        await bakeClonePreview(catalogVoiceId);
+        await bakeClonePreview(catalogVoiceId, opts);
       },
       warmCapacity: async (pools) => {
         const { postWarm } = await import("@/lib/capacity/warm");

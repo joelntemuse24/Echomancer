@@ -16,7 +16,7 @@ import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
 import { analyzeCloneSampleBuffer } from "@/lib/tts/clone-sample-quality-analyze";
 import { requestReferenceCheck, type WorkerReferenceCheck } from "@/lib/tts/reference-quality/client";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
-import type { ClonedVoiceRow } from "@/lib/tts/fish-clone";
+import { catalogIdForClone, type ClonedVoiceRow } from "@/lib/tts/fish-clone";
 import {
   createFishVoiceClone,
   FISH_NATIVE_FREE_MODEL,
@@ -164,6 +164,17 @@ export async function completeStoredClone(opts: {
       referenceTranscript: transcript ?? null,
     });
     await markCloneUploadCompleted(uploadId, row.id);
+    // One Fish preview of the standard line. A failed enqueue leaves the
+    // clone saved; the first Play bakes it then.
+    try {
+      const { enqueueClonePreviewBake } = await import("@/lib/tts/clone-preview-job");
+      await enqueueClonePreviewBake(catalogIdForClone(row.id));
+    } catch (err) {
+      console.warn(
+        "[clone-preview] create enqueue failed:",
+        err instanceof Error ? err.message : err
+      );
+    }
     return row;
   } catch (error) {
     const message =

@@ -8,10 +8,11 @@
  * WebSocket `/api/tts/live` is not used here — that protocol is for token-by-token
  * LLM text. Preview and listen already have the full string.
  *
- * A saved clone's one-line preview is only synthesized when nothing is stored
- * yet; `GET /api/tts/clones/[id]/preview` serves the stored take and is what the
- * picker asks for first. Both routes derive the text and speed through
- * `clone-preview.ts`, so the storage key always matches.
+ * A saved clone's one-line preview is never synthesized here. A stored take is
+ * replayed. A missing one is `202` and is baked by Play or by clone creation.
+ * `GET /api/tts/clones/[id]/preview` is what the picker asks for. Both routes
+ * derive the text and speed through `clone-preview.ts`, so the storage key
+ * always matches.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -216,10 +217,16 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const isClonePreview =
       isStorablePreview(input.text) && isFishCloneCatalogId(catalog.id);
     if (isClonePreview) {
-      // Any saved take answers: the current engine's, or the legacy Fish 2.1
-      // object. Both are this voice, and both are cheaper than a GPU call.
+      // Any saved take answers: the current engine's, the Fish preview, or
+      // the legacy Fish 2.1 object. A missing one-liner is baked by Play or
+      // by clone creation, never by this stream, so a page that hits live
+      // cannot start Fish or a GPU.
       const stored = await findStoredClonePreview(catalog, plan, input.text);
       if (stored) return previewAudioResponse(stored.audio, "stored");
+      return NextResponse.json(
+        { error: "Preparing preview", code: "PREVIEW_PREPARING" },
+        { status: 202 }
+      );
     }
 
     const { response: fishRes, endLive } = await startFishHttpStream(

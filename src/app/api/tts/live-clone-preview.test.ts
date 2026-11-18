@@ -4,7 +4,7 @@
  * The split this file pins:
  *
  *   - `GET /api/tts/clones/[id]/preview` answers from storage or says
- *     `PREVIEW_NOT_STORED`. It never synthesizes.
+ *     `PREVIEW_PREPARING` and does not synthesize.
  *   - `POST` to the same route renders once, on the clone's own engine, and
  *     stores the take.
  *   - `GET /api/tts/live` *serves* a stored preview when one exists, and
@@ -142,7 +142,7 @@ describe("clone preview keys", () => {
 });
 
 describe("GET /api/tts/live never stores a clone preview", () => {
-  it("streams on the first play and writes nothing", async () => {
+  it("does not synthesize the stored one-liner when nothing is saved yet", async () => {
     const clone = await makeClone(USER_A);
     const fetchMock = fishOk(7);
     vi.stubGlobal("fetch", fetchMock);
@@ -150,11 +150,10 @@ describe("GET /api/tts/live never stores a clone preview", () => {
     const url = `/api/tts/live?catalogVoiceId=${catalogIdForClone(clone.id)}`;
 
     const first = await GET(await buildRequest(url, { userId: USER_A, method: "GET" }));
-    expect(first.status).toBe(200);
-    await first.arrayBuffer();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(first.status).toBe(202);
+    expect((await first.json()).code).toBe("PREVIEW_PREPARING");
+    expect(fetchMock).not.toHaveBeenCalled();
 
-    // No `generated` marker, and no object: the live route is a pass-through.
     expect(first.headers.get("x-echomancer-preview")).toBeNull();
     const plan = planClonePreview({
       catalogVoiceId: catalogIdForClone(clone.id),
@@ -263,7 +262,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reports PREVIEW_NOT_STORED before anything is rendered", async () => {
+  it("enqueues a bake and does not render when nothing is stored", async () => {
     const clone = await makeClone(USER_A);
     const fetchMock = fishOk(1);
     vi.stubGlobal("fetch", fetchMock);

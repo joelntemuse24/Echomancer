@@ -76,7 +76,7 @@ describe("GET /api/tts/live", () => {
     const { GET } = await import("@/app/api/tts/live/route");
     const response = await GET(
       await buildRequest(
-        `/api/tts/live?catalogVoiceId=${catalogIdForClone(clone.id)}`,
+        `/api/tts/live?catalogVoiceId=${catalogIdForClone(clone.id)}&text=${encodeURIComponent("The harbor was quiet at dawn, and the bell rang twice.")}`,
         { userId: USER_A, method: "GET" }
       )
     );
@@ -89,6 +89,23 @@ describe("GET /api/tts/live", () => {
     };
     expect(body.latency).toBe("balanced");
     expect(body.prosody?.speed).toBe(INITIAL_SLOW_SPEED);
+  });
+
+  it("does not answer Kokoro or Edge stock previews as a clone bake", async () => {
+    const { GET } = await import("@/app/api/tts/live/route");
+    for (const id of ["drew", "george", "sowell", "ava", "libby"]) {
+      const response = await GET(
+        await buildRequest(`/api/tts/live?catalogVoiceId=${id}`, {
+          userId: USER_A,
+          method: "GET",
+        })
+      );
+      expect(response.status).not.toBe(202);
+      if (response.headers.get("content-type")?.includes("json")) {
+        const body = (await response.json()) as { code?: string };
+        expect(body.code).not.toBe("PREVIEW_PREPARING");
+      }
+    }
   });
 
   it("omits Fish prosody for stock Narrator on the short preview line", async () => {

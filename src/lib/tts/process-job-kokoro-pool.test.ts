@@ -53,7 +53,7 @@ async function seedKokoroJob(
   });
 }
 
-async function useKokoroProvider(
+async function installKokoroProvider(
   respond?: Parameters<typeof createFakeProvider>[0],
   id: "drew" | "sowell" | "george" = "drew"
 ) {
@@ -113,7 +113,7 @@ describe("Kokoro rolling pool", () => {
     let peak = 0;
     const startedAt: Record<number, number> = {};
     const endedAt: Record<number, number> = {};
-    const fake = await useKokoroProvider(async (input) => {
+    const fake = await installKokoroProvider(async (input) => {
       const index = input.sectionIndex ?? 0;
       active += 1;
       peak = Math.max(peak, active);
@@ -145,7 +145,7 @@ describe("Kokoro rolling pool", () => {
 
   it("claims section 0 first so first audio is still early", async () => {
     await seedKokoroJob();
-    const fake = await useKokoroProvider(async () => {
+    const fake = await installKokoroProvider(async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { audio: fakeMp3(), contentType: "audio/mpeg" };
     });
@@ -158,7 +158,7 @@ describe("Kokoro rolling pool", () => {
 
   it("preserves section order in the stored map and object names", async () => {
     await seedKokoroJob();
-    await useKokoroProvider(async (input) => {
+    await installKokoroProvider(async (input) => {
       // Later sections finish faster than earlier ones: completion order must
       // not leak into storage or the map.
       await new Promise((resolve) =>
@@ -211,7 +211,7 @@ describe("Kokoro rolling pool", () => {
           mastered: false,
         };
       });
-    await useKokoroProvider(async () => {
+    await installKokoroProvider(async () => {
       rendersInFlight += 1;
       await new Promise((resolve) => setTimeout(resolve, 10));
       rendersInFlight -= 1;
@@ -238,7 +238,7 @@ describe("Kokoro rolling pool", () => {
   it("retries a 429 take and still finishes the book", async () => {
     await seedKokoroJob();
     const seen = new Map<number, number>();
-    const fake = await useKokoroProvider(async (input) => {
+    const fake = await installKokoroProvider(async (input) => {
       const index = input.sectionIndex ?? 0;
       const attempt = (seen.get(index) ?? 0) + 1;
       seen.set(index, attempt);
@@ -290,7 +290,7 @@ describe("Kokoro rolling pool", () => {
         },
       });
     }
-    const fake = await useKokoroProvider(async () => ({
+    const fake = await installKokoroProvider(async () => ({
       audio: fakeMp3(),
       contentType: "audio/mpeg",
     }));
@@ -317,7 +317,7 @@ describe("Kokoro rolling pool", () => {
 
   it("defers the book when the shared Kokoro cap is full instead of failing", async () => {
     await seedKokoroJob();
-    const fake = await useKokoroProvider(async () => ({
+    const fake = await installKokoroProvider(async () => ({
       audio: fakeMp3(),
       contentType: "audio/mpeg",
     }));
@@ -384,7 +384,7 @@ describe("Kokoro rolling pool", () => {
   it("shares the fleet between two books instead of starving one", async () => {
     await seedKokoroJob();
     await seedKokoroJob(OTHER_JOB_ID, USER_B, "george");
-    const fake = await useKokoroProvider(async () => {
+    const fake = await installKokoroProvider(async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { audio: fakeMp3(), contentType: "audio/mpeg" };
     });
@@ -410,7 +410,7 @@ describe("Kokoro rolling pool", () => {
   it("retries a silent take instead of storing it", async () => {
     await seedKokoroJob();
     const seen = new Map<number, number>();
-    const fake = await useKokoroProvider(async (input) => {
+    const fake = await installKokoroProvider(async (input) => {
       const index = input.sectionIndex ?? 0;
       const attempt = (seen.get(index) ?? 0) + 1;
       seen.set(index, attempt);
@@ -436,7 +436,7 @@ describe("Kokoro rolling pool", () => {
 
   it("resumes from the durable rows when a tick stops with work remaining", async () => {
     await seedKokoroJob();
-    await useKokoroProvider(async () => {
+    await installKokoroProvider(async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { audio: fakeMp3(), contentType: "audio/mpeg" };
     });
@@ -454,7 +454,7 @@ describe("Kokoro rolling pool", () => {
 
     // A fresh worker (new fake adapter, new module state) claims the
     // remainder. Sections already stored are never spoken again.
-    const second = await useKokoroProvider(async () => ({
+    const second = await installKokoroProvider(async () => ({
       audio: fakeMp3(),
       contentType: "audio/mpeg",
     }));
@@ -483,7 +483,7 @@ describe("Kokoro CPU section sizing", () => {
 
   async function sectionsFor(provider: "drew" | "sowell" | "george") {
     await seedKokoroJob(SIZING_JOB, USER_A, provider);
-    const fake = await useKokoroProvider(async () => ({
+    const fake = await installKokoroProvider(async () => ({
       audio: fakeMp3(),
       contentType: "audio/mpeg",
     }));

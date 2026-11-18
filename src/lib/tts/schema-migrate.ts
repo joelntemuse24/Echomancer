@@ -174,6 +174,10 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   source_end_sec REAL,
   source_consented_at INTEGER,
   reference_transcript TEXT,
+  preview_bake_attempts INTEGER NOT NULL DEFAULT 0,
+  preview_bake_not_before INTEGER,
+  preview_bake_terminal INTEGER NOT NULL DEFAULT 0,
+  preview_bake_running_until INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
@@ -195,6 +199,12 @@ const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
   // it (a reference without a transcript is ignored), and passing it saves a
   // Whisper load per cold call. Null rows are transcribed on demand.
   { name: "reference_transcript", def: "TEXT" },
+  // Preview bake ledger. One Fish render per user action. `terminal` stops
+  // Play from enqueueing again; `not_before` is the backoff before Retry.
+  { name: "preview_bake_attempts", def: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "preview_bake_not_before", def: "INTEGER" },
+  { name: "preview_bake_terminal", def: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "preview_bake_running_until", def: "INTEGER" },
 ];
 
 /**

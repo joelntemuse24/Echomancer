@@ -133,22 +133,20 @@ Modal prints one URL per web endpoint. Put the `/synthesize*` one in
 `MODAL_S2_TTS_URL` and the `ready` one in `MODAL_S2_READY_URL` when testing the
 worker against staging.
 
-**`MODAL_S2_READY_URL` is not optional on Vercel.** It is what lets a saved
-clone's preview tell "a container is warm" from "nothing is running" without
-opening a 150 s restore wait inside a 60 s function. On 2026-11-06 production had
-`MODAL_S2_TTS_URL` and `MODAL_S2_TOKEN` but not the ready URL, so
-`synthesizeModalClonePreview` treated the pool as unprovably cold. Operators
-reported on 2026-11-07 that Vercel production has `MODAL_S2_READY_URL` and
-`MODAL_S2_SYNTHESIZE_URL` set. This repo does not store those hostnames, and
-this audit did not read the Vercel dashboard. The ready URL must still be set
-on Production and Preview or the preview path reports `503 PREVIEW_ENGINE_COLD`
-and starts a restore instead of blocking. Read the hostname from
-`modal app list` / the deploy output and set it in the dashboard; nothing in
-this repo can, and no config is changed by code.
+Clone previews do not call the S2 pool. A saved clone's sample is the
+standard preview line, rendered once through the Fish API with that clone's
+`reference_id` and stored under the `fish` preview key. A cold pool does not
+block it, and the preview path does not report `PREVIEW_ENGINE_COLD` or start
+a restore. `MODAL_S2_READY_URL` remains the book path's warmth probe on the
+worker. On 2026-11-06 production had `MODAL_S2_TTS_URL` and `MODAL_S2_TOKEN`
+but not the ready URL, which made the old preview bake treat the pool as
+unprovably cold. That bake no longer runs. The ready URL is still what a book
+placement uses to tell a warm container from an empty pool. Read the hostname
+from `modal app list` / the deploy output and set it in the dashboard; nothing
+in this repo can, and no config is changed by code.
 
-`MODAL_S2_SYNTHESIZE_URL` stays optional: with no single-section host the
-preview renders through the batch contract as a one-row payload, which is correct
-on every deploy. Pointing `MODAL_S2_READY_URL` at the synthesize host is rejected
+`MODAL_S2_SYNTHESIZE_URL` stays optional for the book client. Clone previews
+do not use it. Pointing `MODAL_S2_READY_URL` at the synthesize host is rejected
 loudly, because it is a guaranteed 404.
 
 **Production rule:** a bare `modal deploy` now targets
