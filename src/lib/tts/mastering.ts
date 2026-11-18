@@ -14,6 +14,7 @@
  */
 
 import { wavDurationSeconds } from "@/lib/tts/mp3-duration";
+import { voiceEqStageAf } from "@/lib/tts/voice-eq";
 
 export type MasterableAudioFormat = {
   extension: "mp3" | "wav" | "ogg";
@@ -131,6 +132,21 @@ export function masterLoudnormAf(): string {
 }
 
 /**
+ * Spectral filters, then the shared voice curve, then loudnorm.
+ * The curve is empty when `TTS_VOICE_EQ=0`, and this returns the
+ * previous chain. Loudnorm still sees the filtered signal, so the
+ * LUFS and true-peak targets do not move.
+ */
+function withVoiceEq(
+  spectral: string,
+  loudnorm: string,
+  env: NodeJS.ProcessEnv
+): string {
+  const stage = voiceEqStageAf(env);
+  return stage ? `${spectral},${stage},${loudnorm}` : `${spectral},${loudnorm}`;
+}
+
+/**
  * Spectral chain ahead of loudnorm. Same filter cost class as the old
  * phone-Smooth EQ (a handful of biquads plus one light de-esser).
  *
@@ -151,12 +167,15 @@ export function masterPodcastFiltersAf(): string {
 }
 
 /**
- * Podcast delivery chain: spectral balance, light de-ess, then loudnorm.
- * Applied once on the joined PCM. No compressor — stacking one on
- * one-pass loudnorm is what pumps.
+ * Podcast delivery chain: spectral balance, light de-ess, the shared
+ * voice curve, then loudnorm. Applied once on the joined PCM, and on
+ * each section. No compressor — stacking one on one-pass loudnorm is
+ * what pumps. `TTS_VOICE_EQ=0` drops only the curve.
  */
-export function masterProfessionalAf(): string {
-  return `${masterPodcastFiltersAf()},${masterLoudnormAf()}`;
+export function masterProfessionalAf(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return withVoiceEq(masterPodcastFiltersAf(), masterLoudnormAf(), env);
 }
 
 /**
@@ -195,21 +214,28 @@ export function masterS2LoudnormAf(): string {
   return `loudnorm=I=${MODAL_S2_MASTERING.loudnormI}:TP=${MODAL_S2_MASTERING.loudnormTp}:LRA=${MODAL_S2_MASTERING.loudnormLra}`;
 }
 
-/** S2 spectral chain then loudnorm, for a whole join rendered outside the container. */
-export function masterS2Af(): string {
-  return `${MODAL_S2_MASTERING.spectralAf},${masterS2LoudnormAf()}`;
+/** S2 spectral chain, voice curve, then loudnorm. */
+export function masterS2Af(env: NodeJS.ProcessEnv = process.env): string {
+  return withVoiceEq(MODAL_S2_MASTERING.spectralAf, masterS2LoudnormAf(), env);
 }
 
 /** First pass of S2 section mastering: chain + loudnorm, printing the probe. */
-export function masterS2MeasureAf(): string {
-  return `${MODAL_S2_MASTERING.spectralAf},${masterS2LoudnormAf()}:print_format=json`;
+export function masterS2MeasureAf(env: NodeJS.ProcessEnv = process.env): string {
+  return withVoiceEq(
+    MODAL_S2_MASTERING.spectralAf,
+    `${masterS2LoudnormAf()}:print_format=json`,
+    env
+  );
 }
 
 /**
  * Second pass: same chain, with the measured gain applied linearly, so a
  * short section is not pumped to reach −19.
  */
-export function masterS2LinearAf(probe: LoudnormProbe): string {
+export function masterS2LinearAf(
+  probe: LoudnormProbe,
+  env: NodeJS.ProcessEnv = process.env
+): string {
   const loudnorm = [
     masterS2LoudnormAf(),
     `measured_I=${probe.input_i}`,
@@ -219,12 +245,18 @@ export function masterS2LinearAf(probe: LoudnormProbe): string {
     `offset=${probe.target_offset}`,
     "linear=true",
   ].join(":");
-  return `${MODAL_S2_MASTERING.spectralAf},${loudnorm}`;
+  return withVoiceEq(MODAL_S2_MASTERING.spectralAf, loudnorm, env);
 }
 
 /** First pass of section mastering. Prints the measured loudnorm JSON. */
-export function masterProfessionalMeasureAf(): string {
-  return `${masterPodcastFiltersAf()},${masterLoudnormAf()}:print_format=json`;
+export function masterProfessionalMeasureAf(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return withVoiceEq(
+    masterPodcastFiltersAf(),
+    `${masterLoudnormAf()}:print_format=json`,
+    env
+  );
 }
 
 export type LoudnormProbe = {
@@ -256,7 +288,10 @@ export function parseLoudnormProbe(stderr: string): LoudnormProbe | null {
 }
 
 /** Second pass: the same chain, with the measured gain applied linearly. */
-export function masterProfessionalLinearAf(probe: LoudnormProbe): string {
+export function masterProfessionalLinearAf(
+  probe: LoudnormProbe,
+  env: NodeJS.ProcessEnv = process.env
+): string {
   const loudnorm = [
     masterLoudnormAf(),
     `measured_I=${probe.input_i}`,
@@ -266,7 +301,7 @@ export function masterProfessionalLinearAf(probe: LoudnormProbe): string {
     `offset=${probe.target_offset}`,
     "linear=true",
   ].join(":");
-  return `${masterPodcastFiltersAf()},${loudnorm}`;
+  return withVoiceEq(masterPodcastFiltersAf(), loudnorm, env);
 }
 
 export function masterEncodeArgs(format: MasterableAudioFormat): string[] {

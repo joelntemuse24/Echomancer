@@ -17,12 +17,19 @@ import {
   masterDenoiseWet,
   masterEncodeArgs,
   masterLoudnormAf,
+  MODAL_S2_MASTERING,
   masterPodcastFiltersAf,
   masterProfessionalAf,
   masterProfessionalLinearAf,
+  masterProfessionalMeasureAf,
+  masterS2Af,
+  masterS2LinearAf,
+  masterS2LoudnormAf,
+  masterS2MeasureAf,
   parseLoudnormProbe,
   shouldAttemptMastering,
 } from "./mastering";
+import { voiceEqStageAf } from "./voice-eq";
 
 const MP3 = { extension: "mp3" as const, contentType: "audio/mpeg" };
 const WAV = { extension: "wav" as const, contentType: "audio/wav" };
@@ -156,10 +163,54 @@ describe("mastering constants", () => {
     expect(filters).toMatch(/equalizer=f=3400:width_type=o:width=1\.2:g=1\.6/);
     expect(filters).toContain("deesser=i=0.4:m=0.5:f=0.5:s=o");
     expect(filters).not.toContain("acompressor");
-    expect(af).toBe(`${filters},${masterLoudnormAf()}`);
+    expect(filters).not.toContain("f=8000");
+    const stage = voiceEqStageAf();
+    expect(af).toBe(`${filters},${stage},${masterLoudnormAf()}`);
+    expect(af.indexOf(stage)).toBeGreaterThan(af.indexOf("deesser"));
+    expect(af.indexOf("loudnorm=")).toBeGreaterThan(af.indexOf(stage));
     expect(af).not.toContain("g=3.2");
     expect(af).not.toContain("f=14000");
-    expect(af).not.toContain("f=8000");
+    expect(masterProfessionalAf({ TTS_VOICE_EQ: "0" })).toBe(
+      `${filters},${masterLoudnormAf()}`
+    );
+    const measured = masterProfessionalMeasureAf();
+    expect(measured.indexOf(stage)).toBeLessThan(measured.indexOf("loudnorm="));
+    expect(measured).toContain("print_format=json");
+    const linear = masterProfessionalLinearAf({
+      input_i: -20,
+      input_tp: -2,
+      input_lra: 4,
+      input_thresh: -30,
+      target_offset: 0.5,
+    });
+    expect(linear.indexOf(stage)).toBeLessThan(linear.indexOf("loudnorm="));
+    expect(linear).toContain("linear=true");
+    const s2 = masterS2Af();
+    expect(s2.indexOf(stage)).toBeLessThan(s2.indexOf("loudnorm="));
+    expect(s2).toContain(masterS2LoudnormAf());
+    expect(masterS2Af({ TTS_VOICE_EQ: "0" })).toBe(
+      `${MODAL_S2_MASTERING.spectralAf},${masterS2LoudnormAf()}`
+    );
+    expect(masterS2MeasureAf().indexOf(stage)).toBeLessThan(
+      masterS2MeasureAf().indexOf("loudnorm=")
+    );
+    expect(
+      masterS2LinearAf({
+        input_i: -23,
+        input_tp: -4,
+        input_lra: 5,
+        input_thresh: -33,
+        target_offset: 0.2,
+      }).indexOf(stage)
+    ).toBeLessThan(
+      masterS2LinearAf({
+        input_i: -23,
+        input_tp: -4,
+        input_lra: 5,
+        input_thresh: -33,
+        target_offset: 0.2,
+      }).indexOf("loudnorm=")
+    );
     expect(masterBlendFilterComplex()).toContain(af);
   });
 
