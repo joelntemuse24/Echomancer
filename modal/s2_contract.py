@@ -1689,8 +1689,7 @@ def cold_restore_counts(status, seen_ids) -> str:
     cid = str(status.get("container_id") or "")
     if cid and cid in seen_ids:
         return "same-container"
-    graphs = str(status.get("graphs") or "")
-    if not graphs.startswith(("ok(", "recaptured(")):
+    if not graphs_captured(status):
         return "graphs"
     return "ok"
 
@@ -1722,12 +1721,14 @@ def placement_kind(
 COLD_SINCE_READY_S = 20.0
 
 
+_CAPTURED_GRAPHS = re.compile(r"^(?:ok|recaptured)\(([1-9][0-9]*)\)$")
+
+
 def graphs_captured(status) -> bool:
-    """True when boot replayed or recaptured the warmed decode graphs."""
+    """True when boot replayed or recaptured at least one warmed decode graph."""
     if not isinstance(status, dict):
         return False
-    graphs = str(status.get("graphs") or "")
-    return graphs.startswith(("ok(", "recaptured("))
+    return _CAPTURED_GRAPHS.fullmatch(str(status.get("graphs") or "")) is not None
 
 
 def restore_check_decision(
@@ -1750,18 +1751,23 @@ def restore_check_decision(
         return "fail"
     if not graphs_captured(status):
         return "fail"
+    if "wall_s" not in status:
+        return "fail"
     try:
-        wall = float(status.get("wall_s") or 0)
+        wall = float(status["wall_s"])
     except (TypeError, ValueError):
         return "fail"
     kind = placement_kind(wall, restore_s=restore_s, compile_s=compile_s)
     if kind != "restore":
         return "compiled"
-    since = status.get("since_ready_s")
+    # Missing means this call was not shown to be a fresh container. Treat
+    # that as warm so a short wall cannot pass the cold check by omission.
+    if "since_ready_s" not in status or status.get("since_ready_s") is None:
+        return "warm"
     try:
-        since_s = 0.0 if since is None else float(since)
+        since_s = float(status["since_ready_s"])
     except (TypeError, ValueError):
-        since_s = 0.0
+        return "warm"
     if since_s > cold_since_ready_s:
         return "warm"
     return "pass"

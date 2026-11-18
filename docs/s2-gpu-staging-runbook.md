@@ -355,7 +355,8 @@ variant was another full H100 compile.
 Post-deploy proof is one cold restore, not a multi-round fan-out.
 `restore_check` places one container (so it is safe at `max_containers=1`).
 If that call compiles, it waits for scale-to-zero and places exactly one
-more call, which must restore with `graphs=ok(` or `graphs=recaptured(`.
+more call, which must restore with `graphs=ok(N)` or `graphs=recaptured(N)`
+(N greater than 0).
 `kind` is wall time. `boot=` is printed and is not the pass/fail. The
 compile-cache volume is what keeps the compile from repeating the full
 Inductor run; the log line is `[S2C] compile_cache hit=… compile_s=…`.

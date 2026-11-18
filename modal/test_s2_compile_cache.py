@@ -112,138 +112,228 @@ def test_empty_volume_is_a_miss_and_points_env_at_the_key(tmp_path):
     assert "fallback=empty" in cache.log_line()
 
 
-def test_inductor_files_without_a_mega_cache_are_a_hit(tmp_path):
-    env: dict[str, str] = {}
-    first = prepare_compile_cache(
+class _Volume:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.reloads = 0
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def reload(self) -> None:
+        self.reloads += 1
+        raise AssertionError("reload() with open cache files fails the snapshot hook")
+
+
+def _fields(**overrides):
+    fields = {
+        "torch_version": "2.5.1",
+        "gpu_name": "H100",
+        "compute_capability": "9.0",
+        "engine": "v9",
+        "code": "stamp",
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _prepare(tmp_path, load_mega=None, **overrides):
+    return prepare_compile_cache(
         str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v10",
-        code="stamp",
-        environ=env,
+        environ={},
+        load_mega=load_mega,
+        **_fields(**overrides),
     )
+
+
+def _publish(tmp_path, **overrides):
+    cache = _prepare(tmp_path, **overrides)
+    with open(os.path.join(cache.inductor_dir, "graph.bin"), "wb") as handle:
+        handle.write(b"kernel")
+    volume = _Volume()
+    cache.finish(
+        compile_s=1.0,
+        volume=volume,
+        save_mega=lambda path: open(path, "wb").write(b"mega"),
+    )
+    assert volume.reloads == 0
+    assert volume.commits == 1
+    return cache
+
+
+def test_inductor_files_without_a_mega_cache_are_a_hit_only_after_publish(tmp_path):
+    first = _prepare(tmp_path, engine="v10")
     with open(os.path.join(first.inductor_dir, "graph.bin"), "wb") as handle:
         handle.write(b"kernel")
-    second = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
+    first.finish(compile_s=1.0, volume=_Volume(), save_mega=lambda _path: None)
+    second = _prepare(
+        tmp_path,
         engine="v10",
-        code="stamp",
-        environ=env,
         load_mega=lambda _path: (_ for _ in ()).throw(AssertionError("no mega file")),
     )
     assert second.hit == "hit"
     assert second.fallback == ""
     assert second.key == first.key
+    assert second.inductor_dir == first.inductor_dir
+    assert second.persist is False
 
 
-def test_corrupt_mega_cache_is_quarantined_and_compiles_empty(tmp_path):
-    env: dict[str, str] = {}
-    cache = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v9",
-        code="stamp",
-        environ=env,
+def test_unpublished_files_are_not_a_hit(tmp_path):
+    first = _prepare(tmp_path)
+    with open(os.path.join(first.inductor_dir, "graph.bin"), "wb") as handle:
+        handle.write(b"kernel")
+    with open(first.mega_path, "wb") as handle:
+        handle.write(b"partial")
+    second = _prepare(
+        tmp_path,
+        load_mega=lambda _path: (_ for _ in ()).throw(AssertionError("partial mega")),
     )
-    with open(os.path.join(cache.inductor_dir, "stale.bin"), "wb") as handle:
-        handle.write(b"stale")
+    assert second.hit == "miss"
+    assert second.fallback == "empty"
+    assert second.root != first.root
+    assert os.path.isfile(os.path.join(first.inductor_dir, "graph.bin"))
+    assert not os.path.exists(os.path.join(second.inductor_dir, "graph.bin"))
+
+
+def test_corrupt_published_mega_compiles_a_new_run_and_keeps_the_old(tmp_path):
+    cache = _publish(tmp_path)
     with open(cache.mega_path, "wb") as handle:
         handle.write(b"not-a-cache")
 
     def boom(_path: str) -> None:
         raise ValueError("bad magic")
 
-    fresh = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v9",
-        code="stamp",
-        environ=env,
-        load_mega=boom,
-    )
+    fresh = _prepare(tmp_path, load_mega=boom)
     assert fresh.hit == "miss"
     assert fresh.fallback == "corrupt"
-    assert not os.path.exists(os.path.join(fresh.inductor_dir, "stale.bin"))
-    quarantined = [
-        name for name in os.listdir(tmp_path) if ".corrupt-" in name
-    ]
-    assert len(quarantined) == 1
-    assert os.path.isdir(fresh.inductor_dir)
-    assert env["TORCHINDUCTOR_CACHE_DIR"] == fresh.inductor_dir
+    assert fresh.root != cache.root
+    assert os.path.isfile(os.path.join(cache.inductor_dir, "graph.bin"))
+    assert os.path.isdir(cache.root)
+    assert not os.path.exists(os.path.join(fresh.inductor_dir, "graph.bin"))
     assert "fallback=corrupt" in fresh.log_line()
 
 
 def test_a_loaded_mega_cache_is_a_hit(tmp_path):
+    cache = _publish(tmp_path)
     seen: list[str] = []
 
     def load(path: str) -> None:
         seen.append(path)
 
-    cache = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v9",
-        code="stamp",
-        environ={},
-    )
-    with open(cache.mega_path, "wb") as handle:
-        handle.write(b"artifacts")
-    loaded = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v9",
-        code="stamp",
-        environ={},
-        load_mega=load,
-    )
+    loaded = _prepare(tmp_path, load_mega=load)
     assert loaded.hit == "hit"
     assert loaded.fallback == ""
+    assert loaded.persist is False
     assert seen == [cache.mega_path]
 
 
 def test_unsupported_mega_api_keeps_inductor_files(tmp_path):
+    cache = _publish(tmp_path)
+    with open(os.path.join(cache.triton_dir, "kernel.cubin"), "wb") as handle:
+        handle.write(b"cubin")
+
+    def unsupported(_path: str) -> None:
+        raise CompileCacheUnsupported("no mega-cache")
+
+    loaded = _prepare(tmp_path, load_mega=unsupported)
+    assert loaded.hit == "hit"
+    assert loaded.fallback == "unsupported"
+    assert os.path.isfile(os.path.join(loaded.triton_dir, "kernel.cubin"))
+    assert loaded.root == cache.root
+
+
+def test_mismatched_torch_gpu_engine_or_code_does_not_load(tmp_path):
+    base = _publish(tmp_path)
+
+    def refuse(_path: str) -> None:
+        raise AssertionError("mismatched key loaded a mega-cache")
+
+    for overrides in (
+        {"torch_version": "2.6.0+cu124"},
+        {"gpu_name": "NVIDIA H200"},
+        {"compute_capability": "10.0"},
+        {"engine": "v10"},
+        {"code": "other-stamp"},
+    ):
+        nxt = _prepare(tmp_path, load_mega=refuse, **overrides)
+        assert nxt.hit == "miss", overrides
+        assert nxt.key != base.key
+        assert nxt.root != base.root
+    assert os.path.isfile(os.path.join(base.inductor_dir, "graph.bin"))
+
+
+def test_two_compiles_publish_separate_runs(tmp_path):
+    first = _prepare(tmp_path)
+    second = _prepare(tmp_path)
+    assert first.root != second.root
+    with open(os.path.join(first.inductor_dir, "from-a.bin"), "wb") as handle:
+        handle.write(b"a")
+    with open(os.path.join(second.inductor_dir, "from-b.bin"), "wb") as handle:
+        handle.write(b"b")
+    first.finish(compile_s=1, volume=_Volume(), save_mega=lambda path: open(path, "wb").write(b"a"))
+    second.finish(compile_s=1, volume=_Volume(), save_mega=lambda path: open(path, "wb").write(b"b"))
+    assert os.path.isfile(os.path.join(first.inductor_dir, "from-a.bin"))
+    assert not os.path.exists(os.path.join(first.inductor_dir, "from-b.bin"))
+    assert os.path.isfile(os.path.join(second.inductor_dir, "from-b.bin"))
+    seen: list[str] = []
+    hit = _prepare(tmp_path, load_mega=lambda path: seen.append(path))
+    assert hit.hit == "hit"
+    assert hit.root == second.root
+    assert seen == [second.mega_path]
+
+
+def test_unstamped_code_does_not_read_the_volume(tmp_path):
+    (tmp_path / "sentinel").write_text("keep")
     cache = prepare_compile_cache(
         str(tmp_path),
         torch_version="2.5.1",
         gpu_name="H100",
         compute_capability="9.0",
         engine="v9",
-        code="stamp",
+        code="",
         environ={},
+        load_mega=lambda _path: (_ for _ in ()).throw(AssertionError("unstamped load")),
     )
-    with open(os.path.join(cache.triton_dir, "kernel.cubin"), "wb") as handle:
-        handle.write(b"cubin")
-    with open(cache.mega_path, "wb") as handle:
-        handle.write(b"artifacts")
+    assert cache.hit == "miss"
+    assert cache.persist is False
+    assert cache.fallback == "unstamped"
+    assert cache.inductor_dir == "/opt/torchinductor"
+    assert [path.name for path in tmp_path.iterdir()] == ["sentinel"]
 
-    def unsupported(_path: str) -> None:
-        raise CompileCacheUnsupported("no mega-cache")
 
-    loaded = prepare_compile_cache(
-        str(tmp_path),
-        torch_version="2.5.1",
-        gpu_name="H100",
-        compute_capability="9.0",
-        engine="v9",
-        code="stamp",
-        environ={},
-        load_mega=unsupported,
+def test_code_stamp_hashes_the_compiled_module_and_codegen_flags():
+    import hashlib
+    import importlib
+
+    from conftest import _install_modal_stub
+
+    # ``modal/`` is a namespace on the test path and has no ``Image``. The
+    # decode module only needs the stub to import; the stamp is the file bytes.
+    _install_modal_stub()
+    sys.modules.pop("s2_batch", None)
+    s2_batch = importlib.import_module("s2_batch")
+
+    from s2_compile_cache import _compile_flag_lines, _compiled_module_bytes
+
+    raw = _compiled_module_bytes()
+    assert b"def _attn_decode" in raw
+    assert b"def _decode_step" in raw
+    assert b"def _fast" in raw
+    assert b"def _sample" in raw
+    lines = _compile_flag_lines()
+    assert any(line.startswith("sdpa=") for line in lines)
+    assert any(line.startswith("topk=") for line in lines)
+    expect = hashlib.sha256(
+        "\n".join(["file=" + hashlib.sha256(raw).hexdigest(), *lines]).encode()
+    ).hexdigest()[:16]
+    assert code_stamp() == expect
+    assert code_stamp() == code_stamp()
+    edited = hashlib.sha256(raw + b"\n# attn changed\n").hexdigest()
+    assert code_stamp(sources=["file=" + edited, *lines]) != expect
+    assert code_stamp(sources=["same"], flags=["sdpa=0"]) != code_stamp(
+        sources=["same"], flags=["sdpa=1"]
     )
-    assert loaded.hit == "hit"
-    assert loaded.fallback == "unsupported"
-    assert os.path.isfile(os.path.join(loaded.triton_dir, "kernel.cubin"))
+    assert s2_batch.GPU == "H100!"
 
 
 def test_unwritable_root_falls_back_without_raising(tmp_path):
@@ -347,10 +437,16 @@ def test_finish_writes_manifest_and_commits(tmp_path):
     assert saved == [cache.mega_path]
     assert commits == [cache.key]
     assert cache.committed is True
-    manifest = json.loads((tmp_path / cache.key / "manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / cache.key / "runs" / cache.run_id / "manifest.json").read_text()
+    )
+    assert manifest["complete"] is True
+    assert manifest["run"] == cache.run_id
     assert manifest["compile_s"] == pytest.approx(88.2)
     assert manifest["engine"] == "v10"
     assert manifest["compute_capability"] == "9.0"
+    current = json.loads((tmp_path / cache.key / "current.json").read_text())
+    assert current == {"key": cache.key, "run": cache.run_id, "complete": True}
     assert "hit=miss" in format_compile_cache_log(cache.report())
     assert "compile_s=88.20" in format_compile_cache_log(cache.report())
 
@@ -472,6 +568,37 @@ def test_restore_check_treats_an_already_warm_container_as_not_cold():
     assert run_restore_check(place, scaledown=15, sleep=slept.append, log=lambda _line: None)
     assert len(slept) == 1
     assert rows == []
+
+
+def test_restore_check_rejects_zero_graphs_and_a_missing_cold_mark():
+    def zero():
+        return _status(graphs="ok(0)")
+
+    assert run_restore_check(
+        zero,
+        sleep=lambda _s: (_ for _ in ()).throw(AssertionError("slept")),
+        log=lambda _line: None,
+    ) is False
+
+    rows = [
+        _status(since_ready_s=None),
+        _status(since_ready_s=0.4, container_id="cold"),
+    ]
+
+    def place():
+        return rows.pop(0)
+
+    slept: list[float] = []
+    assert run_restore_check(place, scaledown=15, sleep=slept.append, log=lambda _line: None)
+    assert len(slept) == 1
+    assert rows == []
+
+    def no_wall():
+        row = _status()
+        row.pop("wall_s")
+        return row
+
+    assert run_restore_check(no_wall, log=lambda _line: None) is False
 
 
 def test_restore_check_rejects_recapture_only_when_the_wall_is_not_a_restore():

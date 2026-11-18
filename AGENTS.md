@@ -866,12 +866,17 @@ busy-not-cold backstop.
   protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
   this app rebuilds the H100 snapshots, because `render_batch` is on
   `S2CloneWorker`. Run `scripts/s2/post-deploy-cover.sh` (`::restore_check`,
-one cold restore at `max_containers` 1) after that deploy, then restart
-the worker. The compile-cache volume (`echomancer-compile-cache`) keeps
-Inductor, Triton, and the torch mega-cache across that rebuild, keyed by
-torch version, GPU name, compute capability, `S2C_ENGINE`, and the
-compiled source. `S2C_COMPILE_CACHE=0` skips the volume. An empty or
-corrupt cache compiles the ordinary way and logs `compile_cache hit=miss`.
+  one cold restore at `max_containers` 1) after that deploy, then restart
+  the worker. The compile-cache volume (`echomancer-compile-cache`) keeps
+  Inductor, Triton, and the torch mega-cache across that rebuild, keyed by
+  torch version, GPU name, compute capability, `S2C_ENGINE`, and a stamp of
+  `s2_batch.py` plus the codegen flags. A run is readable only after
+  `finish` writes `current.json` (after self-test). A partial or corrupt
+  tree is not loaded and is not deleted. Two compilers write distinct run
+  directories. `Volume.commit()` runs inside `@modal.enter(snap=True)`;
+  `reload()` is not called. A stamp that cannot be read does not share a
+  key. `S2C_COMPILE_CACHE=0` skips the volume. An empty cache compiles the
+  ordinary way and logs `compile_cache hit=miss`.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2
@@ -882,8 +887,8 @@ corrupt cache compiles the ordinary way and logs `compile_cache hit=miss`.
   snapshot; the book does not. After a deploy, run
   `scripts/s2/post-deploy-cover.sh` (`::restore_check`): one placement,
   and if that placement compiled, one cold restore after scale-to-zero.
-  Judge it by wall time (`placement_kind`) and `graphs=ok(` /
-  `graphs=recaptured(`, not by `boot=restored`. A different H100 worker
+  Judge it by wall time (`placement_kind`) and `graphs=ok(N)` /
+  `graphs=recaptured(N)` with N greater than 0, not by `boot=restored`. A different H100 worker
   variant still builds its own memory snapshot; the volume cache is what
   keeps that from repeating the full Inductor compile. `::cover` with a
   multi-round fan-out is no longer the post-deploy step. Scale-to-zero

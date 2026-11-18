@@ -7,9 +7,17 @@ the ``echomancer-compile-cache`` volume, under a key of torch version, GPU
 name, compute capability, ``S2C_ENGINE``, and a stamp of the compiled source.
 A mismatched machine or a changed decode step never reads another key.
 
-Empty, unreadable, and corrupt caches compile the ordinary way and are logged.
+A run is readable only after ``finish`` writes ``current.json``. That happens
+after warm-up and self-test, so a crash mid-compile cannot be loaded.
+``Volume.commit()`` runs in ``@modal.enter(snap=True)`` before the snapshot;
+``reload()`` does not. A fresh container mounts the latest volume, and reload
+fails while cache files are open. Published runs are left in place: deleting
+volume files a snapshot restores from breaks the restore.
+
+Empty, partial, and corrupt caches compile the ordinary way and are logged.
 Nothing here raises into ``@modal.enter``: a cache fault must not take the book
-down with it, and it must not skip the snapshot.
+down with it, and it must not skip the snapshot. Two compilers write distinct
+run directories and publish ``current.json`` last, so they do not share files.
 
 ``S2C_COMPILE_CACHE=0`` keeps today's local ``/opt/torchinductor`` directory
 and does not read or commit the volume.
@@ -33,12 +41,19 @@ LOCAL_INDUCTOR_DIR = "/opt/torchinductor"
 LOCAL_TRITON_DIR = "/tmp/s2-triton-cache"
 MEGA_CACHE_NAME = "mega-cache.bin"
 MANIFEST_NAME = "manifest.json"
+CURRENT_NAME = "current.json"
+RUNS_DIR = "runs"
 
 _TOKEN = re.compile(r"[^a-z0-9._+-]+")
+_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
 
 class CompileCacheUnsupported(Exception):
     """This torch build has no ``torch.compiler`` mega-cache API."""
+
+
+class CompileCacheStampError(Exception):
+    """The compiled source could not be stamped, so the volume must not be read."""
 
 
 def _token(value: object) -> str:
@@ -86,38 +101,72 @@ def compile_cache_key(
     return key
 
 
-def code_stamp(*, sources: list[str] | None = None) -> str:
+def code_stamp(
+    *, sources: list[str] | None = None, flags: list[str] | None = None
+) -> str:
     """Stamp of the compiled decode step.
 
-    Pass ``sources`` in tests. With no argument this reads the live engine, so
-    a source change misses the cache even when ``S2C_ENGINE`` stays ``v9`` or
-    ``v10``.
+    Pass ``sources`` in tests. With no argument this hashes ``s2_batch.py``
+    (the module ``torch.compile`` traces, including ``_attn_decode`` and the
+    fast sampler) plus the codegen flags. A source change misses the cache
+    even when ``S2C_ENGINE`` stays ``v9`` or ``v10``. An unreadable file raises
+    ``CompileCacheStampError`` instead of sharing one ``unreadable`` key.
     """
-    chunks = list(sources) if sources is not None else _engine_sources()
+    if sources is not None:
+        chunks = list(sources)
+    else:
+        chunks = [_file_chunk(_compiled_module_bytes())]
+    if flags is not None:
+        chunks.extend(flags)
+    elif sources is None:
+        chunks.extend(_compile_flag_lines())
+    if not chunks or any(not str(chunk).strip() for chunk in chunks):
+        raise CompileCacheStampError("compile cache stamp has no source")
     return hashlib.sha256("\n".join(chunks).encode("utf-8")).hexdigest()[:16]
 
 
-def _engine_sources() -> list[str]:
-    import inspect
+def _file_chunk(data: bytes) -> str:
+    return "file=" + hashlib.sha256(data).hexdigest()
 
+
+def _compiled_module_bytes() -> bytes:
     import s2_batch as batch
 
-    chunks = [
-        f"engine={batch.ENGINE}",
-        f"fast={int(batch.FAST_DECODE)}",
-        f"codec={int(batch.CODEC_TUNING)}",
-        f"graphs={int(batch.CUDAGRAPHS)}",
-        f"batch={batch.BATCH}",
-        f"kv={','.join(str(v) for v in batch.KV_BUCKETS)}",
-        f"legacy={int(batch.LEGACY_RENDER)}",
-    ]
-    for name in ("_decode_step", "_embed", "_compile_step", "_logits_to_probs"):
-        fn = getattr(batch._BatchEngine, name, None)
-        try:
-            chunks.append(inspect.getsource(fn) if fn is not None else f"{name}:missing")
-        except (OSError, TypeError):
-            chunks.append(f"{name}:unreadable")
-    return chunks
+    path = getattr(batch, "__file__", None)
+    if not path:
+        raise CompileCacheStampError("s2_batch has no source file")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as err:
+        raise CompileCacheStampError(f"s2_batch source unreadable: {err}") from err
+    if (
+        not data
+        or b"def _decode_step" not in data
+        or b"def _attn_decode" not in data
+        or b"def _fast" not in data
+    ):
+        raise CompileCacheStampError("s2_batch source is not the compiled decode module")
+    return data
+
+
+def _compile_flag_lines() -> list[str]:
+    """Env-selected codegen that does not show up as a source edit."""
+    import s2_batch as batch
+
+    flags = {
+        "engine": batch.ENGINE,
+        "fast": int(bool(batch.FAST_DECODE)),
+        "codec": int(bool(batch.CODEC_TUNING)),
+        "graphs": int(bool(batch.CUDAGRAPHS)),
+        "batch": int(batch.BATCH),
+        "kv": ",".join(str(int(v)) for v in batch.KV_BUCKETS),
+        "legacy": int(bool(batch.LEGACY_RENDER)),
+        "sdpa": int(bool(batch.SDPA_DECODE)),
+        "topk": int(bool(batch.TOPK_FAST_SAMPLE)),
+        "seq": int(batch.MAX_SEQ_LEN),
+    }
+    return [f"{name}={flags[name]}" for name in sorted(flags)]
 
 
 def detect_compile_device(torch_mod=None) -> tuple[str, str, str]:
@@ -188,6 +237,8 @@ class CompileCache:
     engine: str = ""
     compile_s: float | None = None
     committed: bool = False
+    key_root: str = ""
+    run_id: str = ""
 
     def report(self) -> dict:
         compile_s = None if self.compile_s is None else round(float(self.compile_s), 2)
@@ -233,13 +284,17 @@ class CompileCache:
             if not self.fallback:
                 self.fallback = f"save-{type(err).__name__}"
         try:
-            _write_manifest(self)
+            _publish(self)
         except Exception as err:
             print(
                 f"[S2C] compile_cache manifest failed: {type(err).__name__}: {err}"
             )
+            return
         if volume is None:
             return
+        # commit() only. reload() fails with "volume busy" while Inductor has
+        # these files open, and that error inside enter(snap=True) would skip
+        # the snapshot. A new container mounts the latest volume on its own.
         commit = getattr(volume, "commit", None)
         if not callable(commit):
             print("[S2C] compile_cache volume has no commit(); artifacts stay local")
@@ -266,13 +321,26 @@ def prepare_compile_cache(
     environ: dict | None = None,
     load_mega: Callable[[str], None] | None = None,
 ) -> CompileCache:
-    """Point Inductor and Triton at ``root/<key>`` and load a mega-cache.
+    """Point Inductor and Triton at a published run under ``root/<key>``.
 
-    Never raises. An empty volume is a miss. A corrupt mega-cache is quarantined
-    and the compile runs against an empty key directory.
+    Never raises. An empty or partial volume is a miss. A corrupt mega-cache
+    is left in place and the compile uses a new run.
     """
     env = os.environ if environ is None else environ
     try:
+        if not str(code or "").strip():
+            cache = _local_cache(
+                torch_version=torch_version,
+                gpu_name=gpu_name,
+                compute_capability=compute_capability,
+                engine=engine,
+                code="unstamped",
+                fallback="unstamped",
+                persist=False,
+            )
+            _point_cache_env(cache, env)
+            print(cache.log_line())
+            return cache
         if cache_disabled(env):
             cache = _local_cache(
                 torch_version=torch_version,
@@ -362,47 +430,62 @@ def _prepare_compile_cache(
         engine=engine,
         code=code,
     )
+    key_root = os.path.join(root, key)
+    published = _published_run(key_root, key)
+    loader = load_mega or default_load_mega
+    if published is not None:
+        run_root, run_id = published
+        cache = _cache_at(
+            run_root,
+            key,
+            torch_version=torch_version,
+            gpu_name=gpu_name,
+            compute_capability=compute_capability,
+            engine=engine,
+            hit="miss",
+            fallback="",
+            persist=False,
+            key_root=key_root,
+            run_id=run_id,
+        )
+        mega_state = _try_mega(cache.mega_path, loader)
+        if _run_usable(mega_state, cache.inductor_dir, cache.triton_dir):
+            cache.hit = "hit"
+            cache.persist = False
+            cache.fallback = "" if mega_state != "unsupported" else "unsupported"
+            _point_cache_env(cache, environ)
+            print(cache.log_line())
+            return cache
+        # Leave the published tree. A snapshot may still restore from it, and
+        # Modal documents that deleting those files breaks the restore.
+        print(
+            f"[S2C] compile_cache published run unusable key={key} "
+            f"mega={mega_state}; compiling a new run"
+        )
+        fallback = "corrupt" if mega_state == "corrupt" else (
+            "unsupported" if mega_state == "unsupported" else "empty"
+        )
+    else:
+        fallback = "empty"
+    run_id = f"{time.time_ns()}-{os.getpid()}"
+    if not _RUN_ID.match(run_id):
+        raise RuntimeError(f"compile cache run id is not a single path segment: {run_id!r}")
+    run_root = os.path.join(key_root, RUNS_DIR, run_id)
     cache = _cache_at(
-        root,
+        run_root,
         key,
         torch_version=torch_version,
         gpu_name=gpu_name,
         compute_capability=compute_capability,
         engine=engine,
         hit="miss",
-        fallback="empty",
+        fallback=fallback,
         persist=True,
+        key_root=key_root,
+        run_id=run_id,
     )
     os.makedirs(cache.inductor_dir, exist_ok=True)
     os.makedirs(cache.triton_dir, exist_ok=True)
-    loader = load_mega or default_load_mega
-    mega_state = "absent"
-    if os.path.isfile(cache.mega_path) and os.path.getsize(cache.mega_path) > 0:
-        try:
-            loader(cache.mega_path)
-            mega_state = "loaded"
-        except CompileCacheUnsupported as err:
-            mega_state = "unsupported"
-            print(f"[S2C] compile_cache mega-cache unavailable: {err}")
-        except Exception as err:
-            mega_state = "corrupt"
-            print(
-                f"[S2C] compile_cache corrupt key={key}: {type(err).__name__}: {err}; "
-                "quarantining and compiling from scratch"
-            )
-            _reset_compiler_state()
-            _quarantine(cache.root)
-            os.makedirs(cache.inductor_dir, exist_ok=True)
-            os.makedirs(cache.triton_dir, exist_ok=True)
-    if mega_state == "corrupt":
-        cache.hit = "miss"
-        cache.fallback = "corrupt"
-    elif mega_state == "loaded" or _dirs_have_files(cache.inductor_dir, cache.triton_dir):
-        cache.hit = "hit"
-        cache.fallback = "" if mega_state != "unsupported" else "unsupported"
-    else:
-        cache.hit = "miss"
-        cache.fallback = "unsupported" if mega_state == "unsupported" else "empty"
     _point_cache_env(cache, environ)
     print(cache.log_line())
     return cache
@@ -419,14 +502,15 @@ def _cache_at(
     hit: str,
     fallback: str,
     persist: bool,
+    key_root: str = "",
+    run_id: str = "",
 ) -> CompileCache:
-    base = os.path.join(root, key)
     return CompileCache(
         key=key,
-        root=base,
-        inductor_dir=os.path.join(base, "inductor"),
-        triton_dir=os.path.join(base, "triton"),
-        mega_path=os.path.join(base, MEGA_CACHE_NAME),
+        root=root,
+        inductor_dir=os.path.join(root, "inductor"),
+        triton_dir=os.path.join(root, "triton"),
+        mega_path=os.path.join(root, MEGA_CACHE_NAME),
         hit=hit,
         fallback=fallback,
         persist=persist,
@@ -434,6 +518,8 @@ def _cache_at(
         gpu_name=gpu_name,
         compute_capability=compute_capability,
         engine=engine,
+        key_root=key_root,
+        run_id=run_id,
     )
 
 
@@ -525,6 +611,91 @@ def _dirs_have_files(*paths: str) -> bool:
     return False
 
 
+def _published_run(key_root: str, key: str) -> tuple[str, str] | None:
+    """The run ``finish`` published, or None when nothing complete is there."""
+    current = _read_json(os.path.join(key_root, CURRENT_NAME))
+    if not current or current.get("complete") is not True or current.get("key") != key:
+        return None
+    run_id = str(current.get("run") or "")
+    if not _RUN_ID.match(run_id):
+        return None
+    run_root = os.path.join(key_root, RUNS_DIR, run_id)
+    if not _is_inside(key_root, run_root):
+        return None
+    manifest = _read_json(os.path.join(run_root, MANIFEST_NAME))
+    if (
+        not manifest
+        or manifest.get("complete") is not True
+        or manifest.get("key") != key
+        or manifest.get("run") != run_id
+    ):
+        return None
+    return run_root, run_id
+
+
+def _is_inside(parent: str, child: str) -> bool:
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(parent), os.path.abspath(child)]
+        ) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+
+def _read_json(path: str) -> dict | None:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _try_mega(path: str, loader: Callable[[str], None]) -> str:
+    if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        return "absent"
+    try:
+        loader(path)
+        return "loaded"
+    except CompileCacheUnsupported as err:
+        print(f"[S2C] compile_cache mega-cache unavailable: {err}")
+        return "unsupported"
+    except Exception as err:
+        print(
+            f"[S2C] compile_cache corrupt mega {path}: {type(err).__name__}: {err}"
+        )
+        _reset_compiler_state()
+        return "corrupt"
+
+
+def _run_usable(mega_state: str, inductor: str, triton: str) -> bool:
+    if mega_state == "corrupt":
+        return False
+    if mega_state == "loaded":
+        return True
+    if mega_state == "unsupported":
+        return _dirs_have_files(inductor, triton)
+    return mega_state == "absent" and _dirs_have_files(inductor, triton)
+
+
+def _publish(cache: CompileCache) -> None:
+    """Point ``current.json`` at this run only after its manifest is in place."""
+    if not cache.root or not cache.key_root or not _RUN_ID.match(cache.run_id):
+        raise RuntimeError("compile cache run cannot be published")
+    if not _is_inside(cache.key_root, cache.root):
+        raise RuntimeError("compile cache run escapes its key")
+    _write_manifest(cache)
+    payload = {"key": cache.key, "run": cache.run_id, "complete": True}
+    path = os.path.join(cache.key_root, CURRENT_NAME)
+    tmp = os.path.join(cache.key_root, f".{CURRENT_NAME}.{cache.run_id}.tmp")
+    os.makedirs(cache.key_root, exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
 def _reset_compiler_state() -> None:
     """Drop a mega-cache load that failed part-way through.
 
@@ -547,24 +718,14 @@ def _reset_compiler_state() -> None:
         )
 
 
-def _quarantine(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    dest = f"{path}.corrupt-{time.time_ns()}"
-    try:
-        os.rename(path, dest)
-        print(f"[S2C] compile_cache quarantined {path} -> {dest}")
-    except OSError as err:
-        print(f"[S2C] compile_cache quarantine failed: {err}")
-        raise
-
-
 def _write_manifest(cache: CompileCache) -> None:
     if not cache.root:
         return
     os.makedirs(cache.root, exist_ok=True)
     payload = {
         "key": cache.key,
+        "run": cache.run_id,
+        "complete": True,
         "hit": cache.hit,
         "fallback": cache.fallback,
         "compile_s": cache.compile_s,
@@ -618,8 +779,12 @@ def default_save_mega(path: str) -> None:
         print("[S2C] compile_cache mega-cache save returned nothing")
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as handle:
+    tmp = f"{path}.tmp"
+    with open(tmp, "wb") as handle:
         handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
 
 
 def _artifact_bytes(saved) -> bytes | None:
