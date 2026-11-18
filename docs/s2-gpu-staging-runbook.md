@@ -337,33 +337,42 @@ HTTP wait aborts, but only if that call is still an *unstarted* PENDING input.
 It never cancels a call that has already started enter or compile.
 
 ---
-## 4. Verify restores on every worker variant
+## 4. Verify one cold restore
 
 ```bash
 export S2C_APP_NAME=echomancer-s2-clone-staging
-# Spaced past scaledown_window, so each call gets a distinct container.
-modal run modal/s2_clone_warm.py::warm --verify --containers 3 --scaledown 300 --no-synth
+bash scripts/s2/cover-max1.sh
 ```
 
-(Boolean flags are click options: use `--no-synth` / `--no-verify` to turn one off.)
+That is one `::restore_check`. It does not pass `--containers` and it does
+not start a second container while the first call is in flight, so it is
+the check that matches production `max_containers=1`.
 
-Or start them all at once, which is the real four-lane question:
+A multi-variant fan-out (`::warm --verify --containers 3`, `::fanout`,
+`::cover --containers 3 --rounds 6`) is not this step. Each extra cold
+variant was another full H100 compile.
+
+Post-deploy proof is one cold restore, not a multi-round fan-out.
+`restore_check` places one container (so it is safe at `max_containers=1`).
+If that call compiles, it waits for scale-to-zero and places exactly one
+more call, which must restore with `graphs=ok(N)` or `graphs=recaptured(N)`
+(N greater than 0).
+`kind` is wall time. `boot=` is printed and is not the pass/fail. The
+compile-cache volume is what keeps the compile from repeating the full
+Inductor run; the log line is `[S2C] compile_cache hit=… compile_s=…`.
 
 ```bash
-modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 300
-```
-
-Keep going until consecutive placements restore. `cover` scales to zero
-between rounds (so the next fan-out can hit a different worker variant) and
-stops only when `streak` calls in a row finish inside the restore budget.
-`kind` is wall time. `boot=` is printed and is not the pass/fail.
-
-```bash
-# Default: 3 containers, 6 rounds, streak 3, 300s scale-to-zero between rounds.
-# The wrapper exits non-zero if the streak is missed and always restores
-# the autoscaler with min_containers=0.
+# One container. Exits non-zero if the cold restore does not land, and
+# always restores the autoscaler with min_containers=0 and max_containers
+# at the clamped cap (1 on production).
 bash scripts/s2/post-deploy-cover.sh
+# same check:
+bash scripts/s2/cover-max1.sh
 ```
+
+`::cover --containers 3 --rounds 6` is still in `s2_clone_warm.py` for an
+operator who wants to prebuild several worker variants. It is not the
+post-deploy step: each extra variant was another full H100 compile.
 
 Each row prints `wall=` and `graphs=`. The first round's RPC wait is the
 compile budget plus margin (a 1200s get returned before a ~1290–1350s compile
@@ -818,8 +827,8 @@ unbuilt snapshots is how four simultaneous compiles exhausted the budget on
 25 Oct.
 
 ```bash
-# Still production (S2C_APP_NAME unset).
-modal run modal/s2_clone_warm.py --verify --containers 3
+# Still production (S2C_APP_NAME unset). One container, then one cold restore.
+bash scripts/s2/post-deploy-cover.sh
 ```
 
 - [ ] the warm run printed a `build=` id (12 hex chars) — record it
@@ -1109,8 +1118,9 @@ deployment environment. Production's baked env stays at 1, and the live cap
 stays at 1 as well. `MODAL_S2_MAX_GPUS` (default 20) is the worker lease
 count and is not applied here. After each production deploy, in this order:
 
-1. `modal run modal/s2_clone_warm.py --verify --containers 3` (the deploy
-   invalidated the snapshots — 8b)
+1. `bash scripts/s2/post-deploy-cover.sh` (the deploy invalidated the
+   memory snapshots — 8b). This is one `::restore_check`, not a 3-container
+   fan-out. `max_containers` stays 1.
 2. re-run the 8c `update_autoscaler(min_containers=0, max_containers=1, …)`
    call and read the printed settings. If `max_containers` is anything other
    than 1, 8c is what sets it back. Raising it needs explicit owner approval.
@@ -1169,7 +1179,8 @@ modal run modal/s2_clone_warm.py --verify --containers 3
 | Clone path errors | remove `MODAL_S2_TTS_URL` → a book that is not already pinned uses direct Fish. An existing `modal` pin is kept. |
 | Cost or container runaway | live: `update_autoscaler(max_containers=1)` on `echomancer-s2-clone.S2CloneWorker` (see "Rolling the lane count back") — no redeploy, snapshots survive. The dashboard's autoscaler panel does the same thing. |
 | Books stuck parked | `MODAL_S2_DEFER_MS=0` skips the park and continues the tick. It does not rewrite `provider_pin` on that branch and it does not call Drama 3. After the normal defer budget, with `FISH_API_KEY` set, the rest of the book is pinned to direct Fish (the same voice). With no Fish key the book stays parked. |
-| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply 8c so `max_containers` stays 1 (raising it needs explicit owner approval). |
+| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4 (`bash scripts/s2/post-deploy-cover.sh`), then re-apply 8c so `max_containers` stays 1 (raising it needs explicit owner approval). |
+| Compile cache hit is wrong (boot fails, or audio changes after a hit) | Redeploy with `S2C_COMPILE_CACHE=0`. The volume is not read and not committed; Inductor uses `/opt/torchinductor` again. Then run `bash scripts/s2/post-deploy-cover.sh`. Deleting the volume key is the other rollback; the next boot compiles from scratch and writes a new key. |
 
 A book that is already `ready` is never re-synthesized by any of these.
 

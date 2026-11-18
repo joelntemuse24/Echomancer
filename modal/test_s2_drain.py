@@ -345,6 +345,14 @@ def test_cover_script_restores_with_the_real_flag():
     assert "--clamp-restore" in text
     assert "S2_ALLOW_PROD_CAP_ABOVE_1" in text
     assert text.index("--clamp-restore") < text.index("trap restore")
+    assert "::restore_check" in text
+    assert "--containers" not in text
+    assert "--rounds" not in text
+    assert "max_containers" in text
+    max1 = (ROOT / "scripts" / "s2" / "cover-max1.sh").read_text()
+    assert "post-deploy-cover.sh" in max1
+    assert "--containers" not in max1
+    assert "--rounds" not in max1
     cancel = (ROOT / "scripts" / "s2" / "cancel-unstarted-pending.py").read_text()
     assert "does not brake or restore" in cancel
     assert "update_autoscaler" not in cancel

@@ -62,11 +62,11 @@ incompatible with multi-GPU programs.
 
     # STAGING (what a bare command does):
     modal deploy modal/s2_clone_service.py
-    modal run modal/s2_clone_warm.py          # builds+verifies the snapshot
+    bash scripts/s2/cover-max1.sh             # one cold restore; max_containers 1
 
     # PRODUCTION (must be named):
     S2C_ALLOW_PRODUCTION=1 modal deploy modal/s2_clone_service.py
-    S2C_ALLOW_PRODUCTION=1 modal run modal/s2_clone_warm.py
+    bash scripts/s2/post-deploy-cover.sh      # same one-call restore check
 
 `S2C_APP_NAME`, `S2C_ALLOW_PRODUCTION` and the heartbeat registry are resolved
 by `s2_contract.resolve_app_name`, which the warm script and
@@ -75,11 +75,18 @@ same app. Production is opt-in even when its name is spelled out: a deploy
 **invalidates every GPU snapshot of its app**, and a branch under review must not
 be able to evict the live pool's by pasting a command from a docstring.
 
-Every deploy invalidates the snapshot, and a rebuild takes ~15 min. Modal's
-web proxy drops a request after ~542 s, so an HTTP call cannot build the first
-snapshot: it fails with 502 and the container is killed mid-compile, leaving
-nothing behind. Warm it over the client RPC (no proxy limit) instead. That is
-what `s2_clone_warm.py` does; see `docs/s2-gpu-staging-runbook.md`.
+Every deploy invalidates the memory snapshot. The torch.compile / Inductor /
+Triton artifacts that used to be redone on each rebuild live on the
+``echomancer-compile-cache`` volume (see ``s2_compile_cache``), keyed by torch
+version, GPU name, compute capability, ``S2C_ENGINE``, and a stamp of
+``s2_batch.py`` plus the codegen flags. A run is published only after
+self-test. ``Volume.commit()`` runs inside ``@modal.enter(snap=True)`` before
+the snapshot; ``reload()`` is not called. ``S2C_COMPILE_CACHE=0`` leaves that
+volume unread and uncommitted. Modal's
+web proxy drops a request after ~542 s, so an HTTP call still cannot be the
+thing that builds the first snapshot. Warm it over the client RPC (no proxy
+limit) with ``s2_clone_warm.py::restore_check`` — one container at a time.
+See `docs/s2-gpu-staging-runbook.md`.
 
 `S2C_BUILD` identifies the code+config a snapshot belongs to. It is written
 into every container heartbeat and every response, so "this box restored a
@@ -170,6 +177,15 @@ from s2_contract import (
     warm_reference_wav,
 )
 from s2_audio_store import R2, KeepAlivePool, UploadPool, transport_name
+from s2_compile_cache import (
+    COMPILE_CACHE_MOUNT,
+    COMPILE_CACHE_VOLUME_NAME,
+    LOCAL_INDUCTOR_DIR,
+    LOCAL_TRITON_DIR,
+    code_stamp,
+    format_compile_cache_log,
+    open_compile_cache,
+)
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
 
 #: The app this module deploys to. `deploy_identity` is the one resolution the
@@ -353,6 +369,10 @@ _BUILD_ENV = {
     "S2B_WARM_STEPS": str(WARM_STEPS_PER_SHAPE),
     "S2C_MAX_BATCH_ITEMS": str(max_batch_items()),
     "S2C_ENCODE_WORKERS": str(_ENCODE_WORKERS),
+    # Read inside the snapshot enter. ``0`` skips the volume and keeps the
+    # image-local Inductor directory. Baked here because the class env
+    # replaces the process environment.
+    "S2C_COMPILE_CACHE": os.environ.get("S2C_COMPILE_CACHE", "1"),
 }
 
 
@@ -421,8 +441,18 @@ app = modal.App(APP_NAME)
 web_image = (
     gpu_image.pip_install("fastapi[standard]==0.115.6")
     .add_local_python_source(
-        "s2_batch", "s2_mastering", "s2_contract", "s2_audio_store", copy=True
+        "s2_batch",
+        "s2_mastering",
+        "s2_contract",
+        "s2_audio_store",
+        "s2_compile_cache",
+        copy=True,
     )
+)
+
+compile_cache_volume = modal.Volume.from_name(
+    os.environ.get("S2C_COMPILE_CACHE_VOLUME", COMPILE_CACHE_VOLUME_NAME),
+    create_if_missing=True,
 )
 
 #: Shared boot registry: one entry per container, written after restore.
@@ -606,10 +636,20 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
     buffer_containers=_LIMITS["buffer_containers"],
     enable_memory_snapshot=True,
     experimental_options={"enable_gpu_snapshot": True},
+    volumes={COMPILE_CACHE_MOUNT: compile_cache_volume},
     env={
         "S2B_GPU": GPU,
         "S2B_BATCH": str(BATCH),
         "S2B_MAX_SEQ_LEN": str(MAX_SEQ_LEN),
+        # Image-local until prepare() retargets a keyed run. A shared unkeyed
+        # directory on the volume would let a mismatched torch or GPU load
+        # another machine's kernels.
+        "TORCHINDUCTOR_CACHE_DIR": LOCAL_INDUCTOR_DIR,
+        "TRITON_CACHE_DIR": LOCAL_TRITON_DIR,
+        "TORCHINDUCTOR_FX_GRAPH_CACHE": "1",
+        "TORCHINDUCTOR_AUTOGRAD_CACHE": "1",
+        "TORCHINDUCTOR_COMPILE_THREADS": "1",
+        "HF_HOME": "/opt/hf",
         # Same identity dict as s2_control and ready. The class env replaces
         # the process environment, so the keys have to be in this mapping.
         **_BUILD_ENV,
@@ -640,10 +680,29 @@ class S2CloneWorker:
         self.snap_monotonic = time.monotonic()
         self.gpu = GpuExecutor("s2-gpu")
 
+        held: dict = {}
+
         def init() -> None:
             import torch
 
             torch.cuda.init()
+            # Before `_BatchEngine`, which is what calls torch.compile. A miss,
+            # an empty volume, or a corrupt cache logs and compiles as usual.
+            # A stamp that cannot be read must not share one "unknown" key.
+            try:
+                stamp = code_stamp()
+            except Exception as err:
+                stamp = None
+                print(
+                    f"[S2C] compile_cache code stamp failed: "
+                    f"{type(err).__name__}: {err}"
+                )
+            cache = open_compile_cache(
+                COMPILE_CACHE_MOUNT, engine=ENGINE, code=stamp
+            )
+            held["cache"] = cache
+            self.compile_cache_report = cache.report()
+            self._compile_mark = time.time()
             self.engine = _BatchEngine()
             self.weights_loaded_at = time.time()
             # Two forward passes: text only, then with a reference. The second
@@ -663,6 +722,17 @@ class S2CloneWorker:
 
         self.boot_started = time.time()
         self.gpu.start(init, timeout=float(os.environ.get("S2C_INIT_TIMEOUT", "1800")))
+        cache = held.get("cache")
+        if cache is not None:
+            # Still inside enter(snap=True): Modal snapshots after this hook
+            # returns, so the commit lands before the snapshot. A failed
+            # self-test raises out of start() and does not publish. reload()
+            # is not called; open cache files make it fail the hook.
+            cache.finish(
+                compile_s=self.compiled_at - self._compile_mark,
+                volume=compile_cache_volume,
+            )
+            self.compile_cache_report = cache.report()
         self.ref_cache: dict[str, tuple] = {}
         self.transcripts: dict[str, str] = {}
         print(
@@ -735,6 +805,11 @@ class S2CloneWorker:
             f"graphs={self.graph_check} "
             f"(restore duration is only measurable client-side)"
         )
+        # Present on a container that built this snapshot, and on every restore
+        # of it: the report is captured with the snapshot. ``compile_s`` is the
+        # compile+warm time of that build, which is the number that should fall
+        # once the volume hits.
+        print(format_compile_cache_log(getattr(self, "compile_cache_report", None)))
         self._heartbeat(force=True)
         self._start_heartbeat_timer()
 
@@ -774,8 +849,9 @@ class S2CloneWorker:
         # One recapture. `recompile_step()` resets the dead `CUDAGraphTreeManager`
         # AND re-wraps `self.engine.step` so `deferred_cudagraphify` does not
         # keep calling a shut-down manager whose `roots` is `None`. Inductor's
-        # warm disk cache (`/opt/torchinductor`) reuses the compiled Triton
-        # kernels without recompiling them.
+        # warm disk cache (the compile-cache volume, or `/opt/torchinductor`
+        # when `S2C_COMPILE_CACHE=0`) reuses the compiled Triton kernels
+        # without recompiling them.
         self.engine.recompile_step()
         refreshed = self.engine._warm_kv_buckets()
         if refreshed != expected:
@@ -885,6 +961,12 @@ class S2CloneWorker:
             "calls": self.calls,
             "refs_cached": len(self.ref_cache),
             "graphs": getattr(self, "graph_check", None),
+            "compile_cache_hit": (
+                getattr(self, "compile_cache_report", None) or {}
+            ).get("hit"),
+            "compile_s": (
+                getattr(self, "compile_cache_report", None) or {}
+            ).get("compile_s"),
             # The narration recipe this container would render with, so a
             # book's audio can be matched to the numbers behind it without
             # reading the container's image.
@@ -1541,6 +1623,7 @@ ready_image = (
         "s2_mastering",
         "s2_contract",
         "s2_audio_store",
+        "s2_compile_cache",
         "s2_remote_call",
     )
 )

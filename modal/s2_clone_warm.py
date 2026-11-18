@@ -3,9 +3,9 @@
 Run this right after deploying, and keep running it until consecutive calls
 *restore*. A customer book must never be the thing that builds a snapshot.
 
-    # staging app (never touches production)
-    S2C_APP_NAME=echomancer-s2-clone-staging \
-      modal run modal/s2_clone_warm.py::cover --containers 3 --rounds 6 --streak 3
+    # post-deploy, one container at a time (max_containers stays 1)
+    bash scripts/s2/post-deploy-cover.sh
+    # or: modal run modal/s2_clone_warm.py::restore_check
 
     # one RPC, allowed to compile to completion (what the worker kicks)
     modal run modal/s2_clone_warm.py::cover --containers 1 --rounds 1 --scaledown 0
@@ -70,6 +70,7 @@ from s2_contract import (
     deploy_identity,
     fresh_gap_s,
     placement_kind,
+    run_restore_check,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
@@ -278,9 +279,9 @@ def main(
     print(
         "\nDone. If step 1 took minutes this run created the snapshot. A book never\n"
         "does that: its HTTP wait is the restore budget (~150s, ceiling 180s).\n"
-        "Keep covering variants with ::cover until consecutive wall-clock\n"
-        "restores succeed. Next: scripts/s2/staging-smoke.mjs (see\n"
-        "docs/s2-gpu-staging-runbook.md)."
+        "Post-deploy proof is one cold restore: scripts/s2/post-deploy-cover.sh\n"
+        "(::restore_check, one container, max_containers stays 1).\n"
+        "Next: scripts/s2/staging-smoke.mjs (see docs/s2-gpu-staging-runbook.md)."
     )
 
 
@@ -518,6 +519,46 @@ def cover(
     finally:
         print("min_containers stays 0. The wrapper restores the autoscaler.")
     if not met:
+        sys.exit(1)
+
+
+@app.local_entrypoint()
+def restore_check(
+    scaledown: int = 15,
+    restore_s: float = RESTORE_WALL_S,
+    compile_s: float = COMPILE_WALL_S,
+    rpc_timeout: int = RPC_COMPILE_TIMEOUT_S,
+) -> None:
+    """One cold restore, compatible with ``max_containers=1``.
+
+    Places a single ``status()`` call. If that call compiles (a fresh deploy
+    has no memory snapshot; the volume cache is what makes the compile short)
+    this waits out scale-to-zero and places exactly one more call, which must
+    restore and report captured graphs. It does not fan out and it does not
+    loop. ``::cover`` remains for an operator who still wants to prebuild
+    several worker variants.
+    """
+    print(
+        f"restore-check {APP_NAME}.{CLASS_NAME}: one container at a time. "
+        "max_containers stays 1."
+    )
+    _require_empty_input_queue()
+    worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
+
+    def place() -> dict:
+        return _timed_status(worker, rpc_timeout)
+
+    ok = False
+    try:
+        ok = run_restore_check(
+            place,
+            scaledown=scaledown,
+            restore_s=restore_s,
+            compile_s=compile_s,
+        )
+    finally:
+        print("min_containers stays 0. The wrapper restores the autoscaler.")
+    if not ok:
         sys.exit(1)
 
 

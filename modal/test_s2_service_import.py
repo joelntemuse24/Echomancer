@@ -330,8 +330,22 @@ def test_class_shape_matches_the_documented_autoscaler_options(service):
     assert kwargs["min_containers"] == 0
     assert kwargs["enable_memory_snapshot"] is True
     assert kwargs["experimental_options"] == {"enable_gpu_snapshot": True}
-    # Hard cap is 1 until staging signs off four lanes.
+    # Hard cap is 1 until staging signs off four lanes. H100! stays pinned.
     assert kwargs["max_containers"] == 1
+    assert kwargs["min_containers"] == 0
+    assert kwargs["gpu"] == "H100!"
+    assert ":" not in str(kwargs["gpu"])
+    volumes = kwargs["volumes"]
+    assert "/compile-cache" in volumes
+    env = kwargs["env"]
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == "/opt/torchinductor"
+    assert env["TRITON_CACHE_DIR"] == "/tmp/s2-triton-cache"
+    assert "/compile-cache/unkeyed" not in env["TORCHINDUCTOR_CACHE_DIR"]
+    assert env["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
+    assert env["TORCHINDUCTOR_AUTOGRAD_CACHE"] == "1"
+    assert env["S2C_COMPILE_CACHE"] == "1"
+    assert service.COMPILE_CACHE_VOLUME_NAME == "echomancer-compile-cache"
+    assert service.COMPILE_CACHE_MOUNT == "/compile-cache"
 
 
 def test_only_one_snapshot_hook_and_one_post_restore_hook(service):
@@ -426,8 +440,10 @@ def test_ready_and_control_are_cpu_functions(service):
 def test_no_multi_gpu_or_replica_wide_gpu_request(service):
     (kwargs,) = _service_only(service._recorder.classes)
     gpu = kwargs["gpu"]
-    # One GPU per container: "H100!" or "H100", never "H100:4".
-    assert ":" not in str(gpu), f"multi-GPU is incompatible with GPU snapshots: {gpu}"
+    # The bang stops Modal upgrading the type to H200. Dropping it was the
+    # 2026-11-17 incident. One GPU: never "H100:4".
+    assert gpu == "H100!"
+    assert ":" not in str(gpu)
 
 
 def test_container_limits_come_from_env_not_hardcoded(service):
@@ -684,6 +700,11 @@ def test_the_snapshot_hook_owns_the_gpu_thread_before_any_cuda(service):
     assert "torch.cuda.init()" not in after_start
     # The allocator paths that failed are exercised at boot, not on a request.
     assert "selftest()" in source
+    # Publish only after the GPU thread's self-test has returned, still inside
+    # the snapshot hook. A shared "unknown" stamp must not be a cache key.
+    assert source.index("self.gpu.start(init") < source.index("cache.finish")
+    assert 'stamp = "unknown"' not in source
+    assert ".reload(" not in source
 
 
 def test_boot_kind_only_claims_restore_when_provable(service):
