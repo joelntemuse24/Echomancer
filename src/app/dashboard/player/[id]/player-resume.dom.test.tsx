@@ -196,6 +196,7 @@ let releaseJob: (() => void) | null;
 let staleWrite: boolean;
 let serverRow: ServerRow | null;
 let transcriptDoc: Record<string, unknown> | null;
+let bookmarkRows: Array<Record<string, unknown>>;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -292,6 +293,7 @@ beforeEach(() => {
   releaseJob = null;
   serverRow = null;
   transcriptDoc = null;
+  bookmarkRows = [];
   jobBody = baseJob();
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
@@ -335,7 +337,7 @@ beforeEach(() => {
         serverRow = next;
         return json(next);
       }
-      if (url.includes("/bookmarks")) return json({ bookmarks: [] });
+      if (url.includes("/bookmarks")) return json({ bookmarks: bookmarkRows });
       if (url.includes("/transcript")) {
         if (!transcriptDoc) return json({ error: "missing" }, 404);
         return json(transcriptDoc);
@@ -615,6 +617,148 @@ describe("player resume", () => {
     };
     expect(stored.updatedAt).toBe(100);
     expect(stored.positionSeconds).toBe(50);
+  });
+
+  it("seeks to the saved place when metadata arrives after the pending-seek limit", async () => {
+    localStorage.setItem(
+      `ec-resume:${JOB}`,
+      JSON.stringify({ positionSeconds: 1992, sectionIndex: null, updatedAt: 500 })
+    );
+    jobBody = baseJob({
+      resume_position_seconds: 1992,
+      resume_section_index: null,
+      resume_updated_at: 500,
+    });
+    await openPlayer();
+    const element = audio();
+    expect(mediaOf(element).ready).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(13_000);
+    });
+    expect(element.currentTime).toBe(0);
+    mediaOf(element).duration = 4000;
+    await emit(element, "loadedmetadata");
+    expect(element.currentTime).toBeCloseTo(1992, 0);
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 2005;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    expect(puts.some((body) => Number(body.positionSeconds) < 10)).toBe(false);
+    expect(puts.some((body) => Number(body.positionSeconds) >= 1992)).toBe(true);
+  });
+
+  it("seeks a bookmark on another part after a slow load", async () => {
+    bookmarkRows = [
+      {
+        id: "mark-1",
+        positionSeconds: 250,
+        sectionIndex: null,
+        label: null,
+        createdAt: 1,
+      },
+    ];
+    jobBody = baseJob({
+      status: "processing",
+      progress: 40,
+      current_section: 0,
+      total_sections: 2,
+      audio_url: null,
+      duration_seconds: null,
+      segments: [
+        {
+          index: 0,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0000.mp3",
+          durationSeconds: 200,
+        },
+        {
+          index: 1,
+          status: "ready",
+          path: "audiobooks/resume-book/sections/0001.mp3",
+          durationSeconds: 100,
+        },
+      ],
+    });
+    await openPlayer();
+    const element = audio();
+    mediaOf(element).duration = 200;
+    mediaOf(element).ready = 4;
+    await emit(element, "loadedmetadata");
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 20;
+    fireEvent.click(screen.getByRole("button", { name: "Bookmarks, 1" }));
+    const jump = screen.getByRole("button", { name: "4:10" });
+    await act(async () => {
+      fireEvent.click(jump);
+    });
+    await settle();
+    expect(element.src).toContain("0001.mp3");
+    expect(mediaOf(element).ready).toBe(0);
+    expect(element.currentTime).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(13_000);
+    });
+    expect(element.currentTime).toBe(0);
+    expect(element.src).toContain("0001.mp3");
+    mediaOf(element).duration = 100;
+    await emit(element, "loadedmetadata");
+    expect(element.currentTime).toBeCloseTo(50, 0);
+    element.currentTime = 55;
+    if (element.paused) {
+      await act(async () => {
+        await element.play();
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    expect(puts.some((body) => Number(body.positionSeconds) < 10)).toBe(false);
+    expect(puts.some((body) => Number(body.positionSeconds) >= 250)).toBe(true);
+  });
+
+  it("does not rewind when the server row has the same timestamp", async () => {
+    localStorage.setItem(
+      `ec-resume:${JOB}`,
+      JSON.stringify({ positionSeconds: 1000, sectionIndex: null, updatedAt: 40 })
+    );
+    jobBody = baseJob({
+      resume_position_seconds: 1000,
+      resume_section_index: null,
+      resume_updated_at: 40,
+    });
+    holdJob = new Promise((resolve) => {
+      releaseJob = resolve;
+    });
+    rememberJobDetail(JOB, { job: jobBody });
+    render(<PlayerPage />);
+    await settle();
+    const element = audio();
+    mediaOf(element).duration = 4000;
+    await emit(element, "loadedmetadata");
+    expect(element.currentTime).toBeCloseTo(1000, 0);
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 1003;
+    await emit(element, "timeupdate");
+    releaseJob?.();
+    releaseJob = null;
+    holdJob = null;
+    await settle();
+    expect(element.currentTime).toBeCloseTo(1003, 0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    expect(puts.some((body) => Number(body.positionSeconds) < 1002)).toBe(false);
+    expect(puts.some((body) => Number(body.positionSeconds) >= 1003)).toBe(true);
   });
 
   it("a seek that cannot be placed does not stop later saves", async () => {

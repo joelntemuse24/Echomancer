@@ -2684,8 +2684,10 @@ keeps the last place for that listener and that book. The page also writes
 `localStorage` key `ec-resume:<jobId>` so the first paint and a signed-out
 browser restore before the server answers. The device the listener is
 actively using wins. An idle tab, and a tab that has not applied the
-server row yet, does not overwrite another device. A newer `updated_at`
-wins until the listener seeks. Pressing play before that row arrives does
+server row yet, does not overwrite another device. A strictly newer
+`updated_at` wins until the listener seeks. The same timestamp does not
+rewind a playhead that has already passed that row. Pressing play before
+that row arrives does
 not discard it: the page seeks there and keeps playing. Writes happen
 about every 5 seconds while audio is playing and the tab is visible, and
 immediately on pause, seek, track change, and when the tab hides.
@@ -2693,9 +2695,13 @@ Becoming visible re-reads `GET /api/jobs/[id]/position` and, when this tab
 is not playing, adopts a newer row. It does not write on its own, and a
 position that has not moved is not written again. A source change resets
 the element to 0 and pauses it; that 0 is the load, so it is not stored. A
-pending book time is stored instead. A pending seek that cannot be applied
-is cleared, including once the file has a duration, and a pending seek
-expires so it cannot block later saves. Nothing is written until the job
+pending book time is stored instead. A pending seek stays until the
+file can apply it. The 12 second expiry starts once metadata is available
+and the seek still has not landed. It does not run while the element is
+HAVE_NOTHING, so a slow file still seeks when its metadata arrives. If
+that expiry drops a target, the page does not store the start of the file
+until the listener seeks or playback moves forward from a position this
+tab already confirmed. Nothing is written until the job
 response has merged the server row, or that request has failed, and the
 unrestored playhead is not written under the server's clock.
 `PUT /api/jobs/[id]/position` sends the `updated_at` this tab last read.

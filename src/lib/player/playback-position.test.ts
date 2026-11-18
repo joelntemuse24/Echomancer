@@ -16,6 +16,7 @@ import {
   resumeTickAllowed,
   samePlayhead,
   sectionOnBookClock,
+  mayPersistAfterDroppedSeek,
   shouldApplyDetailSeek,
   shouldPersistPlayhead,
   snapshotForPersist,
@@ -375,6 +376,75 @@ describe("bookmark clock", () => {
         serverNewer: true,
       })
     ).toBe(true);
+    expect(
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: true,
+        elementSeconds: 1003,
+        targetSeconds: 1000,
+        serverNewer: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: false,
+        elementSeconds: 1003,
+        targetSeconds: 1000,
+        serverNewer: false,
+      })
+    ).toBe(false);
+  });
+
+  it("does not store the file start after a dropped seek", () => {
+    expect(
+      mayPersistAfterDroppedSeek({
+        reason: "tick",
+        elementSeconds: 0,
+        confirmedSeconds: 1992,
+      })
+    ).toBe(false);
+    expect(
+      mayPersistAfterDroppedSeek({
+        reason: "tick",
+        elementSeconds: 0,
+        confirmedSeconds: null,
+      })
+    ).toBe(false);
+    expect(
+      mayPersistAfterDroppedSeek({
+        reason: "tick",
+        elementSeconds: 1996,
+        confirmedSeconds: 1992,
+      })
+    ).toBe(true);
+    expect(
+      mayPersistAfterDroppedSeek({
+        reason: "seek",
+        elementSeconds: 0,
+        confirmedSeconds: null,
+      })
+    ).toBe(true);
+    const spans = contiguousSpans(parts);
+    expect(
+      snapshotForPersist({
+        reason: "tick",
+        currentTime: 0,
+        readyState: 4,
+        ended: false,
+        pendingActive: false,
+        pendingBookSeconds: null,
+        restoreLanded: true,
+        droppedSeek: true,
+        confirmedSeconds: 1992,
+        onSection: false,
+        sectionIndex: null,
+        spans,
+        complete: true,
+        durationSeconds: 4000,
+        hasNextSection: false,
+      })
+    ).toBeNull();
   });
 
   it("ticks only while playing and visible", () => {

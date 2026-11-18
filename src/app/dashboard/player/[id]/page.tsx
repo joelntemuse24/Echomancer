@@ -225,7 +225,11 @@ type PendingChapterSeek = {
   sectionIndex?: number | null;
 };
 
-/** A pending seek that never lands must not block later saves. */
+/**
+ * A pending seek that metadata can already apply, and still has not,
+ * must not block later saves. The clock stays off while the element is
+ * HAVE_NOTHING: a slow file has not failed to seek, it has not started.
+ */
 const PENDING_SEEK_LIMIT_MS = 12_000;
 
 function PlayerPageInner({ id }: { id: string }) {
@@ -284,8 +288,18 @@ function PlayerPageInner({ id }: { id: string }) {
    */
   const pendingChapterSeekRef = useRef<PendingChapterSeek | null>(null);
   const pendingSeekTimerRef = useRef<number | null>(null);
+  /**
+   * The expiry dropped a target that was not the start of the file.
+   * Ticks stay quiet until the listener seeks or playback moves on from
+   * a position this tab already confirmed.
+   */
+  const droppedSeekHoldRef = useRef(false);
+  /** Element time last accepted by a landed seek or by playback itself. */
+  const confirmedPlayheadRef = useRef<number | null>(null);
+  const seenAudioUrlRef = useRef<string | null>(null);
   const clearPendingSeekRef = useRef<() => void>(() => {});
   const armPendingSeekRef = useRef<(value: PendingChapterSeek) => void>(() => {});
+  const ensurePendingExpiryRef = useRef<() => void>(() => {});
   clearPendingSeekRef.current = () => {
     pendingChapterSeekRef.current = null;
     if (pendingSeekTimerRef.current != null) {
@@ -293,15 +307,34 @@ function PlayerPageInner({ id }: { id: string }) {
       pendingSeekTimerRef.current = null;
     }
   };
-  armPendingSeekRef.current = (value) => {
-    pendingChapterSeekRef.current = value;
-    if (pendingSeekTimerRef.current != null) {
-      window.clearTimeout(pendingSeekTimerRef.current);
-    }
+  ensurePendingExpiryRef.current = () => {
+    const pending = pendingChapterSeekRef.current;
+    if (!pending || pendingSeekTimerRef.current != null) return;
+    const audio = audioRef.current;
+    if (!audio || audio.readyState < 1) return;
     pendingSeekTimerRef.current = window.setTimeout(() => {
       pendingSeekTimerRef.current = null;
-      if (pendingChapterSeekRef.current === value) clearPendingSeekRef.current();
+      if (pendingChapterSeekRef.current !== pending) return;
+      const now = audioRef.current;
+      if (!now || now.readyState < 1) return;
+      const book = pending.bookSeconds;
+      const seconds = pending.seconds;
+      const knownStart =
+        (book == null || book <= 0.05) &&
+        (seconds == null || seconds <= 0.05) &&
+        pending.fraction <= 0.001;
+      pendingChapterSeekRef.current = null;
+      if (!knownStart) droppedSeekHoldRef.current = true;
     }, PENDING_SEEK_LIMIT_MS);
+  };
+  armPendingSeekRef.current = (value) => {
+    pendingChapterSeekRef.current = value;
+    droppedSeekHoldRef.current = false;
+    if (pendingSeekTimerRef.current != null) {
+      window.clearTimeout(pendingSeekTimerRef.current);
+      pendingSeekTimerRef.current = null;
+    }
+    ensurePendingExpiryRef.current();
   };
   useEffect(() => () => {
     if (pendingSeekTimerRef.current != null) window.clearTimeout(pendingSeekTimerRef.current);
@@ -393,6 +426,7 @@ function PlayerPageInner({ id }: { id: string }) {
       clearPendingSeekRef.current();
       audio.currentTime = local;
       setCurrentTime(local);
+      confirmedPlayheadRef.current = local;
       if (local > 0.5) restoreLandedRef.current = true;
       return;
     }
@@ -552,7 +586,7 @@ function PlayerPageInner({ id }: { id: string }) {
             : next.localSeconds;
         const wasPlaying = Boolean(audio && !audio.paused);
         const serverNewer =
-          remote != null && (localUpdated == null || remote.updatedAt >= localUpdated);
+          remote != null && (localUpdated == null || remote.updatedAt > localUpdated);
         if (
           !shouldApplyDetailSeek({
             explicitSeek: explicit,
@@ -570,6 +604,7 @@ function PlayerPageInner({ id }: { id: string }) {
             lastRequestedSeekRef.current = next.localSeconds;
             audio.currentTime = next.localSeconds;
             setCurrentTime(next.localSeconds);
+            confirmedPlayheadRef.current = next.localSeconds;
             if (next.localSeconds > 0.5) restoreLandedRef.current = true;
             if (wasPlaying && audio.paused) void audio.play().catch(() => {});
           } else {
@@ -623,6 +658,8 @@ function PlayerPageInner({ id }: { id: string }) {
       pendingBookSeconds:
         typeof pending?.bookSeconds === "number" ? pending.bookSeconds : null,
       restoreLanded: restoreLandedRef.current,
+      droppedSeek: droppedSeekHoldRef.current,
+      confirmedSeconds: confirmedPlayheadRef.current,
       onSection,
       sectionIndex,
       spans: spansRef.current,
@@ -655,6 +692,7 @@ function PlayerPageInner({ id }: { id: string }) {
       ended: false,
     });
     if (bookSeconds > 0.5) restoreLandedRef.current = true;
+    droppedSeekHoldRef.current = false;
     playbackResume.remember(
       {
         positionSeconds: stored.positionSeconds,
@@ -987,6 +1025,18 @@ function PlayerPageInner({ id }: { id: string }) {
     lastRequestedSeekRef.current = null;
     // A new source is a new start request: its own recovery and watchdog.
     resetAudioStart();
+    if (seenAudioUrlRef.current === audioUrl) return;
+    seenAudioUrlRef.current = audioUrl;
+    // The element clock restarted. A timer armed on the previous file must
+    // not expire this one while it is still HAVE_NOTHING.
+    confirmedPlayheadRef.current = null;
+    const audio = audioRef.current;
+    if (pendingChapterSeekRef.current && (!audio || audio.readyState < 1)) {
+      if (pendingSeekTimerRef.current != null) {
+        window.clearTimeout(pendingSeekTimerRef.current);
+        pendingSeekTimerRef.current = null;
+      }
+    }
   }, [audioUrl, resetAudioStart]);
 
   // HTML audio starts at 1×. Re-apply the visit's rate (1× until the
@@ -1022,7 +1072,10 @@ function PlayerPageInner({ id }: { id: string }) {
       setDuration(effectiveDuration(raw));
     };
     const onTimeUpdate = () => {
-      if (audio.currentTime > 0.5) restoreLandedRef.current = true;
+      if (audio.currentTime > 0.5) {
+        restoreLandedRef.current = true;
+        if (!droppedSeekHoldRef.current) confirmedPlayheadRef.current = audio.currentTime;
+      }
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
       // The requested seek landed once playback has moved on from it.
       if (
@@ -1049,11 +1102,13 @@ function PlayerPageInner({ id }: { id: string }) {
       lastRequestedSeekRef.current = seconds;
       audio.currentTime = seconds;
       setCurrentTime(seconds);
+      confirmedPlayheadRef.current = seconds;
       if (seconds > 0.5) restoreLandedRef.current = true;
     };
     const onDurationChange = () => {
       applyDuration(audio.duration);
       consumePending();
+      ensurePendingExpiryRef.current();
     };
     const clearNoticeIfHealthy = () => {
       if (!audio.error) setNotice(null);
@@ -1062,6 +1117,7 @@ function PlayerPageInner({ id }: { id: string }) {
       clearNoticeIfHealthy();
       applyDuration(audio.duration);
       consumePending();
+      ensurePendingExpiryRef.current();
     };
     const onCanPlay = () => {
       clearNoticeIfHealthy();

@@ -239,8 +239,9 @@ export function sectionOnBookClock(
 /**
  * The job response moves the playhead onto the stored place.
  * An explicit seek wins. Pressing play before the row arrives does not.
- * A newer server time is applied even while audio is already playing.
- * An older server time does not rewind a playhead that has passed it.
+ * `serverNewer` is a strictly newer row. That row is applied even while
+ * audio is already playing. An equal or older row never rewinds a
+ * playhead that has already passed the target.
  */
 export function shouldApplyDetailSeek(input: {
   explicitSeek: boolean;
@@ -253,10 +254,27 @@ export function shouldApplyDetailSeek(input: {
   if (!(input.targetSeconds > 0.05)) return false;
   const at = Number.isFinite(input.elementSeconds) ? input.elementSeconds : 0;
   if (Math.abs(at - input.targetSeconds) <= 0.25) return false;
+  if (!input.serverNewer && at > input.targetSeconds + 0.25) return false;
   if (input.serverNewer) return true;
   if (input.playing) return false;
-  if (at + 0.25 >= input.targetSeconds) return false;
   return true;
+}
+
+/**
+ * A pending seek that expired must not be replaced by the start of the file.
+ * An explicit seek or part change may store. Playback may store once it has
+ * moved forward from a position this tab already confirmed.
+ */
+export function mayPersistAfterDroppedSeek(input: {
+  reason: ResumeSaveReason;
+  elementSeconds: number;
+  confirmedSeconds: number | null;
+}): boolean {
+  if (input.reason === "seek" || input.reason === "track") return true;
+  const confirmed = input.confirmedSeconds;
+  if (confirmed == null || !Number.isFinite(confirmed)) return false;
+  const at = Number.isFinite(input.elementSeconds) ? input.elementSeconds : 0;
+  return at >= confirmed + 0.5;
 }
 
 /** Skip a server write when the playhead has not moved. */
@@ -284,6 +302,10 @@ export function snapshotForPersist(input: {
   pendingActive: boolean;
   pendingBookSeconds: number | null;
   restoreLanded: boolean;
+  /** A pending target was dropped. The file start is not a substitute for it. */
+  droppedSeek?: boolean;
+  /** Element time this tab has already accepted. Progress is measured from here. */
+  confirmedSeconds?: number | null;
   onSection: boolean;
   sectionIndex: number | null;
   spans: readonly SectionSpan[];
@@ -318,6 +340,17 @@ export function snapshotForPersist(input: {
     return null;
   }
   const element = Number.isFinite(input.currentTime) ? Math.max(0, input.currentTime) : 0;
+  if (
+    input.droppedSeek &&
+    !mayPersistAfterDroppedSeek({
+      reason: input.reason,
+      elementSeconds: element,
+      confirmedSeconds: input.confirmedSeconds ?? null,
+    })
+  ) {
+    if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
+    return null;
+  }
   if (!userAct && !input.restoreLanded && element < 0.5) {
     if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
     return null;
