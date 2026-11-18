@@ -136,6 +136,41 @@ describe("playback position", () => {
     expect(rows).toEqual([{ position_seconds: 40 * 60 }]);
   });
 
+  it("a seek replaces a row this tab has not read", async () => {
+    const first = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 100 },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    const saved = await first.json();
+    const phone = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 2400, expectedUpdatedAt: saved.updatedAt },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    expect(phone.status).toBe(200);
+    const forced = await PUT(
+      await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {
+        method: "PUT",
+        userId: USER_A,
+        body: { positionSeconds: 250, expectedUpdatedAt: saved.updatedAt, force: true },
+      }),
+      routeParams({ id: JOB_A })
+    );
+    expect(forced.status).toBe(200);
+    const rows = await query<{ position_seconds: number }>(
+      `SELECT position_seconds FROM playback_positions WHERE job_id = ?`,
+      [JOB_A]
+    );
+    expect(rows).toEqual([{ position_seconds: 250 }]);
+  });
+
   it("rejects a position that is not a timestamp", async () => {
     const response = await PUT(
       await buildRequest(`http://localhost/api/jobs/${JOB_A}/position`, {

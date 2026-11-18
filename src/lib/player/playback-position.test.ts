@@ -329,18 +329,51 @@ describe("bookmark clock", () => {
     ).toEqual({ positionSeconds: 120, sectionIndex: null });
   });
 
-  it("does not seek over a listener who already started", () => {
+  it("keeps an explicit seek and still takes a newer server row while playing", () => {
     expect(
-      shouldApplyDetailSeek({ moved: false, playing: true, elementSeconds: 15, targetSeconds: 1992 })
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: true,
+        elementSeconds: 15,
+        targetSeconds: 1992,
+        serverNewer: false,
+      })
     ).toBe(false);
     expect(
-      shouldApplyDetailSeek({ moved: true, playing: false, elementSeconds: 0, targetSeconds: 1992 })
+      shouldApplyDetailSeek({
+        explicitSeek: true,
+        playing: false,
+        elementSeconds: 0,
+        targetSeconds: 1992,
+        serverNewer: true,
+      })
     ).toBe(false);
     expect(
-      shouldApplyDetailSeek({ moved: false, playing: false, elementSeconds: 1992, targetSeconds: 1992 })
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: true,
+        elementSeconds: 15,
+        targetSeconds: 1992,
+        serverNewer: true,
+      })
+    ).toBe(true);
+    expect(
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: false,
+        elementSeconds: 1992,
+        targetSeconds: 1992,
+        serverNewer: true,
+      })
     ).toBe(false);
     expect(
-      shouldApplyDetailSeek({ moved: false, playing: false, elementSeconds: 0, targetSeconds: 1992 })
+      shouldApplyDetailSeek({
+        explicitSeek: false,
+        playing: false,
+        elementSeconds: 0,
+        targetSeconds: 1992,
+        serverNewer: true,
+      })
     ).toBe(true);
   });
 

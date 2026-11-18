@@ -19,6 +19,7 @@ type MediaState = {
   paused: boolean;
   ready: number;
   ended: boolean;
+  duration: number;
 };
 
 const mediaState = new WeakMap<EventTarget, MediaState>();
@@ -26,7 +27,7 @@ const mediaState = new WeakMap<EventTarget, MediaState>();
 function mediaOf(target: EventTarget): MediaState {
   let row = mediaState.get(target);
   if (!row) {
-    row = { src: "", time: 0, paused: true, ready: 0, ended: false };
+    row = { src: "", time: 0, paused: true, ready: 0, ended: false, duration: 400 };
     mediaState.set(target, row);
   }
   return row;
@@ -129,7 +130,10 @@ function installMediaElement() {
   });
   define("duration", {
     get() {
-      return 400;
+      return mediaOf(this).duration;
+    },
+    set(value: number) {
+      mediaOf(this).duration = value;
     },
   });
   define("seeking", {
@@ -179,11 +183,19 @@ vi.mock("next/link", () => ({
 
 type JobBody = Record<string, unknown>;
 
+type ServerRow = {
+  positionSeconds: number;
+  sectionIndex: number | null;
+  updatedAt: number;
+};
+
 let jobBody: JobBody;
 let puts: Array<Record<string, unknown>>;
 let holdJob: Promise<void> | null;
 let releaseJob: (() => void) | null;
 let staleWrite: boolean;
+let serverRow: ServerRow | null;
+let transcriptDoc: Record<string, unknown> | null;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -278,27 +290,56 @@ beforeEach(() => {
   staleWrite = false;
   holdJob = null;
   releaseJob = null;
+  serverRow = null;
+  transcriptDoc = null;
   jobBody = baseJob();
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => "visible",
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("/position") && init?.method === "PUT") {
-        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const method = init?.method ?? "GET";
+      if (url.includes("/position") && method === "GET") {
+        const row = ensureServer();
+        if (!row) return json({ positionSeconds: null, sectionIndex: null, updatedAt: null });
+        return json(row);
+      }
+      if (url.includes("/position") && method === "PUT") {
+        const body = JSON.parse(String(init?.body ? String(init.body) : "{}")) as Record<string, unknown>;
         puts.push(body);
+        const current = ensureServer();
         if (staleWrite) {
           return json(
-            { stale: true, positionSeconds: 50, sectionIndex: null, updatedAt: 100 },
+            {
+              stale: true,
+              positionSeconds: current?.positionSeconds ?? 50,
+              sectionIndex: current?.sectionIndex ?? null,
+              updatedAt: current?.updatedAt ?? 100,
+            },
             409
           );
         }
-        return json({
-          positionSeconds: body.positionSeconds,
-          sectionIndex: body.sectionIndex ?? null,
-          updatedAt: 101,
-        });
+        const expected = body.expectedUpdatedAt;
+        const force = body.force === true;
+        if (current && !force && expected !== current.updatedAt) {
+          return json({ stale: true, ...current }, 409);
+        }
+        const next: ServerRow = {
+          positionSeconds: Number(body.positionSeconds) || 0,
+          sectionIndex: (body.sectionIndex as number | null) ?? null,
+          updatedAt: (current?.updatedAt ?? 100) + 1,
+        };
+        serverRow = next;
+        return json(next);
       }
       if (url.includes("/bookmarks")) return json({ bookmarks: [] });
+      if (url.includes("/transcript")) {
+        if (!transcriptDoc) return json({ error: "missing" }, 404);
+        return json(transcriptDoc);
+      }
       if (url.includes(`/api/jobs/${JOB}`)) {
         if (holdJob) await holdJob;
         return json({ job: jobBody });
@@ -307,6 +348,21 @@ beforeEach(() => {
     })
   );
 });
+
+function ensureServer(): ServerRow | null {
+  if (serverRow) return serverRow;
+  if (
+    typeof jobBody.resume_position_seconds === "number" &&
+    typeof jobBody.resume_updated_at === "number"
+  ) {
+    serverRow = {
+      positionSeconds: jobBody.resume_position_seconds,
+      sectionIndex: (jobBody.resume_section_index as number | null) ?? null,
+      updatedAt: jobBody.resume_updated_at,
+    };
+  }
+  return serverRow;
+}
 
 afterEach(() => {
   cleanup();
@@ -385,7 +441,7 @@ describe("player resume", () => {
     expect(puts.filter((body) => body.positionSeconds === 0)).toEqual([]);
   });
 
-  it("does not seek back over a listener who already pressed play", async () => {
+  it("keeps playing and saves the server place when play happens before the job loads", async () => {
     holdJob = new Promise((resolve) => {
       releaseJob = resolve;
     });
@@ -406,8 +462,96 @@ describe("player resume", () => {
     releaseJob = null;
     holdJob = null;
     await settle();
-    expect(element.currentTime).toBe(15);
+    expect(element.paused).toBe(false);
+    expect(element.currentTime).toBeCloseTo(1992, 0);
     expect(element.src).toContain("full.mp3");
+    element.currentTime = 2010;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    await settle();
+    expect(puts.some((body) => Number(body.positionSeconds) < 10)).toBe(false);
+    expect(
+      puts.some(
+        (body) =>
+          Number(body.positionSeconds) >= 1992 && body.expectedUpdatedAt === 500
+      )
+    ).toBe(true);
+  });
+
+  it("recovers from one conflict while playing and keeps saving the live playhead", async () => {
+    jobBody = baseJob({
+      resume_position_seconds: 40,
+      resume_updated_at: 10,
+    });
+    await openPlayer();
+    const element = audio();
+    await emit(element, "loadedmetadata");
+    await settle();
+    serverRow = { positionSeconds: 100, sectionIndex: null, updatedAt: 20 };
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 55;
+    await emit(element, "timeupdate");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    expect(puts[0]).toMatchObject({ expectedUpdatedAt: 10 });
+    const retry = puts.find((body) => body.expectedUpdatedAt === 20);
+    expect(Number(retry?.positionSeconds)).toBeGreaterThan(50);
+    expect(Number(retry?.positionSeconds)).toBeLessThan(70);
+    element.currentTime = 70;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    const later = puts.filter((body) => Number(body.positionSeconds) >= 65);
+    expect(later.length).toBeGreaterThan(0);
+    expect(later.every((body) => body.expectedUpdatedAt !== 10)).toBe(true);
+    expect(puts.filter((body) => body.expectedUpdatedAt === 10)).toHaveLength(1);
+  });
+
+  it("adopts a newer place when an idle tab becomes visible, then saves from there", async () => {
+    jobBody = baseJob({
+      resume_position_seconds: 100,
+      resume_updated_at: 10,
+    });
+    await openPlayer();
+    const element = audio();
+    await emit(element, "loadedmetadata");
+    await settle();
+    expect(element.currentTime).toBeCloseTo(100, 0);
+    serverRow = { positionSeconds: 500, sectionIndex: null, updatedAt: 30 };
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await emit(document, "visibilitychange");
+    await settle();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await emit(document, "visibilitychange");
+    await settle();
+    expect(element.currentTime).toBeCloseTo(500, 0);
+    await act(async () => {
+      await element.play();
+    });
+    element.currentTime = 520;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await settle();
+    expect(puts.some((body) => Number(body.positionSeconds) < 50)).toBe(false);
+    expect(
+      puts.some(
+        (body) =>
+          Number(body.positionSeconds) >= 510 && body.expectedUpdatedAt === 30
+      )
+    ).toBe(true);
   });
 
   it("does not write while paused or when the tab becomes visible", async () => {
@@ -466,9 +610,58 @@ describe("player resume", () => {
       force: false,
     });
     const stored = JSON.parse(localStorage.getItem(`ec-resume:${JOB}`) ?? "{}") as {
+      positionSeconds?: number;
       updatedAt?: number;
     };
     expect(stored.updatedAt).toBe(100);
+    expect(stored.positionSeconds).toBe(50);
+  });
+
+  it("a seek that cannot be placed does not stop later saves", async () => {
+    jobBody = baseJob({ duration_seconds: null });
+    transcriptDoc = {
+      blocks: [
+        {
+          id: "p1",
+          kind: "paragraph",
+          level: 1,
+          text: "Hello there.",
+          charStart: 0,
+          charEnd: 12,
+          sectionIndex: 0,
+        },
+      ],
+      charCount: 12,
+      sections: [
+        {
+          index: 0,
+          charStart: 0,
+          charEnd: 12,
+          durationSeconds: null,
+          startSeconds: null,
+          sentences: [],
+        },
+      ],
+    };
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(
+      () => new AbortController().signal
+    );
+    try {
+      await openPlayer();
+      const element = audio();
+      mediaOf(element).duration = 0;
+      element.currentTime = 40;
+      await emit(element, "timeupdate");
+      fireEvent.click(screen.getByRole("button", { name: "Transcript" }));
+      await settle();
+      fireEvent.click(screen.getByRole("button", { name: /Play from Hello there/ }));
+      await settle();
+      await emit(element, "pause");
+      await settle();
+      expect(puts.some((body) => Number(body.positionSeconds) >= 30)).toBe(true);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it("skips on a part past a hole using that part's clock", async () => {

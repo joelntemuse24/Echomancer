@@ -237,18 +237,24 @@ export function sectionOnBookClock(
 }
 
 /**
- * The job response may move the playhead only when the listener has not
- * started and the element is still behind the stored time.
+ * The job response moves the playhead onto the stored place.
+ * An explicit seek wins. Pressing play before the row arrives does not.
+ * A newer server time is applied even while audio is already playing.
+ * An older server time does not rewind a playhead that has passed it.
  */
 export function shouldApplyDetailSeek(input: {
-  moved: boolean;
+  explicitSeek: boolean;
   playing: boolean;
   elementSeconds: number;
   targetSeconds: number;
+  serverNewer: boolean;
 }): boolean {
-  if (input.moved || input.playing) return false;
+  if (input.explicitSeek) return false;
   if (!(input.targetSeconds > 0.05)) return false;
   const at = Number.isFinite(input.elementSeconds) ? input.elementSeconds : 0;
+  if (Math.abs(at - input.targetSeconds) <= 0.25) return false;
+  if (input.serverNewer) return true;
+  if (input.playing) return false;
   if (at + 0.25 >= input.targetSeconds) return false;
   return true;
 }

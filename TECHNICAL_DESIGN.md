@@ -2682,25 +2682,37 @@ has no memory, and nothing stored a playhead. `playback_positions`
 (`user_id`, `job_id`, `position_seconds`, `section_index`, `updated_at`)
 keeps the last place for that listener and that book. The page also writes
 `localStorage` key `ec-resume:<jobId>` so the first paint and a signed-out
-browser restore before the server answers. A newer `updated_at` wins until
-the listener seeks or presses play. Writes happen about every 5 seconds
-while audio is playing and the tab is visible, and immediately on pause,
-seek, track change, and when the tab hides. Becoming visible does not
-write, and a position that has not moved is not written again. A source
-change resets the element to 0 and pauses it; that 0 is the load, so it
-is not stored. A pending book time is stored instead. Nothing is written
-until the job response has merged the server row, or that request has
-failed. `PUT /api/jobs/[id]/position` sends the `updated_at` this tab last
-read. The server updates the row only when that value still matches, or
-when the write is a seek or a part change. A stale tab gets 409 and leaves
-the row alone. The stored number is the book clock when the part on screen
-is inside the contiguous ready prefix. A ready part after a hole keeps
-that part's own clock for skip, the scrubber, focus mode, and the lock
-screen. A finished book within 10 seconds of the end is stored as 0. A
-book still generating clamps to the audio that exists. A failed book does
-not restore. Reopening seeks to that time and does not press play. If the
-listener has already started, the job response does not seek backward over
-them. The library line is `Resume at 33:12` when that time is worth
+browser restore before the server answers. The device the listener is
+actively using wins. An idle tab, and a tab that has not applied the
+server row yet, does not overwrite another device. A newer `updated_at`
+wins until the listener seeks. Pressing play before that row arrives does
+not discard it: the page seeks there and keeps playing. Writes happen
+about every 5 seconds while audio is playing and the tab is visible, and
+immediately on pause, seek, track change, and when the tab hides.
+Becoming visible re-reads `GET /api/jobs/[id]/position` and, when this tab
+is not playing, adopts a newer row. It does not write on its own, and a
+position that has not moved is not written again. A source change resets
+the element to 0 and pauses it; that 0 is the load, so it is not stored. A
+pending book time is stored instead. A pending seek that cannot be applied
+is cleared, including once the file has a duration, and a pending seek
+expires so it cannot block later saves. Nothing is written until the job
+response has merged the server row, or that request has failed, and the
+unrestored playhead is not written under the server's clock.
+`PUT /api/jobs/[id]/position` sends the `updated_at` this tab last read.
+The server updates the row only when that value still matches, or when
+the write is a seek or a part change. A stale write gets 409 with the
+current row. The tab takes that `updated_at` as its new base. If it is
+playing, or the listener has seeked since the last confirmed write, it
+retries the live playhead once. If it is idle, it seeks to the returned
+row. A rejected position is not stored as the winner. A timestamp a 200
+has confirmed is never replaced by an older one. The stored number is the
+book clock when the part on screen is inside the contiguous ready prefix.
+A ready part after a hole keeps that part's own clock for skip, the
+scrubber, focus mode, and the lock screen. A finished book within 10
+seconds of the end is stored as 0. A book still generating clamps to the
+audio that exists. A failed book does not restore. Reopening seeks to that
+time and does not press play. An explicit seek is kept. The library line
+is `Resume at 33:12` when that time is worth
 returning to. Sign-in copies the anonymous rows onto the durable user and
 keeps the later one. `GET /api/jobs` and `GET /api/jobs/[id]` include
 `resume_position_seconds`, `resume_section_index`, and
