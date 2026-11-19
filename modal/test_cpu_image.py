@@ -33,6 +33,8 @@ def test_cpu_worker_image_keeps_apt_python_and_installs_fastapi_for_modal():
     dockerfile = (ROOT / "workers" / "cpu" / "Dockerfile").read_text()
     assert "FROM node:22-bookworm-slim" in dockerfile
     assert "ffmpeg" in dockerfile
+    assert "fce424851b0a982bdd4ac4e96f0e7b32cf29de999e54500676d41ad175ed0c79" in dockerfile
+    assert ">= (6, 1)" in dockerfile
     assert "python3" in dockerfile
     assert "python-is-python3" in dockerfile
     assert "workers/cpu/requirements.txt" in dockerfile

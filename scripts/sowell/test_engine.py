@@ -16,7 +16,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import engine as engine_module  # noqa: E402
+from drew import DREW_FIXED_STYLE_INDEX  # noqa: E402
 from engine import SAMPLE_RATE, SowellEngine  # noqa: E402
+from pack import SOWELL_FIXED_STYLE_INDEX  # noqa: E402
+from style import fixed_style_index, pin_style  # noqa: E402
 
 
 class ResidentRuntime(unittest.TestCase):
@@ -160,9 +163,13 @@ class DrewSpeedMultiply(unittest.TestCase):
 
     def test_walter_and_george_stay_at_one(self) -> None:
         eng, seen = self.engine()
-        eng.speak("Hello.", Path("unused"), voice="sowell", speed=0.9)
-        eng.speak("Hello.", Path("unused"), voice="george", speed=0.9)
+        _wav, walter = eng.speak("Hello.", Path("unused"), voice="sowell", speed=0.9)
+        _wav, george = eng.speak("Hello.", Path("unused"), voice="george", speed=0.9)
         self.assertEqual(seen, [1.0, 1.0])
+        self.assertEqual(walter["speed"], 1.0)
+        self.assertEqual(george["speed"], 1.0)
+        self.assertIsNone(walter["styleIndex"])
+        self.assertIsNone(george["styleIndex"])
 
 
 class ThreadBudget(unittest.TestCase):
@@ -228,6 +235,71 @@ class ThreadBudget(unittest.TestCase):
     def test_legacy_name_delegates(self) -> None:
         engine_module.os.environ["SOWELL_TORCH_THREADS"] = "3"
         self.assertEqual(engine_module.apply_thread_budget(), 3)
+
+
+class FixedStyle(unittest.TestCase):
+    """Drew uses one row for every chunk length. Speed is not part of that."""
+
+    def test_pin_repeats_one_row_and_none_is_the_same_tensor(self) -> None:
+        pack = torch.arange(510 * 256, dtype=torch.float32).reshape(510, 1, 256)
+        self.assertFalse(torch.equal(pack[99], pack[449]))
+        pinned = pin_style(pack, DREW_FIXED_STYLE_INDEX)
+        self.assertEqual(tuple(pinned.shape), (510, 1, 256))
+        for phonemes in (100, 250, 450, 510):
+            # Kokoro selects pack[len(phonemes) - 1].
+            torch.testing.assert_close(pinned[phonemes - 1], pack[DREW_FIXED_STYLE_INDEX])
+        self.assertIs(pin_style(pack, None), pack)
+        with self.assertRaises(Exception):
+            pin_style(pack, 510)
+        with self.assertRaises(Exception):
+            pin_style(pack, True)  # type: ignore[arg-type]
+
+    def test_only_drew_is_pinned(self) -> None:
+        self.assertEqual(DREW_FIXED_STYLE_INDEX, 300)
+        self.assertIsNone(SOWELL_FIXED_STYLE_INDEX)
+        self.assertEqual(fixed_style_index("drew"), 300)
+        self.assertIsNone(fixed_style_index("am_sowell"))
+        self.assertIsNone(fixed_style_index("bm_george"))
+
+    def test_render_sees_one_vector_and_the_same_speed(self) -> None:
+        eng, seen = DrewSpeedMultiply.engine(self)  # type: ignore[arg-type]
+        pack = pin_style(
+            torch.arange(510 * 256, dtype=torch.float32).reshape(510, 1, 256),
+            DREW_FIXED_STYLE_INDEX,
+        )
+        received: list[torch.Tensor] = []
+
+        class Recording:
+            @staticmethod
+            def infer(model, phonemes, voice_pack, speed):
+                del model
+                received.append(voice_pack[len(phonemes) - 1].clone())
+                seen.append(speed)
+                return type("Out", (), {"audio": torch.zeros(SAMPLE_RATE)})()
+
+        # The helper already appended nothing; replace its pipeline and clear
+        # the speed list the helper's own infer would have filled.
+        seen.clear()
+        eng._drew_pack = pack
+        engine_module.KPipeline = Recording
+
+        def runs(pipeline, tokens):
+            del pipeline, tokens
+            yield "one", "a" * 100
+            yield "two", "b" * 250
+            yield "three", "c" * 450
+            yield "four", "d" * 510
+
+        engine_module.iter_phoneme_runs = runs
+        _wav, report = eng.speak(
+            "one two three four", Path("unused"), voice="drew", speed=1.0
+        )
+        self.assertEqual(seen, [0.88, 0.88, 0.88, 0.88])
+        self.assertEqual(report["speed"], 0.88)
+        self.assertEqual(report["styleIndex"], 300)
+        self.assertEqual(len(received), 4)
+        for row in received:
+            torch.testing.assert_close(row, pack[DREW_FIXED_STYLE_INDEX])
 
 
 if __name__ == "__main__":

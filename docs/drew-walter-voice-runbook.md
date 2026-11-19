@@ -188,10 +188,37 @@ the request path does not use it.
 
 ## Cache
 
-Drew sections use `drew-kokoro82m-ft-stageA-step00900-v1`. Andrew's Edge takes
-stay under the Edge key and are never replayed as Drew. Bump `DREW_WEIGHTS_ID`
-in `src/lib/tts/drew-voice.ts` when the volume gets a different checkpoint —
-that is a different model, so its audio must not be found under this key.
+Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-v2`. Andrew's
+Edge takes stay under the Edge key and are never replayed as Drew. Bump
+`DREW_WEIGHTS_ID` in `src/lib/tts/drew-voice.ts` when the volume gets a
+different checkpoint — that is a different model, so its audio must not be
+found under this key. The `style300` piece is the pinned pack row below.
+A new row is a different take even when the checkpoint is the same one, so
+the variant moves with `DREW_FIXED_STYLE_INDEX`.
+
+## One style row
+
+Kokoro reads `pack[phoneme_count - 1]`. Drew's pack changes with that index:
+timbre cosine between tensor rows 150 and 450 is 0.78, and the same sentence
+is about 4.6 dB brighter in the 2–5 kHz band at row 509 than at row 150, and
+about 2 LU quieter. A section split into a long chunk and a short one was
+changing voice in the middle.
+
+`pin_style` in `scripts/sowell/style.py` copies one row into every index when
+the voice is loaded. `KPipeline.infer` still indexes with the phoneme count
+and still receives `drew_speed(speed)`. The speed argument is not scaled a
+second time. Walter (`SOWELL_FIXED_STYLE_INDEX`) and George stay `None`:
+George's rows 150 and 450 are cosine 0.9997 / 0.9986 (timbre / prosody), and
+the same sentence differs by 0.01 dB and 0.0 LU, so George's cache key is
+unchanged. Walter's pack is not in this repository and was not on a Modal
+volume, so it is not pinned and its cache key is unchanged. The hook is
+there for a later measurement.
+
+Drew's row is tensor index **300**. Mean speaker cosine against the Andrew
+pilot paragraph and the Edge rate-0 reading of the same words is a 0.005 tie
+from row 120 through 300 (0.900–0.901). Row 300 is the closest 2–5 kHz
+balance to the pilot (−0.73 dB). Rows 400 and 509 fall to about 0.85 and run
+about +2.4 dB bright. `scripts/sowell/choose_fixed_style.py` is the measurement.
 
 ## Preview
 

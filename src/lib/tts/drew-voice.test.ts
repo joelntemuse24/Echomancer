@@ -12,6 +12,7 @@ import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
   DREW_CACHE_VARIANT,
+  DREW_FIXED_STYLE_INDEX,
   DREW_IN_FLIGHT,
   DREW_MAX_CHARS,
   DREW_NATIVE_KOKORO_SPEED,
@@ -126,6 +127,10 @@ describe("Drew identity", () => {
       })
     ).toBe(DREW_MAX_CHARS);
     expect(DREW_IN_FLIGHT).toBe(2);
+    expect(DREW_CACHE_VARIANT).toContain(`style${DREW_FIXED_STYLE_INDEX}-v2`);
+    expect(DREW_CACHE_VARIANT.endsWith("-v1")).toBe(false);
+    expect(takehomeCacheVariant("sowell", "sowell")).not.toContain("style");
+    expect(takehomeCacheVariant("george", "george")).not.toContain("style");
   });
 
   it("serves a committed Drew preview", () => {
@@ -275,6 +280,9 @@ describe("Drew on the Modal CPU app", () => {
       "utf8"
     );
     expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
+    const index = drew.match(/DREW_FIXED_STYLE_INDEX = (\d+)/);
+    expect(index, drew).toBeTruthy();
+    expect(DREW_FIXED_STYLE_INDEX).toBe(Number(index![1]));
     expect(drew).toContain("PACK_SHAPE = (510, 1, 256)");
     expect(drew).toContain("KModel(model=str(path))");
     expect(drew).toContain(
@@ -294,6 +302,8 @@ describe("Drew on the Modal CPU app", () => {
     expect(engine).toContain("kokoro_speed = drew_speed(speed)");
     expect(engine).toContain("kokoro_speed = 1.0");
     expect(engine).toContain("pipeline_cls.infer(");
+    expect(engine).toContain("pin_style(");
+    expect(engine).toContain("fixed_style_index(");
     expect(engine).toContain("kokoro_speed");
     // Importing Kokoro is lazy so the speed plumbing is testable without it.
     expect(engine).toContain("def kpipeline()");

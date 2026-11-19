@@ -1190,6 +1190,15 @@ for that one recovery.
 | `getDefaultCatalogVoice()` | Drew (`drew`); Ava while Drew's endpoint is unconfigured |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
 
+Drew's Kokoro pack is pinned to tensor index 300 when the voice loads
+(`pin_style` in `scripts/sowell/style.py`). Infer still reads
+`pack[phoneme_count - 1]` and still receives Drew's 0.88 speed, applied
+once. The take-home cache variant is
+`drew-kokoro82m-ft-stageA-step00900-style300-v2`. Walter and George stay
+on the length index: George's rows are flat across 100–510, and Walter's
+pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`
+stays unset and those cache keys do not move.
+
 ### Fish voice cloning + live HTTP stream
 
 | Piece | Role |
@@ -1505,6 +1514,18 @@ re-wrapping `_decode_step` onto a fresh `CUDAGraphTreeManager` backed by
 Inductor's warm disk cache on the `echomancer-compile-cache` volume, or
 `/opt/torchinductor` when `S2C_COMPILE_CACHE=0`) and re-runs `_warm_kv_buckets()`,
 logs `graphs=recaptured(24)` and only fails on a second failure.
+The mega-cache file is read as bytes and passed to `load_cache_artifacts`; a
+path string is not a cache. torch 2.15's loader returns None when the bytes
+do not install, and that None is a failed load. The process environment is
+pointed at the published run before that load: `cache_dir()` reads
+`TORCHINDUCTOR_CACHE_DIR` on every call, and `populate_cache` writes the
+graphs there. A corrupt mega-cache stays on the volume. Inductor and Triton
+files already in that same published run are still the cache a later worker
+uses when the torch version, GPU name, and compute capability match. A lock
+or a temp file does not count. `torch._inductor.config` and Triton's knobs
+are pointed at the same directory after import. A new run directory is
+created only when the published tree has neither a loadable mega-cache nor
+those artifact files.
 `check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
 `recaptured(N)`, with `N` equal to `--expect-shapes`.
 
@@ -2263,10 +2284,10 @@ does not retag.
 
 | | |
 |--|--|
-| Recipe | Two chains, chosen in `prepareSectionForStorage` (`src/lib/tts/section-master.ts`). **Stock, Kokoro (Drew, Walter, George), Fish, and Paradee**: `masterPodcastFiltersAf` — highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11` (`MASTER_LOUDNORM_*`). **Modal clone** passes `"s2"`: the container already applied `S2_SPECTRAL_CHAIN` (highpass 70 Hz, cuts at 190/430/3400/6800 Hz, +5 dB at 8 kHz, lowpass 15.5 kHz). The app then loudnorms to `I=-19` `TP=-3` `LRA=11` (`MODAL_S2_MASTERING`). Both graphs insert `voiceEqStageAf()` (`src/lib/tts/voice-eq.ts`) immediately before that loudnorm: resample to 44.1 kHz in the same graph, then lowshelf/equalizer/highshelf (63 Hz −4, 125 −2, 250 omitted, 500 +1, 1 kHz +2, 2 kHz +3, 4 kHz +1, 8 kHz −3, 16 kHz −4). `TTS_VOICE_EQ=0` omits the stage and leaves the previous chain. The join does not run it again. That is not the −16 podcast pass. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. Encode **44.1 kHz mono 128 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 128 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. Frame positions are read from the MP3 headers (a per-section ffprobe crowd timed out a 1,297-section book at 60s). A section under four seconds is re-encoded with the same crossfade into the next section, or into the previous section at the end of the book, and the rest of that neighbor is still packet-copied, so one heading does not send the book through the full encode. The fallback encode is capped to the decoded sample count, and a full file that already uploaded is not marked failed when the lease is gone. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
+| Recipe | Two chains, chosen in `prepareSectionForStorage` (`src/lib/tts/section-master.ts`). **Stock, Kokoro (Drew, Walter, George), Fish, and Paradee**: `masterPodcastFiltersAf` — highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11` (`MASTER_LOUDNORM_*`). **Modal clone** passes `"s2"`: the container already applied `S2_SPECTRAL_CHAIN` (highpass 70 Hz, cuts at 190/430/3400/6800 Hz, +5 dB at 8 kHz, lowpass 15.5 kHz). The app then loudnorms to `I=-19` `TP=-3` `LRA=11` (`MODAL_S2_MASTERING`). Both graphs insert `voiceEqStageAf()` (`src/lib/tts/voice-eq.ts`) immediately before that loudnorm: resample to 44.1 kHz in the same graph, then lowshelf/equalizer/highshelf (63 Hz −4, 125 −2, 250 omitted, 500 +1, 1 kHz +2, 2 kHz +3, 4 kHz +1, 8 kHz −3, 16 kHz −4). `TTS_VOICE_EQ=0` omits the stage and leaves the previous chain. The join does not run it again. That is not the −16 podcast pass. The loudnorm pass is measured and applied linearly when the section is at least 3 seconds (`SHORT_SECTION_MASTER_SECONDS`). Under that, ffmpeg 5.1's linear loudnorm lands near −32 LUFS and 6.1/7.1 still sit about 2–3 LU quiet of the target, so the section runs the spectral chain and voice curve, measures `integratedLufs`, and applies one `volume` gain clamped to ±24 dB plus `alimiter=level=false` at the true-peak ceiling. A clip too short to measure, or one whose duration cannot be read, keeps one-pass loudnorm with `linear` unset. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. Encode **44.1 kHz mono 128 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 128 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. Frame positions are read from the MP3 headers (a per-section ffprobe crowd timed out a 1,297-section book at 60s). A section under four seconds is re-encoded with the same crossfade into the next section, or into the previous section at the end of the book, and the rest of that neighbor is still packet-copied, so one heading does not send the book through the full encode. The fallback encode is capped to the decoded sample count, and a full file that already uploaded is not marked failed when the lease is gone. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
 | DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
 | Host | Always-on VM (`WORKER=1`). `VERCEL=1` always skips. Enabled when `WORKER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
-| Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. The Dockerfile keeps the same musl pin. |
+| Binaries | Ubuntu `ffmpeg` (required) on the take-home VM. The Modal CPU image (`workers/cpu/Dockerfile`) replaces the bookworm 5.1 `ffmpeg` and `ffprobe` binaries with a pinned static GPL build, n8.1.3, sha256 `fce424851b0a982bdd4ac4e96f0e7b32cf29de999e54500676d41ad175ed0c79`, and refuses a version below 6.1. Apt ffmpeg stays installed so PyAV keeps its libraries. Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. The take-home Dockerfile keeps the same musl pin. |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1` |
@@ -3059,7 +3080,20 @@ for its own book.
 A budget breach fails that book. It does not park it as cold and it does
 not switch narrator. Dollars come from persisted `remote_calls` rows, stored
 in milliseconds. A reload replaces that book's reservations instead of
-appending them. Overlapping Kokoro lanes count as one wall clock. Under
+appending them. Overlapping Kokoro lanes count as one wall clock. The daily
+figure is the overlap of each call with the trailing 24 hours. One call is
+never charged longer than the book time budget, and the slice that is kept
+is the most recent one, so GPU time that still sits in the trailing day is
+not dropped in favour of hours that already fell out of it. An in-flight
+estimate stays on the ledger until the call ends. Elapsed time merges
+across parallel lanes; reservations still in the future are summed, because
+those calls run one after another. An abandoned row whose end was moved
+forward by a later cleanup pass is clamped once at startup and again each
+hour; a second pass does not move the end. A started row whose own end was
+slid is marked abandoned by that clamp, so the load does not treat the
+clamped span as still open and stretch it back to now. Fish hosted-API renders are
+outside that GPU budget. A clone, Kokoro, or Modal CPU call still counts
+when its path is `preview`. Under
 Vitest budgets are off unless `REMOTE_ENFORCE_BUDGETS=1`.
 
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal

@@ -11,7 +11,12 @@ repository is public. The hash is in `voices/sowell/manifest.json`.
 
 The export did not record a trainer checkpoint. The tensor is
 `(510, 1, 256)` float32, which is the Kokoro-82M v1.0 voice contract:
-`pack[phoneme_count - 1]` is 256 wide, and `kokoro-v1_0.pth` uses the
+`pack[phoneme_count - 1]` is 256 wide. `SOWELL_FIXED_STYLE_INDEX` is `None`,
+so Walter keeps that length index: the pack file is not in the repo and was
+not on a volume, so it has not been shown to move with length the way Drew's
+does. George is a stock pack and is flat across those rows, so it stays
+indexed too. Drew is the voice that pins one row; see
+`docs/drew-walter-voice-runbook.md`. `kokoro-v1_0.pth` uses the
 first 128 for the decoder and the rest for the predictor
 (`hexgrad/kokoro` `dfb907a`, model revision
 `f3ff3571791e39611d31c381e3a41a3af07b4987`). The runtime loads that
