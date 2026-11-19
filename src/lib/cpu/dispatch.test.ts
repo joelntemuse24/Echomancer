@@ -33,6 +33,7 @@ import {
 } from "@/lib/cpu/tasks";
 import { runCpuTask } from "@/lib/cpu/runner";
 import { resetModalWorkspaceDisabled } from "@/lib/modal/workspace-disabled";
+import { haltBook, resetRemoteLayerForTests } from "@/lib/remote/layer";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
@@ -149,6 +150,84 @@ afterEach(() => {
   delete process.env.TTS_SECTION_QA_ENABLED;
   delete process.env.TAKEHOME_GLOBAL_ACTIVE;
   delete process.env.TAKEHOME_MAX_INFLIGHT_PER_USER;
+});
+
+describe("a remote refusal is not an accepted placement", () => {
+  afterEach(() => {
+    resetRemoteLayerForTests();
+    vi.unstubAllGlobals();
+    delete process.env.REMOTE_ENFORCE_BUDGETS;
+    delete process.env.REMOTE_BOOK_BUDGET_USD;
+  });
+
+  async function refusedTask(id: string, jobId: string) {
+    process.env.CPU_RUNNER = "modal";
+    process.env.MODAL_CPU_URL = "https://cpu.example";
+    const logs: string[] = [];
+    vi.spyOn(console, "info").mockImplementation((msg) => {
+      logs.push(String(msg));
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await enqueueCpuTask({
+      id,
+      kind: "master",
+      jobId,
+      sectionIndex: 0,
+    });
+    const result = await runCpuTask(id);
+    const row = await getCpuTask(id);
+    return { result, row, logs, fetchMock };
+  }
+
+  it("releases the lease when the call is cancelled before it is sent", async () => {
+    haltBook("job-refused", "cancelled");
+    const { result, row, logs, fetchMock } = await refusedTask(
+      "master:job-refused:0",
+      "job-refused"
+    );
+    expect(result).toBe("deferred");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(row?.status).toBe("queued");
+    expect(row?.owner_token).toBeNull();
+    expect(row?.lease_expires_at).toBeNull();
+    const line = logs.find((item) => item.includes("cpu_dispatch")) ?? "";
+    expect(line).toContain('"error":"cancelled"');
+    expect(line).toContain('"result":"deferred"');
+    expect(line).not.toContain("network");
+    expect(line).not.toContain('"result":"accepted"');
+  });
+
+  it("releases the lease when the daily budget refuses the call", async () => {
+    process.env.REMOTE_ENFORCE_BUDGETS = "1";
+    process.env.REMOTE_BOOK_BUDGET_USD = "0.001";
+    const { result, row, logs, fetchMock } = await refusedTask(
+      "master:job-budget:0",
+      "job-budget"
+    );
+    expect(result).toBe("deferred");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(row?.status).toBe("queued");
+    expect(row?.lease_expires_at).toBeNull();
+    const line = logs.find((item) => item.includes("cpu_dispatch")) ?? "";
+    expect(line).toContain('"error":"budget"');
+    expect(line).toContain('"result":"deferred"');
+    expect(line).not.toContain("network");
+  });
+
+  it("fish and kokoro callers do not record a refusal as an accepted network error", () => {
+    for (const file of [
+      "src/lib/tts/providers/fish.ts",
+      "src/lib/tts/providers/george.ts",
+      "src/lib/tts/providers/drew.ts",
+      "src/lib/tts/providers/sowell.ts",
+    ]) {
+      const source = readFileSync(path.join(process.cwd(), file), "utf8");
+      expect(source).toContain("remoteFetch");
+      expect(source).not.toContain('"network"');
+      expect(source).not.toContain("result: \"accepted\"");
+    }
+  });
 });
 
 describe("cpu budgets", () => {

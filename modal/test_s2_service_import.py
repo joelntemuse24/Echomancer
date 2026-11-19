@@ -653,6 +653,72 @@ def test_single_section_handler_also_stays_on_the_owner_thread(
         worker.gpu.close()
 
 
+def test_render_batch_waits_on_a_busy_gpu_instead_of_opening_another(
+    service, stub_master, monkeypatch
+):
+    """A second render shares this container. It does not fail the call.
+
+    Web handlers still 429 so a stray POST lets go of the GPU. The spawned
+    render waits, which is what keeps max_containers=1 from growing a second
+    H100 when status() or a short web POST already holds an input.
+    """
+    import inspect
+    import threading
+    import time
+
+    source = inspect.getsource(service)
+    assert "@modal.concurrent(max_inputs=2)" in source
+    assert "queue=True" in inspect.getsource(service.S2CloneWorker.render_batch)
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    monkeypatch.setenv("S2C_GPU_WAIT_S", "0")
+    worker = _worker_with_recording_engine(service)
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        started.set()
+        release.wait(5)
+
+    holder = threading.Thread(target=lambda: worker.gpu.submit(hold))
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["body"] = service.S2CloneWorker.render_batch(
+                worker, _batch_payload()
+            )
+        except Exception as err:
+            result["err"] = err
+
+    try:
+        holder.start()
+        assert started.wait(2)
+        renderer = threading.Thread(target=run)
+        renderer.start()
+        time.sleep(0.05)
+        assert "err" not in result
+        assert "body" not in result
+        release.set()
+        renderer.join(5)
+        assert "err" not in result
+        assert result["body"]["items"]
+    finally:
+        release.set()
+        holder.join(5)
+        worker.gpu.close()
+
+
+def test_prewarm_cancel_does_not_kill_the_shared_container():
+    from pathlib import Path
+
+    text = Path(__file__).with_name("s2_clone_warm.py").read_text()
+    start = text.index("def prewarm(")
+    body = text[start:]
+    assert "terminate_containers=False" in body
+    assert "terminate_containers=True" not in body
+
+
 def test_a_busy_lane_answers_429_instead_of_queueing_forever(
     service, stub_master, monkeypatch
 ):

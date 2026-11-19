@@ -183,7 +183,7 @@ from s2_compile_cache import (
     LOCAL_INDUCTOR_DIR,
     LOCAL_TRITON_DIR,
     code_stamp,
-    format_compile_cache_log,
+    format_compile_cache_boot_log,
     open_compile_cache,
 )
 from s2_mastering import S2_SPECTRAL_CHAIN, SECTION_MP3_BITRATE, SECTION_SAMPLE_RATE
@@ -384,8 +384,11 @@ def _max_containers() -> int:
     `update_autoscaler(max_containers=1)`. Raising it needs explicit owner
     approval. `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count
     and is not this cap. `min_containers` stays 0.
-    `@modal.concurrent(max_inputs=1)` means one call at a time on this GPU.
-    A second book queues here and does not open a second container.
+    `@modal.concurrent(max_inputs=2)` lets one render and one light input
+    (status, cover, prewarm, or a stray short web POST) share this GPU.
+    A second render waits on the GPU thread. It does not open a second
+    container, and a web handler still answers 429 immediately so it does
+    not hold the device. ``max_containers`` stays 1.
     """
     return int(_LIMITS["max_containers"])
 
@@ -657,8 +660,12 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
 )
 # One input per container. Production max_containers stays 1, so a second
 # book's call queues on this GPU and does not open a second container.
-# Raising the cap needs explicit owner approval. A 429 is the busy backstop.
-@modal.concurrent(max_inputs=1)
+# Raising the cap needs explicit owner approval. A 429 is the busy backstop
+# for a web handler. max_inputs=2 is what stops a light status/probe from
+# forcing a second H100 while render_batch holds the only slot: book
+# db7d3d90 (2026-11-19) ran two H100s because a web POST occupied the one
+# input and Modal placed render_batch on another container.
+@modal.concurrent(max_inputs=2)
 class S2CloneWorker:
     @modal.enter(snap=True)
     def load(self) -> None:
@@ -809,7 +816,16 @@ class S2CloneWorker:
         # of it: the report is captured with the snapshot. ``compile_s`` is the
         # compile+warm time of that build, which is the number that should fall
         # once the volume hits.
-        print(format_compile_cache_log(getattr(self, "compile_cache_report", None)))
+        # This hook does not compile. The report frozen into the snapshot is
+        # the build's result. Reprinting it as hit=miss compile_s=<hundreds>
+        # made a restored container (graphs ok, selftest ok) look like it had
+        # just compiled, and operators killed healthy H100s for that line.
+        print(
+            format_compile_cache_boot_log(
+                getattr(self, "compile_cache_report", None),
+                boot=kind,
+            )
+        )
         self._heartbeat(force=True)
         self._start_heartbeat_timer()
 
@@ -1002,7 +1018,7 @@ class S2CloneWorker:
         ref_text = validate_reference_text(ref_text)
         return (self.ref_cache[key], ref_text), key, stats
 
-    def _run_on_gpu(self, fn, *, timeout: float | None = None):
+    def _run_on_gpu(self, fn, *, timeout: float | None = None, queue: bool = False):
         """Submit GPU work from a request thread and translate the failure modes.
 
         HTTP handlers never touch CUDA themselves. Three things can go wrong
@@ -1019,6 +1035,11 @@ class S2CloneWorker:
         better than holding an HTTP connection open behind one long batch. The
         job itself is unbounded, because a full batch legitimately takes minutes.
         """
+        # A spawned render waits for the lane. A web handler does not: it
+        # answers 429 and lets go, so a stray POST cannot sit on the GPU
+        # ahead of the book. queue_timeout=None acquires the lock and waits.
+        if queue:
+            return self.gpu.submit(fn, queue_timeout=None)
         if timeout is None:
             raw = os.environ.get("S2C_GPU_WAIT_S", "0")
             try:
@@ -1105,7 +1126,7 @@ class S2CloneWorker:
         encode them, the poll becomes a 500, and the worker would submit again
         after the GPU had already finished.
         """
-        body = self._synthesize_batch_body(payload, _SpawnRequest())
+        body = self._synthesize_batch_body(payload, _SpawnRequest(), queue=True)
         if isinstance(body, dict):
             return body
         content = getattr(body, "content", None)
@@ -1118,10 +1139,12 @@ class S2CloneWorker:
         """Synchronous GPU render.
 
         Submit, poll, and cancel are the CPU function ``s2_control``. This
-        method stays on the H100 because it renders. A book must not send
-        control traffic here: a cold accept would wait out a GPU restore,
-        and each status POST would be another GPU input. Production
-        max_containers stays 1, so it must not open a second one.
+        method stays on the H100 because it renders. A book with
+        ``MODAL_S2_CONTROL_URL`` set must not POST here: the worker's render
+        is the ``render_batch`` method, and a web POST on this class is a
+        second input. ``max_inputs=2`` lets one light request share the
+        container; a full web render still takes the GPU, so the worker
+        does not send one. Production ``max_containers`` stays 1.
         """
         from fastapi import HTTPException
         from fastapi.responses import JSONResponse
@@ -1131,7 +1154,7 @@ class S2CloneWorker:
         body = payload if isinstance(payload, dict) else {}
         return JSONResponse(self._synthesize_batch_body(body, request))
 
-    def _synthesize_batch_body(self, payload: dict, request: Request):
+    def _synthesize_batch_body(self, payload: dict, request: Request, *, queue: bool = False):
         """Many sections in one call; one batch row per section.
 
         Each section is its own row, so every row hears only the reference and
@@ -1378,7 +1401,7 @@ class S2CloneWorker:
             }
 
         try:
-            done = self._run_on_gpu(gpu_work)
+            done = self._run_on_gpu(gpu_work, queue=queue)
         except GpuThreadBusy as err:
             encode_pool.shutdown(wait=False, cancel_futures=True)
             upload_pool.close()
@@ -1823,7 +1846,8 @@ def s2_control(payload: dict, request: Request):
     A cold start is the small image, not an H100 restore. ``render_batch.spawn``
     places the GPU work and returns its id. Status and cancel use
     ``FunctionCall.from_id`` on that id. The book path must not POST those
-    to ``S2CloneWorker``: that class is ``max_inputs=1`` on a GPU.
+    to ``S2CloneWorker``: a web POST there is a GPU input beside
+    ``render_batch``.
     """
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse

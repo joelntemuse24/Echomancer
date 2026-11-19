@@ -1,8 +1,8 @@
 /**
  * Two clone books that start seconds apart on one Modal app.
  *
- * The deployed class is `@modal.concurrent(max_inputs=1)`. Production
- * `max_containers` stays 1, so book B queues on the same GPU and does not
+ * The class is `@modal.concurrent(max_inputs=2)`. Production
+ * `max_containers` stays 1, so book B waits on the same GPU and does not
  * open a second container. Treating `warm_containers > 0`
  * as "this call is warm" arms the steady budget (~60s) and aborts that restore.
  * A steady miss used to freeze every book in the process for 30s.
@@ -271,8 +271,7 @@ describe("a client abort does not post the same sections again", () => {
     expect(result.cold).toBe(true);
     expect(result.staged).toBe(0);
     // The sync Modal handler keeps rendering after the worker drops the
-    // HTTP wait. A second POST of these sections would start another
-    // container (`max_inputs=1` does not return 429) and bill the same
+    // HTTP wait. A second POST of these sections would render the same
     // text twice. The next attempt waits on this book's backoff.
   });
 });
