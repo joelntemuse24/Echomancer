@@ -427,6 +427,21 @@ per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
 `drewKokoroSpeed` exists for tests and documentation, not as a second
 multiplier on the request.
 
+**Drew prosody G:** sentence-type F0 rules (`scripts/sowell/prosody_rules.py`,
+variant `G_rules_phrase`) are off unless `DREW_PROSODY_RULES` is set on the
+take-home worker. The flag is Drew only. Walter and George ignore it. It
+does not add a model pass: the same `KPipeline.infer` runs, and the rules
+edit the F0 tensor that forward already produced. Constants are hardcoded
+(`ACCENT_K` 0.7, `DECL_ST` 3, short exclamation +4 st, long +1.5 st, yes/no
+rise +7 st). Do not read those from the environment. With the flag off the
+request omits `prosody` and the cache key stays
+`drew-kokoro82m-ft-stageA-step00900-style300-v2`. With it on, the body is
+`prosody: "G"` and the key gains `-prosodyG`. The container applies G only
+when that field is present; its own env cannot rule a take cached as
+unruled. Deploy the Modal app that honors the field before setting the flag.
+Style row 300 is unchanged. The picker sample stays the unruled file until
+it is re-recorded after the flag is on.
+
 **Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,

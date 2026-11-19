@@ -196,6 +196,54 @@ found under this key. The `style300` piece is the pinned pack row below.
 A new row is a different take even when the checkpoint is the same one, so
 the variant moves with `DREW_FIXED_STYLE_INDEX`.
 
+`DREW_PROSODY_RULES` is off unless set. Off, the key above is unchanged and
+the request body has no `prosody` field. On (`1`, `true`, `on`, or `yes`),
+`drewCacheVariant` appends `-prosodyG` and the body is `{ prosody: "G" }`.
+That suffix is the recipe, not a new checkpoint: row 300 and speed 0.88
+stay. Bump the suffix in `scripts/sowell/prosody_rules.py`
+(`PROSODY_G_CACHE_SUFFIX`) and `src/lib/tts/drew-voice.ts`
+(`DREW_PROSODY_G_SUFFIX`) together if the G constants change. Do not put
+`ACCENT_K` or `DECL_ST` in the environment. The A/B's defaults of those
+variables were a different variant.
+
+The container applies G only when the body says so. A missing or empty
+field forces the stock forward even if the container has
+`DREW_PROSODY_RULES` set, because the cache key is decided by the process
+that sent the body. A response that was asked for G and does not return
+`x-kokoro-prosody: G` is not stored.
+
+Roll the flag out in this order. Deploy the Modal app that honors
+`prosody: "G"` first (`echomancer-sowell`; this is an owner deploy, not an
+agent command). Then set `DREW_PROSODY_RULES=1` on the take-home VM and
+restart the worker. Vercel does not synthesize Drew take-home. Unset the
+flag and restart to roll back; stored unruled takes stay under the key
+without the suffix, and new sections render stock again. Re-record
+`public/voice-previews/drew.mp3` only after the flag is on in the process
+that renders the preview. Until then the committed sample is the unruled
+take, which is what the flag-off app speaks.
+
+Measured on the Hamlet passage in
+`scripts/sowell/fixtures/drew_prosody_passage.json` (the A/B's text, about
+49 s) with this path: row 300, app speed 1.0, Kokoro 0.88, 4 torch threads,
+CPU, no Modal. After a one-sentence warmup the unruled renders took 10.17 s
+and 10.39 s of infer; the ruled renders took 10.07 s and 10.21 s. First
+audio stayed about 4 s. Both files are 48.875 s (1,173,000 samples), so the
+rules did not change duration. Editing a 51 s F0 contour took 3.3 ms.
+`librosa.pyin`: pitch std 4.23 st unruled, 4.34 st ruled. Sentence-median
+spread 0.84 st to 2.16 st. Question-final move (every `?`, including
+wh-questions) −4.72 st to −2.23 st. The yes/no questions moved from about
+−5 st to −1 st, and the wh-question stayed at −4.6 st. Peaks were 0.42,
+nothing clipped, and there were no octave jumps. Two unruled renders of the
+same text differ by RMS 0.007; unruled against ruled differs by RMS 0.08.
+Kokoro on this CPU is not bitwise stable even with the flag off, and the
+flag-off path does not install the hook. No Andrew reference wav was in the
+tree, so the correlation was not recomputed. The row-200 A/B's G was spread
+2.82 st and question-final −3.43 st, against Andrew at 2.72 st and −1.77 st.
+Row 300 does not reproduce those two numbers. The spread moved most of
+the way toward Andrew, and the question ending (−2.23 st) is closer to
+Andrew than the row-200 G was. Re-run with `scripts/sowell/prosody_ab.py` and
+`scripts/sowell/prosody_metrics.py --andrew <wav>` when a reference exists.
+
 ## One style row
 
 Kokoro reads `pack[phoneme_count - 1]`. Drew's pack changes with that index:
@@ -229,8 +277,8 @@ row 300), then mastered exactly like a book section with
 the book target, the short-clip gain under 3 s) on ffmpeg n8.1.3. The result is
 the same 44.1 kHz mono 128 kbps MP3 a section is stored as, about −16.6 LUFS;
 do not re-encode it. `"drew"` is in `COMMITTED_PREVIEW_IDS`. Re-record it when
-`PREVIEW_TEXT`, the volume checkpoint, `DREW_FIXED_STYLE_INDEX`, or the
-section mastering chain changes:
+`PREVIEW_TEXT`, the volume checkpoint, `DREW_FIXED_STYLE_INDEX`, prosody G
+being turned on, or the section mastering chain changes:
 
 ```bash
 FFMPEG_PATH=/path/to/ffmpeg-n8.1.3 \

@@ -19,6 +19,8 @@ import {
   DREW_MAX_CHARS,
   DREW_PROVIDER_VOICE_ID,
   drewEndpoint,
+  drewProsodyField,
+  drewProsodyRulesEnabled,
 } from "@/lib/tts/drew-voice";
 import { concatWav, splitSowellText } from "@/lib/tts/providers/sowell";
 import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
@@ -35,6 +37,7 @@ async function onePiece(
       ? input.speed
       : 1;
   let last = "";
+  const prosody = drewProsodyField();
   for (let attempt = 0; attempt < 4; attempt++) {
     const res = await remoteFetch({
         provider: "kokoro",
@@ -53,6 +56,9 @@ async function onePiece(
             text,
             speed,
             voice: DREW_PROVIDER_VOICE_ID,
+            // Present only while G is on. An omitted field is the stock
+            // forward, and the container does not consult its own env.
+            ...(prosody ? { prosody } : {}),
             ...(input.jobId ? { jobId: input.jobId } : {}),
             ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
           }),
@@ -71,6 +77,13 @@ async function onePiece(
     if (spoken !== DREW_PROVIDER_VOICE_ID) {
       throw new Error(
         "Drew endpoint did not confirm the Drew voice. The audio was not stored."
+      );
+    }
+    // The cache key already moved. Audio from a container that ignored the
+    // field would be stored as G and replayed after the real rules ship.
+    if (drewProsodyRulesEnabled() && res.headers.get("x-kokoro-prosody") !== "G") {
+      throw new Error(
+        "Drew endpoint did not apply prosody G. The audio was not stored."
       );
     }
     const audio = Buffer.from(await res.arrayBuffer());

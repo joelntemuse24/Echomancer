@@ -204,6 +204,19 @@ class Speaker:
                 {"ok": False, "error": "Drew weights are not mounted", "code": "DREW_UNAVAILABLE"},
                 status_code=503,
             )
+        # Missing means stock. Only an explicit "G" edits F0. The container
+        # env is not consulted: the cache key lives in the process that
+        # sent this body, and a ruled take under the unruled key would stick.
+        raw_prosody = item.get("prosody", None)
+        if raw_prosody is None or raw_prosody == "":
+            prosody = ""
+        elif raw_prosody == "G":
+            prosody = "G"
+        else:
+            return JSONResponse(
+                {"ok": False, "error": "prosody is not supported"},
+                status_code=400,
+            )
         if not self.gate.acquire(blocking=False):
             return JSONResponse({"ok": False, "deferred": True}, status_code=429)
         try:
@@ -213,6 +226,7 @@ class Speaker:
                 Path(MANIFEST),
                 voice=voice,
                 speed=item.get("speed", 1.0),
+                prosody=prosody,
             )
             if len(wav) < 1000:
                 return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
@@ -221,6 +235,8 @@ class Speaker:
             headers = timing_headers(report)
             headers["x-kokoro-voice"] = str(report.get("voice") or voice)
             headers["x-kokoro-speed"] = str(report.get("speed") or 1.0)
+            if report.get("prosody"):
+                headers["x-kokoro-prosody"] = str(report["prosody"])
             # Id, section, and voice only. The text and the token are not logged.
             job_id = str(item.get("jobId") or "")[:80]
             section = item.get("sectionIndex")

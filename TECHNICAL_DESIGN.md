@@ -1211,7 +1211,17 @@ once. The take-home cache variant is
 `drew-kokoro82m-ft-stageA-step00900-style300-v2`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`
-stays unset and those cache keys do not move.
+stays unset and those cache keys do not move. `DREW_PROSODY_RULES` (default
+off, take-home worker only) appends `-prosodyG` via `drewCacheVariant` and
+sends `prosody: "G"` on the Drew POST. The container edits F0 inside that
+same forward (`prosody_rules.py`, recipe G: accent 0.7, 3 st declination,
+exclamation register, yes/no final rise). A missing field is the stock
+forward and does not consult the container env, so an unruled cache key
+cannot store a ruled take. Walter and George never take the recipe. Unset
+the flag to roll back; the base key still finds the takes recorded before
+it. Deploy the app that returns `x-kokoro-prosody: G` before turning the
+flag on, or the worker rejects the audio instead of caching the stock take
+under the new key.
 
 ### Fish voice cloning + live HTTP stream
 
