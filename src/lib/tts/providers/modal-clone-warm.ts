@@ -136,11 +136,12 @@ export function kickModalCloneSnapshotWarm(
 /**
  * Do not start a side restore.
  *
- * `modal run …::cover` is its own Modal input. The class is
- * `@modal.concurrent(max_inputs=1)`, so a cover that is still restoring
- * does not take the book's later `POST /synthesize_batch`. Modal places
- * that POST on a second container. The cover container then finishes
- * restoring, serves nothing, and idles for `scaledown_window`.
+ * `modal run …::cover` is a `status()` input on the GPU class. The book's
+ * render is `render_batch` from CPU `s2_control`, and the worker does not
+ * POST the GPU web endpoints while that URL is set. `max_inputs=2` lets
+ * the light `status()` share the container, so cover does not open a
+ * second H100. This function still does not start one: a voice-list or
+ * extract cover ahead of the book is a spare container.
  *
  * The synthesize call is the container the book uses: one H100 per book
  * that will actually render, inside `MODAL_S2_MAX_GPUS`. A voice-list or

@@ -17,6 +17,7 @@ import {
   modalSingleUrl,
   resetModalCloneRuntimeForTests,
   synthesizeModalClone,
+  synthesizeModalClonePreview,
 } from "./modal-clone";
 import {
   BATCH_HOST,
@@ -77,6 +78,13 @@ describe("endpoint resolution", () => {
     vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
     vi.stubEnv("MODAL_S2_READY_URL", BATCH_HOST);
     expect(() => modalReadyUrl()).toThrow(/separate @modal\.fastapi_endpoint/);
+  });
+
+  it("rejects a ready URL pointing at the single-section GPU host", () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", SINGLE_HOST);
+    vi.stubEnv("MODAL_S2_READY_URL", SINGLE_HOST);
+    expect(() => modalReadyUrl()).toThrow(/synthesize host/);
   });
 
   it("never sends a single-section body to the batch host", () => {
@@ -157,7 +165,7 @@ describe("requests go to the right host", () => {
     expect(endpointOf(urls[0]!)).toBe("single");
   });
 
-  it("keeps a single-section post on its own host when control is configured", async () => {
+  it("sends a single section through control when that URL is set", async () => {
     vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
     vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", SINGLE_HOST);
     vi.stubEnv("MODAL_S2_CONTROL_URL", CONTROL_HOST);
@@ -174,11 +182,76 @@ describe("requests go to the right host", () => {
     });
 
     const urls = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(urls).toEqual([SINGLE_HOST]);
+    expect(urls.every((url) => endpointOf(url) === "control")).toBe(true);
+    expect(urls.some((url) => endpointOf(url) === "single")).toBe(false);
+    expect(urls.some((url) => endpointOf(url) === "batch")).toBe(false);
     const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
-    expect(body.text).toBe("It is a truth universally acknowledged.");
-    expect(body.items).toBeUndefined();
-    expect(urls.some((url) => endpointOf(url) === "control")).toBe(false);
+    expect(body.text).toBeUndefined();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].text).toBe("It is a truth universally acknowledged.");
+    expect(body.idempotency_key).toContain("book-single");
+  });
+
+  it("does not post the GPU web endpoint for an untracked section when control is set", async () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", SINGLE_HOST);
+    vi.stubEnv("MODAL_S2_CONTROL_URL", CONTROL_HOST);
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    const fetchMock = setupFetch();
+
+    await synthesizeModalClone({
+      text: "It is a truth universally acknowledged.",
+      voiceId: "private-fish-id",
+      catalogVoiceId: "clone:saved-id",
+      model: "s2.1-pro-base",
+    });
+
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.every((url) => endpointOf(url) === "control")).toBe(true);
+  });
+
+  it("renders a preview through control and does not touch the GPU web hosts", async () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", SINGLE_HOST);
+    vi.stubEnv("MODAL_S2_CONTROL_URL", CONTROL_HOST);
+    vi.stubEnv("MODAL_S2_READY_URL", READY_HOST);
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    vi.stubEnv("MODAL_S2_WARM_HOOK", "0");
+    const fetchMock = setupFetch();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(JSON.stringify(readyBody({ warm_containers: 1 })), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              key: "preview",
+              audio_b64: Buffer.from(mp3).toString("base64"),
+              duration_s: 1.2,
+              truncated_units: 0,
+            },
+          ],
+        }),
+        { headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const result = await synthesizeModalClonePreview({
+      text: "A short preview line.",
+      voiceId: "private-fish-id",
+      catalogVoiceId: "clone:saved-id",
+    });
+
+    const kinds = fetchMock.mock.calls.map((call) => endpointOf(String(call[0])));
+    expect(kinds).toContain("ready");
+    expect(kinds).toContain("control");
+    expect(kinds).not.toContain("single");
+    expect(kinds).not.toContain("batch");
+    expect(result.audio.length).toBeGreaterThan(0);
   });
 
   it("renders a single section through a one-row batch when no single host exists", async () => {
