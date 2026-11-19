@@ -7,6 +7,7 @@ missing (a bare CI runner), which is how the other packs suites behave.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import unittest
@@ -32,9 +33,9 @@ class ResidentRuntime(unittest.TestCase):
             eng._packs = {"am_sowell": torch.zeros(1), "bm_george": torch.zeros(1)}
             eng.init_count += 1
 
-        def render(text: str, voice: str = "am_sowell", speed: float = 1.0):
-            del voice, speed
-            return torch.zeros(SAMPLE_RATE), text, 0.01
+        def render(text: str, voice: str = "am_sowell", speed: float = 1.0, prosody: str | None = None):
+            del voice, speed, prosody
+            return torch.zeros(SAMPLE_RATE), text, 0.01, [1.0], None
 
         eng._load_locked = load
         eng._render_locked = render
@@ -54,17 +55,19 @@ class ResidentRuntime(unittest.TestCase):
     def test_a_failed_render_releases_the_lock(self) -> None:
         eng = self.engine()
 
-        def boom(text: str, voice: str = "am_sowell", speed: float = 1.0):
-            del text, voice, speed
+        def boom(text: str, voice: str = "am_sowell", speed: float = 1.0, prosody: str | None = None):
+            del text, voice, speed, prosody
             raise RuntimeError("synth failed")
 
         eng._render_locked = boom
         with self.assertRaises(RuntimeError):
             eng.speak("Hello.", Path("unused"))
-        eng._render_locked = lambda text, voice="am_sowell", speed=1.0: (
+        eng._render_locked = lambda text, voice="am_sowell", speed=1.0, prosody=None: (
             torch.zeros(SAMPLE_RATE),
             text,
             0.01,
+            [1.0],
+            None,
         )
         _wav, report = eng.speak("Hello.", Path("unused"))
         self.assertEqual(report["initCount"], 1)
@@ -75,12 +78,12 @@ class ResidentRuntime(unittest.TestCase):
         peak = 0
         real_render = eng._render_locked
 
-        def render(text: str, voice: str = "am_sowell", speed: float = 1.0):
+        def render(text: str, voice: str = "am_sowell", speed: float = 1.0, prosody: str | None = None):
             nonlocal inside, peak
             inside += 1
             peak = max(peak, inside)
             try:
-                return real_render(text, voice, speed)
+                return real_render(text, voice, speed, prosody)
             finally:
                 inside -= 1
 
@@ -107,6 +110,14 @@ class DrewSpeedMultiply(unittest.TestCase):
     """0.88 is applied once, in `_render_locked`, and only for Drew."""
 
     def setUp(self) -> None:
+        # These stubs have no predictor. A leaked flag would wrap the stock
+        # forward and the speed check would no longer be the stock call.
+        self._prosody = os.environ.pop("DREW_PROSODY_RULES", None)
+        self.addCleanup(
+            lambda: os.environ.__setitem__("DREW_PROSODY_RULES", self._prosody)
+            if self._prosody is not None
+            else os.environ.pop("DREW_PROSODY_RULES", None)
+        )
         self._real_kpipeline = getattr(engine_module, "KPipeline", None)
         self._real_runs = engine_module.iter_phoneme_runs
         self.addCleanup(

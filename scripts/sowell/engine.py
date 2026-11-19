@@ -51,6 +51,7 @@ from drew import (
     load_voice_pack,
 )
 from style import fixed_style_index, pin_style
+from prosody_rules import plan_chunks, prosody_hooks, resolve_prosody
 
 MAX_CHARS = 2000
 PHONEME_CAP = 510
@@ -314,8 +315,15 @@ class SowellEngine:
         manifest_file: Path | None = None,
         voice: str = SOWELL_VOICE_ID,
         speed: float = 1.0,
+        prosody: str | None = None,
     ) -> tuple[bytes, dict]:
-        """Load on the first call in this process, then render under the lock."""
+        """Load on the first call in this process, then render under the lock.
+
+        ``prosody=""`` is the stock forward even if ``DREW_PROSODY_RULES`` is
+        set. The HTTP handler passes that for a request that did not ask for
+        variant G, so a container env cannot rule audio cached as unruled.
+        ``prosody=None`` is the CLI and reads the env.
+        """
         started = time.perf_counter()
         with self._lock:
             inits_before = self.init_count
@@ -331,7 +339,9 @@ class SowellEngine:
                     # load() takes the same lock; call the body inline.
                     self._load_locked(pack_path, manifest_file)
             load_seconds = time.perf_counter() - load_started
-            audio, spoken, first_audio = self._render_locked(text, voice_id, speed)
+            audio, spoken, first_audio, chunk_seconds, prosody_name = self._render_locked(
+                text, voice_id, speed, prosody
+            )
             elapsed = time.perf_counter() - started
         report = {
             "chars": len(" ".join(text.split())),
@@ -347,6 +357,8 @@ class SowellEngine:
             "voice": voice_id,
             "speed": drew_speed(speed) if voice_id == DREW_VOICE_ID else 1.0,
             "styleIndex": fixed_style_index(voice_id),
+            "prosody": prosody_name,
+            "chunkSeconds": chunk_seconds,
         }
         return _wav_bytes(audio), report
 
@@ -401,7 +413,8 @@ class SowellEngine:
         text: str,
         voice: str = SOWELL_VOICE_ID,
         speed: float = 1.0,
-    ) -> tuple[torch.Tensor, str, float]:
+        prosody: str | None = None,
+    ) -> tuple[torch.Tensor, str, float, list[float], str | None]:
         cleaned = " ".join(text.split())
         if not cleaned:
             raise PackError("empty text")
@@ -419,29 +432,58 @@ class SowellEngine:
             kokoro_speed = 1.0
         if pipeline is None or pack is None:
             raise PackError("runtime is not loaded")
+        try:
+            recipe = resolve_prosody(voice, prosody)
+        except ValueError as err:
+            raise PackError(str(err)) from err
         pipeline_cls = kpipeline()
 
         _, tokens = pipeline.g2p(cleaned)
+        # Materialise the chunks before the forward. Planning a sentence
+        # that crosses a 510-phoneme cut is string work, not a model pass.
+        # With no recipe this list is what the loop below already walked.
+        runs: list[tuple[str, str]] = []
+        for graphemes, phonemes in iter_phoneme_runs(pipeline, tokens):
+            if not phonemes:
+                continue
+            if len(phonemes) > PHONEME_CAP:
+                raise PackError(
+                    f"phoneme run is {len(phonemes)}, over {PHONEME_CAP}; refusing to drop text"
+                )
+            runs.append((graphemes, phonemes))
+        plans = plan_chunks(runs) if recipe is not None else None
         pieces: list[torch.Tensor] = []
         spoken: list[str] = []
+        chunk_seconds: list[float] = []
         first_audio = 0.0
         render_started = time.perf_counter()
         with torch.inference_mode():
-            for graphemes, phonemes in iter_phoneme_runs(pipeline, tokens):
-                if not phonemes:
-                    continue
-                if len(phonemes) > PHONEME_CAP:
-                    raise PackError(
-                        f"phoneme run is {len(phonemes)}, over {PHONEME_CAP}; refusing to drop text"
+            for index, (graphemes, phonemes) in enumerate(runs):
+                # No recipe: the stock infer, with nothing wrapped. That is
+                # the bit-identical path. A recipe edits F0 inside that same
+                # call and then puts the predictor methods back.
+                if recipe is None:
+                    output = pipeline_cls.infer(
+                        pipeline.model, phonemes, pack, kokoro_speed
                     )
-                output = pipeline_cls.infer(
-                    pipeline.model, phonemes, pack, kokoro_speed
-                )
+                else:
+                    with prosody_hooks(
+                        pipeline.model,
+                        phonemes,
+                        kokoro_speed,
+                        recipe,
+                        plans[index] if plans is not None else (),
+                    ):
+                        output = pipeline_cls.infer(
+                            pipeline.model, phonemes, pack, kokoro_speed
+                        )
                 audio = getattr(output, "audio", None)
                 if audio is None:
                     raise PackError("Kokoro returned no audio for a chunk")
-                pieces.append(audio.detach().to(dtype=torch.float32, device="cpu").reshape(-1))
+                wave = audio.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
+                pieces.append(wave)
                 spoken.append(graphemes)
+                chunk_seconds.append(round(wave.numel() / SAMPLE_RATE, 4))
                 if first_audio == 0.0:
                     first_audio = time.perf_counter() - render_started
         if not pieces:
@@ -452,7 +494,7 @@ class SowellEngine:
         audio = torch.cat(pieces)
         if audio.numel() < SAMPLE_RATE // 10 or not bool(torch.isfinite(audio).all()):
             raise PackError("audio is empty or non-finite")
-        return audio, joined, first_audio
+        return audio, joined, first_audio, chunk_seconds, (recipe.name if recipe else None)
 
 
 def _wav_bytes(audio: torch.Tensor) -> bytes:

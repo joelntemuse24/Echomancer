@@ -50,6 +50,32 @@ export const DREW_WEIGHTS_ID = "stageA-step00900";
  */
 export const DREW_FIXED_STYLE_INDEX = 300;
 export const DREW_CACHE_VARIANT = `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-v2`;
+/**
+ * Suffix while variant G is on. Mirrors `PROSODY_G_CACHE_SUFFIX` in
+ * `scripts/sowell/prosody_rules.py`. A ruled take must not be replayed as
+ * an unruled one. Bump both if the G constants change.
+ */
+export const DREW_PROSODY_G_SUFFIX = "-prosodyG";
+
+/** Explicit on-values only. Unset, empty, and `0` leave Drew's forward stock. */
+export function drewProsodyRulesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.DREW_PROSODY_RULES ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+/**
+ * The take-home cache identity. The suffix is present only while the flag
+ * is on, so turning the flag off finds the takes recorded before it.
+ */
+export function drewCacheVariant(env: NodeJS.ProcessEnv = process.env): string {
+  if (!drewProsodyRulesEnabled(env)) return DREW_CACHE_VARIANT;
+  return `${DREW_CACHE_VARIANT}${DREW_PROSODY_G_SUFFIX}`;
+}
+
+/** The request field, or nothing. Omitting it is how the container stays stock. */
+export function drewProsodyField(env: NodeJS.ProcessEnv = process.env): "G" | undefined {
+  return drewProsodyRulesEnabled(env) ? "G" : undefined;
+}
 
 /** Volume and object paths the operator must upload to, in one place. */
 export const DREW_VOLUME_NAME = "andrew-distill";

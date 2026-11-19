@@ -40,7 +40,9 @@ DREW_NATIVE_KOKORO_SPEED = 0.88
 # rate-0 reading of the same words is a 0.005 tie (0.900–0.901). Index 300
 # is the closest 2–5 kHz balance to the pilot (−0.73 dB). Rows 400 and 509
 # fall to ~0.85 and run about +2.4 dB bright. Changing this requires a new
-# run of that script and a bump of DREW_CACHE_VARIANT.
+# run of that script and a bump of DREW_CACHE_VARIANT. Sentence-type F0
+# rules are not this index: they are `prosody_rules.py`, off unless the
+# request says prosody G, and they do not move the row.
 DREW_FIXED_STYLE_INDEX = 300
 DREW_SPEED_MIN = 0.5
 DREW_SPEED_MAX = 2.0

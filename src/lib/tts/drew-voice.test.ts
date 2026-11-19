@@ -12,6 +12,7 @@ import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
   DREW_CACHE_VARIANT,
+  DREW_PROSODY_G_SUFFIX,
   DREW_FIXED_STYLE_INDEX,
   DREW_IN_FLIGHT,
   DREW_MAX_CHARS,
@@ -21,9 +22,12 @@ import {
   DREW_VOICE_PACK_PATH,
   DREW_VOLUME_NAME,
   DrewNotConfiguredError,
+  drewCacheVariant,
   drewEnabled,
   drewEndpoint,
   drewKokoroSpeed,
+  drewProsodyField,
+  drewProsodyRulesEnabled,
   drewReady,
 } from "@/lib/tts/drew-voice";
 
@@ -38,6 +42,7 @@ function clearDrewEnv() {
   delete process.env.DREW_URL;
   delete process.env.DREW_TOKEN;
   delete process.env.WORKER;
+  delete process.env.DREW_PROSODY_RULES;
 }
 
 function wavBody(): Buffer {
@@ -131,6 +136,31 @@ describe("Drew identity", () => {
     expect(DREW_CACHE_VARIANT.endsWith("-v1")).toBe(false);
     expect(takehomeCacheVariant("sowell", "sowell")).not.toContain("style");
     expect(takehomeCacheVariant("george", "george")).not.toContain("style");
+    delete process.env.DREW_PROSODY_RULES;
+    expect(drewProsodyRulesEnabled()).toBe(false);
+    expect(drewProsodyField()).toBeUndefined();
+    expect(drewCacheVariant()).toBe(DREW_CACHE_VARIANT);
+  });
+
+  it("moves only Drew's cache key when variant G is on", () => {
+    const sowell = takehomeCacheVariant("sowell", "sowell");
+    const george = takehomeCacheVariant("george", "george");
+    process.env.DREW_PROSODY_RULES = "1";
+    try {
+      expect(drewProsodyRulesEnabled()).toBe(true);
+      expect(drewProsodyField()).toBe("G");
+      expect(takehomeCacheVariant("drew", "drew")).toBe(
+        `${DREW_CACHE_VARIANT}${DREW_PROSODY_G_SUFFIX}`
+      );
+      expect(DREW_PROSODY_G_SUFFIX).toBe("-prosodyG");
+      expect(takehomeCacheVariant("sowell", "sowell")).toBe(sowell);
+      expect(takehomeCacheVariant("george", "george")).toBe(george);
+    } finally {
+      delete process.env.DREW_PROSODY_RULES;
+    }
+    expect(takehomeCacheVariant("drew", "drew")).toBe(DREW_CACHE_VARIANT);
+    expect(drewProsodyRulesEnabled({ DREW_PROSODY_RULES: "0" })).toBe(false);
+    expect(drewProsodyRulesEnabled({ DREW_PROSODY_RULES: "" })).toBe(false);
   });
 
   it("serves a committed Drew preview", () => {
@@ -197,9 +227,9 @@ describe("Drew provider", () => {
   }
 
   it("sends the app speed once and never posts a vendor id", async () => {
-    const seen: { text: string; speed: number; voice: string }[] = [];
+    const seen: Record<string, unknown>[] = [];
     const url = await listen((body, res) => {
-      seen.push(JSON.parse(body) as { text: string; speed: number; voice: string });
+      seen.push(JSON.parse(body) as Record<string, unknown>);
       res.writeHead(200, {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
@@ -227,7 +257,55 @@ describe("Drew provider", () => {
     // the multiply happens exactly once.
     expect(seen[0]!.speed).toBe(1);
     expect(seen[0]!.voice).toBe("drew");
-    expect(seen[0]!.text).toContain("harbor");
+    expect(String(seen[0]!.text)).toContain("harbor");
+    // Flag off: the field is absent, so an older container's stock forward
+    // is what this cache key stores.
+    expect(seen[0]).not.toHaveProperty("prosody");
+  });
+
+  it("asks for G and refuses audio that did not apply it", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const url = await listen((body, res) => {
+      seen.push(JSON.parse(body) as Record<string, unknown>);
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
+      });
+      res.end(wavBody());
+    });
+    process.env.DREW_URL = url;
+    process.env.DREW_PROSODY_RULES = "1";
+    delete process.env.WORKER;
+    await expect(
+      resolveStockAdapter({ provider: "drew", catalogVoiceId: "drew" }).synthesize({
+        text: "Is the harbor quiet?",
+        voice: DREW_PROVIDER_VOICE_ID,
+      })
+    ).rejects.toThrow(/prosody G/i);
+    expect(seen[0]!.prosody).toBe("G");
+    expect(seen[0]!.speed).toBe(1);
+  });
+
+  it("stores audio when the container confirms G", async () => {
+    const url = await listen((_body, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
+        "x-kokoro-prosody": "G",
+      });
+      res.end(wavBody());
+    });
+    process.env.DREW_URL = url;
+    process.env.DREW_PROSODY_RULES = "1";
+    delete process.env.WORKER;
+    const audio = await resolveStockAdapter({
+      provider: "drew",
+      catalogVoiceId: "drew",
+    }).synthesize({
+      text: "Is the harbor quiet?",
+      voice: DREW_PROVIDER_VOICE_ID,
+    });
+    expect(audio.audio.length).toBe(244);
   });
 
   it("refuses audio that did not confirm the Drew voice", async () => {
@@ -274,6 +352,8 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain("@modal.concurrent(max_inputs=1)");
     expect(worker).toContain("load_drew()");
     expect(worker).toContain("DREW_UNAVAILABLE");
+    expect(worker).toContain('raw_prosody == "G"');
+    expect(worker).toContain('headers["x-kokoro-prosody"]');
 
     const drew = readFileSync(
       path.join(process.cwd(), "scripts/sowell/drew.py"),
@@ -302,6 +382,9 @@ describe("Drew on the Modal CPU app", () => {
     expect(engine).toContain("kokoro_speed = drew_speed(speed)");
     expect(engine).toContain("kokoro_speed = 1.0");
     expect(engine).toContain("pipeline_cls.infer(");
+    // No recipe: the same infer, with the hooks not installed.
+    expect(engine).toContain("if recipe is None:");
+    expect(engine).toContain("prosody_hooks(");
     expect(engine).toContain("pin_style(");
     expect(engine).toContain("fixed_style_index(");
     expect(engine).toContain("kokoro_speed");
@@ -331,5 +414,21 @@ describe("Drew on the Modal CPU app", () => {
       { encoding: "utf8" }
     );
     expect(engine.status, engine.stderr || engine.stdout).toBe(0);
+  });
+
+  it("runs the prosody rules against the production chunker", () => {
+    const rules = spawnSync(
+      "python3",
+      [path.join(process.cwd(), "scripts/sowell/test_prosody_rules.py")],
+      { encoding: "utf8" }
+    );
+    expect(rules.status, rules.stderr || rules.stdout).toBe(0);
+    const source = readFileSync(
+      path.join(process.cwd(), "scripts/sowell/prosody_rules.py"),
+      "utf8"
+    );
+    expect(source).toContain("accent_k=0.7");
+    expect(source).toContain("decl_st=3.0");
+    expect(source).toContain('PROSODY_G_CACHE_SUFFIX = "-prosodyG"');
   });
 });
