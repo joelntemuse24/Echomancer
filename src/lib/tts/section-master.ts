@@ -5,8 +5,10 @@
  * Each section gets the podcast chain (EQ, light de-esser, the shared
  * voice curve, loudnorm to −16 LUFS) and is stored as mono 128 kbps MP3.
  * S2 sections use their spectral chain, the same voice curve, and −19.
- * The loudnorm gain is
- * measured, then applied, so a short section does not sit quiet of −16.
+ * At 3 seconds and above, loudnorm is measured and then applied
+ * linearly. Under that, ffmpeg's linear loudnorm sits quiet of the
+ * target (about −32 LUFS on ffmpeg 5.1, still ~2–3 LU quiet on 6.1/7.1),
+ * so the section gets one measured gain and a true-peak limiter.
  * Finish packet-copies those files and re-encodes only the crossfade
  * window (under two seconds). The cut is the frame whose splice step
  * matches the audio beside it. A consonant elsewhere in the window is
@@ -31,6 +33,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import path from "node:path";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
+import { integratedLufs } from "@/lib/tts/clone-sample-prepare";
+import { audioDurationSeconds } from "@/lib/tts/mp3-duration";
 import {
   crossfadePcm16Mono,
   ffmpegConcatAvailable,
@@ -45,11 +49,16 @@ import {
   masterDenoiseWet,
   masterProfessionalAf,
   masterProfessionalLinearAf,
+  masterPreLoudnormAf,
   masterProfessionalMeasureAf,
   masterS2Af,
   masterS2LinearAf,
   masterS2MeasureAf,
   parseLoudnormProbe,
+  planSectionLoudness,
+  sectionLoudnessTarget,
+  shortSectionApplyAf,
+  shortSectionGainDb,
 } from "@/lib/tts/mastering";
 import { createWavHeader, stripWavHeader } from "@/lib/tts/pcm-wav";
 import type { SectionJoinKind } from "@/lib/tts/types";
@@ -133,6 +142,14 @@ export async function withFfmpegSlot<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+/** Little-endian f32 from an ffmpeg file. A pooled Buffer is copied so the view is aligned. */
+function float32FromPcm(pcm: Buffer): Float32Array {
+  const bytes = pcm.byteLength - (pcm.byteLength % 4);
+  const copy = new ArrayBuffer(bytes);
+  new Uint8Array(copy).set(pcm.subarray(0, bytes));
+  return new Float32Array(copy);
+}
+
 function runChild(bin: string, args: string[], timeoutMs: number): Promise<ChildResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -201,47 +218,101 @@ export async function masterSectionBuffer(
     const src = path.join(dir, `in.${extension || "mp3"}`);
     const out = path.join(dir, "out.mp3");
     await writeFile(src, audio);
-    const measureAf = chain === "s2" ? masterS2MeasureAf() : masterProfessionalMeasureAf();
-    const measured = await withFfmpegSlot(() =>
-      runChild(
-        ffmpegBin(env),
-        ["-hide_banner", "-i", src, "-ac", "1", "-af", measureAf, "-f", "null", "-"],
+    const mp3Args = [
+      "-ar",
+      String(SAMPLE_RATE),
+      "-c:a",
+      "libmp3lame",
+      "-b:a",
+      MASTER_OUTPUT_MP3_BITRATE,
+      "-reservoir",
+      "0",
+      // No per-section Xing/Info frame: a copy-joined book must not carry
+      // the first section's frame count and TOC into the whole file.
+      "-write_xing",
+      "0",
+      out,
+    ];
+    if (planSectionLoudness(audioDurationSeconds(audio)) === "short-gain") {
+      const pre = path.join(dir, "pre.f32");
+      await runFfmpeg(
+        [
+          "-i",
+          src,
+          "-ac",
+          "1",
+          "-af",
+          masterPreLoudnormAf(chain, env),
+          "-ar",
+          String(SAMPLE_RATE),
+          "-f",
+          "f32le",
+          pre,
+        ],
+        env,
         remaining()
-      )
-    );
-    const probe = parseLoudnormProbe(measured.stderr || "");
-    const applyAf = probe
-      ? chain === "s2"
-        ? masterS2LinearAf(probe)
-        : masterProfessionalLinearAf(probe)
-      : chain === "s2"
-        ? masterS2Af()
-        : masterProfessionalAf();
-    await runFfmpeg(
-      [
-        "-i",
-        src,
-        "-ac",
-        "1",
-        "-af",
-        applyAf,
-        "-ar",
-        String(SAMPLE_RATE),
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        MASTER_OUTPUT_MP3_BITRATE,
-        "-reservoir",
-        "0",
-        // No per-section Xing/Info frame: a copy-joined book must not carry
-        // the first section's frame count and TOC into the whole file.
-        "-write_xing",
-        "0",
-        out,
-      ],
-      env,
-      remaining()
-    );
+      );
+      const pcm = await readFile(pre);
+      const measured = integratedLufs(float32FromPcm(pcm), SAMPLE_RATE);
+      if (measured == null) {
+        // Too short or too quiet to gate. One-pass loudnorm, not the
+        // linear pass that sits quiet on a short file.
+        await runFfmpeg(
+          [
+            "-i",
+            src,
+            "-ac",
+            "1",
+            "-af",
+            chain === "s2" ? masterS2Af(env) : masterProfessionalAf(env),
+            ...mp3Args,
+          ],
+          env,
+          remaining()
+        );
+      } else {
+        const target = sectionLoudnessTarget(chain);
+        await runFfmpeg(
+          [
+            "-f",
+            "f32le",
+            "-ar",
+            String(SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-i",
+            pre,
+            "-af",
+            shortSectionApplyAf(shortSectionGainDb(measured, target.i), target.tp),
+            ...mp3Args,
+          ],
+          env,
+          remaining()
+        );
+      }
+    } else {
+      const measureAf = chain === "s2" ? masterS2MeasureAf() : masterProfessionalMeasureAf();
+      const measured = await withFfmpegSlot(() =>
+        runChild(
+          ffmpegBin(env),
+          ["-hide_banner", "-i", src, "-ac", "1", "-af", measureAf, "-f", "null", "-"],
+          remaining()
+        )
+      );
+      const probe = parseLoudnormProbe(measured.stderr || "");
+      const applyAf = probe
+        ? chain === "s2"
+          ? masterS2LinearAf(probe)
+          : masterProfessionalLinearAf(probe)
+        : chain === "s2"
+          ? masterS2Af()
+          : masterProfessionalAf();
+      await runFfmpeg(
+        ["-i", src, "-ac", "1", "-af", applyAf, ...mp3Args],
+        env,
+        remaining()
+      );
+    }
     const mastered = await readFile(out);
     if (isEmptyOrSilentAudio(mastered)) return null;
     return mastered;

@@ -72,6 +72,15 @@ export const MASTER_OUTPUT_MP3_BITRATE = resolveMasterOutputMp3Bitrate(
 );
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
+/**
+ * Section mastering uses a single measured gain below this length.
+ * ffmpeg 5.1's linear loudnorm lands near −32 LUFS on a title of about
+ * 3 seconds, and 6.1/7.1 still sit a couple of LU quiet of −16. At 3
+ * seconds and above the measured two-pass stays.
+ */
+export const SHORT_SECTION_MASTER_SECONDS = 3;
+/** The single gain is not allowed to run away on a near-silent clip. */
+export const SHORT_SECTION_GAIN_CLAMP_DB = 24;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */
 export const MASTER_DFN_CHUNK_SECONDS = 180;
 /**
@@ -285,6 +294,73 @@ export function parseLoudnormProbe(stderr: string): LoudnormProbe | null {
   } catch {
     return null;
   }
+}
+
+/** Podcast −16 / −1.5, or the S2 book target −19 / −3. */
+export function sectionLoudnessTarget(chain: "podcast" | "s2"): {
+  i: number;
+  tp: number;
+} {
+  if (chain === "s2") {
+    return { i: MODAL_S2_MASTERING.loudnormI, tp: MODAL_S2_MASTERING.loudnormTp };
+  }
+  return { i: MASTER_LOUDNORM_I, tp: MASTER_LOUDNORM_TP };
+}
+
+/**
+ * Under 3 seconds the section skips two-pass loudnorm. Unknown duration
+ * stays on the two-pass, because a missing length is not evidence the
+ * clip is a title.
+ */
+export function planSectionLoudness(
+  durationSeconds: number | null
+): "short-gain" | "two-pass" {
+  if (
+    durationSeconds != null &&
+    Number.isFinite(durationSeconds) &&
+    durationSeconds > 0 &&
+    durationSeconds < SHORT_SECTION_MASTER_SECONDS
+  ) {
+    return "short-gain";
+  }
+  return "two-pass";
+}
+
+/**
+ * Spectral chain and voice curve, resampled to 44.1 kHz, with no loudnorm.
+ * The short-clip gain is measured on this signal.
+ */
+export function masterPreLoudnormAf(
+  chain: "podcast" | "s2",
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const spectral =
+    chain === "s2" ? MODAL_S2_MASTERING.spectralAf : masterPodcastFiltersAf();
+  const stage = voiceEqStageAf(env);
+  if (stage) return `${spectral},${stage}`;
+  return `${spectral},aresample=${MASTER_OUTPUT_SAMPLE_RATE}`;
+}
+
+/** One gain toward the book target, clamped so a silent clip cannot explode. */
+export function shortSectionGainDb(measuredLufs: number, targetLufs: number): number {
+  if (!Number.isFinite(measuredLufs) || !Number.isFinite(targetLufs)) {
+    throw new Error("short section loudness is not finite");
+  }
+  const gain = targetLufs - measuredLufs;
+  return Math.max(
+    -SHORT_SECTION_GAIN_CLAMP_DB,
+    Math.min(SHORT_SECTION_GAIN_CLAMP_DB, gain)
+  );
+}
+
+/**
+ * Apply that gain, then a true-peak limiter. `level=false` keeps the
+ * limiter from undoing the gain (its default levels the signal itself).
+ * This graph has no `loudnorm` and no `linear=true`.
+ */
+export function shortSectionApplyAf(gainDb: number, truePeakDb: number): string {
+  const limit = 10 ** (truePeakDb / 20);
+  return `volume=${gainDb.toFixed(3)}dB,alimiter=limit=${limit.toFixed(5)}:level=false`;
 }
 
 /** Second pass: the same chain, with the measured gain applied linearly. */

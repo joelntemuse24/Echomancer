@@ -33,6 +33,15 @@ from pathlib import Path
 
 DREW_VOICE_ID = "drew"
 DREW_NATIVE_KOKORO_SPEED = 0.88
+# Tensor index into the (510, 1, 256) pack. Kokoro reads
+# pack[phoneme_count - 1]; a 510-phoneme chunk uses 509, so there is no
+# index 510. Chosen by scripts/sowell/choose_fixed_style.py: mean speaker
+# cosine of rows 120–300 against the Andrew pilot paragraph and the Edge
+# rate-0 reading of the same words is a 0.005 tie (0.900–0.901). Index 300
+# is the closest 2–5 kHz balance to the pilot (−0.73 dB). Rows 400 and 509
+# fall to ~0.85 and run about +2.4 dB bright. Changing this requires a new
+# run of that script and a bump of DREW_CACHE_VARIANT.
+DREW_FIXED_STYLE_INDEX = 300
 DREW_SPEED_MIN = 0.5
 DREW_SPEED_MAX = 2.0
 PACK_SHAPE = (510, 1, 256)
