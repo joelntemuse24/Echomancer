@@ -71,4 +71,6 @@ takes stay under the Edge key. They are not replayed as George.
 
 `public/voice-previews/george.mp3` is a local CPU take of `PREVIEW_TEXT`
 from that pinned `bm_george` file. 24 kHz mono, 96 kbps. It is not a
-live synthesis. Re-record it when `PREVIEW_TEXT` changes.
+live synthesis, and it is the raw take, not mastered. Re-record it when
+`PREVIEW_TEXT` changes, through `scripts/previews/master-preview.ts` so it is
+mastered like a George book section.
