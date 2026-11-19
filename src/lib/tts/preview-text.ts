@@ -10,9 +10,10 @@
  * Drew, Ava, Libby, George, and Walter ship a recording of this line at
  * `public/voice-previews/<catalog id>.mp3`. George is a local Kokoro
  * `bm_george` take. Walter (catalog id `sowell`) is a local Kokoro
- * `am_sowell` take of the same words. Drew's committed file is still
- * outstanding — see the TODO in `stock-preview.ts`. Change the words and
- * re-record those files together.
+ * `am_sowell` take of the same words. Drew's file is a pinned-row take
+ * mastered like a book section. Change the words and re-record those files
+ * together, and master every Kokoro take with
+ * `scripts/previews/master-preview.ts` so a preview sounds like its books.
  * Ryan's and Andrew's files stay for books that already use them; the
  * picker plays neither.
  */

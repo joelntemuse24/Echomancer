@@ -224,13 +224,23 @@ about +2.4 dB bright. `scripts/sowell/choose_fixed_style.py` is the measurement.
 
 The committed sample is **`public/voice-previews/drew.mp3`**: `PREVIEW_TEXT`
 rendered with Drew at app speed 1.0 (Kokoro 0.88, 24 kHz mono, pinned style
-row 300), encoded as 96 kbps mono MP3. `"drew"` is in `COMMITTED_PREVIEW_IDS`.
-Re-record it when `PREVIEW_TEXT`, the volume checkpoint, or
-`DREW_FIXED_STYLE_INDEX` changes.
+row 300), then mastered exactly like a book section with
+`scripts/previews/master-preview.ts` (podcast chain, voice curve, loudness to
+the book target, the short-clip gain under 3 s) on ffmpeg n8.1.3. The result is
+the same 44.1 kHz mono 128 kbps MP3 a section is stored as, about −16.6 LUFS;
+do not re-encode it. `"drew"` is in `COMMITTED_PREVIEW_IDS`. Re-record it when
+`PREVIEW_TEXT`, the volume checkpoint, `DREW_FIXED_STYLE_INDEX`, or the
+section mastering chain changes:
+
+```bash
+FFMPEG_PATH=/path/to/ffmpeg-n8.1.3 \
+npx tsx scripts/previews/master-preview.ts drew-raw.wav public/voice-previews/drew.mp3
+```
 
 Walter's sample is unchanged: `public/voice-previews/sowell.mp3`, a local CPU
-take of `PREVIEW_TEXT` with `am_sowell`. Re-record it when `PREVIEW_TEXT`
-changes.
+take of `PREVIEW_TEXT` with `am_sowell`. It is the raw take, not mastered, so
+it is quieter and less finished than a Walter book. Re-record it through
+`scripts/previews/master-preview.ts` when it is next touched.
 
 ## Rollback
 
