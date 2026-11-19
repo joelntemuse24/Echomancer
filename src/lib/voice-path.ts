@@ -48,7 +48,7 @@ export const isListedSowellVoice = isListedWalterVoice;
 
 /**
  * A tap on the standard pile that should survive the upload step.
- * Walter is remembered only by its own id. It is not one of the five slim ids.
+ * Walter is remembered only by its own id. It is not one of the slim ids.
  */
 export function isListedGeorgeVoice(voice: PathVoice): boolean {
   return voice.id === GEORGE_CATALOG_VOICE_ID && voice.provider === "george";

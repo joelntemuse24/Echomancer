@@ -46,7 +46,9 @@ describe("stock preview", () => {
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 
-  it("serves the committed Echomancer Andrew sample", async () => {
+  it("serves Drew's sample when a stale client names Echomancer Andrew", async () => {
+    // The Paradee id is unlisted. A preview request that still names it is
+    // coerced to Drew and served Drew's committed sample.
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -58,14 +60,11 @@ describe("stock preview", () => {
     expect(response.headers.get("content-type")).toMatch(/audio\/mpeg/);
     const audio = Buffer.from(await response.arrayBuffer());
     const recorded = await readFile(
-      path.join(
-        process.cwd(),
-        "public",
-        "voice-previews",
-        "echomancer-andrew.mp3"
-      )
+      path.join(process.cwd(), "public", "voice-previews", "drew.mp3")
     );
     expect(audio.equals(recorded)).toBe(true);
+    expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
+    expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 
   it("maps an old Randolph preview onto Drew, not Andrew", async () => {
@@ -112,17 +111,18 @@ describe("voices catalog", () => {
     };
     expect(body.voices.map((voice) => voice.id)).toEqual([
       "drew",
-      "echomancer-andrew",
       "ava",
       "libby",
     ]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
       "Drew",
-      "Echomancer Andrew",
       "Ava",
       "Libby",
     ]);
     expect(body.voices.map((voice) => voice.id)).not.toContain("standard");
+    expect(body.voices.map((voice) => voice.id)).not.toContain(
+      "echomancer-andrew"
+    );
     for (const voice of body.voices) {
       expect(voice.expressive).toBeUndefined();
       expect(JSON.stringify(voice)).not.toMatch(/expressive/i);

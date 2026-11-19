@@ -20,6 +20,7 @@ import {
   isAvaVoice,
   isLibbyVoice,
   isDrewVoice,
+  isEchomancerAndrewVoice,
   isEdgeStockVoice,
   isGeorgeVoice,
   isMichelleVoice,
@@ -45,17 +46,18 @@ describe("standard voice identity", () => {
     expect(LIBBY_NEURAL_VOICE_ID).toBe("en-GB-LibbyNeural");
     expect(SLIM_STOCK_VOICE_IDS).toEqual([
       "drew",
-      "echomancer-andrew",
       "ava",
       "libby",
       "george",
     ]);
+    expect(SLIM_STOCK_VOICE_IDS).not.toContain("echomancer-andrew");
   });
 
   it("pins friendly product names", () => {
     expect(stockDisplayName("drew")).toBe("Drew");
-    // The retired row keeps its name for a stored book; never listed.
+    // The retired rows keep their names for a stored book; never listed.
     expect(stockDisplayName("standard")).toBe("Andrew");
+    expect(stockDisplayName("echomancer-andrew")).toBe("Echomancer Andrew");
     expect(stockDisplayName("ava")).toBe("Ava");
     expect(stockDisplayName("libby")).toBe("Libby");
     expect(stockDisplayName("michelle")).toBe("Michelle");
@@ -75,6 +77,20 @@ describe("standard voice identity", () => {
       isEdgeStockVoice({ id: "drew", provider: "drew", model: "kokoro/drew" })
     ).toBe(false);
     expect(isStandardVoice({ id: "drew", provider: "drew" })).toBe(false);
+    // A stored Paradee row is still that voice, and it is not Drew or Edge.
+    expect(
+      isEchomancerAndrewVoice({
+        id: "echomancer-andrew",
+        provider: "paradee",
+        model: "paradee/paradee-v1.1-int8",
+      })
+    ).toBe(true);
+    expect(isDrewVoice({ id: "echomancer-andrew", provider: "paradee" })).toBe(
+      false
+    );
+    expect(
+      isEdgeStockVoice({ id: "echomancer-andrew", provider: "paradee" })
+    ).toBe(false);
     expect(
       isStandardVoice({
         id: "standard",
@@ -195,6 +211,8 @@ describe("standard voice identity", () => {
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("drew");
     expect(coercePlainCatalogVoiceId("andrew")).toBe("drew");
     expect(coercePlainCatalogVoiceId("standard")).toBe("drew");
+    expect(coercePlainCatalogVoiceId("echomancer-andrew")).toBe("drew");
+    expect(coercePlainCatalogVoiceId("Echomancer Andrew")).toBe("drew");
     expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("drew");
     expect(coercePlainCatalogVoiceId("drew")).toBe("drew");
     expect(coercePlainCatalogVoiceId("ryan")).toBe("george");
@@ -213,6 +231,9 @@ describe("standard voice identity", () => {
     });
     // A new request naming Andrew was coerced to Drew, which has no Edge lock.
     expect(plainStockLock(coercePlainCatalogVoiceId("andrew"))).toBeNull();
+    expect(
+      plainStockLock(coercePlainCatalogVoiceId("echomancer-andrew"))
+    ).toBeNull();
     expect(plainStockLock("randolph")).toBeNull();
     expect(plainStockLock("drew")).toBeNull();
     expect(plainStockLock(coercePlainCatalogVoiceId("randolph"))).toBeNull();

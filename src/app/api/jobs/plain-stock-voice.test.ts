@@ -174,6 +174,81 @@ describe("plain stock job create", () => {
     expect(body.code).toBe("DREW_NOT_CONFIGURED");
   });
 
+  it("stores Drew when a stale client still names Echomancer Andrew", async () => {
+    Object.assign(process.env, DREW_ENV);
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "Quay",
+          catalogVoiceId: "echomancer-andrew",
+          ttsProvider: "paradee",
+          providerVoiceId: "paradee-v1.1-int8",
+          voiceName: "Echomancer Andrew",
+          ttsOptions: { model: "paradee/paradee-v1.1-int8" },
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const row = await jobRow(body.jobId as string);
+    expect(row?.tts_provider).toBe("drew");
+    expect(row?.provider_voice_id).toBe("drew");
+    expect(row?.catalog_voice_id).toBe("drew");
+    expect(row?.voice_name).toBe("Drew");
+    const options = JSON.parse(String(row?.tts_options)) as { model?: string };
+    expect(options.model).toBe("kokoro/drew");
+  });
+
+  it("stores Drew when a stale client names Paradee and no catalog id", async () => {
+    Object.assign(process.env, DREW_ENV);
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "stream",
+          pdfStoragePath: upload.body.storagePath,
+          ttsProvider: "paradee",
+          providerVoiceId: "paradee-v1.1-int8",
+          voiceName: "Echomancer Andrew",
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const row = await jobRow(body.jobId as string);
+    expect(row?.tts_provider).toBe("drew");
+    expect(row?.provider_voice_id).toBe("drew");
+    expect(row?.catalog_voice_id).toBe("drew");
+    expect(row?.voice_name).toBe("Drew");
+  });
+
+  it("fails closed when a request names Echomancer Andrew and Drew is unset", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          catalogVoiceId: "echomancer-andrew",
+          ttsProvider: "paradee",
+          providerVoiceId: "paradee-v1.1-int8",
+        },
+      })
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { code?: string };
+    expect(body.code).toBe("DREW_NOT_CONFIGURED");
+  });
+
   it("stores Edge Libby when an old client still names Clara", async () => {
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
@@ -230,6 +305,39 @@ describe("plain stock job create", () => {
     expect(row?.catalog_voice_id).toBe("standard");
     expect(row?.voice_name).toBe("Andrew");
     // Nothing about the stored row moved, so its saved audio keeps playing.
+    expect(row?.status).toBe("ready");
+  });
+
+  /**
+   * The same contract for Paradee: a stored Echomancer Andrew row is never
+   * rewritten. Only a new request is coerced, and only at insert time.
+   */
+  it("leaves an existing Echomancer Andrew row exactly as it was stored", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const { execute } = await import("@/lib/turso");
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress, pdf_storage_path,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, next_section_index, total_sections
+       ) VALUES (?, ?, ?, ?, 'ready', 100, ?, 'stock', 'takehome',
+         'paradee', 'paradee-v1.1-int8', 'echomancer-andrew', ?, ?, 0, 1)`,
+      [
+        "job-echomancer-andrew-stored",
+        USER_A,
+        "Old book",
+        "Echomancer Andrew",
+        upload.body.storagePath,
+        JSON.stringify({ model: "paradee/paradee-v1.1-int8" }),
+        BOOK.length,
+      ]
+    );
+
+    const row = await jobRow("job-echomancer-andrew-stored");
+    expect(row?.tts_provider).toBe("paradee");
+    expect(row?.provider_voice_id).toBe("paradee-v1.1-int8");
+    expect(row?.catalog_voice_id).toBe("echomancer-andrew");
+    expect(row?.voice_name).toBe("Echomancer Andrew");
     expect(row?.status).toBe("ready");
   });
 });

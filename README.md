@@ -63,7 +63,9 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 - Optional: Drew, George, and Walter need the shared Kokoro CPU endpoint
   (`DREW_*`, `GEORGE_*`, `SOWELL_*`); without it the default falls back to Ava
 - A book already stored as Andrew keeps its audio and downloads. New requests
-  use Drew. A book already stored as Randolph still plays and downloads.
+  use Drew. A book already stored as Echomancer Andrew keeps its Paradee
+  audio; a new request that names that voice uses Drew. A book already stored
+  as Randolph still plays and downloads.
 - Optional: R2 for production storage
 
 ### Install

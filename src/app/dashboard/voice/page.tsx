@@ -96,7 +96,6 @@ import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import { duplicateCloneDateLabel } from "@/lib/clone-list-label";
 import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
-import { ECHOMANCER_ANDREW_CATALOG_VOICE_ID } from "@/lib/tts/standard-voice";
 import { voiceIdAfterPathChange } from "@/lib/voice-path-selection";
 import {
   isPersistableStandardVoiceId,
@@ -1337,9 +1336,7 @@ export default function VoiceSelectionPage() {
       ? [VOICE_PATH.cloneMark, duplicateCloneDateLabel(cloneVoices, voice)]
           .filter(Boolean)
           .join(" · ")
-      : voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID
-        ? "Warm US male delivery, generated on our own machine."
-        : null;
+      : null;
     const previewLabel = previewControlLabel({
       preparing: isPreparing,
       playing: isPlaying && !isPreparing,

@@ -41,8 +41,9 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    // Michelle left the pile for Ava. Clara left it for Libby. Andrew is
-    // retired, so a saved "standard" pick lands on Drew — `coerce` does that.
+    // Michelle left the pile for Ava. Clara left it for Libby. Andrew and
+    // Echomancer Andrew are retired, so a saved "standard" or
+    // "echomancer-andrew" pick lands on Drew — `coerce` does that.
     // A clone id is stored as itself and checked against this person's list
     // before it is selected.
     const catalogVoiceId = isCloneCatalogId(parsed.catalogVoiceId)

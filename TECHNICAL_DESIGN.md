@@ -146,15 +146,21 @@ the provider's message.
 ## 1. What the product is (one page)
 
 Echomancer turns an uploaded document into listen-able audio. The slim catalog
-(`SLIM_STOCK_VOICE_IDS` in `src/lib/tts/standard-voice.ts`) is five voices:
-**Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Echomancer
-Andrew** (`echomancer-andrew`, self-hosted Paradee, `src/lib/tts/providers/paradee.ts`),
-**Ava** (Edge `en-US-AvaNeural`, not Dragon HD), **Libby** (Edge
-`en-GB-LibbyNeural`), and **Ryan** (Edge `en-GB-RyanNeural`). Clara and Michelle
-stay resolvable for books already made with them and are not listed. A new
-request that names Clara uses Libby. Randolph is not synthesized. A stored
-Randolph book still plays and downloads; a new request that names Randolph or
-Google uses Andrew. Optional **Fish voice cloning** trains on the direct Fish
+(`SLIM_STOCK_VOICE_IDS` in `src/lib/tts/standard-voice.ts`) is **Drew**
+(catalog id `drew`, fine-tuned Kokoro-82M, the default), **Ava** (Edge
+`en-US-AvaNeural`, not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and
+**George** (Kokoro `bm_george`, listed only when that endpoint is set).
+**Walter** (catalog id `sowell`) is listed after those when its endpoint is
+set. **Echomancer Andrew** (`echomancer-andrew`, self-hosted Paradee,
+`src/lib/tts/providers/paradee.ts`) is unlisted. A book already stored with
+that id still resolves and keeps its audio; a new request or saved pick that
+names it uses Drew. The Paradee adapter stays for those stored rows. Edge
+Andrew (`standard`) is unlisted the same way, and a new request that names
+him uses Drew. Ryan is unlisted and a new request that names him uses George.
+Clara and Michelle stay resolvable for books already made with them and are
+not listed. A new request that names Clara uses Libby. Randolph is not
+synthesized. A stored Randolph book still plays and downloads; a new request
+that names Randolph or Google uses Drew. Optional **Fish voice cloning** trains on the direct Fish
 API (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container
 when `MODAL_S2_TTS_URL` is set (`modal/s2_clone_service.py`) and otherwise
 direct Fish — the same voice, because Fish trained the reference. Drama 3 is
@@ -184,7 +190,7 @@ Two customer paths:
 | Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Always-on VPS worker |
 
 `generation_mode` is always `"stock"` in v2. The Voice tab opens on the
-slim pile (Andrew, Echomancer Andrew, Ava, Libby, Ryan). Clone is the other path.
+slim pile (Drew, Ava, Libby, George, and Walter when that endpoint is set). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
@@ -201,7 +207,7 @@ Implemented hosts, plus the deploy report from the claim-class section above.
 | Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. Voice pick stays unblocked while extract runs. |
 | Whole-book orchestration | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Code default `WORKER_CONCURRENCY=1`. Reported host on 2026-11-07: Contabo. The process does not check the vendor. |
 | Clone synthesis | Modal app `echomancer-s2-clone` when `MODAL_S2_TTS_URL` is set. One GPU per container, `min_containers=0`. The VM does not run the GPU. Direct Fish is the other engine for the same reference. |
-| Stock synthesis | Edge Read Aloud for Andrew, Ava, Libby, and Ryan. Paradee for Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
+| Stock synthesis | Drew, George, and Walter on the Kokoro CPU app. Edge Read Aloud for Ava, Libby, and a book already stored as Andrew or Ryan. Paradee for a book already stored as Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
 
 ---
@@ -1199,7 +1205,7 @@ for that one recovery.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Drew (`drew`), Echomancer Andrew (`echomancer-andrew`), Ava, Libby, George, then Walter (`sowell`) when its endpoint is set; clones merged in the voices API. Andrew (`standard`) and Ryan are unlisted but still resolve for stored books |
+| `listCatalogVoices(filters)` | Slim catalog: Drew (`drew`), Ava, Libby, George, then Walter (`sowell`) when its endpoint is set; clones merged in the voices API. Echomancer Andrew (`echomancer-andrew`), Andrew (`standard`), and Ryan are unlisted but still resolve for stored books. A new request that names Echomancer Andrew uses Drew |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Drew (`drew`); Ava while Drew's endpoint is unconfigured |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -1275,7 +1281,10 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Andrew, Echomancer Andrew, Ava, Libby, Ryan + session clones). Clara, Randolph, and Michelle are not listed. The Andrew card keeps catalog id `standard`.
+(Drew, Ava, Libby, George, plus Walter when configured, plus session clones).
+Echomancer Andrew, Andrew (`standard`), Ryan, Clara, Randolph, and Michelle
+are not listed. A stored Echomancer Andrew book still resolves. A new request
+that names that id uses Drew.
 
 ---
 
@@ -1377,12 +1386,15 @@ replace the adapter with paid Azure Speech.
 
 ### `src/lib/tts/browser-speech.ts`
 
-The picker plays a committed recording of `PREVIEW_TEXT` for Andrew, Echomancer
-Andrew, Ava, Libby, and Ryan (`public/voice-previews/<id>.mp3`: `standard`,
-`echomancer-andrew`, `ava`, `libby`, `ryan`). The page preloads those five
-files. `POST /api/tts/preview` returns the same bytes and does not call
-Edge. A missing file falls through to browser speech, then live synthesis.
-Clara's old id plays Libby's file. Randolph's old id plays Andrew's. Fish clones
+The picker plays a committed recording of `PREVIEW_TEXT` for the listed stock
+voices (`public/voice-previews/<id>.mp3`: `ava`, `libby`, `george`, `sowell`,
+and Drew's sample when it is committed). The page preloads the slim ids plus
+Walter. `POST /api/tts/preview` returns those bytes. A request that names
+Andrew (`standard`) or Echomancer Andrew (`echomancer-andrew`) is served
+Drew's sample and does not call Paradee or Edge. `standard.mp3`,
+`ryan.mp3`, and `echomancer-andrew.mp3` stay on disk and are not listed.
+A missing file falls through to browser speech, then live synthesis.
+Clara's old id plays Libby's file. Randolph's old id plays Drew's. Fish clones
 still use `GET /api/tts/live`.
 
 ### `src/lib/tts/providers/openrouter.ts`
@@ -2497,7 +2509,7 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voices tab opens on Andrew, Echomancer Andrew, Ava, Libby, and Ryan. The heading is
+- The Voices tab opens on Drew, Ava, Libby, and George, plus Walter when that endpoint is set. The heading is
   **Voice**. Each row’s preview plays with one tap, with or without an upload.
   A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`,
   including a `clone:` id. After upload or paste that id stays selected when
@@ -2515,7 +2527,7 @@ corner of the landing and dashboard footers, at low opacity.
   session says to sign in (`GET /api/clips` `reason: "sign-in"`). The upload
   control is the one on this page.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Echomancer Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Echomancer Andrew is `echomancer-andrew` (Paradee). Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
+- Standard: slim stock only (Drew, Ava, Libby, George, plus Walter when listed). Drew is catalog id `drew`. Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. George is Kokoro `bm_george`. Walter's id is still `sowell`. Echomancer Andrew (`echomancer-andrew`, Paradee), Andrew (`standard`), Ryan, Clara, Randolph, and Michelle are not listed. A stored Echomancer Andrew book still resolves; a new request or saved pick that names that id uses Drew. Each listed name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks
   **Make audiobook**; warn does not).

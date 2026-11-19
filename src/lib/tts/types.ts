@@ -1,7 +1,8 @@
 /**
- * Stock TTS types — slim catalog (Drew / Echomancer Andrew / Ava / Libby /
- * George, plus Walter when configured) + Fish clones + optional OpenRouter /
- * direct adapters. Premium HD models stay gated.
+ * Stock TTS types — slim catalog (Drew / Ava / Libby / George, plus Walter
+ * when configured) + Fish clones + optional OpenRouter / direct adapters.
+ * Echomancer Andrew (`echomancer-andrew`, Paradee) is an unlisted legacy id.
+ * Premium HD models stay gated.
  */
 
 export type StockProvider =
@@ -14,8 +15,9 @@ export type StockProvider =
   /** Microsoft Edge online TTS — Ava / Libby, and stored Andrew / Ryan rows */
   | "edge"
   /**
-   * Self-hosted Paradee v1.1 int8 ONNX student distilled for Echomancer.
-   * Runs on the Contabo worker CPU behind `scripts/paradee/server.py`.
+   * Self-hosted Paradee v1.1 int8 ONNX student. Unlisted. A book already
+   * stored as Echomancer Andrew still speaks here, behind
+   * `scripts/paradee/server.py`. A new request uses Drew.
    */
   | "paradee"
   /**

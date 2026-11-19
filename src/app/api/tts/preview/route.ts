@@ -86,9 +86,9 @@ export async function POST(request: NextRequest) {
       hdEnabled: true,
       userId,
     });
-    // A leftover Expressive request is Drew now, not the retired Andrew row.
-    // With Drew's endpoint unset there is no sample, and the route says so
-    // instead of synthesizing a narrator that is no longer offered.
+    // A leftover Expressive request, or a stale Echomancer Andrew id, is Drew
+    // now. With Drew's endpoint unset there is no sample, and the route says
+    // so instead of synthesizing a narrator that is no longer offered.
     if (!catalog && /expressive/i.test(requestedId)) {
       catalog = await getCatalogVoice(DREW_CATALOG_VOICE_ID, {
         hdEnabled: true,

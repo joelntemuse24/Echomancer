@@ -31,7 +31,8 @@ describe("george voice", () => {
     expect(listed).not.toContain("george");
     expect(listed).not.toContain("ryan");
     // Drew is the default and is absent too unless its own endpoint is set.
-    expect(listed).toEqual(["echomancer-andrew", "ava", "libby"]);
+    expect(listed).toEqual(["ava", "libby"]);
+    expect(listed).not.toContain("echomancer-andrew");
   });
 
   it("lists George on the Kokoro CPU adapter and does not call OpenRouter", async () => {
@@ -44,6 +45,7 @@ describe("george voice", () => {
     const listed = (await listCatalogVoices()).map((item) => item.id);
     expect(listed).toContain("george");
     expect(listed).not.toContain("ryan");
+    expect(listed).not.toContain("echomancer-andrew");
     expect(takehomeCacheVariant("george", "george")).toBe(GEORGE_CACHE_VARIANT);
     expect(takehomeCacheVariant("edge", "ryan")).not.toBe(GEORGE_CACHE_VARIANT);
     expect(takehomeCacheVariant("sowell", "sowell")).not.toBe(GEORGE_CACHE_VARIANT);

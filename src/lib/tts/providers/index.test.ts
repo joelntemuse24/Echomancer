@@ -110,9 +110,9 @@ describe("resolveStockAdapter", () => {
       expect(isStandardVoice(hint)).toBe(false);
       expect(isEdgeStockVoice(hint)).toBe(false);
     }
-    expect(coercePlainCatalogVoiceId("echomancer-andrew")).toBe(
-      "echomancer-andrew"
-    );
+    // A new request names Drew. A stored row still resolves as Paradee above.
+    expect(coercePlainCatalogVoiceId("echomancer-andrew")).toBe("drew");
+    expect(coercePlainCatalogVoiceId("Echomancer Andrew")).toBe("drew");
   });
 
   it("refuses a stored Google voice instead of speaking it", () => {

@@ -10,7 +10,7 @@
 /** OpenRouter model-id vendor prefixes (and static provider aliases). */
 export const ALLOWED_SPEECH_VENDORS = [
   "edge", // Microsoft Edge online TTS — app default Standard
-  "paradee", // Self-hosted Paradee v1.1 int8 (Echomancer Andrew)
+  "paradee", // Unlisted Paradee row; stored echomancer-andrew books still resolve
   "fish-audio", // Fish Audio S2.1 Pro (free + paid) — clones + legacy narrator
   "google", // Gemini TTS
   "qwen",

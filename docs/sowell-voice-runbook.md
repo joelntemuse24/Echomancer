@@ -5,8 +5,8 @@
 > label changed. See `docs/drew-walter-voice-runbook.md` for the rename and for
 > Drew, the app default that replaced Andrew.
 
-Sowell is a separate narrator. It does not replace Andrew, Ava, Libby,
-Ryan, Echomancer Andrew, or a clone. The weight file is not in git: this
+Sowell is a separate narrator. It does not replace Drew, Ava, Libby,
+George, or a clone. The weight file is not in git: this
 repository is public. The hash is in `voices/sowell/manifest.json`.
 
 The export did not record a trainer checkpoint. The tensor is
