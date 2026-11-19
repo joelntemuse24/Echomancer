@@ -872,8 +872,15 @@ busy-not-cold backstop.
   torch version, GPU name, compute capability, `S2C_ENGINE`, and a stamp of
   `s2_batch.py` plus the codegen flags. A run is readable only after
   `finish` writes `current.json` (after self-test). A partial or corrupt
-  tree is not loaded and is not deleted. Two compilers write distinct run
-  directories. `Volume.commit()` runs inside `@modal.enter(snap=True)`;
+  tree is not deleted. A corrupt mega-cache is left in place and is
+  passed to torch as bytes, never as a path. torch 2.15 returns None for a
+  bad payload instead of raising; that None is a failed load. The cache
+  directory is set on the process environment before the load, because
+  `cache_dir()` reads `TORCHINDUCTOR_CACHE_DIR` on every call and
+  `populate_cache` writes there. A lock or a temp file is not an artifact.
+  Inductor and Triton files already in that published run are still used.
+  A new run is created only when those directories have no artifact. Two compilers
+  write distinct run directories. `Volume.commit()` runs inside `@modal.enter(snap=True)`;
   `reload()` is not called. A stamp that cannot be read does not share a
   key. `S2C_COMPILE_CACHE=0` skips the volume. An empty cache compiles the
   ordinary way and logs `compile_cache hit=miss`.
