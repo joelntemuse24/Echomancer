@@ -14,10 +14,21 @@ after warm-up and self-test, so a crash mid-compile cannot be loaded.
 fails while cache files are open. Published runs are left in place: deleting
 volume files a snapshot restores from breaks the restore.
 
-Empty, partial, and corrupt caches compile the ordinary way and are logged.
-Nothing here raises into ``@modal.enter``: a cache fault must not take the book
-down with it, and it must not skip the snapshot. Two compilers write distinct
-run directories and publish ``current.json`` last, so they do not share files.
+Empty and partial caches compile the ordinary way and are logged. A corrupt
+mega-cache is left in place (a snapshot may still restore from that tree) but
+Inductor and Triton files in the same published run are still used. A new run
+directory is only for a published tree that has neither a loadable mega-cache
+nor those files. Nothing here raises into ``@modal.enter``: a cache fault must
+not take the book down with it, and it must not skip the snapshot. Two
+compilers write distinct run directories and publish ``current.json`` last, so
+they do not share files.
+
+A different H100 worker variant builds its own memory snapshot. It still
+reads this cache when the torch version, device name, and compute capability
+match: the key includes those, and a hit points at the published run rather
+than a fresh per-boot directory. ``TORCHINDUCTOR_CACHE_DIR`` is applied to
+``torch._inductor.config`` as well as the environment, because Inductor reads
+the directory at import and the image default is the local ``/opt/torchinductor``.
 
 ``S2C_COMPILE_CACHE=0`` keeps today's local ``/opt/torchinductor`` directory
 and does not read or commit the volume.
@@ -356,7 +367,8 @@ def prepare_compile_cache(
     """Point Inductor and Triton at a published run under ``root/<key>``.
 
     Never raises. An empty or partial volume is a miss. A corrupt mega-cache
-    is left in place and the compile uses a new run.
+    is left in place. Inductor and Triton files in that published run are
+    still used; a new run is only created when those directories are empty.
     """
     env = os.environ if environ is None else environ
     try:
@@ -480,11 +492,25 @@ def _prepare_compile_cache(
             key_root=key_root,
             run_id=run_id,
         )
+        # Point the process at this run before the mega-cache load.
+        # torch 2.15 `cache_dir()` reads TORCHINDUCTOR_CACHE_DIR on every
+        # call and `populate_cache` writes there. Loading first drops the
+        # bytes into the image default (`/opt/torchinductor`), then the
+        # retarget points compile at a directory those bytes never reached.
+        had_files = _dirs_have_files(cache.inductor_dir, cache.triton_dir)
+        _point_cache_env(cache, environ)
         mega_state = _try_mega(cache.mega_path, loader)
-        if _run_usable(mega_state, cache.inductor_dir, cache.triton_dir):
+        # A failed load can write a partial file into the run. That file is
+        # not a reason to reuse an otherwise empty tree.
+        if mega_state == "loaded" or had_files:
             cache.hit = "hit"
             cache.persist = False
-            cache.fallback = "" if mega_state != "unsupported" else "unsupported"
+            if mega_state == "corrupt":
+                cache.fallback = "mega-corrupt"
+            elif mega_state == "unsupported":
+                cache.fallback = "unsupported"
+            else:
+                cache.fallback = ""
             _point_cache_env(cache, environ)
             print(cache.log_line())
             return cache
@@ -599,7 +625,12 @@ def _point_cache_env(cache: CompileCache, environ: dict) -> None:
     environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     environ["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "1"
     environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+    # Inductor and Triton both snapshot these paths at import. The image env
+    # points them at local directories, and `import torch` has already run by
+    # the time a restored worker reaches this, so the config objects have to
+    # be rewritten or a hit still compiles into /opt/torchinductor.
     _point_inductor_config(cache.inductor_dir)
+    _point_triton_cache(cache.triton_dir)
 
 
 def _ensure_dir(path: str) -> bool:
@@ -629,8 +660,55 @@ def _point_inductor_config(cache_dir: str) -> None:
             config.cache_dir = cache_dir
         if hasattr(config, "fx_graph_cache"):
             config.fx_graph_cache = True
+        if hasattr(config, "autograd_cache"):
+            config.autograd_cache = True
     except Exception as err:
         print(f"[S2C] compile_cache inductor config skipped: {type(err).__name__}: {err}")
+
+
+def _point_triton_cache(cache_dir: str) -> None:
+    """Point Triton at ``cache_dir`` even when it was imported against the image default."""
+    if not cache_dir:
+        return
+    try:
+        import triton
+    except Exception:
+        return
+    try:
+        knobs = getattr(triton, "knobs", None)
+        cache = getattr(knobs, "cache", None) if knobs is not None else None
+        if cache is not None and hasattr(cache, "dir"):
+            cache.dir = cache_dir
+    except Exception as err:
+        print(f"[S2C] compile_cache triton knobs skipped: {type(err).__name__}: {err}")
+    try:
+        from triton.runtime import cache as triton_cache
+    except Exception:
+        return
+    try:
+        for name in ("cache_dir", "default_cache_dir"):
+            current = getattr(triton_cache, name, None)
+            # Triton 3.8 reads the directory from knobs (set above). These
+            # names, when present, are sometimes functions. Replacing a
+            # function with a path string makes the next caller fail.
+            if isinstance(current, str):
+                setattr(triton_cache, name, cache_dir)
+        for name in ("default_cache_manager", "file_cache_manager"):
+            manager = getattr(triton_cache, name, None)
+            if manager is not None and hasattr(manager, "cache_dir"):
+                manager.cache_dir = cache_dir
+    except Exception as err:
+        print(f"[S2C] compile_cache triton cache skipped: {type(err).__name__}: {err}")
+
+
+def _is_cache_artifact(name: str) -> bool:
+    """A lock or a temp file is not a compiled kernel."""
+    if not name or name.startswith("."):
+        return False
+    lowered = name.lower()
+    return not (
+        lowered.endswith(".lock") or lowered.endswith(".tmp") or lowered.endswith(".part")
+    )
 
 
 def _dirs_have_files(*paths: str) -> bool:
@@ -638,7 +716,7 @@ def _dirs_have_files(*paths: str) -> bool:
         if not path or not os.path.isdir(path):
             continue
         for _dir, _dirs, files in os.walk(path):
-            if files:
+            if any(_is_cache_artifact(name) for name in files):
                 return True
     return False
 
@@ -701,13 +779,16 @@ def _try_mega(path: str, loader: Callable[[str], None]) -> str:
 
 
 def _run_usable(mega_state: str, inductor: str, triton: str) -> bool:
-    if mega_state == "corrupt":
-        return False
+    """A loaded mega-cache is enough. Disk artifacts still count when it is not.
+
+    A corrupt mega-cache used to force a fresh run directory, so the Inductor
+    and Triton files sitting next to it were never read and ``compile_s`` stayed
+    a full compile. Those files are the cache a different H100 worker variant
+    can actually reuse. Only an empty tree starts a new run.
+    """
     if mega_state == "loaded":
         return True
-    if mega_state == "unsupported":
-        return _dirs_have_files(inductor, triton)
-    return mega_state == "absent" and _dirs_have_files(inductor, triton)
+    return _dirs_have_files(inductor, triton)
 
 
 def _publish(cache: CompileCache) -> None:
@@ -775,22 +856,29 @@ def _write_manifest(cache: CompileCache) -> None:
 
 
 def default_load_mega(path: str) -> None:
-    """Load ``torch.compiler`` mega-cache bytes. Raises on a bad file."""
+    """Load ``torch.compiler`` mega-cache bytes. Raises on a bad file.
+
+    ``load_cache_artifacts`` unpickles its argument. Passing the path (a
+    ``str``) raises ``TypeError: a bytes-like object is required, not 'str'``
+    and does not install the cache, so a later compile is a full one even
+    when the log said ``hit=hit``. The file is read in binary and only those
+    bytes are passed.
+    """
     load = _mega_api("load_cache_artifacts")
     if load is None:
         raise CompileCacheUnsupported(
             "torch.compiler.load_cache_artifacts is not available"
         )
-    try:
-        load(path)
-        return
-    except TypeError:
-        pass
     with open(path, "rb") as handle:
         payload = handle.read()
-    if not payload:
+    if not isinstance(payload, (bytes, bytearray)) or len(payload) == 0:
         raise ValueError("mega-cache is empty")
-    load(payload)
+    # torch 2.15 catches a bad payload inside deserialize and returns None
+    # instead of raising. Treating that as a successful load logs hit=hit
+    # and then compiles against an empty directory.
+    loaded = load(bytes(payload))
+    if loaded is None:
+        raise ValueError("mega-cache was not installed")
 
 
 def default_save_mega(path: str) -> None:

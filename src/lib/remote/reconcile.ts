@@ -20,6 +20,7 @@ import {
   noteFlightPolled,
   noteFlightNotFound,
   clearFlightNotFound,
+  reapStaleFlights,
   remoteFlights,
   setRemoteEventSink,
   setRemoteFlightStamp,
@@ -38,6 +39,7 @@ import {
   hydrateOpenRemoteCalls,
   loadActiveBrakes,
   persistRemoteEvent,
+  repairInflatedRemoteCalls,
   stampOpenRemoteCall,
 } from "@/lib/remote/store";
 
@@ -189,7 +191,17 @@ export async function reconcileRemoteCalls(): Promise<void> {
   setRemoteFlightStamp((flight) => {
     void stampOpenRemoteCall(flight);
   });
+  await repairInflatedRemoteCalls().catch((err) => {
+    console.warn(
+      "[remote] inflated-call repair failed",
+      err instanceof Error ? err.message : err
+    );
+  });
   await hydrateOpenRemoteCalls();
+  const reaped = reapStaleFlights();
+  if (reaped > 0) {
+    console.info(`[remote] reaped ${reaped} stale call(s) at a fixed end`);
+  }
   await pollStoredS2Calls().catch((err) => {
     console.warn(
       "[remote] stored call poll failed",
