@@ -223,9 +223,10 @@ about +2.4 dB bright. `scripts/sowell/choose_fixed_style.py` is the measurement.
 ## Preview
 
 The committed sample is **`public/voice-previews/drew.mp3`**: `PREVIEW_TEXT`
-rendered with Drew at app speed 1.0 (Kokoro 0.88, 24 kHz mono). `"drew"` is
-in `COMMITTED_PREVIEW_IDS`. Re-record it when `PREVIEW_TEXT` or the volume
-checkpoint changes.
+rendered with Drew at app speed 1.0 (Kokoro 0.88, 24 kHz mono, pinned style
+row 300), encoded as 96 kbps mono MP3. `"drew"` is in `COMMITTED_PREVIEW_IDS`.
+Re-record it when `PREVIEW_TEXT`, the volume checkpoint, or
+`DREW_FIXED_STYLE_INDEX` changes.
 
 Walter's sample is unchanged: `public/voice-previews/sowell.mp3`, a local CPU
 take of `PREVIEW_TEXT` with `am_sowell`. Re-record it when `PREVIEW_TEXT`
