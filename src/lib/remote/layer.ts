@@ -17,12 +17,22 @@
  * same flights. Nothing here dials Modal, Fish, or a GPU.
  */
 
+import { randomBytes } from "node:crypto";
 import { RemoteCallRefused, type RemoteEvent, type RemoteOutcome, type RemotePath, type RemoteProvider } from "@/lib/remote/types";
 
 export type { RemoteEvent, RemoteOutcome, RemotePath, RemoteProvider } from "@/lib/remote/types";
 export { RemoteCallRefused } from "@/lib/remote/types";
 
-const TERMINAL = new Set<RemoteOutcome>(["success", "failure", "cancelled", "timeout"]);
+const TERMINAL = new Set<RemoteOutcome>([
+  "success",
+  "failure",
+  "cancelled",
+  "timeout",
+  "abandoned",
+]);
+
+/** Trailing window the daily GPU budget is measured against. */
+export const REMOTE_DAY_MS = 24 * 60 * 60_000;
 
 export function isTerminalOutcome(outcome: RemoteOutcome): boolean {
   return TERMINAL.has(outcome);
@@ -88,14 +98,34 @@ let seq = 0;
 let eventSink: ((event: RemoteEvent) => void) | null = null;
 let stampSink: ((flight: Flight) => void) | null = null;
 
-/** Dollar reservations from `started` rows. Wall time is the merged span. */
+/**
+ * Dollar reservations from `started` rows. Wall time is the merged span,
+ * and only the part that sits inside the trailing day counts as today.
+ * Fish and previews set `gpu` false: they are not Modal GPU time.
+ */
 export type SpendRow = {
   key: string;
   jobId?: string;
+  provider?: RemoteProvider;
+  path?: RemotePath;
+  /** False for Fish and for any preview. Omitted rows still count. */
+  gpu?: boolean;
   usd: number;
   start: number;
   end: number;
+  /** Set when a terminal end was written. Later passes leave it alone. */
+  closed?: boolean;
 };
+
+/**
+ * Fish hosted-API renders and every preview are outside the GPU budget.
+ * A preview must not be refused with the book budget error.
+ */
+export function countsTowardGpuBudget(provider: RemoteProvider, path: RemotePath): boolean {
+  if (provider === "fish" || provider === "preview") return false;
+  if (path === "preview") return false;
+  return true;
+}
 
 let spend: SpendRow[] = [];
 
@@ -128,6 +158,9 @@ function rememberSpend(flight: Flight): void {
   const row: SpendRow = {
     key: flight.key,
     jobId: flight.jobId,
+    provider: flight.provider,
+    path: flight.path,
+    gpu: countsTowardGpuBudget(flight.provider, flight.path),
     usd: flight.estCostUsd,
     start: flight.startedAt,
     end: flight.startedAt + (flight.estMs > 0 ? flight.estMs : 0),
@@ -140,8 +173,18 @@ function closeSpend(flight: Flight): void {
   const row = spend.find(
     (item) => item.key === flight.key && Math.abs(item.start - flight.startedAt) < 1_000
   );
-  if (!row) return;
-  row.end = flight.endedAt ?? Date.now();
+  if (!row || flight.endedAt == null || row.closed) return;
+  row.end = flight.endedAt;
+  // A still-live observation can be replaced by the real completion.
+  // A terminal end stays where this pass put it.
+  if (
+    flight.status === "success" ||
+    flight.status === "failure" ||
+    flight.status === "cancelled" ||
+    flight.status === "timeout"
+  ) {
+    row.closed = true;
+  }
 }
 
 /**
@@ -180,7 +223,9 @@ export function setRemoteFlightStamp(fn: ((flight: Flight) => void) | null): voi
 
 function nextId(): string {
   seq += 1;
-  return `rc_${seq.toString(36)}`;
+  // Unique across process restarts. A recycled `rc_1` used to hit
+  // ON CONFLICT and move an abandoned row's ended_at forward.
+  return `rc_${Date.now().toString(36)}_${seq.toString(36)}_${randomBytes(4).toString("hex")}`;
 }
 
 export function resetRemoteLayerForTests(): void {
@@ -328,26 +373,86 @@ export function defaultBudgetCaps(env: NodeJS.ProcessEnv = process.env): BudgetC
   };
 }
 
-function intervalsOf(rows: SpendRow[], now: number): Array<[number, number]> {
-  return rows.map((row) => [row.start, row.end > row.start ? row.end : now]);
+/** One call cannot be charged longer than a book's own time budget. */
+export function remoteCallCapMs(env: NodeJS.ProcessEnv = process.env): number {
+  return defaultBudgetCaps(env).bookMs;
 }
 
-/** Dollars and one wall clock for this book. Parallel lanes overlap. */
+function rowCountsAsGpu(row: SpendRow): boolean {
+  if (row.gpu === false) return false;
+  if (row.provider && row.path && !countsTowardGpuBudget(row.provider, row.path)) return false;
+  if (row.provider && !row.path && !countsTowardGpuBudget(row.provider, "book")) return false;
+  return true;
+}
+
+/**
+ * The span this row is allowed to charge.
+ * A stored end is kept. An open row runs until now. Neither may exceed the
+ * per-call cap, and a row that started in the past cannot charge past now.
+ * A call admitted at `now` keeps its future estimate.
+ */
+export function chargedInterval(row: SpendRow, now: number): [number, number] | null {
+  if (!rowCountsAsGpu(row)) return null;
+  if (!Number.isFinite(row.start)) return null;
+  const capEnd = row.start + remoteCallCapMs();
+  const raw = row.end > row.start ? row.end : now;
+  const capped = Math.min(raw, capEnd);
+  const end = capped > now && row.start < now - 1_000 ? Math.min(capped, now) : capped;
+  if (!(end > row.start)) return null;
+  return [row.start, end];
+}
+
+function intervalsOf(rows: readonly SpendRow[], now: number): Array<[number, number]> {
+  const intervals: Array<[number, number]> = [];
+  for (const row of rows) {
+    const interval = chargedInterval(row, now);
+    if (interval) intervals.push(interval);
+  }
+  return intervals;
+}
+
+/** Dollars and one wall clock for this book. Parallel lanes overlap. Fish does not count. */
 export function bookSpend(jobId: string, now = Date.now()): { usd: number; ms: number } {
-  const rows = spend.filter((row) => row.jobId === jobId);
+  const rows = spend.filter((row) => row.jobId === jobId && rowCountsAsGpu(row));
   return {
     usd: rows.reduce((sum, row) => sum + row.usd, 0),
     ms: mergedIntervalMs(intervalsOf(rows, now)),
   };
 }
 
+/**
+ * GPU time and dollars whose span overlaps the trailing 24h.
+ * Each call contributes only that overlap, and never more than its own
+ * capped wall time. Abandoned rows that were stretched to "now" therefore
+ * cannot fill the day by themselves.
+ */
 export function dailySpend(now = Date.now()): { usd: number; ms: number } {
-  const cutoff = now - 24 * 60 * 60_000;
-  const rows = spend.filter((row) => row.end >= cutoff || row.start >= cutoff);
-  return {
-    usd: rows.reduce((sum, row) => sum + row.usd, 0),
-    ms: mergedIntervalMs(intervalsOf(rows, now)),
-  };
+  return dailySpendOf(spend, now);
+}
+
+export function dailySpendOf(rows: readonly SpendRow[], now = Date.now()): { usd: number; ms: number } {
+  const windowStart = now - REMOTE_DAY_MS;
+  let usd = 0;
+  const intervals: Array<[number, number]> = [];
+  for (const row of rows) {
+    if (!rowCountsAsGpu(row)) continue;
+    const interval = chargedInterval(row, now);
+    let overlaps = false;
+    if (interval) {
+      const start = Math.max(interval[0], windowStart);
+      // A call admitted at `now` still has to count its own estimate. Every
+      // older row stops at `now`, so a stretched abandoned end cannot add
+      // time that has not overlapped this window.
+      const end = interval[0] >= now - 1_000 ? interval[1] : Math.min(interval[1], now);
+      if (end > start) {
+        overlaps = true;
+        intervals.push([start, end]);
+      }
+    }
+    const prospective = row.start >= now - 1_000 && row.start <= now + 1_000;
+    if (overlaps || prospective) usd += row.usd;
+  }
+  return { usd, ms: mergedIntervalMs(intervals) };
 }
 
 /**
@@ -416,25 +521,34 @@ export function admitRemoteCall(
 
   const estCostUsd = Math.max(0, input.estCostUsd ?? 0);
   const estMs = Math.max(0, input.estMs ?? 0);
-  if (budgetsEnabled(input.enforceBudget)) {
+  if (
+    budgetsEnabled(input.enforceBudget) &&
+    countsTowardGpuBudget(input.provider, input.path)
+  ) {
     const caps = { ...defaultBudgetCaps(), ...input.caps };
-    const book = input.jobId ? bookSpend(input.jobId, now) : { usd: 0, ms: 0 };
-    const day = dailySpend(now);
-    const bookRows = input.jobId ? spend.filter((row) => row.jobId === input.jobId) : [];
+    const pending: SpendRow = {
+      key: "pending",
+      jobId: input.jobId,
+      provider: input.provider,
+      path: input.path,
+      gpu: true,
+      usd: estCostUsd,
+      start: now,
+      end: now + estMs,
+    };
+    const bookRows = input.jobId
+      ? spend.filter((row) => row.jobId === input.jobId && rowCountsAsGpu(row))
+      : [];
+    const dayRows = spend.filter((row) => rowCountsAsGpu(row));
+    const bookUsd = bookRows.reduce((sum, row) => sum + row.usd, 0);
     const bookWall = input.jobId
-      ? mergedIntervalMs([...intervalsOf(bookRows, now), [now, now + estMs]])
+      ? mergedIntervalMs(intervalsOf([...bookRows, pending], now))
       : 0;
-    const dayWall = mergedIntervalMs([
-      ...intervalsOf(
-        spend.filter((row) => row.start >= now - 24 * 60 * 60_000 || row.end >= now - 24 * 60 * 60_000),
-        now
-      ),
-      [now, now + estMs],
-    ]);
+    const day = dailySpendOf([...dayRows, pending], now);
     const over =
-      (input.jobId && (book.usd + estCostUsd > caps.bookUsd || bookWall > caps.bookMs)) ||
-      day.usd + estCostUsd > caps.dailyUsd ||
-      dayWall > caps.dailyMs;
+      (input.jobId && (bookUsd + estCostUsd > caps.bookUsd || bookWall > caps.bookMs)) ||
+      day.usd > caps.dailyUsd ||
+      day.ms > caps.dailyMs;
     if (over) {
       record({
         flightKey: key,
@@ -745,8 +859,12 @@ export function settleFlightCall(
     ) {
       continue;
     }
+    // A poll that just saw the call finish ends it now, never past the
+    // per-call cap. Reaping uses `terminalEnd` instead, so a later cleanup
+    // pass cannot keep sliding an abandoned row up to "now".
+    const end = Math.max(flight.startedAt, Math.min(now, flight.startedAt + remoteCallCapMs()));
     flight.status = outcome;
-    flight.endedAt = now;
+    flight.endedAt = end;
     flight.promise = undefined;
     closeSpend(flight);
     record({
@@ -760,9 +878,78 @@ export function settleFlightCall(
       callTag: flight.tag,
       outcome,
       startedAt: flight.startedAt,
-      endedAt: now,
+      endedAt: end,
     });
   }
+}
+
+/**
+ * End used the first time a call is reaped.
+ * A recent heartbeat wins when it is inside the cap. Otherwise the end is
+ * `now` for a call that just finished, or the cap for one that has already
+ * been open longer than a book is allowed to run. It is not `now` merely
+ * because a later cleanup pass observed the row.
+ */
+export function terminalEnd(flight: Pick<Flight, "startedAt" | "polledAt" | "endedAt">, now: number): number {
+  if (
+    flight.endedAt != null &&
+    flight.endedAt > flight.startedAt &&
+    flight.endedAt <= flight.startedAt + remoteCallCapMs()
+  ) {
+    return flight.endedAt;
+  }
+  const capEnd = flight.startedAt + remoteCallCapMs();
+  const beat =
+    flight.polledAt != null && flight.polledAt > flight.startedAt
+      ? Math.min(flight.polledAt, capEnd, now)
+      : 0;
+  if (beat > flight.startedAt) return beat;
+  return Math.max(flight.startedAt, Math.min(now, capEnd));
+}
+
+/**
+ * Close one stale open flight. A second call leaves the end where it was.
+ * Returns true only when this pass wrote the end.
+ */
+export function abandonFlight(flight: Flight, now = Date.now()): boolean {
+  if (
+    flight.status !== "running" &&
+    flight.status !== "still_live" &&
+    flight.status !== "submit_unconfirmed"
+  ) {
+    return false;
+  }
+  const end = terminalEnd(flight, now);
+  flight.status = "cancelled";
+  flight.endedAt = end;
+  flight.promise = undefined;
+  closeSpend(flight);
+  record({
+    flightKey: flight.key,
+    idempotencyKey: flight.idempotencyKey,
+    provider: flight.provider,
+    path: flight.path,
+    jobId: flight.jobId,
+    section: flight.sections.join(","),
+    callId: flight.callId,
+    callTag: flight.tag,
+    outcome: "abandoned",
+    startedAt: flight.startedAt,
+    endedAt: end,
+    error: "abandoned",
+  });
+  return true;
+}
+
+/** Open flights older than the per-call cap. Each one is closed once. */
+export function reapStaleFlights(now = Date.now()): number {
+  const cap = remoteCallCapMs();
+  let closed = 0;
+  for (const flight of flights.values()) {
+    if (now - flight.startedAt < cap) continue;
+    if (abandonFlight(flight, now)) closed += 1;
+  }
+  return closed;
 }
 
 /**
@@ -1169,6 +1356,7 @@ export function everyStartHasAnEnd(log: readonly RemoteEvent[] = events): boolea
       event.outcome === "failure" ||
       event.outcome === "cancelled" ||
       event.outcome === "timeout" ||
+      event.outcome === "abandoned" ||
       event.outcome === "still_live" ||
       event.outcome === "submit_unconfirmed"
     ) {

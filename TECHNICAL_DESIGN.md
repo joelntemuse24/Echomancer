@@ -1489,6 +1489,15 @@ re-wrapping `_decode_step` onto a fresh `CUDAGraphTreeManager` backed by
 Inductor's warm disk cache on the `echomancer-compile-cache` volume, or
 `/opt/torchinductor` when `S2C_COMPILE_CACHE=0`) and re-runs `_warm_kv_buckets()`,
 logs `graphs=recaptured(24)` and only fails on a second failure.
+The mega-cache file is read as bytes and passed to `load_cache_artifacts`; a
+path string is not a cache. A corrupt mega-cache stays on the volume, and
+Inductor and Triton files in that same published run are still the cache a
+later worker uses when the torch version, GPU name, and compute capability
+match. Those directories are written onto `torch._inductor.config` and
+Triton's cache knobs after import, because the image default is captured at
+import and a hit that leaves it there compiles into `/opt/torchinductor`. A
+new run directory is created only when the published tree has neither a
+loadable mega-cache nor those files.
 `check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
 `recaptured(N)`, with `N` equal to `--expect-shapes`.
 
@@ -3043,7 +3052,14 @@ for its own book.
 A budget breach fails that book. It does not park it as cold and it does
 not switch narrator. Dollars come from persisted `remote_calls` rows, stored
 in milliseconds. A reload replaces that book's reservations instead of
-appending them. Overlapping Kokoro lanes count as one wall clock. Under
+appending them. Overlapping Kokoro lanes count as one wall clock. The daily
+figure is the overlap of each call with the trailing 24 hours, and one call
+is never charged longer than the book time budget: an abandoned row whose
+end was moved forward by a later cleanup pass cannot fill the day. Startup
+and the hourly pass clamp those stored ends once and close stale open rows;
+a second pass does not move the end. Fish hosted-API renders and every
+preview are outside that GPU budget, so a preview is never refused with
+"This book is over its remote-call budget." Under
 Vitest budgets are off unless `REMOTE_ENFORCE_BUDGETS=1`.
 
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal

@@ -27,6 +27,7 @@ export type RemoteOutcome =
   | "failure"
   | "cancelled"
   | "timeout"
+  | "abandoned"
   | "still_live"
   | "submit_unconfirmed"
   | "refused"

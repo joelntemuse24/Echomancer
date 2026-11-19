@@ -40,6 +40,7 @@ from s2_compile_cache import (
     _artifact_bytes,
     code_stamp,
     compile_cache_key,
+    default_load_mega,
     default_save_mega,
     format_compile_cache_log,
     prepare_compile_cache,
@@ -195,8 +196,36 @@ def test_unpublished_files_are_not_a_hit(tmp_path):
     assert not os.path.exists(os.path.join(second.inductor_dir, "graph.bin"))
 
 
-def test_corrupt_published_mega_compiles_a_new_run_and_keeps_the_old(tmp_path):
+def test_corrupt_published_mega_reuses_inductor_files(tmp_path):
+    """A bad mega-cache must not throw away the kernels beside it.
+
+    ``load_cache_artifacts`` failing used to allocate a fresh run directory,
+    so Inductor and Triton compiled from empty dirs and ``compile_s`` stayed
+    a full compile. The published run is the cache a later H100 worker reads
+    when the device name and compute capability match.
+    """
     cache = _publish(tmp_path)
+    with open(cache.mega_path, "wb") as handle:
+        handle.write(b"not-a-cache")
+
+    def boom(_path: str) -> None:
+        raise ValueError("bad magic")
+
+    fresh = _prepare(tmp_path, load_mega=boom)
+    assert fresh.hit == "hit"
+    assert fresh.persist is False
+    assert fresh.fallback == "mega-corrupt"
+    assert fresh.root == cache.root
+    assert fresh.run_id == cache.run_id
+    assert fresh.key == cache.key
+    assert os.path.isfile(os.path.join(fresh.inductor_dir, "graph.bin"))
+    assert os.path.isfile(cache.mega_path)
+    assert "fallback=mega-corrupt" in fresh.log_line()
+
+
+def test_corrupt_mega_without_artifacts_compiles_a_new_run(tmp_path):
+    cache = _publish(tmp_path)
+    os.remove(os.path.join(cache.inductor_dir, "graph.bin"))
     with open(cache.mega_path, "wb") as handle:
         handle.write(b"not-a-cache")
 
@@ -207,7 +236,7 @@ def test_corrupt_published_mega_compiles_a_new_run_and_keeps_the_old(tmp_path):
     assert fresh.hit == "miss"
     assert fresh.fallback == "corrupt"
     assert fresh.root != cache.root
-    assert os.path.isfile(os.path.join(cache.inductor_dir, "graph.bin"))
+    assert os.path.isfile(cache.mega_path)
     assert os.path.isdir(cache.root)
     assert not os.path.exists(os.path.join(fresh.inductor_dir, "graph.bin"))
     assert "fallback=corrupt" in fresh.log_line()
@@ -352,6 +381,89 @@ def test_unwritable_root_falls_back_without_raising(tmp_path):
     assert cache.persist is False
     assert cache.fallback.startswith("volume-")
     assert "compile_s=na" in cache.log_line()
+
+
+def test_mega_cache_round_trip_passes_bytes_not_a_path(tmp_path, monkeypatch):
+    """``load_cache_artifacts`` unpickles bytes. A path string is a TypeError."""
+    seen: list[bytes] = []
+
+    def save(*args):
+        if args:
+            raise TypeError("a bytes-like object is required, not 'str'")
+        return (b"\x80mega-bytes", object())
+
+    def load(payload):
+        if not isinstance(payload, (bytes, bytearray)):
+            raise TypeError("a bytes-like object is required, not 'str'")
+        seen.append(bytes(payload))
+
+    def api(name):
+        if name == "save_cache_artifacts":
+            return save
+        if name == "load_cache_artifacts":
+            return load
+        return None
+
+    monkeypatch.setattr("s2_compile_cache._mega_api", api)
+    path = tmp_path / "nested" / "mega-cache.bin"
+    default_save_mega(str(path))
+    default_load_mega(str(path))
+    assert path.read_bytes() == b"\x80mega-bytes"
+    assert seen == [b"\x80mega-bytes"]
+
+
+def test_hit_retargets_inductor_and_triton_after_they_were_imported(tmp_path, monkeypatch):
+    """The image default is read at import. A hit has to overwrite it.
+
+    Otherwise ``compile_cache hit=hit`` still compiles into ``/opt/torchinductor``
+    and a fresh run directory, and a second H100 worker does not reuse the
+    artifacts even when the cache key matches.
+    """
+    import types
+
+    published = _publish(tmp_path)
+    torch = types.ModuleType("torch")
+    inductor = types.ModuleType("torch._inductor")
+    inductor.config = types.SimpleNamespace(
+        cache_dir="/opt/torchinductor",
+        fx_graph_cache=False,
+        autograd_cache=False,
+    )
+    torch._inductor = inductor
+    dynamo = types.ModuleType("torch._dynamo")
+    dynamo.reset = lambda: None
+    torch._dynamo = dynamo
+
+    triton = types.ModuleType("triton")
+    knobs_cache = types.SimpleNamespace(dir="/tmp/s2-triton-cache")
+    triton.knobs = types.SimpleNamespace(cache=knobs_cache)
+    runtime = types.ModuleType("triton.runtime")
+    triton_cache = types.ModuleType("triton.runtime.cache")
+    triton_cache.cache_dir = "/tmp/s2-triton-cache"
+    manager = types.SimpleNamespace(cache_dir="/tmp/s2-triton-cache")
+    triton_cache.default_cache_manager = manager
+    runtime.cache = triton_cache
+    triton.runtime = runtime
+
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torch._inductor", inductor)
+    monkeypatch.setitem(sys.modules, "torch._dynamo", dynamo)
+    monkeypatch.setitem(sys.modules, "triton", triton)
+    monkeypatch.setitem(sys.modules, "triton.runtime", runtime)
+    monkeypatch.setitem(sys.modules, "triton.runtime.cache", triton_cache)
+
+    hit = _prepare(tmp_path, load_mega=lambda _path: None)
+    assert hit.hit == "hit"
+    assert hit.root == published.root
+    assert hit.run_id == published.run_id
+    assert inductor.config.cache_dir == hit.inductor_dir
+    assert inductor.config.fx_graph_cache is True
+    assert inductor.config.autograd_cache is True
+    assert knobs_cache.dir == hit.triton_dir
+    assert triton_cache.cache_dir == hit.triton_dir
+    assert manager.cache_dir == hit.triton_dir
+    assert hit.inductor_dir != "/opt/torchinductor"
+    assert hit.triton_dir != "/tmp/s2-triton-cache"
 
 
 def test_mega_cache_save_writes_bytes_from_the_torch_tuple(tmp_path, monkeypatch):

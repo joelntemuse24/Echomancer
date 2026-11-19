@@ -871,8 +871,12 @@ busy-not-cold backstop.
   Inductor, Triton, and the torch mega-cache across that rebuild, keyed by
   torch version, GPU name, compute capability, `S2C_ENGINE`, and a stamp of
   `s2_batch.py` plus the codegen flags. A run is readable only after
-  `finish` writes `current.json` (after self-test). A partial or corrupt
-  tree is not loaded and is not deleted. Two compilers write distinct run
+  `finish` writes `current.json` (after self-test). A partial tree is not
+  loaded and is not deleted. A corrupt mega-cache is left in place and is
+  passed to torch as bytes, never as a path. Inductor and Triton files in
+  that published run are still used, and `torch._inductor.config` plus
+  Triton's cache dir are pointed at them after import. A new run is created
+  only when those directories are empty. Two compilers write distinct run
   directories. `Volume.commit()` runs inside `@modal.enter(snap=True)`;
   `reload()` is not called. A stamp that cannot be read does not share a
   key. `S2C_COMPILE_CACHE=0` skips the volume. An empty cache compiles the

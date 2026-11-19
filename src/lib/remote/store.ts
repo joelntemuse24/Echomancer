@@ -6,7 +6,9 @@
 
 import { execute, query } from "@/lib/turso";
 import {
+  countsTowardGpuBudget,
   hydrateRemoteFlight,
+  remoteCallCapMs,
   replacePersistedSpend,
   type Flight,
   type RemoteEvent,
@@ -27,12 +29,29 @@ export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
          call_id, call_tag, status, started_at, ended_at, outcome, est_cost_usd, error
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
-         status = excluded.status,
-         ended_at = excluded.ended_at,
-         outcome = excluded.outcome,
+         status = CASE
+           WHEN remote_calls.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+           THEN remote_calls.status
+           ELSE excluded.status
+         END,
+         ended_at = CASE
+           WHEN remote_calls.ended_at IS NOT NULL
+            AND remote_calls.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+           THEN remote_calls.ended_at
+           ELSE COALESCE(excluded.ended_at, remote_calls.ended_at)
+         END,
+         outcome = CASE
+           WHEN remote_calls.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+           THEN remote_calls.outcome
+           ELSE excluded.outcome
+         END,
          call_id = COALESCE(excluded.call_id, remote_calls.call_id),
          call_tag = COALESCE(excluded.call_tag, remote_calls.call_tag),
-         error = excluded.error`,
+         error = CASE
+           WHEN remote_calls.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+           THEN remote_calls.error
+           ELSE excluded.error
+         END`,
       [
         event.id,
         event.flightKey,
@@ -81,7 +100,11 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
               call_id, call_tag, outcome, started_at, est_cost_usd
        FROM remote_calls
        WHERE rowid IN (SELECT MAX(rowid) FROM remote_calls GROUP BY flight_key)
-         AND outcome IN ('started', 'still_live', 'submit_unconfirmed')`
+         AND outcome IN ('started', 'still_live', 'submit_unconfirmed')
+         AND (
+           ended_at IS NULL
+           OR outcome IN ('still_live', 'submit_unconfirmed')
+         )`
     );
     for (const row of rows) {
       const startedAt = asMs(Number(row.started_at)) || now;
@@ -115,19 +138,32 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
   }
 }
 
-/** Dollars and wall-clock spans from persisted `started` rows. */
+/**
+ * Dollars and wall-clock spans from persisted `started` rows.
+ * The end is the earliest terminal end for that flight, so a later cleanup
+ * pass that writes a newer `ended_at` cannot stretch the charge.
+ */
 export async function loadPersistedSpend(): Promise<void> {
   const rows = await query<{
     flight_key: string;
     job_id: string | null;
+    provider: SpendRow["provider"];
+    path: SpendRow["path"];
     est_cost_usd: number | null;
     started_at: number;
     ended_at: number | null;
   }>(
-    `SELECT s.flight_key, s.job_id, s.est_cost_usd, s.started_at,
+    `SELECT s.flight_key, s.job_id, s.provider, s.path, s.est_cost_usd, s.started_at,
             COALESCE(
-              (SELECT MAX(e.ended_at) FROM remote_calls e
-                WHERE e.flight_key = s.flight_key AND e.ended_at IS NOT NULL),
+              (SELECT MIN(e.ended_at) FROM remote_calls e
+                WHERE e.flight_key = s.flight_key
+                  AND e.ended_at IS NOT NULL
+                  AND e.ended_at > s.started_at
+                  AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')),
+              (SELECT MIN(e.ended_at) FROM remote_calls e
+                WHERE e.flight_key = s.flight_key
+                  AND e.ended_at IS NOT NULL
+                  AND e.ended_at > s.started_at),
               s.started_at
             ) AS ended_at
      FROM remote_calls s
@@ -136,15 +172,71 @@ export async function loadPersistedSpend(): Promise<void> {
   const loaded: SpendRow[] = rows.map((row) => {
     const start = asMs(Number(row.started_at));
     const end = asMs(Number(row.ended_at)) || start;
+    const provider = row.provider;
+    const path = row.path ?? "book";
     return {
       key: row.flight_key,
       jobId: row.job_id ?? undefined,
+      provider,
+      path,
+      gpu: provider ? countsTowardGpuBudget(provider, path) : true,
       usd: Number(row.est_cost_usd ?? 0),
       start,
       end: end > start ? end : start,
+      closed: end > start,
     };
   });
   replacePersistedSpend(loaded);
+}
+
+/**
+ * One-time, idempotent repair for rows whose end was pushed forward by a
+ * later cleanup pass. Clamps the stored end to the per-call cap and closes
+ * open rows that have already aged past that cap. Nothing is deleted.
+ */
+export async function repairInflatedRemoteCalls(
+  now = Date.now()
+): Promise<{ clamped: number; closed: number }> {
+  const cap = remoteCallCapMs();
+  const cutoff = now - cap;
+  try {
+    const clamped = await execute(
+      `UPDATE remote_calls
+       SET ended_at = started_at + ?
+       WHERE ended_at IS NOT NULL
+         AND started_at > 0
+         AND ended_at > started_at + ?`,
+      [cap, cap]
+    );
+    const closed = await execute(
+      `UPDATE remote_calls
+       SET ended_at = started_at + ?,
+           status = 'abandoned',
+           outcome = CASE
+             WHEN outcome = 'started' THEN 'started'
+             ELSE 'abandoned'
+           END
+       WHERE outcome IN ('started', 'still_live', 'submit_unconfirmed')
+         AND started_at > 0
+         AND started_at <= ?
+         AND (ended_at IS NULL OR ended_at <= started_at)`,
+      [cap, cutoff]
+    );
+    const clampedN = clamped.rowsAffected;
+    const closedN = closed.rowsAffected;
+    if (clampedN > 0 || closedN > 0) {
+      console.info(
+        `[remote] repaired remote calls clamped=${clampedN} closed=${closedN} cap_ms=${cap}`
+      );
+    }
+    return { clamped: clampedN, closed: closedN };
+  } catch (err) {
+    console.warn(
+      "[remote] repair failed:",
+      err instanceof Error ? err.message : err
+    );
+    return { clamped: 0, closed: 0 };
+  }
 }
 
 /** Write the function-call id onto the latest row without a second spend reservation. */
