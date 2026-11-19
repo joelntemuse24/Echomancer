@@ -27,6 +27,7 @@ import {
 import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+import { fishHostedSampling } from "@/lib/tts/fish-performance";
 
 import {
   parseCloneProviderPin,
@@ -264,6 +265,16 @@ function buildTtsBody(
     input.chunkLength <= 300
   ) {
     body.chunk_length = Math.round(input.chunkLength);
+  }
+  // Omitted unless FISH_S2_HOSTED_SAMPLING is on. The API default is
+  // 0.7/0.7. 0.9/0.9 is a separate switch: it changes clone variance
+  // even when the text has no tag. The self-hosted container already
+  // samples at 0.9 and does not read this flag.
+  const sampling = fishHostedSampling();
+  if (sampling) {
+    body.temperature = sampling.temperature;
+    body.top_p = sampling.topP;
+    body.condition_on_previous_chunks = true;
   }
   return body;
 }

@@ -216,13 +216,19 @@ Live Listen and Live Stream stay on Vercel.
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
 Live Stream / Live Listen: pauseStyle and title cleanup. Soft crossfade is
 Whole-book concat only. Fish whole-book and Live Listen send the cleaned words with no
-square-bracket cues. Headings sit on their own paragraph with ending
-punctuation. A book's own `[brackets]` become parentheses before Fish
+square-bracket cues, unless `FISH_S2_PERFORMANCE` is on. That flag inserts a
+validated S2 tag subset at send time and does not change Edge, Kokoro, or
+Paradee. On that path a cut, unknown, or malformed bracket is deleted,
+including one split across a chunk or a section, so the tag is not spoken.
+The marks read starts beside packing and is not awaited. Hosted sampling
+stays at the API default unless `FISH_S2_HOSTED_SAMPLING` is on. Headings sit on their own paragraph with ending
+punctuation. With the flag off, a book's own `[brackets]` become parentheses before Fish
 synthesis, because Fish treats `[..]` as direction. The published S2 cue
 list stays so leftover tags are dropped, not spoken. Edge and Google
 still insert `[break]` / `[long-break]` as silence, then map them
 (Google SSML, Edge punctuation). Fish section audio uses cache variant
-`fish-plain-v1` so an older cued take is not replayed. Picker previews
+`fish-plain-v1` (`fish-performance-v1` while `FISH_S2_PERFORMANCE` is on;
+the Modal recipe gains `-perf`) so an older take is not replayed. Picker previews
 use the short one-liner (`PREVIEW_TEXT`). There is no book-level
 `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
@@ -1461,6 +1467,8 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Signed-in users only. search.list is 100 quota units; videos.list is durations only. Not used to download audio.
 # YT_SERVER_CLIPS_EMAILS=you@gmail.com # Allowlist for server-side YouTube sections. APIFY_TOKEN stays on the worker only.
 # LISTEN_PREP_MODEL=xiaomi/mimo-v2.6-flash # Whole-book cleanup. Reasoning off for xiaomi/* (MiMo ignores minimal and spends the output budget). Strict json_schema. Provider order DeepInfra, Xiaomi, GMICloud; fallbacks off so Novita is not used.
+# FISH_S2_PERFORMANCE=1 # Off unless set. Fish sections get validated S2 tags (lexical cues plus listen-prep marks on the existing cleanup request). No second model call, and the marks read is not awaited. Hosted sampling stays at the API default.
+# FISH_S2_HOSTED_SAMPLING=1 # Separate from the tags. Sends MODAL_S2_SAMPLING (default 0.9,0.9) on the hosted Fish body. Off, because 0.9 adds clone variance on untagged sentences and was not measured as safer than the API 0.7/0.7. The self-hosted container already uses 0.9.
 # LISTEN_PREP_REASONING=off # off | minimal. Default off for xiaomi/*, minimal for other primary models. The DeepSeek fallback stays off.
 # LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.
 # LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32

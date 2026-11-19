@@ -79,9 +79,10 @@ export async function GET(
         voice_name: string | null;
         created_at: number | null;
         updated_at: number | null;
+        pdf_storage_path: string | null;
       }
     >(
-      `SELECT id, tts_provider, tts_options, book_title, voice_name, created_at, updated_at
+      `SELECT id, tts_provider, tts_options, pdf_storage_path, book_title, voice_name, created_at, updated_at
        FROM jobs WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );

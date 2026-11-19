@@ -115,11 +115,22 @@ import {
   persistFrozenSections,
   repackFrozenTail,
 } from "@/lib/tts/frozen-script";
-import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
+  ListenPrepDeferredError,
+  loadStoredPerformanceMarks,
+} from "@/lib/tts/listen-prep-cache";
+import {
+  fishSpokenSection,
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
 } from "@/lib/tts/narration-script";
+import {
+  fishPerformanceEnabled,
+  fishSectionCacheText,
+  peekFishPerformanceMarks,
+  uploadIdFromContentPath,
+  type PerformanceMark,
+} from "@/lib/tts/fish-performance";
 import {
   deliveryUserInputFromUnknown,
   resolveDeliverySettings,
@@ -506,11 +517,15 @@ export function takehomeCacheVariant(
       // under the two older recipes while its own runtime rendered nothing, so
       // the new narration never played and the book looked like a speed change.
       // See `clone-narration-recipe.ts` for what is (and is not) included.
-      return `s2-pro-modal-${cloneNarrationRecipeId()}`;
+      const recipe = `s2-pro-modal-${cloneNarrationRecipeId()}`;
+      // A performance take is a different script. The recipe id itself
+      // stays the unit/pause identity; `-perf` only moves when the flag
+      // is on, so a plain take is not replayed as a tagged one.
+      return fishPerformanceEnabled() ? `${recipe}-perf` : recipe;
     }
     // No drama-3 variant exists any more: a take from that engine is a
     // different voice, so it must never be found under a clone's key.
-    return "fish-plain-v1";
+    return fishPerformanceEnabled() ? "fish-performance-v1" : "fish-plain-v1";
   }
   // Paragraph-level packing with trimmed joins. Bumped so takes from the
   // per-sentence pipeline are never replayed.
@@ -1580,6 +1595,16 @@ async function runClaimedTick(
     }
   }
 
+  // Marks live on the listen-prep file that cleanup already wrote. Start
+  // the read here so it overlaps packing and the reference download. The
+  // render peeks memory and does not wait: a slow or missing file cannot
+  // hold first audio, and lexical tags still apply.
+  const performanceUploadId =
+    upload?.id ?? uploadIdFromContentPath(job.pdf_storage_path);
+  if (providerId === "fish" && performanceUploadId && fishPerformanceEnabled()) {
+    void loadStoredPerformanceMarks(performanceUploadId).catch(() => undefined);
+  }
+
   // After the file is readable. A book still waiting on extract must not
   // start a GPU, and N waiting books must not start N restores.
   const knownTotal = job.total_sections ?? 0;
@@ -2105,6 +2130,13 @@ async function runClaimedTick(
      * rather than fail the book on a section that has spent its retries.
      */
     let cloneProviderFaultSeen: string | null = null;
+    const performanceMarks: PerformanceMark[] =
+      providerId === "fish" ? peekFishPerformanceMarks(performanceUploadId) : [];
+    const spokenFishSection = (index: number): string =>
+      fishSpokenSection(sections[index] ?? "", {
+        previousText: index > 0 ? (sections[index - 1] ?? "") : "",
+        marks: performanceMarks,
+      });
     /**
      * Speech for one section, up to the moment the provider returns audio.
      *
@@ -2163,6 +2195,8 @@ async function runClaimedTick(
             jobId,
             index,
             sectionText: sections[index]!,
+            previousSectionText: index > 0 ? sections[index - 1] : "",
+            performanceMarks,
             frozen: packed[index],
             provider,
             voiceId,
@@ -2440,7 +2474,7 @@ async function runClaimedTick(
           !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
         const cacheKeyFor = (index: number) =>
           takehomeSectionCacheKey({
-            text: sections[index]!,
+            text: fishSectionCacheText(sections[index]!, spokenFishSection(index)),
             voiceId,
             model: modelSlug ?? "",
             index,
@@ -2577,7 +2611,7 @@ async function runClaimedTick(
                     {
                       id: jobId,
                       pending: render,
-                      textAt: (index) => sections[index] ?? "",
+                      textAt: (index) => spokenFishSection(index),
                       playbackStarted: playback.started,
                       bufferedMs: playback.bufferedMs,
                       firstLight: needsFirstLight,
@@ -2643,7 +2677,7 @@ async function runClaimedTick(
               : withCloneBatchSlot(() =>
                   dispatchModalCloneLanes({
                     indexes: gpuIndexes,
-                    textAt: (index) => sections[index]!,
+                    textAt: (index) => spokenFishSection(index),
                     lanes,
                     batch,
                     maxLaneChars,
@@ -3831,6 +3865,8 @@ async function synthesizeChecked(
     jobId: string;
     index: number;
     sectionText: string;
+    previousSectionText?: string;
+    performanceMarks?: readonly PerformanceMark[];
     frozen?: FrozenSection;
     provider: ReturnType<typeof resolveStockAdapter>;
     voiceId: string;
@@ -3903,6 +3939,8 @@ async function synthesizeSettled(
     jobId: string;
     index: number;
     sectionText: string;
+    previousSectionText?: string;
+    performanceMarks?: readonly PerformanceMark[];
     frozen?: FrozenSection;
     provider: ReturnType<typeof resolveStockAdapter>;
     voiceId: string;
@@ -3970,6 +4008,8 @@ async function synthesizeSection(args: {
   jobId: string;
   index: number;
   sectionText: string;
+  previousSectionText?: string;
+  performanceMarks?: readonly PerformanceMark[];
   frozen?: FrozenSection;
   provider: ReturnType<typeof resolveStockAdapter>;
   voiceId: string;
@@ -4007,6 +4047,9 @@ async function synthesizeSection(args: {
       deliveryPrefix: args.ttsOptions.deliveryPrefix === true,
       pauseStyle:
         args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
+      // A QA split is a sentence from the source, not the next section.
+      previousText: args.frozen ? args.previousSectionText : undefined,
+      performanceMarks: args.performanceMarks,
     }
   );
 
@@ -4043,7 +4086,10 @@ async function synthesizeSection(args: {
           ? drewSpeedForRequest(ttsOptions.narrationSpeed)
           : fishSpeedForRequest(ttsOptions.narrationSpeed);
     const cacheKey = takehomeSectionCacheKey({
-      text: args.frozen?.text ?? sectionText,
+      text:
+        args.provider.id === "fish"
+          ? fishSectionCacheText(args.frozen?.text ?? sectionText, synthText)
+          : (args.frozen?.text ?? sectionText),
       voiceId: args.voiceId,
       model: modelId,
       index: args.index,

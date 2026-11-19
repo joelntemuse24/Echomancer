@@ -1,8 +1,10 @@
 /**
  * Read the frozen Whole-book script and the exact Fish `text` field.
  *
- * Does not tag, pack, or synthesize. `speakable.txt` / `sections.json` are
+ * Does not pack or synthesize. `speakable.txt` / `sections.json` are
  * written once on the first take-home claim; this only loads them.
+ * `fishText` is the string synthesis sends, including performance tags
+ * when `FISH_S2_PERFORMANCE` is on.
  *
  * `storedText` is the frozen window in `sections.json`. `fishText` is
  * the exact cleaned text `synthesizeSection` sends to Fish. Other request
@@ -20,6 +22,11 @@ import {
   loadFrozenScript,
 } from "@/lib/tts/frozen-script";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import {
+  uploadIdFromContentPath,
+  type PerformanceMark,
+} from "@/lib/tts/fish-performance";
+import { loadStoredPerformanceMarks } from "@/lib/tts/listen-prep-cache";
 import type { FrozenSection } from "@/lib/tts/types";
 
 export type FishMarkupSection = {
@@ -67,12 +74,16 @@ function fishRequestText(
   sectionText: string,
   providerId: string,
   pauseStyle: PauseStyle,
-  deliveryPrefix: boolean
+  deliveryPrefix: boolean,
+  previousText: string,
+  marks: readonly PerformanceMark[]
 ): string | null {
   if (providerId !== "fish") return null;
   return narrationScriptForSynthesis(sectionText, "fish", {
     deliveryPrefix,
     pauseStyle: pauseStyle === "sparse" ? "sparse" : "normal",
+    previousText,
+    performanceMarks: marks,
   });
 }
 
@@ -80,7 +91,9 @@ function toSection(
   section: FrozenSection,
   providerId: string,
   pauseStyle: PauseStyle,
-  deliveryPrefix: boolean
+  deliveryPrefix: boolean,
+  previousText: string,
+  marks: readonly PerformanceMark[]
 ): FishMarkupSection {
   return {
     index: section.index,
@@ -91,7 +104,9 @@ function toSection(
       section.text,
       providerId,
       pauseStyle,
-      deliveryPrefix
+      deliveryPrefix,
+      previousText,
+      marks
     ),
   };
 }
@@ -150,10 +165,12 @@ export function toPublicFishMarkup(
  * Load stored markup. Returns null when the freeze has not been written yet.
  */
 export async function loadStoredFishMarkup(
-  job: OwnedMarkupJob
+  job: OwnedMarkupJob & { pdf_storage_path?: string | null }
 ): Promise<FishMarkup | null> {
   const frozen = await loadFrozenScript(job.id);
   if (!frozen) return null;
+  const uploadId = uploadIdFromContentPath(job.pdf_storage_path);
+  const marks = uploadId ? await loadStoredPerformanceMarks(uploadId) : [];
 
   const provider = job.tts_provider || "";
   const delivery = resolveDeliverySettings(
@@ -176,12 +193,14 @@ export async function loadStoredFishMarkup(
     deliveryPrefix: delivery.deliveryPrefix,
     speakableSource,
     speakable: frozen.speakable,
-    sections: frozen.sections.map((section) =>
+    sections: frozen.sections.map((section, index) =>
       toSection(
         section,
         provider,
         delivery.pauseStyle,
-        delivery.deliveryPrefix
+        delivery.deliveryPrefix,
+        index > 0 ? frozen.sections[index - 1]!.text : "",
+        marks
       )
     ),
   };

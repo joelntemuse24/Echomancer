@@ -1227,6 +1227,12 @@ describe("listenPrepRequestBody", () => {
       );
       expect(fallback.reasoning).toEqual({ enabled: false });
       expect(fallback.provider.order).toEqual(["together", "deepinfra"]);
+      expect(mimo.response_format.json_schema.schema.required).toEqual([
+        "edits",
+        "headings",
+        "note",
+      ]);
+      expect(mimo.messages[0]?.content).not.toContain('"marks"');
     } finally {
       if (previous === undefined) delete process.env.LISTEN_PREP_REASONING;
       else process.env.LISTEN_PREP_REASONING = previous;
@@ -1248,6 +1254,74 @@ describe("listenPrepRequestBody", () => {
     } finally {
       if (previous === undefined) delete process.env.LISTEN_PREP_REASONING;
       else process.env.LISTEN_PREP_REASONING = previous;
+    }
+  });
+});
+
+describe("listen-prep performance marks", () => {
+  const note = {
+    kind: null,
+    novelKind: null,
+    tone: "",
+    pov: "",
+    dialogue: null,
+  };
+
+  it("asks for marks only while the flag is on, and a bad cue does not fail the chunk", async () => {
+    process.env.FISH_S2_PERFORMANCE = "1";
+    try {
+      const body = listenPrepRequestBody("xiaomi/mimo-v2.6-flash", "Hello.", "primary");
+      const schema = body.response_format.json_schema.schema as {
+        required: string[];
+      };
+      expect(schema.required).toContain("marks");
+      expect(String(body.messages[0]?.content)).toContain('"marks"');
+      const ops = coerceListenOps(
+        {
+          edits: [],
+          headings: [],
+          note,
+          marks: [
+            { id: "1", cue: "narrator voice" },
+            { id: "1", cue: "audience laughing" },
+            { id: "1", cue: "whispering" },
+            { id: "9", cue: "sad" },
+          ],
+        },
+        2
+      );
+      expect(ops?.marks).toEqual([{ id: 1, cue: "whispering" }]);
+      const line = `"Don't tell anyone," she whispered.`;
+      const next = await prepareForListening(line, {
+        apiKey: "test",
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      edits: [],
+                      headings: [],
+                      note,
+                      marks: [
+                        { id: "1", cue: "sad" },
+                        { id: "1", cue: "narrator voice" },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          ),
+      });
+      expect(next.text).toContain("whispered");
+      expect(next.marks).toEqual([
+        { anchor: line.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 48), cue: "sad" },
+      ]);
+    } finally {
+      delete process.env.FISH_S2_PERFORMANCE;
     }
   });
 });

@@ -4,9 +4,10 @@
  * Source: https://docs.fish.audio/developer-guide/core-features/emotions
  *
  * S2 is square brackets. Whole-book Fish narration does not insert these
- * cues. The list is what we strip before synthesis, so a leftover tag is
- * not spoken as a word. Other square brackets in the book become
- * parentheses. S1 parentheses are not used as direction.
+ * cues unless `FISH_S2_PERFORMANCE` is on, and then only a validated
+ * subset (`fish-performance.ts`). The list is also what we strip, so a
+ * leftover tag is not spoken as a word. Other square brackets in the
+ * book become parentheses. S1 parentheses are not used as direction.
  */
 
 /** Pauses. Never counted toward the performance-cue cap. */
