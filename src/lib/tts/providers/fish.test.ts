@@ -5,6 +5,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.FISH_API_KEY;
   delete process.env.FISH_S2_PERFORMANCE;
+  delete process.env.FISH_S2_HOSTED_SAMPLING;
 });
 
 describe("isFishLiveVoice", () => {
@@ -69,9 +70,32 @@ describe("stock Narrator vs clone reference_id", () => {
     expect(body.condition_on_previous_chunks).toBeUndefined();
   });
 
-  it("sends the measured sampling when performance tags are on", async () => {
+  it("does not change the Fish body when only performance tags are on", async () => {
     process.env.FISH_API_KEY = "test-key";
     process.env.FISH_S2_PERFORMANCE = "1";
+    const fetchMock = vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fishTtsProvider } = await import("./fish");
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "real-fish-account-ref",
+      catalogVoiceId: "clone:abc",
+      model: "s2.1-pro-free",
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    expect(body.temperature).toBeUndefined();
+    expect(body.top_p).toBeUndefined();
+    expect(body.condition_on_previous_chunks).toBeUndefined();
+    expect(body.text).toBe("Hello");
+  });
+
+  it("sends the measured sampling only when hosted sampling is on", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    process.env.FISH_S2_HOSTED_SAMPLING = "1";
     const fetchMock = vi.fn(
       async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
     );

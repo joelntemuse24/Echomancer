@@ -126,6 +126,8 @@ import {
 } from "@/lib/tts/narration-script";
 import {
   fishPerformanceEnabled,
+  fishSectionCacheText,
+  peekFishPerformanceMarks,
   uploadIdFromContentPath,
   type PerformanceMark,
 } from "@/lib/tts/fish-performance";
@@ -1593,6 +1595,16 @@ async function runClaimedTick(
     }
   }
 
+  // Marks live on the listen-prep file that cleanup already wrote. Start
+  // the read here so it overlaps packing and the reference download. The
+  // render peeks memory and does not wait: a slow or missing file cannot
+  // hold first audio, and lexical tags still apply.
+  const performanceUploadId =
+    upload?.id ?? uploadIdFromContentPath(job.pdf_storage_path);
+  if (providerId === "fish" && performanceUploadId && fishPerformanceEnabled()) {
+    void loadStoredPerformanceMarks(performanceUploadId).catch(() => undefined);
+  }
+
   // After the file is readable. A book still waiting on extract must not
   // start a GPU, and N waiting books must not start N restores.
   const knownTotal = job.total_sections ?? 0;
@@ -2118,12 +2130,8 @@ async function runClaimedTick(
      * rather than fail the book on a section that has spent its retries.
      */
     let cloneProviderFaultSeen: string | null = null;
-    const performanceUploadId =
-      upload?.id ?? uploadIdFromContentPath(job.pdf_storage_path);
     const performanceMarks: PerformanceMark[] =
-      providerId === "fish" && performanceUploadId
-        ? await loadStoredPerformanceMarks(performanceUploadId)
-        : [];
+      providerId === "fish" ? peekFishPerformanceMarks(performanceUploadId) : [];
     const spokenFishSection = (index: number): string =>
       fishSpokenSection(sections[index] ?? "", {
         previousText: index > 0 ? (sections[index - 1] ?? "") : "",
@@ -2466,7 +2474,7 @@ async function runClaimedTick(
           !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
         const cacheKeyFor = (index: number) =>
           takehomeSectionCacheKey({
-            text: sections[index]!,
+            text: fishSectionCacheText(sections[index]!, spokenFishSection(index)),
             voiceId,
             model: modelSlug ?? "",
             index,
@@ -4078,7 +4086,10 @@ async function synthesizeSection(args: {
           ? drewSpeedForRequest(ttsOptions.narrationSpeed)
           : fishSpeedForRequest(ttsOptions.narrationSpeed);
     const cacheKey = takehomeSectionCacheKey({
-      text: args.frozen?.text ?? sectionText,
+      text:
+        args.provider.id === "fish"
+          ? fishSectionCacheText(args.frozen?.text ?? sectionText, synthText)
+          : (args.frozen?.text ?? sectionText),
       voiceId: args.voiceId,
       model: modelId,
       index: args.index,

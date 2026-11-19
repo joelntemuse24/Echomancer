@@ -18,7 +18,11 @@
  * (job 12534aaa). A text prompt with no matching audio is how a clone
  * goes degenerate, and a longer prefill would hold first audio.
  * The hosted API already conditions the chunks of one request
- * (`condition_on_previous_chunks`).
+ * (`condition_on_previous_chunks`, default true). Hosted temperature
+ * stays at the API default unless `FISH_S2_HOSTED_SAMPLING` is on.
+ * 0.9/0.9 is not part of this flag: it changes clone variance even
+ * when no tag is inserted, and the self-hosted container already
+ * samples at 0.9 on its own.
  */
 
 import {
@@ -116,11 +120,18 @@ export function uploadIdFromContentPath(
   return match?.[1] ?? null;
 }
 
-/** Hosted Fish sampling. Null while the flag is off, so the body stays unchanged. */
-export function fishPerformanceSampling(
+/**
+ * Hosted Fish sampling override. Null unless `FISH_S2_HOSTED_SAMPLING`
+ * is on, so the performance flag does not change the request body.
+ * The API default is 0.7/0.7. 0.9 adds sample variance; on a clone that
+ * variance is timbre, and fish-speech #1280 found higher temperatures
+ * add variability rather than making a tag stronger.
+ */
+export function fishHostedSampling(
   env: NodeJS.ProcessEnv = process.env
 ): { temperature: number; topP: number } | null {
-  if (!fishPerformanceEnabled(env)) return null;
+  const flag = env.FISH_S2_HOSTED_SAMPLING?.trim().toLowerCase();
+  if (flag !== "1" && flag !== "true" && flag !== "on") return null;
   const raw = env.MODAL_S2_SAMPLING?.trim() || "0.9,0.9";
   const [temperature, topP] = raw.split(",");
   return {
@@ -207,11 +218,55 @@ function continuesDelivery(sentence: string): boolean {
   return /^["“']/.test(text) || /^\p{Ll}/u.test(text);
 }
 
+/**
+ * Delete every square bracket and the words inside it.
+ *
+ * A tag Fish does not treat as a cue is spoken as a word. That includes
+ * an unknown tag, a bracket that never closed, and a tag cut in half at
+ * a listen-prep chunk or a section boundary (`[whis` / `pering]`).
+ * A cut opener at the end of a line takes the short tail with it. A cut
+ * closer drops the token stuck to `]`. A bracket with sentence
+ * punctuation after it drops only that one token, so the rest of the
+ * line is still read.
+ */
+export function stripUnspokenBrackets(text: string): string {
+  if (!text.includes("[") && !text.includes("]")) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      let rest = line.replace(/\[[^\[\]]*\]/g, " ");
+      rest = rest.replace(/\[[^\[\]]*$/g, (tail) => {
+        if (tail.length <= 48 && !/[.!?…]/.test(tail)) return " ";
+        return tail.replace(/^\[[^\s\[\]]*/, " ");
+      });
+      rest = rest.replace(/(?:^|\s)[^\s\[\]]{0,48}\]/g, " ");
+      return rest.replace(/[\[\]]/g, "").replace(/[^\S\n]{2,}/g, " ").trim();
+    })
+    .join("\n");
+}
+
 function stripTags(sentence: string): string {
-  return sentence
-    .replace(/\[[^\[\]]*\]/g, " ")
-    .replace(/[^\S\n]{2,}/g, " ")
-    .trim();
+  return stripUnspokenBrackets(sentence).replace(/[^\S\n]{2,}/g, " ").trim();
+}
+
+function insideDoubleQuotes(sentence: string, index: number): boolean {
+  let open = false;
+  for (let i = 0; i < index; i++) {
+    const ch = sentence[i];
+    if (ch === '"') open = !open;
+    else if (ch === "“") open = true;
+    else if (ch === "”") open = false;
+  }
+  return open;
+}
+
+/** A pause cue inside a quote, a number, or an abbreviation can be read aloud. */
+function breakWouldBeSpoken(sentence: string, at: number): boolean {
+  if (insideDoubleQuotes(sentence, at)) return true;
+  const around = sentence.slice(Math.max(0, at - 6), at + 8);
+  if (/\d/.test(around)) return true;
+  const left = sentence.slice(Math.max(0, at - 12), at);
+  return /(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc|e\.g|i\.e)\.\s*$/i.test(left);
 }
 
 function hasLetters(sentence: string): boolean {
@@ -232,7 +287,7 @@ function insertSentenceBreak(sentence: string): string {
       length = mark.length;
     }
   }
-  if (at < 0) return sentence;
+  if (at < 0 || breakWouldBeSpoken(sentence, at)) return sentence;
   const left = sentence.slice(0, at).trimEnd();
   const right = sentence.slice(at + length).trimStart();
   const kept = sentence.slice(at, at + length).trim();
@@ -370,6 +425,16 @@ function trailingDelivery(
   const plain = previous.replace(/\r\n/g, "\n").trim();
   if (!plain) return null;
   return annotate(plain, marks, null).carry;
+}
+
+/**
+ * Cache identity for one section.
+ * Flag off hashes the frozen source, the same bytes as today.
+ * Flag on hashes the spoken script, so a whisper carry and a plain
+ * reading of the same section do not share a take.
+ */
+export function fishSectionCacheText(source: string, spoken: string): string {
+  return fishPerformanceEnabled() ? spoken : source;
 }
 
 /**

@@ -174,9 +174,10 @@ export async function readListenPrepCache(
 const marksInflight = new Map<string, Promise<PerformanceMark[]>>();
 
 /**
- * Marks for this upload. A hit in memory returns immediately. A storage
- * read is capped at 1.5s so a slow object cannot hold the first section;
- * the read still fills the memory copy for the next tick.
+ * Marks for this upload. A hit in memory returns immediately. The
+ * take-home tick starts this and does not wait. A caller that does
+ * await it (the operator markup view) gives up after 1.5s. The read
+ * still fills the memory copy when it finishes.
  */
 export async function loadStoredPerformanceMarks(
   uploadId: string

@@ -801,16 +801,27 @@ same listen-prep request also returns a sparse `marks` list, and Fish
 synthesis — the hosted API and the self-hosted lane — speaks
 `fishPerformanceScript`: plain words, then a validated S2 tag
 (`[whispering]`, `[sighing]`, and the rest of the published cue list).
-Unknown tags and crowd effects are removed, so they are not spoken.
-Lexical cues (whispered, sighed, shouted, breathless) do not need a
-mark. A delivery tag continues into a following quoted sentence, including
-the first sentence of the next section when the previous section ended
-on that delivery. Generated audio codes are not carried across sections.
-The hosted request then also sends temperature and top_p from
-`MODAL_S2_SAMPLING` (default 0.9, 0.9) and `condition_on_previous_chunks`.
-The section cache variant gains `-perf` / `fish-performance-v1`, so a
-plain take is not replayed as a tagged one. Edge, Google, Kokoro, and
-Paradee stay on their own scripts.
+Unknown tags, crowd effects, and a bracket that is cut or never closed
+are deleted, including a tag split across a chunk or a section, so they
+are not spoken. A `[break]` is not placed inside quotes, next to a digit,
+or after an abbreviation. Lexical cues (whispered, sighed, shouted,
+breathless) do not need a mark. A delivery tag continues into a following
+quoted sentence, including the first sentence of the next section when
+the previous section ended on that delivery. Generated audio codes are
+not carried across sections. The marks file is read beside packing and
+is not awaited, so a miss or a slow object does not hold first audio.
+Hosted temperature stays at the API default (0.7, 0.7).
+`FISH_S2_HOSTED_SAMPLING` is a separate switch that sends
+`MODAL_S2_SAMPLING` (default 0.9, 0.9) and
+`condition_on_previous_chunks`. 0.9 is not bundled with the tags: it
+changes variance on untagged sentences too, and fish-speech #1280 found
+higher temperatures add variability rather than making a tag stronger.
+The self-hosted container already samples at 0.9 and does not read this
+flag. While the performance flag is on, the section cache hashes the
+spoken script and the variant gains `-perf` / `fish-performance-v1`, so
+a plain take and a tagged take do not collide. With the flag off the
+key stays the frozen section text and `fish-plain-v1`. Edge, Google,
+Kokoro, and Paradee stay on their own scripts.
 
 `toFishNarrationScript` is the Edge / Google pause IR. It:
 

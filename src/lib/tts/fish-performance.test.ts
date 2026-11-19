@@ -4,12 +4,14 @@ import {
   applyFishPerformance,
   canonicalPerformanceCue,
   clearFishPerformanceMarks,
-  fishPerformanceSampling,
+  fishHostedSampling,
+  fishSectionCacheText,
   FISH_PERFORMANCE_MARKS_INSTRUCTION,
   normalizePerformanceMarks,
   performanceAnchor,
   rememberFishPerformanceMarks,
   resolveChunkMarks,
+  stripUnspokenBrackets,
   takeFishPerformanceMarks,
 } from "@/lib/tts/fish-performance";
 import {
@@ -18,7 +20,7 @@ import {
   narrationScriptForSynthesis,
   toFishPlainNarration,
 } from "@/lib/tts/narration-script";
-import { takehomeCacheVariant } from "@/lib/tts/process-job";
+import { takehomeCacheVariant, takehomeSectionCacheKey } from "@/lib/tts/process-job";
 
 /**
  * One passage, plain and annotated. No audio is rendered.
@@ -59,6 +61,7 @@ const ANNOTATED = [
 
 afterEach(() => {
   delete process.env.FISH_S2_PERFORMANCE;
+  delete process.env.FISH_S2_HOSTED_SAMPLING;
   delete process.env.MODAL_S2_SAMPLING;
   delete process.env.MODAL_S2_TTS_URL;
   delete process.env.CLONE_TTS_PROVIDER;
@@ -73,7 +76,11 @@ describe("fish performance flag", () => {
     expect(plain).not.toContain("audience laughing");
     expect(plain).not.toContain("[whispering]");
     expect(fishSpokenSection(PASSAGE)).toBe(PASSAGE);
-    expect(fishPerformanceSampling()).toBeNull();
+    expect(fishSpokenSection("She said [whisper")).toBe("She said [whisper");
+    expect(narrationScriptForSynthesis("She said [whisper", "fish")).toBe(
+      toFishPlainNarration("She said [whisper")
+    );
+    expect(fishHostedSampling()).toBeNull();
   });
 
   it("annotates the same passage from the words and a listen-prep mark", () => {
@@ -99,10 +106,71 @@ describe("fish performance flag", () => {
     ).toBe("The morning was bright and still.");
   });
 
-  it("does not tag Edge, and leaves the preview one-liner alone", () => {
+  it("never speaks a cut, unknown, or misplaced bracket", () => {
     process.env.FISH_S2_PERFORMANCE = "1";
-    const edge = narrationScriptForSynthesis(PASSAGE, "edge");
-    expect(edge).not.toMatch(/\[(?:whispering|sighing|shouting|sad|in a hurry tone)\]/);
+    const left = fishSpokenSection("The harbor was quiet [whis");
+    const right = fishSpokenSection("pering] after the rain she watched the boats.");
+    expect(left).not.toMatch(/\[|\]|whis/);
+    expect(right).not.toMatch(/\[|\]|pering/);
+    const joined = fishSpokenSection(
+      "The harbor was quiet [whispering] after the rain she watched the boats."
+    );
+    expect(joined).not.toMatch(/\[|\]|whisper/);
+    const acrossChunks = fishSpokenSection(
+      "The harbor was quiet [whis\npering] after the rain she watched the boats."
+    );
+    expect(acrossChunks).not.toMatch(/\[|\]|whis|pering/);
+    expect(fishPerformanceScript(`"Don't [narrator voice] tell," she whispered.`)).toBe(
+      `[whispering] "Don't tell," she whispered.`
+    );
+    expect(fishPerformanceScript("see [12] boats in the harbor tonight.")).not.toMatch(/\[|\]/);
+    expect(fishPerformanceScript("The count was 3[4]5 before dawn today.")).not.toMatch(/\[|\]/);
+    expect(fishPerformanceScript("Mr. [sic] Smith whispered the name again.")).toBe(
+      "[whispering] Mr. Smith whispered the name again."
+    );
+    expect(stripUnspokenBrackets("She said [whisper")).toBe("She said");
+    expect(stripUnspokenBrackets("She said [in a hurry")).toBe("She said");
+  });
+
+  it("does not put a break inside quotes, numbers, or an abbreviation", () => {
+    process.env.FISH_S2_PERFORMANCE = "1";
+    const quoted =
+      '"She waited at the rail for a long time, listening to the water move against the piles, and then she said it was too late to go back ... the lights on the far shore had already gone out for the night."';
+    expect(quoted.length).toBeGreaterThan(160);
+    expect(applyFishPerformance(quoted)).not.toContain("[break]");
+    const numbered =
+      "The census listed one hundred forty towns across the valley, and the range ran from 12 ... 40 before the road gave out and the last houses disappeared into the trees.";
+    expect(numbered.length).toBeGreaterThan(160);
+    expect(applyFishPerformance(numbered)).not.toContain("[break]");
+    const abbreviated =
+      "The party walked for a long while with Mr. ... Smith still talking about the harbor lights and the long road that led back into town after dark, long after the last boat had left the quay.";
+    expect(abbreviated.length).toBeGreaterThan(160);
+    expect(applyFishPerformance(abbreviated)).not.toContain("[break]");
+    expect(applyFishPerformance("Mr. Smith whispered the name again.")).toBe(
+      "[whispering] Mr. Smith whispered the name again."
+    );
+  });
+
+  it("does not tag Edge, Kokoro, or Paradee, and leaves the preview one-liner alone", () => {
+    const edgeBefore = narrationScriptForSynthesis(PASSAGE, "edge");
+    const variants = {
+      drew: takehomeCacheVariant("drew"),
+      george: takehomeCacheVariant("george"),
+      sowell: takehomeCacheVariant("sowell"),
+      paradee: takehomeCacheVariant("paradee"),
+      edge: takehomeCacheVariant("edge"),
+    };
+    process.env.FISH_S2_PERFORMANCE = "1";
+    expect(narrationScriptForSynthesis(PASSAGE, "edge")).toBe(edgeBefore);
+    expect(narrationScriptForSynthesis(PASSAGE, "drew")).toBe(PASSAGE);
+    expect(narrationScriptForSynthesis(PASSAGE, "george")).toBe(PASSAGE);
+    expect(narrationScriptForSynthesis(PASSAGE, "sowell")).toBe(PASSAGE);
+    expect(narrationScriptForSynthesis(PASSAGE, "paradee")).toBe(PASSAGE);
+    expect(takehomeCacheVariant("drew")).toBe(variants.drew);
+    expect(takehomeCacheVariant("george")).toBe(variants.george);
+    expect(takehomeCacheVariant("sowell")).toBe(variants.sowell);
+    expect(takehomeCacheVariant("paradee")).toBe(variants.paradee);
+    expect(takehomeCacheVariant("edge")).toBe(variants.edge);
     expect(narrationScriptForSynthesis(PREVIEW_TEXT, "fish")).toBe(
       toFishPlainNarration(PREVIEW_TEXT)
     );
@@ -175,11 +243,46 @@ describe("fish performance flag", () => {
     delete process.env.CLONE_TTS_PROVIDER;
   });
 
-  it("clamps hosted sampling to the API range", () => {
+  it("hashes the spoken script only while the flag is on", () => {
+    const source = `"They will hear us."`;
+    const previous = `"Don't tell anyone," she whispered.`;
+    const identity = {
+      voiceId: "v",
+      model: "m",
+      index: 1,
+      providerId: "fish",
+      catalogVoiceId: "standard",
+    };
+    const off = takehomeSectionCacheKey({
+      ...identity,
+      text: fishSectionCacheText(source, "should-not-be-hashed"),
+    });
+    expect(off).toBe(takehomeSectionCacheKey({ ...identity, text: source }));
+    expect(takehomeCacheVariant("fish", "standard")).toBe("fish-plain-v1");
     process.env.FISH_S2_PERFORMANCE = "1";
-    expect(fishPerformanceSampling()).toEqual({ temperature: 0.9, topP: 0.9 });
+    const carried = fishSpokenSection(source, { previousText: previous });
+    const plain = fishSpokenSection(source);
+    expect(carried).not.toBe(plain);
+    const carriedKey = takehomeSectionCacheKey({
+      ...identity,
+      text: fishSectionCacheText(source, carried),
+    });
+    const plainKey = takehomeSectionCacheKey({
+      ...identity,
+      text: fishSectionCacheText(source, plain),
+    });
+    expect(carriedKey).not.toBe(plainKey);
+    expect(carriedKey).not.toBe(off);
+    expect(takehomeCacheVariant("fish", "standard")).toBe("fish-performance-v1");
+  });
+
+  it("clamps hosted sampling only when that flag is on", () => {
+    process.env.FISH_S2_PERFORMANCE = "1";
+    expect(fishHostedSampling()).toBeNull();
+    process.env.FISH_S2_HOSTED_SAMPLING = "1";
+    expect(fishHostedSampling()).toEqual({ temperature: 0.9, topP: 0.9 });
     process.env.MODAL_S2_SAMPLING = "2,0";
-    expect(fishPerformanceSampling()).toEqual({ temperature: 1, topP: 0.06 });
+    expect(fishHostedSampling()).toEqual({ temperature: 1, topP: 0.06 });
   });
 
   it("stashes marks for the upload without a second read", () => {

@@ -22,6 +22,7 @@
 import {
   applyFishPerformance,
   fishPerformanceEnabled,
+  stripUnspokenBrackets,
   type PerformanceMark,
 } from "@/lib/tts/fish-performance";
 
@@ -268,8 +269,7 @@ export function fishSpokenSection(
 
 /** Drop every square bracket before the plain narration, so a refused tag is not spoken. */
 function plainForPerformance(speakable: string): string {
-  const stripped = (speakable ?? "").replace(/\[[^\[\]]*\]/g, " ");
-  return toFishPlainNarration(stripped);
+  return toFishPlainNarration(stripUnspokenBrackets(speakable ?? ""));
 }
 
 export function narrationScriptForSynthesis(
