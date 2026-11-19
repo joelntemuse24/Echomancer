@@ -11,11 +11,19 @@
  * because custom `<break>` is 1007). OpenRouter / Gemini /
  * Grok would speak the words, so they stay untagged.
  *
- * Fish receives the cleaned words with no square-bracket cues.
- * Edge / Google keep `[break]` / `[long-break]` as a pause IR.
+ * Fish receives the cleaned words with no square-bracket cues, unless
+ * `FISH_S2_PERFORMANCE` is on. That flag inserts a validated S2 tag
+ * subset at send time (`fish-performance.ts`). Edge / Google keep
+ * `[break]` / `[long-break]` as a pause IR either way.
  * Narration does not prepend `[conversational seminar tone]`.
  * `deliveryPrefix` is still accepted and ignored so stored jobs parse.
  */
+
+import {
+  applyFishPerformance,
+  fishPerformanceEnabled,
+  type PerformanceMark,
+} from "@/lib/tts/fish-performance";
 
 import { isSpeakableHeading, isChapterHeading, splitSentences } from "@/lib/tts/speakable-text";
 import {
@@ -227,13 +235,60 @@ export function usesNarrationPauseScript(providerId: string): boolean {
   return PAUSE_SCRIPT_PROVIDERS.has(providerId);
 }
 
+/**
+ * Fish text with performance tags. While the flag is off this is the
+ * plain narration, so a caller that has not opted in stays on today's
+ * script. The self-hosted lane uses `fishSpokenSection`, which returns
+ * the frozen string unchanged while the flag is off.
+ */
+export function fishPerformanceScript(
+  speakable: string,
+  opts?: { previousText?: string; marks?: readonly PerformanceMark[] }
+): string {
+  if (!fishPerformanceEnabled()) return toFishPlainNarration(speakable);
+  const previous = opts?.previousText ? plainForPerformance(opts.previousText) : "";
+  return applyFishPerformance(plainForPerformance(speakable), {
+    previousText: previous,
+    marks: opts?.marks,
+  });
+}
+
+/**
+ * The string the self-hosted clone lane sends. Flag off: the frozen
+ * section, byte for byte. Flag on: the same annotated script the
+ * per-section path speaks.
+ */
+export function fishSpokenSection(
+  text: string,
+  opts?: { previousText?: string; marks?: readonly PerformanceMark[] }
+): string {
+  if (!fishPerformanceEnabled()) return text;
+  return fishPerformanceScript(text, opts);
+}
+
+/** Drop every square bracket before the plain narration, so a refused tag is not spoken. */
+function plainForPerformance(speakable: string): string {
+  const stripped = (speakable ?? "").replace(/\[[^\[\]]*\]/g, " ");
+  return toFishPlainNarration(stripped);
+}
+
 export function narrationScriptForSynthesis(
   speakable: string,
   providerId: string,
-  opts?: { deliveryPrefix?: boolean; pauseStyle?: "sparse" | "normal" }
+  opts?: {
+    deliveryPrefix?: boolean;
+    pauseStyle?: "sparse" | "normal";
+    previousText?: string;
+    performanceMarks?: readonly PerformanceMark[];
+  }
 ): string {
   if (!usesNarrationPauseScript(providerId)) return speakable;
-  if (providerId === "fish") return toFishPlainNarration(speakable);
+  if (providerId === "fish") {
+    return fishPerformanceScript(speakable, {
+      previousText: opts?.previousText,
+      marks: opts?.performanceMarks,
+    });
+  }
   const source = stripFishDeliveryCues(speakable);
   return stripFishDeliveryCues(
     toFishNarrationScript(source, {

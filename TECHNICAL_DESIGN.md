@@ -796,6 +796,22 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 with ending punctuation, scene-break lines dropped, no square-bracket cues.
 A book's own `[brackets]` become parentheses. Allowlisted S2 tags are removed.
 
+`FISH_S2_PERFORMANCE` (default off) is the exception. While it is on, the
+same listen-prep request also returns a sparse `marks` list, and Fish
+synthesis — the hosted API and the self-hosted lane — speaks
+`fishPerformanceScript`: plain words, then a validated S2 tag
+(`[whispering]`, `[sighing]`, and the rest of the published cue list).
+Unknown tags and crowd effects are removed, so they are not spoken.
+Lexical cues (whispered, sighed, shouted, breathless) do not need a
+mark. A delivery tag continues into a following quoted sentence, including
+the first sentence of the next section when the previous section ended
+on that delivery. Generated audio codes are not carried across sections.
+The hosted request then also sends temperature and top_p from
+`MODAL_S2_SAMPLING` (default 0.9, 0.9) and `condition_on_previous_chunks`.
+The section cache variant gains `-perf` / `fish-performance-v1`, so a
+plain take is not replayed as a tagged one. Edge, Google, Kokoro, and
+Paradee stay on their own scripts.
+
 `toFishNarrationScript` is the Edge / Google pause IR. It:
 
 - puts `[long-break]` after headings and between paragraphs

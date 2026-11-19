@@ -22,6 +22,13 @@ import {
   type ListenPrepFetch,
   type ListenPrepResult,
 } from "@/lib/tts/listen-prep";
+import {
+  fishPerformanceEnabled,
+  normalizePerformanceMarks,
+  rememberFishPerformanceMarks,
+  takeFishPerformanceMarks,
+  type PerformanceMark,
+} from "@/lib/tts/fish-performance";
 
 export const LISTEN_CLEANED_NAME = "listen-cleaned.txt";
 export const LISTEN_PREP_NAME = "listen-prep.json";
@@ -58,6 +65,8 @@ type PrepRecord = {
   narratorSettled?: boolean;
   attempts?: number;
   chunks?: ListenChunkRecord[];
+  /** Fish S2 performance anchors. Absent when the flag was off for this pass. */
+  marks?: PerformanceMark[];
   /** Hash of the text last written to listen-cleaned.txt. */
   cleanedHash?: string;
   /** True when the pass ran with chapter-heading protection. */
@@ -148,6 +157,9 @@ export async function readListenPrepCache(
   if (!record.narratorSettled) return null;
   try {
     const text = (await downloadFile(cleanedKey(uploadId))).toString("utf8");
+    if (fishPerformanceEnabled()) {
+      rememberFishPerformanceMarks(uploadId, normalizePerformanceMarks(record.marks));
+    }
     return {
       text,
       sourceHash: record.sourceHash,
@@ -156,6 +168,42 @@ export async function readListenPrepCache(
     };
   } catch {
     return null;
+  }
+}
+
+const marksInflight = new Map<string, Promise<PerformanceMark[]>>();
+
+/**
+ * Marks for this upload. A hit in memory returns immediately. A storage
+ * read is capped at 1.5s so a slow object cannot hold the first section;
+ * the read still fills the memory copy for the next tick.
+ */
+export async function loadStoredPerformanceMarks(
+  uploadId: string
+): Promise<PerformanceMark[]> {
+  if (!fishPerformanceEnabled()) return [];
+  const known = takeFishPerformanceMarks(uploadId);
+  if (known) return known;
+  let pending = marksInflight.get(uploadId);
+  if (!pending) {
+    pending = readRecord(uploadId)
+      .then((record) => {
+        const marks = normalizePerformanceMarks(record?.marks);
+        rememberFishPerformanceMarks(uploadId, marks);
+        return marks;
+      })
+      .catch(() => [] as PerformanceMark[])
+      .finally(() => marksInflight.delete(uploadId));
+    marksInflight.set(uploadId, pending);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<PerformanceMark[]>((resolve) => {
+    timer = setTimeout(() => resolve(takeFishPerformanceMarks(uploadId) ?? []), 1_500);
+  });
+  try {
+    return await Promise.race([pending, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -213,7 +261,9 @@ async function writePrep(
     chunks: prep.chunks,
     cleanedHash: hash,
     protectedHeadings,
+    ...(prep.marks.length ? { marks: prep.marks } : {}),
   };
+  if (fishPerformanceEnabled()) rememberFishPerformanceMarks(uploadId, prep.marks);
   await uploadFile(
     `pdfs/${uploadId}`,
     LISTEN_PREP_NAME,

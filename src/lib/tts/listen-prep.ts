@@ -19,6 +19,14 @@ import { normalizeNumbersAndAbbreviations } from "@/lib/tts/normalize-speakable"
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 import { mapPool } from "@/lib/async-pool";
 import { openRouterChatUrl, unwrapJsonObject } from "@/lib/tts/openrouter-chat";
+import {
+  canonicalPerformanceCue,
+  FISH_PERFORMANCE_MARKS_INSTRUCTION,
+  FISH_PERFORMANCE_MARKS_PER_CHUNK,
+  fishPerformanceEnabled,
+  resolveChunkMarks,
+  type PerformanceMark,
+} from "@/lib/tts/fish-performance";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
@@ -85,6 +93,8 @@ export type ListenOps = {
   /** Spoken replacements that already passed the letter-loss guard. */
   replacements?: ListenEdit[];
   note?: ListenNote | null;
+  /** Line-id cues. Empty unless FISH_S2_PERFORMANCE is on. Never fails the chunk. */
+  marks?: Array<{ id: number; cue: string }>;
 };
 
 /** A replacement may not delete more of the paragraph than this, unless it is clutter. */
@@ -115,12 +125,15 @@ export type ListenPrepResult = {
   sample: string;
   /** Per chunk, in order. `ok` is a primary-model success, not a fallback or fail-open. */
   chunks: ListenChunkRecord[];
+  /** Performance anchors for Fish S2. Empty unless the flag is on. */
+  marks: PerformanceMark[];
 };
 
 export type ListenChunkRecord = {
   ok: boolean;
   text: string;
   note: ListenNote | null;
+  marks?: PerformanceMark[];
 };
 
 type LineSpan = {
@@ -204,8 +217,10 @@ export function listenPrepPassWaitMs(
 
 /** Bake-off prompt, plus a per-chunk note for the narrator suggestion. */
 export function listenPrepSystemPrompt(): string {
-  return `${BAKEOFF_SYSTEM_PROMPT}
+  const base = `${BAKEOFF_SYSTEM_PROMPT}
 Also include "note" for this chunk only: {"kind":"article"|"biography"|"history"|"nonfiction"|"novel"|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}.`;
+  if (!fishPerformanceEnabled()) return base;
+  return `${base}\n${FISH_PERFORMANCE_MARKS_INSTRUCTION}`;
 }
 
 const BAKEOFF_SYSTEM_PROMPT = `You clean up the text of a book before it is read aloud as an audiobook.
@@ -369,7 +384,34 @@ export function coerceListenOps(value: unknown, lineCount: number): ListenOps | 
     }
   }
   if (!Array.isArray(row.edits) && !Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
-  return { drop, headings: ids(row.headings), replacements, note: coerceListenNote(row.note) };
+  return {
+    drop,
+    headings: ids(row.headings),
+    replacements,
+    note: coerceListenNote(row.note),
+    marks: coercePerformanceMarks((row as { marks?: unknown }).marks, lineCount),
+  };
+}
+
+function coercePerformanceMarks(
+  raw: unknown,
+  lineCount: number
+): Array<{ id: number; cue: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ id: number; cue: string }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const mark = item as { id?: unknown; cue?: unknown };
+    const idList: number[] = [];
+    addListenId(idList, mark.id, lineCount);
+    const id = idList[0];
+    if (id == null || typeof mark.cue !== "string") continue;
+    const cue = canonicalPerformanceCue(mark.cue);
+    if (!cue) continue;
+    out.push({ id, cue });
+    if (out.length >= FISH_PERFORMANCE_MARKS_PER_CHUNK) break;
+  }
+  return out;
 }
 
 function countableLetters(value: string): number {
@@ -884,6 +926,7 @@ async function cleanChunk(opts: {
   rejected: boolean;
   sample: string;
   note: ListenNote | null;
+  marks: PerformanceMark[];
   ms: number;
   fallback: boolean;
   ok: boolean;
@@ -932,6 +975,7 @@ async function cleanChunk(opts: {
     rejected: false,
     sample: "",
     note: null as ListenNote | null,
+    marks: [] as PerformanceMark[],
     ms: 0,
     fallback: false,
     ok: false,
@@ -972,11 +1016,18 @@ async function cleanChunk(opts: {
         failOpen: false,
         rejected: true,
         note: ops.note ?? null,
+        marks: resolveChunkMarks(
+          ops.marks,
+          lineSpans(opts.chunk),
+          dropIds,
+          replacements
+        ),
         fallback: posted.fallback,
         ok: !posted.fallback,
       });
     }
     const lines = lineSpans(opts.chunk);
+    const marks = resolveChunkMarks(ops.marks, lines, dropIds, replacements);
     const sample =
       lines.find((line) => dropIds.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
       replacements[0]?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
@@ -988,6 +1039,7 @@ async function cleanChunk(opts: {
       rejected: dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
       note: ops.note ?? null,
+      marks,
       fallback: posted.fallback,
       ok: !posted.fallback,
     });
@@ -1083,7 +1135,7 @@ export function listenPrepRequestBody(
       json_schema: {
         name: "listen_prep",
         strict: true,
-        schema: LISTEN_PREP_SCHEMA,
+        schema: listenPrepSchema(),
       },
     },
     provider: listenPrepProvider(model, route),
@@ -1127,6 +1179,31 @@ const LISTEN_PREP_SCHEMA = {
   },
   required: ["edits", "headings", "note"],
 } as const;
+
+const LISTEN_PREP_MARKS_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      id: { type: "string" },
+      cue: { type: "string" },
+    },
+    required: ["id", "cue"],
+  },
+} as const;
+
+function listenPrepSchema(): object {
+  if (!fishPerformanceEnabled()) return LISTEN_PREP_SCHEMA;
+  return {
+    ...LISTEN_PREP_SCHEMA,
+    properties: {
+      ...LISTEN_PREP_SCHEMA.properties,
+      marks: LISTEN_PREP_MARKS_SCHEMA,
+    },
+    required: ["edits", "headings", "note", "marks"],
+  };
+}
 
 let globalActive = 0;
 const globalWaiters: Array<() => void> = [];
@@ -1180,6 +1257,7 @@ export async function prepareForListening(
     notes: [],
     sample: "",
     chunks: [],
+    marks: [],
   };
   if (!text.trim()) return empty;
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
@@ -1214,6 +1292,7 @@ export async function prepareForListening(
           rejected: false,
           sample: "",
           note: saved.note,
+          marks: saved.marks ?? [],
           ms: 0,
           fallback: false,
           ok: true,
@@ -1249,6 +1328,12 @@ export async function prepareForListening(
     fallbackChunks: cleaned.filter((chunk) => chunk.fallback).length,
     notes: cleaned.flatMap((chunk) => (chunk.note ? [chunk.note] : [])),
     sample: cleaned.find((chunk) => chunk.sample)?.sample || "",
-    chunks: cleaned.map((chunk) => ({ ok: chunk.ok, text: chunk.text, note: chunk.note })),
+    chunks: cleaned.map((chunk) => ({
+      ok: chunk.ok,
+      text: chunk.text,
+      note: chunk.note,
+      ...(chunk.marks.length ? { marks: chunk.marks } : {}),
+    })),
+    marks: cleaned.flatMap((chunk) => chunk.marks),
   };
 }
