@@ -42,7 +42,14 @@ export const DREW_IN_FLIGHT = 2;
  * from a take recorded under this one. Bump with the volume paths.
  */
 export const DREW_WEIGHTS_ID = "stageA-step00900";
-export const DREW_CACHE_VARIANT = `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-v1`;
+/**
+ * Tensor index pinned for every Drew chunk. Mirrors
+ * `DREW_FIXED_STYLE_INDEX` in `scripts/sowell/drew.py`. The checkpoint
+ * itself did not change; the cache key still moves, because a section
+ * recorded under the length-indexed pack is a different take.
+ */
+export const DREW_FIXED_STYLE_INDEX = 300;
+export const DREW_CACHE_VARIANT = `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-v2`;
 
 /** Volume and object paths the operator must upload to, in one place. */
 export const DREW_VOLUME_NAME = "andrew-distill";

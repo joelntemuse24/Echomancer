@@ -19,8 +19,13 @@ import {
   masterLoudnormAf,
   MODAL_S2_MASTERING,
   masterPodcastFiltersAf,
+  masterPreLoudnormAf,
   masterProfessionalAf,
   masterProfessionalLinearAf,
+  planSectionLoudness,
+  SHORT_SECTION_MASTER_SECONDS,
+  shortSectionApplyAf,
+  shortSectionGainDb,
   masterProfessionalMeasureAf,
   masterS2Af,
   masterS2LinearAf,
@@ -84,6 +89,27 @@ describe("mastering constants", () => {
     expect(graph).toContain(`LRA=${MASTER_LOUDNORM_LRA}`);
     expect(graph).toContain("highpass=f=80");
     expect(graph).toContain("deesser=");
+    expect(SHORT_SECTION_MASTER_SECONDS).toBe(3);
+    expect(planSectionLoudness(2.9)).toBe("short-gain");
+    expect(planSectionLoudness(3)).toBe("two-pass");
+    expect(planSectionLoudness(null)).toBe("two-pass");
+    const short = shortSectionApplyAf(shortSectionGainDb(-30, MASTER_LOUDNORM_I), MASTER_LOUDNORM_TP);
+    expect(short).not.toContain("loudnorm");
+    expect(short).not.toContain("linear=true");
+    expect(short).toContain("alimiter=");
+    expect(short).toContain("level=false");
+    expect(shortSectionGainDb(-80, -16)).toBe(24);
+    expect(shortSectionGainDb(-10, -16)).toBe(-6);
+    const pre = masterPreLoudnormAf("podcast");
+    expect(pre).not.toContain("loudnorm");
+    expect(pre).toContain("highpass=f=80");
+    expect(masterProfessionalLinearAf({
+      input_i: -24,
+      input_tp: -3,
+      input_lra: 4,
+      input_thresh: -34,
+      target_offset: 0,
+    })).toContain("linear=true");
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
       expect.arrayContaining([

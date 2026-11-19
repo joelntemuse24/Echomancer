@@ -22,6 +22,10 @@ GEORGE_VOICE_ID = "bm_george"
 GEORGE_VOICE_FILE = "voices/bm_george.pt"
 GEORGE_VOICE_SHA256 = "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b"
 SOWELL_VOICE_ID = "am_sowell"
+# None keeps Kokoro's length index. Set an int only when the pack's rows
+# move with length the way Drew's do. Measured packs that stay flat
+# (George, am_michael) stay None so their takes are not thrown away.
+SOWELL_FIXED_STYLE_INDEX: int | None = None
 # Drew is its own fine-tuned kmodel, not a pack on stock Kokoro. See drew.py.
 DREW_VOICE_ID = "drew"
 _VOICE_ALIASES = {

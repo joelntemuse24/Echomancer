@@ -50,6 +50,7 @@ from drew import (
     load_kmodel,
     load_voice_pack,
 )
+from style import fixed_style_index, pin_style
 
 MAX_CHARS = 2000
 PHONEME_CAP = 510
@@ -297,7 +298,9 @@ class SowellEngine:
             self._drew_pipes = {
                 "a": pipeline_cls(lang_code="a", repo_id=PINNED_REPO, model=model),
             }
-            self._drew_pack = pack
+            # One row, copied across the pack at load. Infer still indexes
+            # with the phoneme count and still receives drew_speed(speed).
+            self._drew_pack = pin_style(pack, fixed_style_index(DREW_VOICE_ID))
             self.init_count += 1
             return True
         except (DrewPackError, PackError) as err:
@@ -343,6 +346,7 @@ class SowellEngine:
             "spokenWords": len(words(spoken)),
             "voice": voice_id,
             "speed": drew_speed(speed) if voice_id == DREW_VOICE_ID else 1.0,
+            "styleIndex": fixed_style_index(voice_id),
         }
         return _wav_bytes(audio), report
 
@@ -370,8 +374,10 @@ class SowellEngine:
             "b": KPipeline(lang_code="b", repo_id=PINNED_REPO, model=model),
         }
         self._packs = {
-            SOWELL_VOICE_ID: pack,
-            GEORGE_VOICE_ID: self._load_george_voice(),
+            SOWELL_VOICE_ID: pin_style(pack, fixed_style_index(SOWELL_VOICE_ID)),
+            GEORGE_VOICE_ID: pin_style(
+                self._load_george_voice(), fixed_style_index(GEORGE_VOICE_ID)
+            ),
         }
         self.init_count += 1
 
