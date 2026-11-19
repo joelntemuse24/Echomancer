@@ -709,6 +709,69 @@ def test_render_batch_waits_on_a_busy_gpu_instead_of_opening_another(
         worker.gpu.close()
 
 
+def test_two_render_batches_do_not_overlap_cuda(service, stub_master, monkeypatch):
+    """max_inputs=2 can admit two renders. Their CUDA must not overlap.
+
+    The lock is a threading.Lock held for the whole gpu_work, and the
+    executor runs one job on one thread. A second render waits outside
+    engine.render, so it cannot replay a CUDA graph beside the first.
+    """
+    import threading
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    worker = _worker_with_recording_engine(service)
+    inflight = 0
+    peak = 0
+    state = threading.Lock()
+    entered = threading.Event()
+    release_first = threading.Event()
+    original = worker.engine.render
+
+    def render(slots, ref, sampling, on_section=None):
+        nonlocal inflight, peak
+        with state:
+            inflight += 1
+            peak = max(peak, inflight)
+        if not entered.is_set():
+            entered.set()
+            release_first.wait(5)
+        try:
+            return original(slots, ref, sampling, on_section)
+        finally:
+            with state:
+                inflight -= 1
+
+    worker.engine.render = render
+    errors: list = []
+
+    def run() -> None:
+        try:
+            service.S2CloneWorker.render_batch(worker, _batch_payload())
+        except Exception as err:
+            errors.append(err)
+
+    first = threading.Thread(target=run)
+    second = threading.Thread(target=run)
+    try:
+        first.start()
+        assert entered.wait(2)
+        second.start()
+        time.sleep(0.05)
+        assert peak == 1
+        release_first.set()
+        first.join(5)
+        second.join(5)
+        assert errors == []
+        assert peak == 1
+        renders = [name for name, _ident in worker.engine.threads if name == "render"]
+        assert len(renders) == 2
+    finally:
+        release_first.set()
+        first.join(2)
+        second.join(2)
+        worker.gpu.close()
+
+
 def test_prewarm_cancel_does_not_kill_the_shared_container():
     from pathlib import Path
 
