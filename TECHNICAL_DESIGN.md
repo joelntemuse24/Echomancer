@@ -1490,14 +1490,17 @@ Inductor's warm disk cache on the `echomancer-compile-cache` volume, or
 `/opt/torchinductor` when `S2C_COMPILE_CACHE=0`) and re-runs `_warm_kv_buckets()`,
 logs `graphs=recaptured(24)` and only fails on a second failure.
 The mega-cache file is read as bytes and passed to `load_cache_artifacts`; a
-path string is not a cache. A corrupt mega-cache stays on the volume, and
-Inductor and Triton files in that same published run are still the cache a
-later worker uses when the torch version, GPU name, and compute capability
-match. Those directories are written onto `torch._inductor.config` and
-Triton's cache knobs after import, because the image default is captured at
-import and a hit that leaves it there compiles into `/opt/torchinductor`. A
-new run directory is created only when the published tree has neither a
-loadable mega-cache nor those files.
+path string is not a cache. torch 2.15's loader returns None when the bytes
+do not install, and that None is a failed load. The process environment is
+pointed at the published run before that load: `cache_dir()` reads
+`TORCHINDUCTOR_CACHE_DIR` on every call, and `populate_cache` writes the
+graphs there. A corrupt mega-cache stays on the volume. Inductor and Triton
+files already in that same published run are still the cache a later worker
+uses when the torch version, GPU name, and compute capability match. A lock
+or a temp file does not count. `torch._inductor.config` and Triton's knobs
+are pointed at the same directory after import. A new run directory is
+created only when the published tree has neither a loadable mega-cache nor
+those artifact files.
 `check-cudagraphs.py` accepts zero `cudagraph_skips` plus both `ok(N)` and
 `recaptured(N)`, with `N` equal to `--expect-shapes`.
 
@@ -3053,13 +3056,19 @@ A budget breach fails that book. It does not park it as cold and it does
 not switch narrator. Dollars come from persisted `remote_calls` rows, stored
 in milliseconds. A reload replaces that book's reservations instead of
 appending them. Overlapping Kokoro lanes count as one wall clock. The daily
-figure is the overlap of each call with the trailing 24 hours, and one call
-is never charged longer than the book time budget: an abandoned row whose
-end was moved forward by a later cleanup pass cannot fill the day. Startup
-and the hourly pass clamp those stored ends once and close stale open rows;
-a second pass does not move the end. Fish hosted-API renders and every
-preview are outside that GPU budget, so a preview is never refused with
-"This book is over its remote-call budget." Under
+figure is the overlap of each call with the trailing 24 hours. One call is
+never charged longer than the book time budget, and the slice that is kept
+is the most recent one, so GPU time that still sits in the trailing day is
+not dropped in favour of hours that already fell out of it. An in-flight
+estimate stays on the ledger until the call ends. Elapsed time merges
+across parallel lanes; reservations still in the future are summed, because
+those calls run one after another. An abandoned row whose end was moved
+forward by a later cleanup pass is clamped once at startup and again each
+hour; a second pass does not move the end. A started row whose own end was
+slid is marked abandoned by that clamp, so the load does not treat the
+clamped span as still open and stretch it back to now. Fish hosted-API renders are
+outside that GPU budget. A clone, Kokoro, or Modal CPU call still counts
+when its path is `preview`. Under
 Vitest budgets are off unless `REMOTE_ENFORCE_BUDGETS=1`.
 
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal

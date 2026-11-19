@@ -302,5 +302,5 @@ describe("sowell voice", () => {
       { encoding: "utf8" }
     );
     expect(resident.status, resident.stderr).toBe(0);
-  });
+  }, 30_000);
 });

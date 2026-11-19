@@ -141,7 +141,8 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
 /**
  * Dollars and wall-clock spans from persisted `started` rows.
  * The end is the earliest terminal end for that flight, so a later cleanup
- * pass that writes a newer `ended_at` cannot stretch the charge.
+ * pass that writes a newer `ended_at` cannot stretch the charge. A row the
+ * repair marked abandoned is closed. A call that is still open is not.
  */
 export async function loadPersistedSpend(): Promise<void> {
   const rows = await query<{
@@ -151,27 +152,35 @@ export async function loadPersistedSpend(): Promise<void> {
     path: SpendRow["path"];
     est_cost_usd: number | null;
     started_at: number;
-    ended_at: number | null;
+    status: string | null;
+    terminal_end: number | null;
+    any_end: number | null;
   }>(
     `SELECT s.flight_key, s.job_id, s.provider, s.path, s.est_cost_usd, s.started_at,
-            COALESCE(
-              (SELECT MIN(e.ended_at) FROM remote_calls e
-                WHERE e.flight_key = s.flight_key
-                  AND e.ended_at IS NOT NULL
-                  AND e.ended_at > s.started_at
-                  AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')),
-              (SELECT MIN(e.ended_at) FROM remote_calls e
-                WHERE e.flight_key = s.flight_key
-                  AND e.ended_at IS NOT NULL
-                  AND e.ended_at > s.started_at),
-              s.started_at
-            ) AS ended_at
+            s.status AS status,
+            (SELECT MIN(e.ended_at) FROM remote_calls e
+              WHERE e.flight_key = s.flight_key
+                AND e.ended_at IS NOT NULL
+                AND e.ended_at > s.started_at
+                AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+            ) AS terminal_end,
+            (SELECT MIN(e.ended_at) FROM remote_calls e
+              WHERE e.flight_key = s.flight_key
+                AND e.ended_at IS NOT NULL
+                AND e.ended_at > s.started_at
+            ) AS any_end
      FROM remote_calls s
      WHERE s.outcome = 'started'`
   );
   const loaded: SpendRow[] = rows.map((row) => {
     const start = asMs(Number(row.started_at));
-    const end = asMs(Number(row.ended_at)) || start;
+    const terminal = asMs(Number(row.terminal_end));
+    const anyEnd = asMs(Number(row.any_end));
+    // A terminal end, or the repair that marks the row abandoned, is final.
+    // An open call keeps accruing until that happens; a provisional
+    // still_live end must not freeze the charge below the real run.
+    const closed = terminal > start || row.status === "abandoned";
+    const end = terminal > start ? terminal : anyEnd > start ? anyEnd : start;
     const provider = row.provider;
     const path = row.path ?? "book";
     return {
@@ -183,16 +192,20 @@ export async function loadPersistedSpend(): Promise<void> {
       usd: Number(row.est_cost_usd ?? 0),
       start,
       end: end > start ? end : start,
-      closed: end > start,
+      closed,
     };
   });
   replacePersistedSpend(loaded);
 }
 
 /**
- * One-time, idempotent repair for rows whose end was pushed forward by a
- * later cleanup pass. Clamps the stored end to the per-call cap and closes
- * open rows that have already aged past that cap. Nothing is deleted.
+ * Idempotent repair for rows whose end was pushed forward by a later
+ * cleanup pass. Both statements are UPDATEs: the first rewrites only spans
+ * longer than the per-call cap, the second closes only open rows already
+ * older than that cap. A non-terminal row whose end was slid is marked
+ * abandoned, so the spend load treats that clamped span as closed instead
+ * of extending it to now. A call admitted now matches neither. Nothing is
+ * deleted. A second pass writes no rows.
  */
 export async function repairInflatedRemoteCalls(
   now = Date.now()
@@ -202,7 +215,11 @@ export async function repairInflatedRemoteCalls(
   try {
     const clamped = await execute(
       `UPDATE remote_calls
-       SET ended_at = started_at + ?
+       SET ended_at = started_at + ?,
+           status = CASE
+             WHEN outcome IN ('started', 'still_live', 'submit_unconfirmed') THEN 'abandoned'
+             ELSE status
+           END
        WHERE ended_at IS NOT NULL
          AND started_at > 0
          AND ended_at > started_at + ?`,

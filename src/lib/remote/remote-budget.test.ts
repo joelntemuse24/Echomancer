@@ -8,6 +8,7 @@ import {
   dailySpendOf,
   reapStaleFlights,
   remoteCallCapMs,
+  remoteEvents,
   replacePersistedSpend,
   resetRemoteLayerForTests,
   runRemoteCall,
@@ -37,26 +38,37 @@ describe("daily remote budget", () => {
     };
     expect(dailySpendOf([sixHoursEndingTwentyHoursAgo], now).ms).toBe(4 * HOUR);
 
+    // Ten real hours. The cap keeps the latest six, and four of those sit
+    // inside the trailing day. Dropping them to zero would admit another
+    // full day on top of GPU time that already ran.
     const tenHoursMostlyBeforeTheWindow: SpendRow = {
       key: "before",
+      provider: "s2-clone",
+      path: "book",
       usd: 1,
       start: now - 30 * HOUR,
       end: now - 20 * HOUR,
+      closed: true,
     };
     expect(chargedInterval(tenHoursMostlyBeforeTheWindow, now)).toEqual([
-      now - 30 * HOUR,
-      now - 24 * HOUR,
+      now - 26 * HOUR,
+      now - 20 * HOUR,
     ]);
-    expect(dailySpendOf([tenHoursMostlyBeforeTheWindow], now).ms).toBe(0);
+    expect(dailySpendOf([tenHoursMostlyBeforeTheWindow], now).ms).toBe(4 * HOUR);
 
+    // Unrepaired stretch: one cap, the most recent six hours, not the
+    // whole 34. Repair moves the stored end back so this becomes zero.
     const stretchedToNow: SpendRow = {
       key: "stretched",
+      provider: "s2-clone",
+      path: "book",
       usd: 4,
       start: now - 34 * HOUR,
       end: now,
+      closed: true,
     };
-    expect(chargedInterval(stretchedToNow, now)?.[1]).toBe(now - 34 * HOUR + remoteCallCapMs());
-    expect(dailySpendOf([stretchedToNow], now)).toEqual({ usd: 0, ms: 0 });
+    expect(chargedInterval(stretchedToNow, now)).toEqual([now - CAP, now]);
+    expect(dailySpendOf([stretchedToNow], now)).toEqual({ usd: 4, ms: CAP });
 
     const laneA: SpendRow = {
       key: "lane-a",
@@ -280,10 +292,24 @@ describe("daily remote budget", () => {
     });
     expect(quiet.kind).toBe("start");
     if (quiet.kind !== "start") return;
-    expect(reapStaleFlights(start + 33 * HOUR)).toBe(1);
-    expect(quiet.flight.endedAt).toBe(start + CAP);
+    const observed = start + 33 * HOUR;
+    expect(reapStaleFlights(observed)).toBe(1);
+    expect(quiet.flight.endedAt).toBe(observed);
     expect(reapStaleFlights(start + DAY)).toBe(0);
-    expect(quiet.flight.endedAt).toBe(start + CAP);
+    expect(quiet.flight.endedAt).toBe(observed);
+    const charged = chargedInterval(
+      {
+        key: quiet.flight.key,
+        provider: "s2-clone",
+        path: "book",
+        usd: 1,
+        start,
+        end: quiet.flight.endedAt ?? observed,
+        closed: true,
+      },
+      observed
+    );
+    expect(charged).toEqual([observed - CAP, observed]);
   });
 
   it("does not charge Fish or a preview, and never refuses a preview for the GPU day", async () => {
@@ -383,7 +409,8 @@ describe("daily remote budget", () => {
       enforceBudget: true,
       now,
     });
-    expect(clonePreview.kind).toBe("start");
+    expect(clonePreview.kind).toBe("blocked");
+    if (clonePreview.kind === "blocked") expect(clonePreview.reason).toBe("budget");
 
     await expect(
       runRemoteCall({
@@ -398,5 +425,217 @@ describe("daily remote budget", () => {
     ).resolves.toBe("preview-audio");
 
     expect(dailySpend(now).ms).toBe(18 * HOUR);
+  });
+
+  it("keeps an in-flight estimate so a second call cannot slip under the cap", () => {
+    const now = Date.now();
+    const caps = { bookMs: CAP, dailyMs: 12 * HOUR, bookUsd: 100, dailyUsd: 100 };
+    const first = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "holding",
+      sections: ["0"],
+      enforceBudget: true,
+      now,
+      estMs: 4 * HOUR,
+      caps,
+    });
+    expect(first.kind).toBe("start");
+    const second = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "holding",
+      sections: ["1"],
+      enforceBudget: true,
+      now: now + 5_000,
+      estMs: 4 * HOUR,
+      caps,
+    });
+    expect(second.kind).toBe("blocked");
+    if (second.kind === "blocked") expect(second.reason).toBe("budget");
+  });
+
+  it("sums serial reservations and still merges parallel Kokoro lanes", () => {
+    const now = Date.now();
+    const laneA: SpendRow = {
+      key: "lane-a",
+      provider: "kokoro",
+      path: "book",
+      usd: 0.01,
+      start: now - 1_000,
+      end: now - 1_000,
+      closed: false,
+    };
+    const laneB: SpendRow = { ...laneA, key: "lane-b" };
+    expect(dailySpendOf([laneA, laneB], now).ms).toBe(1_000);
+
+    const bookA: SpendRow = {
+      key: "s2-a",
+      provider: "s2-clone",
+      path: "book",
+      jobId: "a",
+      usd: 1,
+      start: now,
+      end: now + 4 * HOUR,
+    };
+    const bookB: SpendRow = { ...bookA, key: "s2-b", jobId: "b" };
+    expect(dailySpendOf([bookA, bookB], now).ms).toBe(8 * HOUR);
+  });
+
+  it("counts a real in-window tail so another full day cannot be admitted on top", () => {
+    const now = Date.now();
+    replacePersistedSpend([
+      {
+        key: "real-tail",
+        jobId: "old",
+        provider: "s2-clone",
+        path: "book",
+        gpu: false,
+        usd: 1,
+        start: now - 30 * HOUR,
+        end: now - 20 * HOUR,
+        closed: true,
+      },
+    ]);
+    expect(dailySpend(now).ms).toBe(4 * HOUR);
+    const caps = { bookMs: CAP, dailyMs: 12 * HOUR, bookUsd: 100, dailyUsd: 100 };
+    const first = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "next-a",
+      sections: ["0"],
+      enforceBudget: true,
+      now,
+      estMs: CAP,
+      caps,
+    });
+    expect(first.kind).toBe("start");
+    const second = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "next-b",
+      sections: ["0"],
+      enforceBudget: true,
+      now: now + 1_000,
+      estMs: CAP,
+      caps,
+    });
+    expect(second.kind).toBe("blocked");
+    if (second.kind === "blocked") expect(second.reason).toBe("budget");
+  });
+
+  it("does not let an open call grow past the cap, and a second reap leaves the end", () => {
+    const now = Date.now();
+    const open: SpendRow = {
+      key: "open",
+      provider: "s2-clone",
+      path: "book",
+      usd: 1,
+      start: now - 10 * HOUR,
+      end: now - 10 * HOUR,
+      closed: false,
+    };
+    expect(chargedInterval(open, now)).toEqual([now - CAP, now]);
+    expect(dailySpendOf([open], now).ms).toBe(CAP);
+    expect(chargedInterval(open, now + 4 * HOUR)).toEqual([now + 4 * HOUR - CAP, now + 4 * HOUR]);
+  });
+
+  it("mints an event id that is not reused after the process resets", () => {
+    const now = Date.now();
+    const first = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "id-a",
+      sections: ["0"],
+      now,
+    });
+    expect(first.kind).toBe("start");
+    const idA = remoteEvents()[0]?.id ?? "";
+    resetRemoteLayerForTests();
+    const second = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "id-b",
+      sections: ["0"],
+      now,
+    });
+    expect(second.kind).toBe("start");
+    const idB = remoteEvents()[0]?.id ?? "";
+    expect(idA).toMatch(/^rc_[0-9a-z]+_[0-9a-z]+_[0-9a-f]{8}$/);
+    expect(idB).toMatch(/^rc_[0-9a-z]+_[0-9a-z]+_[0-9a-f]{8}$/);
+    expect(idA).not.toBe(idB);
+    expect(idA).not.toBe("rc_1");
+  });
+
+  it("does not rewrite a call that is still inside the cap", async () => {
+    await resetDatabase();
+    const now = Date.now();
+    const key = "s2-clone|fresh|0";
+    await persistRemoteEvent({
+      id: "fresh-started",
+      flightKey: key,
+      idempotencyKey: key,
+      provider: "s2-clone",
+      path: "book",
+      jobId: "fresh",
+      section: "0",
+      outcome: "started",
+      startedAt: now - 1_000,
+      estCostUsd: 0.05,
+    });
+    const repaired = await repairInflatedRemoteCalls(now);
+    expect(repaired).toEqual({ clamped: 0, closed: 0 });
+    const row = await queryOne<{ ended_at: number | null; outcome: string; status: string }>(
+      `SELECT ended_at, outcome, status FROM remote_calls WHERE id = ?`,
+      ["fresh-started"]
+    );
+    expect(row?.ended_at ?? null).toBeNull();
+    expect(row?.outcome).toBe("started");
+    expect(row?.status).toBe("started");
+  });
+
+  it("closes a started row whose own end was slid, without stretching it to now", async () => {
+    await resetDatabase();
+    const now = Date.now();
+    const start = now - 34 * HOUR;
+    const key = "s2-clone|slid-start|0";
+    await persistRemoteEvent({
+      id: "slid-started",
+      flightKey: key,
+      idempotencyKey: key,
+      provider: "s2-clone",
+      path: "book",
+      jobId: "slid-start",
+      section: "0",
+      outcome: "started",
+      startedAt: start,
+      endedAt: now,
+      estCostUsd: 4,
+    });
+    const repaired = await repairInflatedRemoteCalls(now);
+    expect(repaired).toEqual({ clamped: 1, closed: 0 });
+    const row = await queryOne<{ ended_at: number; outcome: string; status: string }>(
+      `SELECT ended_at, outcome, status FROM remote_calls WHERE id = ?`,
+      ["slid-started"]
+    );
+    expect(Number(row?.ended_at)).toBe(Math.floor(start) + CAP);
+    expect(row?.outcome).toBe("started");
+    expect(row?.status).toBe("abandoned");
+    const again = await repairInflatedRemoteCalls(now + HOUR);
+    expect(again).toEqual({ clamped: 0, closed: 0 });
+
+    resetRemoteLayerForTests();
+    expect(await hydrateOpenRemoteCalls(now)).toBe(0);
+    expect(dailySpend(now).ms).toBe(0);
+    const admitted = admitRemoteCall({
+      provider: "s2-clone",
+      path: "book",
+      jobId: "after-slid",
+      sections: ["0"],
+      enforceBudget: true,
+      now,
+      estMs: 60_000,
+    });
+    expect(admitted.kind).toBe("start");
   });
 });

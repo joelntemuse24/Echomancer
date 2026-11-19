@@ -460,8 +460,17 @@ def _prepare_compile_cache(
             key_root=key_root,
             run_id=run_id,
         )
+        # Point the process at this run before the mega-cache load.
+        # torch 2.15 `cache_dir()` reads TORCHINDUCTOR_CACHE_DIR on every
+        # call and `populate_cache` writes there. Loading first drops the
+        # bytes into the image default (`/opt/torchinductor`), then the
+        # retarget points compile at a directory those bytes never reached.
+        had_files = _dirs_have_files(cache.inductor_dir, cache.triton_dir)
+        _point_cache_env(cache, environ)
         mega_state = _try_mega(cache.mega_path, loader)
-        if _run_usable(mega_state, cache.inductor_dir, cache.triton_dir):
+        # A failed load can write a partial file into the run. That file is
+        # not a reason to reuse an otherwise empty tree.
+        if mega_state == "loaded" or had_files:
             cache.hit = "hit"
             cache.persist = False
             if mega_state == "corrupt":
@@ -646,7 +655,11 @@ def _point_triton_cache(cache_dir: str) -> None:
         return
     try:
         for name in ("cache_dir", "default_cache_dir"):
-            if hasattr(triton_cache, name):
+            current = getattr(triton_cache, name, None)
+            # Triton 3.8 reads the directory from knobs (set above). These
+            # names, when present, are sometimes functions. Replacing a
+            # function with a path string makes the next caller fail.
+            if isinstance(current, str):
                 setattr(triton_cache, name, cache_dir)
         for name in ("default_cache_manager", "file_cache_manager"):
             manager = getattr(triton_cache, name, None)
@@ -656,12 +669,22 @@ def _point_triton_cache(cache_dir: str) -> None:
         print(f"[S2C] compile_cache triton cache skipped: {type(err).__name__}: {err}")
 
 
+def _is_cache_artifact(name: str) -> bool:
+    """A lock or a temp file is not a compiled kernel."""
+    if not name or name.startswith("."):
+        return False
+    lowered = name.lower()
+    return not (
+        lowered.endswith(".lock") or lowered.endswith(".tmp") or lowered.endswith(".part")
+    )
+
+
 def _dirs_have_files(*paths: str) -> bool:
     for path in paths:
         if not path or not os.path.isdir(path):
             continue
         for _dir, _dirs, files in os.walk(path):
-            if files:
+            if any(_is_cache_artifact(name) for name in files):
                 return True
     return False
 
@@ -818,7 +841,12 @@ def default_load_mega(path: str) -> None:
         payload = handle.read()
     if not isinstance(payload, (bytes, bytearray)) or len(payload) == 0:
         raise ValueError("mega-cache is empty")
-    load(bytes(payload))
+    # torch 2.15 catches a bad payload inside deserialize and returns None
+    # instead of raising. Treating that as a successful load logs hit=hit
+    # and then compiles against an empty directory.
+    loaded = load(bytes(payload))
+    if loaded is None:
+        raise ValueError("mega-cache was not installed")
 
 
 def default_save_mega(path: str) -> None:

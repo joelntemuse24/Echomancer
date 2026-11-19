@@ -396,6 +396,7 @@ def test_mega_cache_round_trip_passes_bytes_not_a_path(tmp_path, monkeypatch):
         if not isinstance(payload, (bytes, bytearray)):
             raise TypeError("a bytes-like object is required, not 'str'")
         seen.append(bytes(payload))
+        return object()
 
     def api(name):
         if name == "save_cache_artifacts":
@@ -464,6 +465,113 @@ def test_hit_retargets_inductor_and_triton_after_they_were_imported(tmp_path, mo
     assert manager.cache_dir == hit.triton_dir
     assert hit.inductor_dir != "/opt/torchinductor"
     assert hit.triton_dir != "/tmp/s2-triton-cache"
+
+
+def test_torch_none_is_a_corrupt_mega_and_reuses_inductor_files(tmp_path, monkeypatch):
+    """torch 2.15 returns None for a bad payload instead of raising.
+
+    That used to log hit=hit and then compile against an empty directory.
+    The published inductor files are the cache the next worker reads.
+    """
+    cache = _publish(tmp_path)
+
+    def load(payload):
+        assert isinstance(payload, (bytes, bytearray))
+        return None
+
+    monkeypatch.setattr(
+        "s2_compile_cache._mega_api",
+        lambda name: load if name == "load_cache_artifacts" else None,
+    )
+    fresh = prepare_compile_cache(str(tmp_path), environ={}, **_fields())
+    assert fresh.hit == "hit"
+    assert fresh.fallback == "mega-corrupt"
+    assert fresh.persist is False
+    assert fresh.root == cache.root
+    assert os.path.isfile(os.path.join(fresh.inductor_dir, "graph.bin"))
+
+
+def test_published_hit_points_the_env_before_the_mega_load(tmp_path):
+    """``populate_cache`` writes wherever TORCHINDUCTOR_CACHE_DIR points.
+
+    The load has to see the published run, not the image default, or the
+    bytes land in ``/opt/torchinductor`` and compile reads an empty volume dir.
+    """
+    published = _publish(tmp_path)
+    env = {
+        "TORCHINDUCTOR_CACHE_DIR": "/opt/torchinductor",
+        "TRITON_CACHE_DIR": "/tmp/s2-triton-cache",
+    }
+    seen: dict[str, str] = {}
+
+    def load(_path: str) -> None:
+        seen["inductor"] = env.get("TORCHINDUCTOR_CACHE_DIR", "")
+        seen["triton"] = env.get("TRITON_CACHE_DIR", "")
+
+    hit = prepare_compile_cache(
+        str(tmp_path),
+        environ=env,
+        load_mega=load,
+        **_fields(),
+    )
+    assert hit.hit == "hit"
+    assert hit.root == published.root
+    assert seen["inductor"] == published.inductor_dir
+    assert seen["triton"] == published.triton_dir
+    assert seen["inductor"] != "/opt/torchinductor"
+
+
+def test_a_lock_file_is_not_a_compiled_artifact(tmp_path):
+    cache = _publish(tmp_path)
+    os.remove(os.path.join(cache.inductor_dir, "graph.bin"))
+    with open(os.path.join(cache.inductor_dir, ".lock"), "w", encoding="utf-8") as handle:
+        handle.write("lock")
+    with open(os.path.join(cache.triton_dir, "cache.lock"), "w", encoding="utf-8") as handle:
+        handle.write("lock")
+
+    def boom(_path: str) -> None:
+        raise ValueError("bad magic")
+
+    fresh = _prepare(tmp_path, load_mega=boom)
+    assert fresh.hit == "miss"
+    assert fresh.root != cache.root
+    assert not os.path.exists(os.path.join(fresh.inductor_dir, "graph.bin"))
+
+
+def test_retarget_does_not_replace_a_triton_cache_function(tmp_path, monkeypatch):
+    import types
+
+    published = _publish(tmp_path)
+    torch = types.ModuleType("torch")
+    inductor = types.ModuleType("torch._inductor")
+    inductor.config = types.SimpleNamespace(cache_dir="/opt/torchinductor")
+    torch._inductor = inductor
+    triton = types.ModuleType("triton")
+    knobs_cache = types.SimpleNamespace(dir="/tmp/s2-triton-cache")
+    triton.knobs = types.SimpleNamespace(cache=knobs_cache)
+    runtime = types.ModuleType("triton.runtime")
+    triton_cache = types.ModuleType("triton.runtime.cache")
+
+    def default_cache_dir():
+        return "/tmp/s2-triton-cache"
+
+    triton_cache.default_cache_dir = default_cache_dir
+    triton_cache.cache_dir = "/tmp/s2-triton-cache"
+    runtime.cache = triton_cache
+    triton.runtime = runtime
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torch._inductor", inductor)
+    monkeypatch.setitem(sys.modules, "triton", triton)
+    monkeypatch.setitem(sys.modules, "triton.runtime", runtime)
+    monkeypatch.setitem(sys.modules, "triton.runtime.cache", triton_cache)
+
+    hit = _prepare(tmp_path, load_mega=lambda _path: None)
+    assert hit.hit == "hit"
+    assert hit.root == published.root
+    assert triton_cache.default_cache_dir is default_cache_dir
+    assert triton_cache.cache_dir == hit.triton_dir
+    assert knobs_cache.dir == hit.triton_dir
+    assert inductor.config.cache_dir == hit.inductor_dir
 
 
 def test_mega_cache_save_writes_bytes_from_the_torch_tuple(tmp_path, monkeypatch):
