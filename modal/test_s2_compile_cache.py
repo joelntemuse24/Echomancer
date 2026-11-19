@@ -41,6 +41,7 @@ from s2_compile_cache import (
     code_stamp,
     compile_cache_key,
     default_save_mega,
+    format_compile_cache_boot_log,
     format_compile_cache_log,
     prepare_compile_cache,
 )
@@ -473,6 +474,32 @@ def test_finish_survives_a_failing_save_and_a_failing_commit(tmp_path):
     assert cache.committed is False
     assert cache.compile_s == 3.0
     assert os.path.isfile(os.path.join(cache.root, "manifest.json"))
+
+
+def test_restore_log_does_not_look_like_a_fresh_compile():
+    """A restored container reprints the snapshot report after graphs=ok.
+
+    Book containers logged ``hit=miss fallback=empty compile_s=973.99`` on a
+    boot that only restored. That line is the build's compile, not this one.
+    """
+    report = {
+        "hit": "miss",
+        "key": "torch-h100",
+        "compile_s": 973.99,
+        "fallback": "empty",
+    }
+    line = format_compile_cache_boot_log(report, boot="unknown")
+    assert "compiled=no" in line
+    assert "compile_s=na" in line
+    assert "snapshot_compile_s=973.99" in line
+    assert "snapshot_hit=miss" in line
+    assert "snapshot_fallback=empty" in line
+    assert "hit=miss key=" not in line
+    restored = format_compile_cache_boot_log(report, boot="restored")
+    assert restored.startswith("[S2C] compile_cache boot=restored ")
+    missing = format_compile_cache_boot_log(None, boot="unknown")
+    assert "compiled=no" in missing
+    assert "snapshot_compile_s=na" in missing
 
 
 def test_startup_log_line_reports_hit_and_compile_seconds():

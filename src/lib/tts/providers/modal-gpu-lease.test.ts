@@ -237,12 +237,12 @@ describe("modal_gpu_leases", () => {
     expect(otherCloneShareView([{ index: 3, text: "Chapter." }], [], 24).pending).toEqual([3]);
   });
 
-  it("routes a second call to a new container and keeps min_containers at 0", () => {
+  it("shares one container between a render and a light input", () => {
     const source = readFileSync(
       path.join(process.cwd(), "modal/s2_clone_service.py"),
       "utf8"
     );
-    expect(source).toContain("@modal.concurrent(max_inputs=1)");
+    expect(source).toContain("@modal.concurrent(max_inputs=2)");
     expect(source).toContain('min_containers=_LIMITS["min_containers"]');
     const contract = readFileSync(path.join(process.cwd(), "modal/s2_contract.py"), "utf8");
     expect(contract).toContain('"min_containers": 0');

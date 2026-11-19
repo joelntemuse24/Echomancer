@@ -216,6 +216,38 @@ def format_compile_cache_log(report: dict | None) -> str:
     )
 
 
+def format_compile_cache_boot_log(report: dict | None, *, boot: str) -> str:
+    """Line for ``@modal.enter`` publish, which does not compile.
+
+    ``compile_s`` on the captured report is the snapshot build's time.
+    Reprinting ``hit=miss compile_s=973.99`` after ``graphs=ok`` made a
+    restored container look like this boot had just missed the cache and
+    compiled. Operators killed healthy containers for that line. This boot's
+    ``compile_s`` is ``na``. The snapshot's number stays, labeled as the
+    snapshot's.
+    """
+    data = report or {}
+    hit = data.get("hit")
+    if hit not in ("hit", "miss"):
+        hit = "-"
+    key = data.get("key") or "-"
+    fallback = data.get("fallback") or "-"
+    compile_s = data.get("compile_s")
+    if compile_s is None:
+        shown = "na"
+    else:
+        try:
+            shown = f"{float(compile_s):.2f}"
+        except (TypeError, ValueError):
+            shown = "na"
+    boot_name = boot if boot in ("restored", "unknown") else "unknown"
+    return (
+        f"[S2C] compile_cache boot={boot_name} compiled=no compile_s=na "
+        f"snapshot_hit={hit} snapshot_key={key} "
+        f"snapshot_compile_s={shown} snapshot_fallback={fallback}"
+    )
+
+
 def cache_disabled(environ: dict | None = None) -> bool:
     env = os.environ if environ is None else environ
     return str(env.get("S2C_COMPILE_CACHE", "1")).strip() == "0"

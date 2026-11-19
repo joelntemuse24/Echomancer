@@ -21,9 +21,10 @@ approval. `MODAL_S2_MAX_GPUS` (default **20**) is the worker lease count,
 not permission to raise the autoscaler. The code default is
 `max_containers=1`, so a plain `modal deploy` does not open a fleet.
 The production post-deploy step (8c) sets and keeps `max_containers` 1.
-`min_containers` stays 0. `@modal.concurrent(max_inputs=1)` on
-`S2CloneWorker` means one call at a time on that GPU. A second book queues
-on the same GPU and never opens a second container. A 429 `lane_busy`
+`min_containers` stays 0. `@modal.concurrent(max_inputs=2)` on
+`S2CloneWorker` lets one render and one light input share that GPU. A
+second render waits on the GPU thread and never opens a second container.
+A 429 `lane_busy`
 answer is a backstop for an older image and is busy, not cold. Do not
 redeploy to change that: a redeploy wipes GPU snapshots.
 
@@ -357,7 +358,11 @@ more call, which must restore with `graphs=ok(N)` or `graphs=recaptured(N)`
 (N greater than 0).
 `kind` is wall time. `boot=` is printed and is not the pass/fail. The
 compile-cache volume is what keeps the compile from repeating the full
-Inductor run; the log line is `[S2C] compile_cache hit=… compile_s=…`.
+Inductor run. `finish()` logs `[S2C] compile_cache hit=… compile_s=…`
+for the build that wrote the snapshot. A later restore reprints
+`[S2C] compile_cache boot=… compiled=no compile_s=na snapshot_compile_s=…`.
+That second line is the snapshot's report. `compiled=no` means this boot
+did not compile.
 
 ```bash
 # One container. Exits non-zero if the cold restore does not land, and
@@ -768,12 +773,15 @@ before lowering the live window. The script does not deploy. A 10s hold is
 safe under a window that is still 45s; the live window stays at its
 previous value until this script is run.
 
-**Do not redeploy for concurrency.** The live `echomancer-s2-clone` image
-already has `@modal.concurrent(max_inputs=1)` on `S2CloneWorker`. A second
-book's POST queues on that same GPU. It does not open a second container,
-and it is not answered 429. A 429 `lane_busy` body is only the backstop if
-an older image is still serving, and the worker treats it as busy, not
-cold. A `modal deploy` wipes the GPU memory snapshots. This runbook does
+**Do not redeploy from an agent.** The code's `S2CloneWorker` is
+`@modal.concurrent(max_inputs=2)`: one `render_batch` and one light input
+share the GPU, and a second render waits on the GPU thread. The live
+image stays at `max_inputs=1` until an owner deploy. The worker change
+does not need that deploy. With `MODAL_S2_CONTROL_URL` set, the worker
+never POSTs the GPU web endpoints, so a book does not open a second H100
+on the image that is live today. A 429 `lane_busy` body is the web
+handler's backstop, and the worker treats it as busy, not cold. A
+`modal deploy` wipes the GPU memory snapshots. This runbook does
 not deploy.
 
 8a deploys with the baked cap at 1. 8b warms snapshots while that cap is
@@ -1023,8 +1031,9 @@ because it cannot tell you the narration sounds right:
 
 **~57s of the cold figure is the Modal restore, and it is the floor when the
 restore starts at the synth call.** A side `modal run …::cover` is not used
-for that. With `max_inputs=1` the cover is a second container the book's
-POST does not join, and that container then idles for `scaledown_window`.
+for that. Cover's `status()` is a light input. `max_inputs=2` lets it
+share the container with `render_batch` instead of idling a second H100
+for `scaledown_window`.
 Extract, the voice list, and the tick do not start one. The book's
 `/synthesize_batch` is the container. The first call pays about 68s. Later
 calls stay on it while the worker posts them back to back. A gap longer

@@ -34,6 +34,7 @@ import {
   S2ControlRejected,
   S2ControlUnavailable,
   S2NotFoundSettled,
+  S2ProtocolMismatch,
   UNCONFIRMED_SUBMIT_LIMIT,
 } from "@/lib/tts/providers/modal-clone-call";
 import {
@@ -958,7 +959,7 @@ describe("remote book path", () => {
     );
   });
 
-  it("falls back to the GPU only when the control body names another protocol", async () => {
+  it("does not post the GPU when the control body names another protocol", async () => {
     await resetDatabase();
     stubModalEndpoints(vi.stubEnv, { control: true });
     vi.stubEnv("MODAL_S2_TOKEN", "test-token");
@@ -966,39 +967,23 @@ describe("remote book path", () => {
     const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string, init?: RequestInit) => {
+      vi.fn(async (url: string) => {
         urls.push(String(url));
-        const payload = JSON.parse(String(init?.body ?? "{}")) as { items?: unknown };
-        if (endpointOf(String(url)) === "control") {
-          return new Response(
-            JSON.stringify({ protocol: "legacy-sync", protocol_version: 0, status: "ok" }),
-            { status: 200, headers: { "content-type": "application/json" } }
-          );
-        }
-        expect(payload.items).toBeTruthy();
         return new Response(
-          JSON.stringify({
-            items: [
-              {
-                key: "0",
-                audio_b64: Buffer.from([0x49, 0x44, 0x33, 0, 1]).toString("base64"),
-                duration_s: 1,
-                truncated_units: 0,
-              },
-            ],
-          }),
+          JSON.stringify({ protocol: "legacy-sync", protocol_version: 0, status: "ok" }),
           { status: 200, headers: { "content-type": "application/json" } }
         );
       })
     );
-    const outcome = await renderModalCloneBatch(
-      [{ key: "0", text: "The harbor was quiet." }],
-      reference,
-      undefined,
-      "book-legacy"
-    );
-    expect(outcome.audio.get("0")?.audio.byteLength).toBeGreaterThan(0);
-    expect(urls.map((url) => endpointOf(url))).toEqual(["control", "batch"]);
+    await expect(
+      renderModalCloneBatch(
+        [{ key: "0", text: "The harbor was quiet." }],
+        reference,
+        undefined,
+        "book-legacy"
+      )
+    ).rejects.toBeInstanceOf(S2ProtocolMismatch);
+    expect(urls.map((url) => endpointOf(url))).toEqual(["control"]);
   });
 
   it("keeps the same idempotency key when a poll is not_found", async () => {

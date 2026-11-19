@@ -50,6 +50,13 @@ export async function remoteFetch(opts: {
   });
 }
 
+/** budget and cancelled never reached a container. in_flight may still be running. */
+export function remoteCallRefusal(
+  err: unknown
+): "cancelled" | "budget" | "in_flight" | null {
+  return err instanceof RemoteCallRefused ? err.code : null;
+}
+
 export function remoteCallStillLive(err: unknown): boolean {
-  return err instanceof RemoteCallRefused && err.code === "in_flight";
+  return remoteCallRefusal(err) === "in_flight";
 }

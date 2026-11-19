@@ -227,12 +227,20 @@ export function s2ControlOrigin(): string | null {
   } catch {
     return null;
   }
-  const batch = process.env.MODAL_S2_TTS_URL?.trim();
-  if (batch) {
+  // A control URL that is actually a GPU web host must not be used as the
+  // submit path: posting the batch body there is a short web input on the
+  // H100, and a real spawn would then need a second container.
+  const gpuHosts = [
+    process.env.MODAL_S2_TTS_URL,
+    process.env.MODAL_S2_SYNTHESIZE_URL,
+  ];
+  for (const rawHost of gpuHosts) {
+    const host = rawHost?.trim();
+    if (!host) continue;
     try {
-      if (new URL(batch).origin === control) return null;
+      if (new URL(host).origin === control) return null;
     } catch {
-      /* a bad batch URL does not make the control host a GPU */
+      /* a bad GPU URL does not make the control host a GPU */
     }
   }
   return control;

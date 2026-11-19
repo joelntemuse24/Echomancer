@@ -275,8 +275,14 @@ async function postCpuPlacement(
   const acceptMs = cpuDispatchAcceptMs();
   const task = await getCpuTask(taskId);
   let response: Response;
+  let remoteCallRefusal: (
+    err: unknown
+  ) => "cancelled" | "budget" | "in_flight" | null = () => null;
   try {
-    const { remoteFetch, remoteCallStillLive } = await import("@/lib/remote/http");
+    const imported = await import("@/lib/remote/http");
+    const remoteFetch = imported.remoteFetch;
+    const remoteCallStillLive = imported.remoteCallStillLive;
+    remoteCallRefusal = imported.remoteCallRefusal;
     try {
       response = await remoteFetch({
         provider: "modal-cpu",
@@ -309,6 +315,25 @@ async function postCpuPlacement(
       throw err;
     }
   } catch (err) {
+    const refusal = remoteCallRefusal(err);
+    // A budget or cancel refusal never left this process. It is not a
+    // network error and the container did not accept the POST. Keeping
+    // the placement claimed it for the lease (180s) with nobody running.
+    if (refusal === "budget" || refusal === "cancelled") {
+      await releaseCpuPlacement(
+        taskId,
+        owner,
+        refusal === "budget" ? "remote call refused: budget" : "remote call refused: cancelled"
+      );
+      logCpu({
+        event: "cpu_dispatch",
+        id: taskId,
+        kind,
+        result: "deferred",
+        error: refusal,
+      });
+      return "deferred";
+    }
     if (isUnreachable(err)) {
       await requeueCpuTask(taskId, owner);
       logCpu({
@@ -320,14 +345,14 @@ async function postCpuPlacement(
       });
       return "deferred";
     }
-    // Timeout, reset, or an unknown network error: the container may
-    // still accept this POST. Keep the placement.
+    // Timeout, in-flight, reset, or an unknown network error: the
+    // container may still accept this POST. Keep the placement.
     logCpu({
       event: "cpu_dispatch",
       id: taskId,
       kind,
       result: "accepted",
-      error: isDispatchTimeout(err) ? "accept_timeout" : "network",
+      error: isDispatchTimeout(err) ? "accept_timeout" : refusal === "in_flight" ? "in_flight" : "network",
       acceptMs,
     });
     return "accepted";

@@ -620,8 +620,10 @@ def prewarm(rpc_timeout: int = 90) -> None:
     try:
         status = handle.get(timeout=rpc_timeout)
     except Exception as err:
+        # False: this status() may share the container with a book's
+        # render_batch. Terminating the container would kill that H100.
         try:
-            handle.cancel(terminate_containers=True)
+            handle.cancel(terminate_containers=False)
         except Exception as cancel_err:
             print(f"prewarm cancel failed: {cancel_err}", file=sys.stderr)
         print(f"prewarm cancelled after {rpc_timeout}s: {err}", file=sys.stderr)

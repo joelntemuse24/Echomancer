@@ -6,8 +6,8 @@
  * both runners, so the loser filled the log with "another worker holds the
  * lease" and did not get a real turn until the winner finished.
  *
- * A side `modal run ::cover` is a second Modal input. With max_inputs=1 it
- * restores a container the book's /synthesize_batch does not join.
+ * A side `modal run ::cover` is a light status() input. max_inputs=2 lets
+ * it share the container with the book's render_batch.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

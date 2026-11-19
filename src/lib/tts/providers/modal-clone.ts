@@ -119,7 +119,6 @@ import {
   s2ControlOrigin,
   s2IdempotencyKey,
   S2ControlUnavailable,
-  S2ProtocolMismatch,
   submitThenPoll,
 } from "@/lib/tts/providers/modal-clone-call";
 
@@ -214,10 +213,10 @@ export class ModalCloneReferenceError extends Error {
 /**
  * The container answered 429: its lane is already rendering.
  *
- * The deployed class is `@modal.concurrent(max_inputs=1)`. Production
- * `max_containers` stays 1, so a second book queues on that GPU and does
- * not open a second container. This error stays as the backstop for a
- * container that still answers `lane_busy`.
+ * The class is `@modal.concurrent(max_inputs=2)`. Production
+ * `max_containers` stays 1. A second render waits on the GPU thread. A
+ * web handler still answers 429 immediately, so this error stays as the
+ * backstop for a container that still answers `lane_busy`.
  * It is busy, not cold, and must not start a cold backoff.
  */
 export class ModalCloneLaneBusyError extends Error {
@@ -444,7 +443,7 @@ export function modalReadyUrl(): string | null {
   const explicit = (process.env.MODAL_S2_READY_URL || "").trim();
   if (!explicit) return null;
   const origin = endpointOrigin(explicit, "MODAL_S2_READY_URL");
-  if (origin === modalBatchUrl()) {
+  if (origin === modalBatchUrl() || origin === modalSingleUrl()) {
     throw new Error(
       "MODAL_S2_READY_URL points at the synthesize host. The ready probe is a separate @modal.fastapi_endpoint with its own hostname."
     );
@@ -850,7 +849,11 @@ export async function synthesizeModalClonePreview(
   try {
   const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
   const budgetMs = Math.max(5_000, Math.floor(input.budgetMs ?? 45_000));
-  const single = modalSingleUrl();
+  // A configured control URL is the only render path. The single-section
+  // web endpoint is on the GPU class; posting it beside render_batch
+  // opens a second H100.
+  const viaControl = Boolean(s2ControlOrigin());
+  const single = viaControl ? null : modalSingleUrl();
   const seedEpoch = Math.max(0, Math.floor(input.seedEpoch ?? 0));
   let audio: Buffer;
   let durationSeconds: number;
@@ -1443,9 +1446,9 @@ function clearModalCloneRenderSeal(jobId: string | undefined): void {
 /**
  * Whether this call may use the steady budget.
  *
- * `warm_containers > 0` means some container finished restoring. With
- * `max_inputs=1` that container is busy for the book that holds it, so
- * another book's call is placed on a container that still has to restore.
+ * `warm_containers > 0` means some container finished restoring. A
+ * container already held by a book's lease is busy, so another book's
+ * call is placed on a container that still has to restore.
  * Spare warmth is `warm_containers` above the other live GPU leases: a
  * container that finished restoring and is not held by another book. A
  * book's first call uses that spare container instead of paying a restore.
@@ -1703,7 +1706,9 @@ async function postSynthesize(
   epoch: number,
   wait?: ModalCallWait
 ): Promise<{ audio: Buffer; durationSeconds: number; truncatedUnits: number }> {
-  const single = modalSingleUrl();
+  // Control is the one render path. `{text}` on the GPU web endpoint is a
+  // second input on the same class as render_batch.
+  const single = s2ControlOrigin() ? null : modalSingleUrl();
   const batchRowKey = "single";
   if (single) {
     const response = await postModal(
@@ -1740,6 +1745,9 @@ async function postSynthesize(
       sampling: MODAL_S2_SAMPLING,
       ...(input.jobId ? { job_id: input.jobId } : {}),
       seed_epoch: epoch,
+      ...(input.jobId
+        ? { idempotency_key: s2IdempotencyKey(input.jobId, [batchRowKey], epoch) }
+        : {}),
       ...(retry ? { seed: nextSeed() } : {}),
     },
     input.signal,
@@ -1872,11 +1880,19 @@ async function postModal(
     ...authHeaders(requireToken()),
     "Content-Type": "application/json",
   };
-  // Batch bodies with a control URL always submit-poll. A cold CPU
-  // container retries that submit. The GPU post is the unset-URL path,
-  // or a body that names a different protocol. `{text}` stays on `url`.
+  // Batch bodies with a control URL always submit-poll, including a call
+  // with no job id. A protocol the worker does not speak is not posted to
+  // the GPU web endpoint: that POST is a second H100 input beside
+  // render_batch. `{text}` is rejected here; the caller sends a one-row
+  // batch through control instead.
   const batchItems = Array.isArray(body.items) && body.items.length > 0;
-  const control = tracked && batchItems ? s2ControlOrigin() : null;
+  const controlOrigin = s2ControlOrigin();
+  if (!batchItems && controlOrigin) {
+    throw new Error(
+      "A single-section Modal clone call goes through s2_control as a one-row batch"
+    );
+  }
+  const control = batchItems ? controlOrigin : null;
   if (control) {
     // The long timer is the GPU wait. A book polls by the stored call id,
     // so that timer must not abort the control accept.
@@ -1891,29 +1907,22 @@ async function postModal(
     });
   let response: Response;
   try {
-    if (control && tracked) {
-      try {
-        response = await submitThenPoll({
-          url: control,
-          body,
-          headers,
-          signal: controller.signal,
-          // The id is stored before this wait. First light keeps polling until
-          // the proxy ceiling. A timeout with no id stays unconfirmed and
-          // does not post the GPU. A completed 5xx fails the book after the
-          // control deadline.
-          waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
-          onCallId: (id) => setFlightCallId(tracked.key, id),
-        });
-      } catch (err) {
-        if (!(err instanceof S2ProtocolMismatch)) throw err;
-        if (firstLight) armAbort(limit);
-        else {
-          const timeout = AbortSignal.timeout(limit);
-          timeout.addEventListener("abort", onExternalAbort, { once: true });
-        }
-        response = await postGpu();
-      }
+    if (control) {
+      response = await submitThenPoll({
+        url: control,
+        body,
+        headers,
+        signal: controller.signal,
+        // The id is stored before this wait. First light keeps polling until
+        // the proxy ceiling. A timeout with no id stays unconfirmed and
+        // does not post the GPU. A completed 5xx fails the book after the
+        // control deadline. A different protocol does not fall through to
+        // the GPU web endpoint.
+        waitMs: firstLight ? modalCloneProxyCeilingMs() : limit,
+        onCallId: (id) => {
+          if (tracked) setFlightCallId(tracked.key, id);
+        },
+      });
     } else {
       response = await postGpu();
     }

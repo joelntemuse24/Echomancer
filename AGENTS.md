@@ -534,9 +534,14 @@ The historical runbook command that set the cap to 20 is not the current
 8c step. The script does not deploy and does not wipe snapshots, and it
 is still not an agent command.
 `/ready` still reports the deploy-time value, so the printed settings are
-the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=1)`
-means one call at a time on that GPU. A second book queues on the same
-GPU and never opens a second container. A 429 `lane_busy` body stays a
+the check. `min_containers` stays 0. `@modal.concurrent(max_inputs=2)`
+lets one `render_batch` and one light input (status, cover, prewarm, or a
+stray short web POST) share that GPU. A second render waits on the GPU
+thread. It does not open a second container. A web handler still answers
+429 immediately, so it does not hold the device. With
+`MODAL_S2_CONTROL_URL` set the worker never POSTs the GPU web endpoints:
+every render is `s2_control` → `render_batch.spawn`. A 429 `lane_busy`
+body stays a
 busy-not-cold backstop.
 
 - **A warm container is not a free container.** `/ready` reporting
@@ -828,11 +833,16 @@ busy-not-cold backstop.
   warm GPU does not wait on the sample. A book already pinned to Fish does not
   download it. (A legacy `drama3` row is re-pinned before this point, so it
   follows whichever real engine that resolves to.)
-- **The book's `/synthesize_batch` is the only container it starts.** A side
-  `modal run …::cover` is a second input. `@modal.concurrent(max_inputs=1)`
-  will not attach that POST to a cover that is still restoring, so the cover
-  comes up, serves nothing, and idles for `scaledown_window`. Extract, the
-  voice list, and the tick do not call `prewarmModalCloneSnapshot`.
+- **The book's render is one container.** With `MODAL_S2_CONTROL_URL` set,
+  every render (batch, single section, preview) is `s2_control` →
+  `render_batch.spawn`. The worker does not POST `synthesize` or
+  `synthesize_batch` on the GPU class, and a protocol mismatch does not
+  fall through to those hosts. `status()` from cover, restore_check, and
+  prewarm is a light input. `@modal.concurrent(max_inputs=2)` lets it share
+  the container with `render_batch`, so it does not open a second H100.
+  A prewarm that times out cancels with `terminate_containers=False`, so
+  it does not kill the book's GPU. Extract, the voice list, and the tick
+  do not call `prewarmModalCloneSnapshot`.
   `POST /clone-prewarm` still answers and starts nothing. A stock-only
   account never starts a GPU. Concat, saved-raw mastering, a fish pin, and a
   tick whose sections are cached do not either. The first call pays the cold
@@ -862,8 +872,10 @@ busy-not-cold backstop.
   "The voice engine didn't start. Try again." The book does not stay on
   "Starting the clone voice…". NotFound stays on that key. After the render wait plus 30s
   it settles like `expired` and cover is free. The synchronous GPU post is
-  used when the URL is unset, or when the control body names a different
-  protocol. A `{text}` post stays on `MODAL_S2_SYNTHESIZE_URL`. Deploying
+  used only when the control URL is unset. A control body that names a
+  different protocol is an error. It is not posted to the GPU web
+  endpoint. A `{text}` body is rejected while control is set; the caller
+  sends a one-row batch. Deploying
   this app rebuilds the H100 snapshots, because `render_batch` is on
   `S2CloneWorker`. Run `scripts/s2/post-deploy-cover.sh` (`::restore_check`,
   one cold restore at `max_containers` 1) after that deploy, then restart
@@ -876,7 +888,10 @@ busy-not-cold backstop.
   directories. `Volume.commit()` runs inside `@modal.enter(snap=True)`;
   `reload()` is not called. A stamp that cannot be read does not share a
   key. `S2C_COMPILE_CACHE=0` skips the volume. An empty cache compiles the
-  ordinary way and logs `compile_cache hit=miss`.
+  ordinary way and `finish()` logs `compile_cache hit=miss`. A restore
+  reprints that report as `compiled=no compile_s=na` with
+  `snapshot_compile_s` holding the build's number, so a healthy container
+  is not logged as a fresh compile.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2
