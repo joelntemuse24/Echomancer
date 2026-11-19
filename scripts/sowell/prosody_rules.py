@@ -38,13 +38,21 @@ PROSODY_G_CACHE_SUFFIX = "-prosodyG"
 _WH = frozenset({"what", "who", "whom", "whose", "which", "where", "when", "why", "how"})
 _WORD = re.compile(r"[A-Za-z']+")
 # Same lookbehind the A/B used, plus an ellipsis so "Wait… Don't go?" is
-# two sentences. A dot inside "3.14" has no following space, so it stays.
-_SPLIT = re.compile(r"(?<=[.!?…])[\"”’]?\s+")
-_TRAIL = re.compile(r"([.!?…])[\"”’]*\s*$")
+# two sentences, plus an ASCII apostrophe used as a closing quote. A dot
+# inside "3.14" has no following space, so it stays.
+_QUOTES = set("\"”’'")
+_TRAIL = re.compile(r"([.!?…])[\"”’']*\s*$")
 # Character after a terminator in the phoneme string. Space and the quotes
 # Kokoro leaves attached to punctuation.
-_AFTER = set(" \"”’")
+_AFTER = set(" \"”’'")
 _ON = frozenset({"1", "true", "on", "yes"})
+# Titles whose US lexicon phonemes contain no period (misaki us_gold:
+# "Mr." "Mrs." "Ms." "Dr." "etc."). The grapheme string still has the
+# dot. Splitting there and not in the phonemes assigns the first piece's
+# kind — a statement — to the whole sentence, so "Is Dr. Smith home?"
+# never rises and "Look at Mr. Smith!" is not an exclamation. "No." is
+# not here: it is often its own sentence, and that period is a phoneme.
+_ABBREV = frozenset({"mr", "mrs", "ms", "dr", "etc"})
 
 
 @dataclass(frozen=True)
@@ -143,11 +151,59 @@ def grapheme_sentences(text: str) -> list[tuple[str, str]]:
 
     The first word decides a question, and a leading quote is not a word.
     ``What's`` stays a yes/no question: the A/B matched the wh-list exactly,
-    and ``what's`` is not in it. A sentence split across chunks still uses
-    this first word, not the first word of the later chunk.
+    and ``what's`` is not in it. A curly apostrophe is the same word.
+    A sentence split across chunks still uses this first word, not the
+    first word of the later chunk. ``Mr.`` / ``Dr.`` / ``etc.`` are not
+    boundaries; see ``_ABBREV``.
     """
-    parts = [part for part in _SPLIT.split(text.strip()) if part.strip()]
+    parts = [part for part in _split_sentences(text.strip()) if part.strip()]
     return [(part, _kind(part)) for part in parts]
+
+
+def _abbrev_period(text: str, index: int) -> bool:
+    """True when ``text[index]`` is a period that belongs to ``_ABBREV``."""
+    if index < 0 or index >= len(text) or text[index] != ".":
+        return False
+    start = index
+    while start > 0 and text[start - 1].isalpha():
+        start -= 1
+    return text[start:index].lower() in _ABBREV
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on ``[.!?…]`` plus one optional closing quote and whitespace.
+
+    The terminator stays on the left piece. The quote is consumed with the
+    whitespace, matching the A/B lookbehind. An abbreviation period is not
+    a boundary even when a space follows it.
+    """
+    parts: list[str] = []
+    start = 0
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in ".!?…" and not _abbrev_period(text, index):
+            consumed = index + 1
+            if consumed < length and text[consumed] in _QUOTES:
+                consumed += 1
+            if consumed < length and text[consumed].isspace():
+                while consumed < length and text[consumed].isspace():
+                    consumed += 1
+                parts.append(text[start : index + 1])
+                start = consumed
+                index = consumed
+                continue
+        index += 1
+    if start < length:
+        parts.append(text[start:])
+    return parts
+
+
+def _first_word(part: str) -> str:
+    """The question's first word, with quotes and curly apostrophes folded."""
+    core = part.lstrip(" \t\"“”‘’'")
+    return (_WORD.findall(core.replace("’", "'"))[:1] or [""])[0].lower()
 
 
 def _kind(part: str) -> str:
@@ -158,8 +214,7 @@ def _kind(part: str) -> str:
     if punct == "!":
         return "excl"
     if punct == "?":
-        first = (_WORD.findall(part)[:1] or [""])[0].lower()
-        return "qwh" if first in _WH else "qyn"
+        return "qwh" if _first_word(part) in _WH else "qyn"
     return "stmt"
 
 
@@ -167,8 +222,9 @@ def phoneme_bounds(phonemes: str) -> list[tuple[int, int, bool]]:
     """``(start, end, ended)`` in phoneme-character coordinates.
 
     A terminator ends the sentence when the next character is the end of
-    the chunk, a space, or a quote. ``3.14`` stays one span. An open tail
-    (``ended`` false) is a sentence Kokoro has not finished yet.
+    the chunk, a space, or a quote. ``3.14`` stays one span, and so does
+    ``Mr.`` / ``Dr.`` / ``etc.``. An open tail (``ended`` false) is a
+    sentence Kokoro has not finished yet.
     """
     spans: list[tuple[int, int, bool]] = []
     start = 0
@@ -178,10 +234,15 @@ def phoneme_bounds(phonemes: str) -> list[tuple[int, int, bool]]:
             continue
         if index + 1 != length and phonemes[index + 1] not in _AFTER:
             continue
+        # Same titles as the grapheme split. A phoneme string that still
+        # contains "Dr. " must not open a second span the graphemes no
+        # longer have, or the question's kind lands on the title.
+        if _abbrev_period(phonemes, index):
+            continue
         # A closing quote after the terminator is still this sentence.
         # Leaving it behind made `"Is it?"` grow a one-character tail.
         end = index + 1
-        while end < length and phonemes[end] in '"”’':
+        while end < length and phonemes[end] in _QUOTES:
             end += 1
         spans.append((start, end, True))
         start = end
@@ -196,8 +257,10 @@ def plan_chunks(chunks: Sequence[tuple[str, str]]) -> list[list[LocalSentence]]:
     Kinds come from the joined graphemes, in order, so a chunk that starts
     at "That I have?" still knows the sentence began with "What". Phoneme
     spans that end are one sentence; an open tail continues into the next
-    chunk. Extra phoneme spans (a "Dr." the graphemes did not split the
-    same way) are statements, which get phrase smoothing and no rise.
+    chunk. A span past the grapheme list is a statement: phrase smoothing
+    and no rise. Abbreviation periods are not spans on either side, so
+    "Is Dr. Smith home?" stays one yes/no question when the lexicon drops
+    the period.
     """
     graphemes = " ".join(text.strip() for text, _phonemes in chunks if text.strip())
     kinds = [kind for _text, kind in grapheme_sentences(graphemes)]
@@ -377,10 +440,14 @@ def _from_contour(edited, f0, shape):
 def prosody_hooks(model, phonemes: str, speed: float, recipe: ProsodyRecipe, sentences: Sequence[LocalSentence]) -> Iterator[None]:
     """Swap the predictor for one forward, then put the original methods back.
 
-    ``duration_proj`` is an ``nn.Linear``. A forward hook reads its output
-    and leaves that output unchanged, so the duration the decoder's
-    alignment uses is the one the stock forward computed. The F0 edit runs
-    on the tensor ``F0Ntrain`` already produced. Both are local to this call.
+    ``duration_proj`` is a module (Kokoro 0.9.4's ``LinearNorm``, which
+    wraps ``nn.Linear``). Assigning a function over it raises. A forward
+    hook reads the pre-sigmoid output and leaves that output unchanged, so
+    the duration the decoder's alignment uses is the one the stock forward
+    computed. The F0 edit runs on the tensor ``F0Ntrain`` already produced.
+    Both swaps are local to this call and are put back in ``finally``,
+    the F0 method first so a hook-removal error cannot leave this call's
+    phonemes on the resident model.
     """
     predictor = getattr(model, "predictor", None)
     if predictor is None or not hasattr(predictor, "duration_proj") or not hasattr(predictor, "F0Ntrain"):
@@ -402,10 +469,10 @@ def prosody_hooks(model, phonemes: str, speed: float, recipe: ProsodyRecipe, sen
             return f0, noise
         return edit_f0(f0, durations, model.vocab, phonemes, recipe, sentences), noise
 
-    # duration_proj is an nn.Linear. Assigning a function there raises,
-    # and the stock forward must still be the one that runs. A forward
-    # hook sees its output and does not change it. A test double that is
-    # not a module is wrapped by hand and put back.
+    # duration_proj is a module. Assigning a function there raises, and
+    # the stock forward must still be the one that runs. A forward hook
+    # sees its output and does not change it. A test double that is not
+    # a module is wrapped by hand and put back.
     handle = None
     if hasattr(original_duration, "register_forward_hook"):
         handle = original_duration.register_forward_hook(
@@ -422,8 +489,11 @@ def prosody_hooks(model, phonemes: str, speed: float, recipe: ProsodyRecipe, sen
     try:
         yield
     finally:
+        # Restore the F0 method before removing the duration hook. remove()
+        # is the only call here that can raise, and a raised remove must
+        # not leave this request's wrapper on the resident predictor.
+        predictor.F0Ntrain = original_f0
         if handle is not None:
             handle.remove()
         else:
             predictor.duration_proj = original_duration
-        predictor.F0Ntrain = original_f0

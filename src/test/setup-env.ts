@@ -54,6 +54,9 @@ delete process.env.MODAL_S2_WARM_HOOK;
 // Listen-prep tests assert the code default. A host override must not leak in.
 delete process.env.LISTEN_PREP_MODEL;
 delete process.env.LISTEN_PREP_REASONING;
+// Drew prosody is off unless a test sets it. A host flag must not move
+// the take-home cache key or attach prosody to a request body.
+delete process.env.DREW_PROSODY_RULES;
 
 // Polling paths must not synthesize during tests; workers are driven explicitly.
 process.env.TTS_POLL_NUDGE_BUDGET_MS = "0";

@@ -439,8 +439,12 @@ request omits `prosody` and the cache key stays
 `prosody: "G"` and the key gains `-prosodyG`. The container applies G only
 when that field is present; its own env cannot rule a take cached as
 unruled. Deploy the Modal app that honors the field before setting the flag.
-Style row 300 is unchanged. The picker sample stays the unruled file until
-it is re-recorded after the flag is on.
+Style row 300 is unchanged. Mr., Mrs., Ms., Dr., and etc. are not sentence
+breaks: those lexicon phonemes have no period, and splitting the words
+there would mark the rest of the sentence as a statement and drop a
+yes/no rise or an exclamation. A curly apostrophe is the same first word
+as an ASCII one, so What’s stays a yes/no question. The picker sample
+stays the unruled file until it is re-recorded after the flag is on.
 
 **Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,

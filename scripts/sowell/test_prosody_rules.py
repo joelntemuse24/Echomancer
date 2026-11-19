@@ -113,12 +113,26 @@ class SentenceTypes(unittest.TestCase):
         self.assertEqual(_kinds("Chapter One Is it not monstrous?"), ["qyn"])
         self.assertEqual(_kinds("The value is 3.14 exactly."), ["stmt"])
         self.assertEqual(len(phoneme_bounds("The value is 3.14 exactly.")), 1)
-        # "Dr." is its own statement, same as the A/B splitter: the period
-        # has a space after it.
-        self.assertEqual(_kinds("Dr. Smith stayed home."), ["stmt", "stmt"])
+        # The lexicon speaks Dr./Mr./etc. with no period, so the dot is not
+        # a sentence. Splitting it used to label the question as a statement.
+        self.assertEqual(_kinds("Dr. Smith stayed home."), ["stmt"])
+        self.assertEqual(_kinds("Is Dr. Smith home?"), ["qyn"])
+        self.assertEqual(_kinds("What did Mr. Smith say?"), ["qwh"])
+        self.assertEqual(_kinds("Look at Mrs. Smith!"), ["excl"])
+        self.assertEqual(_kinds("Dogs, cats, etc. are here."), ["stmt"])
+        self.assertEqual(
+            _kinds("Mrs. Jones left. Is Ms. Smith here?"),
+            ["stmt", "qyn"],
+        )
+        # "No." is a real sentence. Its period is a phoneme.
+        self.assertEqual(_kinds("No. Is it ready?"), ["stmt", "qyn"])
+        # A curly apostrophe is the same first word as the A/B's ASCII one.
+        self.assertEqual(_kinds("What’s Hecuba to him?"), ["qyn"])
+        self.assertEqual(_kinds("'Is it not monstrous?'"), ["qyn"])
         self.assertEqual(_kinds("Wait… Don't go?"), ["stmt", "qyn"])
         self.assertEqual(_kinds("Wait... Don't go?"), ["stmt", "qyn"])
         self.assertEqual(len(phoneme_bounds('He said. "Is it?"')), 2)
+        self.assertEqual(len(phoneme_bounds("Is Dr. Smith home?")), 1)
 
     def test_a_split_question_keeps_the_first_words_type(self) -> None:
         # Production cuts at 510 phonemes. The tail chunk must not reclassify
@@ -151,6 +165,18 @@ class SentenceTypes(unittest.TestCase):
         self.assertGreaterEqual(plans[0][0].sent_len, 40)
         self.assertFalse(plans[0][0].ends_here)
         self.assertTrue(plans[1][0].ends_here)
+
+    def test_an_abbreviation_does_not_steal_the_question(self) -> None:
+        # us_gold speaks "Dr." as dˈɑktəɹ. The period is only in the words.
+        text = "Is Dr. Smith home? Look at Mr. Jones!"
+        phonemes = "ɪz dˈɑktəɹ smˈɪθ hˈoʊm? lˈʊk æt mˈɪstəɹ dʒˈoʊnz!"
+        plans = plan_chunks([(text, phonemes)])
+        self.assertEqual([span.kind for span in plans[0]], ["qyn", "excl"])
+        self.assertTrue(all(span.ends_here for span in plans[0]))
+        # The same words used as the phoneme string must not split either,
+        # or the rise would land on "Dr." and the "?" would be a statement.
+        same = plan_chunks([(text, text)])
+        self.assertEqual([span.kind for span in same[0]], ["qyn", "excl"])
 
     def test_one_chunk_plans_a_rise_only_on_the_question_that_ends_there(self) -> None:
         text = "The harbor was quiet. Is it monstrous? What is Hecuba!"
@@ -418,8 +444,9 @@ class OneForward(unittest.TestCase):
         self.assertIs(model.predictor.F0Ntrain, boom)
 
     def test_a_real_duration_linear_is_hooked_and_left_in_place(self) -> None:
-        # Kokoro's duration_proj is an nn.Linear. Assigning a function to it
-        # raises TypeError. The hook has to leave the module where it is.
+        # Kokoro's duration_proj is LinearNorm, a module around nn.Linear.
+        # Assigning a function to it raises TypeError. This stand-in has the
+        # same forward-hook API. The hook has to leave the module where it is.
         from prosody_rules import prosody_hooks
 
         torch = self.torch

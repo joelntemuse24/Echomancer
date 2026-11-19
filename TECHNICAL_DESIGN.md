@@ -1215,7 +1215,8 @@ stays unset and those cache keys do not move. `DREW_PROSODY_RULES` (default
 off, take-home worker only) appends `-prosodyG` via `drewCacheVariant` and
 sends `prosody: "G"` on the Drew POST. The container edits F0 inside that
 same forward (`prosody_rules.py`, recipe G: accent 0.7, 3 st declination,
-exclamation register, yes/no final rise). A missing field is the stock
+exclamation register, yes/no final rise). Mr., Mrs., Ms., Dr., and etc.
+are not sentence breaks, because those phonemes have no period. A missing field is the stock
 forward and does not consult the container env, so an unruled cache key
 cannot store a ruled take. Walter and George never take the recipe. Unset
 the flag to roll back; the base key still finds the takes recorded before
