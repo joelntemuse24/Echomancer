@@ -121,9 +121,8 @@ export function resolveStockAdapter(opts: {
   ) {
     throw new RetiredGoogleVoiceError();
   }
-  // A stored Paradee row keeps its own adapter. Checked before the Edge
-  // branch so no Edge-shaped hint can pull it back onto `standard`, and
-  // before Drew so a stored book is not re-spoken as Drew.
+  // Drew, Walter, and George match their own id or provider. A stored
+  // Paradee row matches none of these, so it is not re-spoken as Drew.
   if (
     opts.catalogVoiceId === DREW_CATALOG_VOICE_ID ||
     opts.provider === "drew"
@@ -142,6 +141,10 @@ export function resolveStockAdapter(opts: {
   ) {
     return georgeTtsProvider;
   }
+  // A stored Echomancer Andrew row: its catalog id, provider `paradee`, or
+  // a `paradee/` model. After the Kokoro id checks, so a Drew row whose
+  // options still mention Paradee stays Drew. Before Edge, so this row is
+  // not pulled onto `standard`.
   if (isEchomancerAndrewVoice(hint)) {
     return paradeeTtsProvider;
   }

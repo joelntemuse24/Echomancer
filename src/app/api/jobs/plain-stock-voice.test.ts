@@ -5,6 +5,7 @@ import {
   buildRequest,
   jobRow,
   resetDatabase,
+  routeParams,
   uploadBookViaApi,
 } from "@/test/harness";
 
@@ -229,6 +230,30 @@ describe("plain stock job create", () => {
     expect(row?.voice_name).toBe("Drew");
   });
 
+  it("fails closed when a Paradee body has no catalog id and Drew is unset", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          ttsProvider: "paradee",
+          providerVoiceId: "paradee-v1.1-int8",
+          voiceName: "Echomancer Andrew",
+          ttsOptions: { model: "paradee/paradee-v1.1-int8" },
+        },
+      })
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { code?: string };
+    expect(body.code).toBe("DREW_NOT_CONFIGURED");
+    const { query } = await import("@/lib/turso");
+    const rows = await query<{ id: string }>("SELECT id FROM jobs");
+    expect(rows).toHaveLength(0);
+  });
+
   it("fails closed when a request names Echomancer Andrew and Drew is unset", async () => {
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
@@ -339,5 +364,98 @@ describe("plain stock job create", () => {
     expect(row?.catalog_voice_id).toBe("echomancer-andrew");
     expect(row?.voice_name).toBe("Echomancer Andrew");
     expect(row?.status).toBe("ready");
+  });
+
+  it("requeues a failed Echomancer Andrew book without changing its voice", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const { execute } = await import("@/lib/turso");
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress, pdf_storage_path,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, next_section_index, total_sections,
+         segments_json, error_message
+       ) VALUES (?, ?, ?, ?, 'failed', 40, ?, 'stock', 'takehome',
+         'paradee', 'paradee-v1.1-int8', 'echomancer-andrew', ?, ?, 1, 2, ?, ?)`,
+      [
+        "job-echomancer-andrew-retry",
+        USER_A,
+        "Old book",
+        "Echomancer Andrew",
+        upload.body.storagePath,
+        JSON.stringify({ model: "paradee/paradee-v1.1-int8" }),
+        BOOK.length,
+        JSON.stringify([
+          {
+            index: 0,
+            path: "audiobooks/job-echomancer-andrew-retry/sections/0000.mp3",
+            status: "ready",
+          },
+        ]),
+        "Section 1: boom",
+      ]
+    );
+
+    const { PATCH } = await import("@/app/api/jobs/[id]/route");
+    const response = await PATCH(
+      await buildRequest("/api/jobs/job-echomancer-andrew-retry", {
+        userId: USER_A,
+        method: "PATCH",
+        body: { action: "retry" },
+      }),
+      routeParams({ id: "job-echomancer-andrew-retry" })
+    );
+    expect(response.status).toBe(200);
+
+    const row = await jobRow("job-echomancer-andrew-retry");
+    expect(row?.status).toBe("queued");
+    expect(row?.next_section_index).toBe(1);
+    expect(row?.tts_provider).toBe("paradee");
+    expect(row?.provider_voice_id).toBe("paradee-v1.1-int8");
+    expect(row?.catalog_voice_id).toBe("echomancer-andrew");
+    expect(row?.voice_name).toBe("Echomancer Andrew");
+    const options = JSON.parse(String(row?.tts_options)) as { model?: string };
+    expect(options.model).toBe("paradee/paradee-v1.1-int8");
+  });
+
+  it("copies a stored Echomancer Andrew stream into take-home on Paradee", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const { execute } = await import("@/lib/turso");
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress, pdf_storage_path,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, next_section_index
+       ) VALUES (?, ?, ?, ?, 'ready', 100, ?, 'stock', 'stream',
+         'paradee', 'paradee-v1.1-int8', 'echomancer-andrew', ?, ?, 0)`,
+      [
+        "job-echomancer-andrew-stream",
+        USER_A,
+        "Old book",
+        "Echomancer Andrew",
+        upload.body.storagePath,
+        JSON.stringify({ model: "paradee/paradee-v1.1-int8" }),
+        BOOK.length,
+      ]
+    );
+
+    const { POST: takehome } = await import("@/app/api/jobs/[id]/takehome/route");
+    const response = await takehome(
+      await buildRequest("/api/jobs/job-echomancer-andrew-stream/takehome", {
+        userId: USER_A,
+        method: "POST",
+      }),
+      routeParams({ id: "job-echomancer-andrew-stream" })
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { jobId?: string };
+    const child = await jobRow(String(body.jobId));
+    expect(child?.tts_provider).toBe("paradee");
+    expect(child?.provider_voice_id).toBe("paradee-v1.1-int8");
+    expect(child?.catalog_voice_id).toBe("echomancer-andrew");
+    expect(child?.voice_name).toBe("Echomancer Andrew");
+    const parent = await jobRow("job-echomancer-andrew-stream");
+    expect(parent?.catalog_voice_id).toBe("echomancer-andrew");
+    expect(parent?.tts_provider).toBe("paradee");
   });
 });
