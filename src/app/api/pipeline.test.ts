@@ -84,6 +84,17 @@ beforeEach(async () => {
   await resetDatabase();
   delete process.env.PREMIUM_HD_ENABLED;
   process.env.TTS_SECTIONS_PER_TICK = "3";
+  // A request that names no voice is Drew, and Drew is listed only with its
+  // endpoint. The pipeline fakes synthesis, so the endpoint is never called.
+  process.env.DREW_ENABLED = "1";
+  process.env.DREW_URL = "https://example.modal.run";
+  process.env.DREW_TOKEN = "token";
+});
+
+afterEach(() => {
+  delete process.env.DREW_ENABLED;
+  delete process.env.DREW_URL;
+  delete process.env.DREW_TOKEN;
 });
 
 describe("upload", () => {
@@ -307,9 +318,7 @@ describe("take-home generation", () => {
     const created = await createJob({
       userId: USER_A,
       pdfStoragePath: upload.body.storagePath,
-      // Drew is the default narrator, but it needs its CPU endpoint. Name an
-      // Edge voice here so the pipeline test does not depend on that config.
-      catalogVoiceId: "ava",
+      catalogVoiceId: "drew",
     });
     expect(created.response.status).toBe(200);
     expect(created.body.status).toBe("queued");
@@ -321,9 +330,9 @@ describe("take-home generation", () => {
 
     const jobId = created.body.jobId as string;
     const queued = await jobRow(jobId);
-    expect(queued?.catalog_voice_id).toBe("ava");
-    expect(queued?.tts_provider).toBe("edge");
-    expect(queued?.provider_voice_id).toBe("en-US-AvaNeural");
+    expect(queued?.catalog_voice_id).toBe("drew");
+    expect(queued?.tts_provider).toBe("drew");
+    expect(queued?.provider_voice_id).toBe("drew");
     expect((await runWorker(jobId)).status).toBe(200);
 
     const finished = await jobRow(jobId);

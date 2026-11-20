@@ -5,7 +5,7 @@
 > label changed. See `docs/drew-walter-voice-runbook.md` for the rename and for
 > Drew, the app default that replaced Andrew.
 
-Sowell is a separate narrator. It does not replace Drew, Ava, Libby,
+Sowell is a separate narrator. It does not replace Drew, Heart,
 George, or a clone. The weight file is not in git: this
 repository is public. The hash is in `voices/sowell/manifest.json`.
 

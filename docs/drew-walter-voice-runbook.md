@@ -160,8 +160,9 @@ harness if it carries a path. The handler accepts either `SOWELL_TOKEN` or
 `DREW_TOKEN` as the bearer, so the same secret value works for both.
 
 Drew is the default the moment those three are set. **Before** they are set,
-`getDefaultCatalogVoice()` returns **Ava**, so a no-voice request is never
-stored pointing at an endpoint that cannot speak.
+a request that names no voice is still Drew and the job route returns 503
+`DREW_NOT_CONFIGURED`, so nothing is stored pointing at an endpoint that
+cannot speak.
 
 ## Speed: 0.88 is Drew's native 1x
 
@@ -292,10 +293,10 @@ it is quieter and less finished than a Walter book. Re-record it through
 
 ## Rollback
 
-Unset `DREW_ENABLED`. The card disappears, a request naming Drew returns 503
-`DREW_NOT_CONFIGURED`, and the default falls back to Ava. Stored Drew audio
-still plays from object storage. Walter, George, Ava, Libby and every stored
-Andrew/Ryan book are unaffected.
+Unset `DREW_ENABLED`. The card disappears, a request naming Drew, and a
+request that names no voice, return 503 `DREW_NOT_CONFIGURED`. Stored Drew
+audio still plays from object storage. Heart, Walter, George, and every
+stored Andrew, Ava, Libby, and Ryan book are unaffected.
 
 ## Smoke
 

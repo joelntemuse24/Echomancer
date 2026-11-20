@@ -31,6 +31,9 @@ describe("plain stock job create", () => {
 
   afterEach(() => {
     clearDrewEnv();
+    delete process.env.HEART_ENABLED;
+    delete process.env.HEART_URL;
+    delete process.env.HEART_TOKEN;
   });
 
   it("stores Drew when the request names Expressive (Andrew is retired)", async () => {
@@ -136,7 +139,7 @@ describe("plain stock job create", () => {
     expect(row?.provider_voice_id).toBe("drew");
   });
 
-  it("defaults to Ava, not Drew, before Drew's endpoint is configured", async () => {
+  it("fails closed when no voice is named and Drew is not configured", async () => {
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -149,11 +152,9 @@ describe("plain stock job create", () => {
         },
       })
     );
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    const row = await jobRow(body.jobId as string);
-    expect(row?.catalog_voice_id).toBe("ava");
-    expect(row?.tts_provider).toBe("edge");
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { code?: string };
+    expect(body.code).toBe("DREW_NOT_CONFIGURED");
   });
 
   it("fails closed with 503 when a request names Drew and the endpoint is unset", async () => {
@@ -274,7 +275,60 @@ describe("plain stock job create", () => {
     expect(body.code).toBe("DREW_NOT_CONFIGURED");
   });
 
-  it("stores Edge Libby when an old client still names Clara", async () => {
+  it("fails closed when a request names Ava and Heart is not configured", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "Quay",
+          catalogVoiceId: "ava",
+        },
+      })
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { code?: string };
+    expect(body.code).toBe("HEART_NOT_CONFIGURED");
+  });
+
+  it("stores Heart when an old client still names Ava", async () => {
+    Object.assign(process.env, {
+      HEART_ENABLED: "1",
+      HEART_URL: "https://example.modal.run",
+      HEART_TOKEN: "token",
+    });
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "Quay",
+          catalogVoiceId: "libby",
+          voiceName: "Libby",
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const row = await jobRow(body.jobId as string);
+    expect(row?.tts_provider).toBe("heart");
+    expect(row?.provider_voice_id).toBe("af_heart");
+    expect(row?.catalog_voice_id).toBe("heart");
+    expect(row?.voice_name).toBe("Heart");
+  });
+
+  it("stores Heart when an old client still names Clara", async () => {
+    Object.assign(process.env, {
+      HEART_ENABLED: "1",
+      HEART_URL: "https://example.modal.run",
+      HEART_TOKEN: "token",
+    });
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -291,10 +345,10 @@ describe("plain stock job create", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const row = await jobRow(body.jobId as string);
-    expect(row?.tts_provider).toBe("edge");
-    expect(row?.provider_voice_id).toBe("en-GB-LibbyNeural");
-    expect(row?.catalog_voice_id).toBe("libby");
-    expect(row?.voice_name).toBe("Libby");
+    expect(row?.tts_provider).toBe("heart");
+    expect(row?.provider_voice_id).toBe("af_heart");
+    expect(row?.catalog_voice_id).toBe("heart");
+    expect(row?.voice_name).toBe("Heart");
   });
 
   /**
@@ -457,5 +511,88 @@ describe("plain stock job create", () => {
     const parent = await jobRow("job-echomancer-andrew-stream");
     expect(parent?.catalog_voice_id).toBe("echomancer-andrew");
     expect(parent?.tts_provider).toBe("paradee");
+  });
+
+  it("requeues a failed Ava book on Edge and a failed Clara book on Fish", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const { execute } = await import("@/lib/turso");
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress, pdf_storage_path,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, next_section_index, total_sections,
+         segments_json, error_message
+       ) VALUES (?, ?, ?, ?, 'failed', 40, ?, 'stock', 'takehome',
+         'edge', 'en-US-AvaNeural', 'ava', ?, ?, 1, 2, ?, ?)`,
+      [
+        "job-ava-retry",
+        USER_A,
+        "Old book",
+        "Ava",
+        upload.body.storagePath,
+        JSON.stringify({ model: "edge/en-US-AvaNeural" }),
+        BOOK.length,
+        JSON.stringify([
+          {
+            index: 0,
+            path: "audiobooks/job-ava-retry/sections/0000.mp3",
+            status: "ready",
+          },
+        ]),
+        "Section 1: boom",
+      ]
+    );
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress, pdf_storage_path,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, next_section_index, total_sections
+       ) VALUES (?, ?, ?, ?, 'failed', 20, ?, 'stock', 'takehome',
+         'fish', 'a50f1ee074124ba2b1dc44623f99abbe', 'clara', ?, ?, 0, 2)`,
+      [
+        "job-clara-retry",
+        USER_A,
+        "Old book",
+        "Clara",
+        upload.body.storagePath,
+        JSON.stringify({ model: "s2.1-pro-free" }),
+        BOOK.length,
+      ]
+    );
+    Object.assign(process.env, {
+      HEART_ENABLED: "1",
+      HEART_URL: "https://example.modal.run",
+      HEART_TOKEN: "token",
+    });
+    const { PATCH } = await import("@/app/api/jobs/[id]/route");
+    const ava = await PATCH(
+      await buildRequest("/api/jobs/job-ava-retry", {
+        userId: USER_A,
+        method: "PATCH",
+        body: { action: "retry" },
+      }),
+      routeParams({ id: "job-ava-retry" })
+    );
+    expect(ava.status).toBe(200);
+    const avaRow = await jobRow("job-ava-retry");
+    expect(avaRow?.status).toBe("queued");
+    expect(avaRow?.tts_provider).toBe("edge");
+    expect(avaRow?.provider_voice_id).toBe("en-US-AvaNeural");
+    expect(avaRow?.catalog_voice_id).toBe("ava");
+    expect(avaRow?.voice_name).toBe("Ava");
+
+    const clara = await PATCH(
+      await buildRequest("/api/jobs/job-clara-retry", {
+        userId: USER_A,
+        method: "PATCH",
+        body: { action: "retry" },
+      }),
+      routeParams({ id: "job-clara-retry" })
+    );
+    expect(clara.status).toBe(200);
+    const claraRow = await jobRow("job-clara-retry");
+    expect(claraRow?.tts_provider).toBe("fish");
+    expect(claraRow?.catalog_voice_id).toBe("clara");
+    expect(claraRow?.voice_name).toBe("Clara");
   });
 });

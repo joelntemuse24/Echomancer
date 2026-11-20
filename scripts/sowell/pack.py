@@ -21,10 +21,15 @@ PINNED_WEIGHTS = "kokoro-v1_0.pth"
 GEORGE_VOICE_ID = "bm_george"
 GEORGE_VOICE_FILE = "voices/bm_george.pt"
 GEORGE_VOICE_SHA256 = "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b"
+# Official Kokoro-82M American female voice at that revision. Stock pack,
+# not Drew's fine-tuned weights and not the Sowell pack.
+HEART_VOICE_ID = "af_heart"
+HEART_VOICE_FILE = "voices/af_heart.pt"
+HEART_VOICE_SHA256 = "0ab5709b8ffab19bfd849cd11d98f75b60af7733253ad0d67b12382a102cb4ff"
 SOWELL_VOICE_ID = "am_sowell"
 # None keeps Kokoro's length index. Set an int only when the pack's rows
 # move with length the way Drew's do. Measured packs that stay flat
-# (George, am_michael) stay None so their takes are not thrown away.
+# (George, Heart, am_michael) stay None so their takes are not thrown away.
 SOWELL_FIXED_STYLE_INDEX: int | None = None
 # Drew is its own fine-tuned kmodel, not a pack on stock Kokoro. See drew.py.
 DREW_VOICE_ID = "drew"
@@ -33,11 +38,13 @@ _VOICE_ALIASES = {
     "walter": SOWELL_VOICE_ID,
     "am_sowell_avg": SOWELL_VOICE_ID,
     "george": GEORGE_VOICE_ID,
+    "heart": HEART_VOICE_ID,
+    "af_heart": HEART_VOICE_ID,
     "andrew": DREW_VOICE_ID,
     "drew": DREW_VOICE_ID,
 }
 #: Voices the container will speak. A name outside this set is refused.
-VOICE_ALLOWLIST = (SOWELL_VOICE_ID, GEORGE_VOICE_ID, DREW_VOICE_ID)
+VOICE_ALLOWLIST = (SOWELL_VOICE_ID, GEORGE_VOICE_ID, HEART_VOICE_ID, DREW_VOICE_ID)
 
 
 class PackError(Exception):
@@ -69,6 +76,23 @@ def check_george_voice(path: Path) -> torch.Tensor:
         raise PackError(f"George voice layout {tuple(pack.shape)} {pack.dtype}")
     if not bool(torch.isfinite(pack).all()):
         raise PackError("George voice has a non-finite value")
+    return pack
+
+
+def check_heart_voice(path: Path) -> torch.Tensor:
+    """The pinned af_heart tensor. weights_only, hash, and shape."""
+    if not path.is_file():
+        raise PackError(f"Heart voice missing: {path}")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != HEART_VOICE_SHA256:
+        raise PackError("Heart voice hash does not match the pinned Kokoro file")
+    pack = torch.load(path, weights_only=True, map_location="cpu")
+    if not isinstance(pack, torch.Tensor):
+        raise PackError("Heart voice is not a tensor")
+    if tuple(pack.shape) != PACK_SHAPE or pack.dtype != torch.float32:
+        raise PackError(f"Heart voice layout {tuple(pack.shape)} {pack.dtype}")
+    if not bool(torch.isfinite(pack).all()):
+        raise PackError("Heart voice has a non-finite value")
     return pack
 
 

@@ -18,8 +18,10 @@ import { edgeTtsProvider } from "./edge";
 import { paradeeTtsProvider } from "./paradee";
 import { sowellTtsProvider } from "./sowell";
 import { georgeTtsProvider } from "./george";
+import { heartTtsProvider } from "./heart";
 import { drewTtsProvider } from "./drew";
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
+import { HEART_CATALOG_VOICE_ID } from "@/lib/tts/heart-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-voice";
 import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
 import {
@@ -37,6 +39,7 @@ const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = 
   paradee: paradeeTtsProvider,
   sowell: sowellTtsProvider,
   george: georgeTtsProvider,
+  heart: heartTtsProvider,
   drew: drewTtsProvider,
   research: minimaxFreeTtsProvider,
 };
@@ -67,6 +70,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   if (id === "george") {
     return georgeTtsProvider;
   }
+  if (id === "heart") {
+    return heartTtsProvider;
+  }
   if (id === "drew") {
     return drewTtsProvider;
   }
@@ -90,7 +96,7 @@ export class RetiredGoogleVoiceError extends Error {
 }
 
 /**
- * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). A stored
+ * Prefer Edge for a stored Andrew / Ava / Libby / Ryan / Michelle row. A stored
  * Echomancer Andrew row (provider `paradee`) stays on its own adapter. A new
  * request that names that id is coerced to Drew before insert, so this branch
  * is a stored book. A stored Google / Randolph row is not spoken again. A stored `fish` provider stays
@@ -121,8 +127,9 @@ export function resolveStockAdapter(opts: {
   ) {
     throw new RetiredGoogleVoiceError();
   }
-  // Drew, Walter, and George match their own id or provider. A stored
-  // Paradee row matches none of these, so it is not re-spoken as Drew.
+  // Drew, Walter, George, and Heart match their own id or provider. A stored
+  // Paradee row matches none of these, so it is not re-spoken as Drew. A
+  // stored Ava or Libby row matches none of these either, so it stays Edge.
   if (
     opts.catalogVoiceId === DREW_CATALOG_VOICE_ID ||
     opts.provider === "drew"
@@ -140,6 +147,12 @@ export function resolveStockAdapter(opts: {
     opts.provider === "george"
   ) {
     return georgeTtsProvider;
+  }
+  if (
+    opts.catalogVoiceId === HEART_CATALOG_VOICE_ID ||
+    opts.provider === "heart"
+  ) {
+    return heartTtsProvider;
   }
   // A stored Echomancer Andrew row: its catalog id, provider `paradee`, or
   // a `paradee/` model. After the Kokoro id checks, so a Drew row whose
@@ -195,6 +208,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "paradee" ||
     id === "sowell" ||
     id === "george" ||
+    id === "heart" ||
     id === "drew" ||
     id === "research"
   );

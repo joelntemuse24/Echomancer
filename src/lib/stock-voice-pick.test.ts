@@ -29,7 +29,7 @@ describe("stock voice pick", () => {
       storage
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "ava",
+      catalogVoiceId: "heart",
       delivery: "standard",
     });
     // Andrew is retired: a saved Andrew/Randolph/standard pick lands on Drew.
@@ -75,26 +75,26 @@ describe("stock voice pick", () => {
     });
   });
 
-  it("moves a saved Clara pick onto Libby", () => {
+  it("moves a saved Clara pick onto Heart", () => {
     const storage = memoryStore();
     storage.setItem(
       "ec_stock_voice_pick",
       JSON.stringify({ catalogVoiceId: "clara", delivery: "standard" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "libby",
+      catalogVoiceId: "heart",
       delivery: "standard",
     });
   });
 
-  it("moves a saved Michelle pick onto Ava", () => {
+  it("moves a saved Michelle pick onto Heart", () => {
     const storage = memoryStore();
     storage.setItem(
       "ec_stock_voice_pick",
       JSON.stringify({ catalogVoiceId: "michelle", delivery: "expressive" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "ava",
+      catalogVoiceId: "heart",
       delivery: "standard",
     });
   });

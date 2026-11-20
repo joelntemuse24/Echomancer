@@ -311,7 +311,7 @@ export async function holdEdgeSectionSlot(cap: number): Promise<HeldProviderSlot
  * inside the Fish HTTP call so a take-home that already took one does not
  * take a second. Returns null for Fish.
  *
- * Drew, Walter, and George all come from the one `echomancer-sowell` fleet,
+ * Drew, Walter, George, and Heart all come from the one `echomancer-sowell` fleet,
  * so they take a **`kokoro`** permit with the fleet cap, not a per-voice
  * permit. A preview during a book therefore shares the fleet the book is
  * using instead of opening a call beyond `SOWELL_MAX_CONTAINERS` that would
@@ -322,7 +322,12 @@ export async function holdListenerSlot(
   edgeCap: number
 ): Promise<HeldProviderSlot | null> {
   if (providerId === "fish") return null;
-  if (providerId === "drew" || providerId === "sowell" || providerId === "george") {
+  if (
+    providerId === "drew" ||
+    providerId === "sowell" ||
+    providerId === "george" ||
+    providerId === "heart"
+  ) {
     return holdNamedProviderSlot("kokoro", sowellFleetContainers());
   }
   if (providerId === "edge" || providerId === "google") {

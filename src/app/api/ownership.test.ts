@@ -588,6 +588,9 @@ describe("POST /api/jobs (create)", () => {
       [UPLOAD_ID_A]
     );
 
+    process.env.DREW_ENABLED = "1";
+    process.env.DREW_URL = "https://example.modal.run";
+    process.env.DREW_TOKEN = "token";
     const body = {
       mode: "stock",
       jobKind: "takehome",
@@ -618,6 +621,9 @@ describe("POST /api/jobs (create)", () => {
       [USER_A, pdfPath]
     );
     expect(rows).toHaveLength(1);
+    delete process.env.DREW_ENABLED;
+    delete process.env.DREW_URL;
+    delete process.env.DREW_TOKEN;
   });
 
   it("still refuses a stream while extract is running", async () => {

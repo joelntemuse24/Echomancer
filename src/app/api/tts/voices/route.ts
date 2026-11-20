@@ -158,7 +158,9 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Andrew / Ava / Libby / Ryan + session clones. Clara, Randolph, and Michelle are not listed.
+    // Drew, Heart, and George, plus Walter when its endpoint is set, and
+    // session clones. Ava, Libby, Andrew, Ryan, Clara, Randolph, and Michelle
+    // are not listed.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;

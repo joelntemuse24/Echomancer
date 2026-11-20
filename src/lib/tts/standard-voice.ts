@@ -2,8 +2,7 @@
  * Stock narrators shown in the slim catalog.
  *
  *   Drew      → fine-tuned Kokoro-82M, own kmodel (catalog id `drew`, default)
- *   Ava       → Edge `en-US-AvaNeural` (non-HD; Dragon HD is not on this route)
- *   Libby     → Edge `en-GB-LibbyNeural`
+ *   Heart     → Kokoro `af_heart` when that endpoint is set
  *   George    → Kokoro `bm_george` when that endpoint is set
  *
  * **Andrew is retired.** Catalog id `standard` was Edge
@@ -21,11 +20,16 @@
  * names it lands on Drew. The Paradee adapter stays for those stored rows.
  *
  * Ryan is unlisted for the same reason and a new request that names him uses
- * George. Clara stays resolvable for books already made with her, and is not
- * listed: a new request or saved pick that names Clara uses Libby. One that
- * names Randolph or a Google Cloud voice uses Drew. Michelle
- * (`en-US-MichelleNeural`) is the same kind of unlisted id. Do not add
- * rejected Edge females (Jenny, Sonia, Aria) or Ava Dragon HD.
+ * George.
+ *
+ * **Ava and Libby are retired the same way.** Catalog ids `ava` (Edge
+ * `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`) stay unlisted
+ * legacy ids: a book already stored with either still resolves, plays, and
+ * is never rewritten or re-spoken. A new request or saved pick that names
+ * Ava, Libby, Clara, or Michelle lands on Heart. Clara stays on Fish for a
+ * book already stored as Clara. Michelle stays on Edge for a book already
+ * stored as Michelle. One that names Randolph or a Google Cloud voice uses
+ * Drew. Do not add rejected Edge females (Jenny, Sonia, Aria) or Ava Dragon HD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
  * User clones stay on the Fish `clone:<uuid>` path.
@@ -36,7 +40,12 @@ import {
   CLARA_FISH_REFERENCE_ID,
   curatedFishDisplayName,
 } from "@/lib/tts/curated-fish-stock";
-import { DREW_VOICE_ID, KOKORO_GEORGE_VOICE_ID } from "@/lib/tts/kokoro-voice-ids";
+import { HEART_DISPLAY_NAME } from "@/lib/tts/heart-voice";
+import {
+  DREW_VOICE_ID,
+  KOKORO_GEORGE_VOICE_ID,
+  KOKORO_HEART_VOICE_ID,
+} from "@/lib/tts/kokoro-voice-ids";
 
 /** Retired Edge Andrew. Unlisted; stored Andrew books still resolve to it. */
 export const STANDARD_CATALOG_VOICE_ID = "standard";
@@ -47,19 +56,29 @@ export const DREW_CATALOG_VOICE_ID = DREW_VOICE_ID;
  * resolves to it and is never rewritten. A new request uses Drew.
  */
 export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
+/**
+ * Retired Edge Ava. Unlisted; a stored Ava book still resolves to it and is
+ * never rewritten. A new request uses Heart.
+ */
 export const AVA_CATALOG_VOICE_ID = "ava";
+/**
+ * Retired Edge Libby. Unlisted; a stored Libby book still resolves to it and
+ * is never rewritten. A new request uses Heart.
+ */
 export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";
-/** Not listed. Still resolved so an in-flight Michelle job can finish. */
+/**
+ * Not listed. A stored Michelle book still resolves on Edge. A new request
+ * or saved pick that names Michelle uses Heart.
+ */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 /** Old catalog id. New requests and saved picks use Andrew. */
 export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
 /**
- * Edge females auditioned and rejected. Ava (non-HD) replaced Michelle.
- * Libby is the listed UK female. Dragon HD Ava is a different voice and is
- * not on the free Edge route.
+ * Edge females auditioned and rejected. Heart replaced Ava and Libby.
+ * Dragon HD Ava is a different voice and is not on the free Edge route.
  */
 export const REJECTED_EDGE_FEMALE_LABELS = [
   "Jenny",
@@ -71,11 +90,10 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Drew, Ava, Libby, George. Walter is appended when listed. */
+/** Slim picker order: Drew, Heart, George. Walter is appended when listed. */
 export const SLIM_STOCK_VOICE_IDS = [
   DREW_CATALOG_VOICE_ID,
-  AVA_CATALOG_VOICE_ID,
-  LIBBY_CATALOG_VOICE_ID,
+  KOKORO_HEART_VOICE_ID,
   "george",
 ] as const;
 
@@ -114,6 +132,7 @@ export const STOCK_DISPLAY_NAMES = {
   [ECHOMANCER_ANDREW_CATALOG_VOICE_ID]: "Echomancer Andrew",
   [AVA_CATALOG_VOICE_ID]: "Ava",
   [LIBBY_CATALOG_VOICE_ID]: "Libby",
+  [KOKORO_HEART_VOICE_ID]: HEART_DISPLAY_NAME,
   [RYAN_CATALOG_VOICE_ID]: "Ryan",
   [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
   [CLARA_CATALOG_VOICE_ID]: "Clara",
@@ -161,6 +180,11 @@ export function isWalterVoice(voice: VoiceHint): boolean {
 export function isGeorgeVoice(voice: VoiceHint): boolean {
   if (voice.id === KOKORO_GEORGE_VOICE_ID) return true;
   return (voice.provider || "").toLowerCase() === "george";
+}
+
+export function isHeartVoice(voice: VoiceHint): boolean {
+  if (voice.id === KOKORO_HEART_VOICE_ID) return true;
+  return (voice.provider || "").toLowerCase() === "heart";
 }
 
 export function stockDisplayName(id?: string | null): string | null {
@@ -237,12 +261,15 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 /**
  * Andrew / Ava / Libby / Ryan — free Edge Read Aloud path. Legacy Michelle too.
  * A row already stored as Fish stays on Fish. Drew and the Kokoro voices have
- * their own providers and are never Edge.
+ * their own providers and are never Edge. A new request that names Ava or
+ * Libby is coerced to Heart before it is inserted, so this still matches a
+ * stored row.
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
   if (voice.provider === "sowell" || voice.id === "sowell") return false;
   if (voice.provider === "george" || voice.id === "george") return false;
+  if (voice.provider === "heart" || voice.id === KOKORO_HEART_VOICE_ID) return false;
   if (voice.provider === "drew" || voice.id === DREW_CATALOG_VOICE_ID) return false;
   if (isEchomancerAndrewVoice(voice)) return false;
   if (
@@ -325,15 +352,20 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
    */
   "echomancer-andrew": DREW_CATALOG_VOICE_ID,
   "echomancer andrew": DREW_CATALOG_VOICE_ID,
-  ava: AVA_CATALOG_VOICE_ID,
-  libby: LIBBY_CATALOG_VOICE_ID,
-  clara: LIBBY_CATALOG_VOICE_ID,
+  /**
+   * Ava, Libby, Clara, and Michelle are retired for new requests. A stored
+   * book keeps its own id. This map runs before insert and on a saved pick.
+   */
+  ava: KOKORO_HEART_VOICE_ID,
+  libby: KOKORO_HEART_VOICE_ID,
+  clara: KOKORO_HEART_VOICE_ID,
+  michelle: KOKORO_HEART_VOICE_ID,
+  heart: KOKORO_HEART_VOICE_ID,
   ryan: "george",
   george: "george",
   sowell: "sowell",
   walter: "sowell",
   randolph: DREW_CATALOG_VOICE_ID,
-  michelle: MICHELLE_CATALOG_VOICE_ID,
   standard: DREW_CATALOG_VOICE_ID,
 };
 
@@ -341,9 +373,9 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
  * Saved picks and new job requests that still name an Expressive variant
  * land on the matching plain stock id. A bare "expressive" is Drew.
  * A request that still says Andrew, Echomancer Andrew, or Randolph uses
- * Drew. One that says Clara uses Libby, and one that says Ryan uses George.
- * A stored book is not coerced: this runs before insert and on a saved
- * pick, never on a row.
+ * Drew. One that says Ava, Libby, Clara, or Michelle uses Heart, and one
+ * that says Ryan uses George. A stored book is not coerced: this runs
+ * before insert and on a saved pick, never on a row.
  */
 export function coercePlainCatalogVoiceId(raw: string): string {
   const stripped = raw.trim().replace(EXPRESSIVE_TAIL, "").trim();
@@ -354,9 +386,10 @@ export function coercePlainCatalogVoiceId(raw: string): string {
 }
 
 /**
- * Listed stock plus legacy Michelle / Randolph / Andrew / Echomancer Andrew.
- * Not Clara, not a user clone. `standard` and `echomancer-andrew` are here
- * because a stored book with either id is still stock.
+ * Listed stock plus legacy Ava / Libby / Michelle / Randolph / Andrew /
+ * Echomancer Andrew. Not Clara, not a user clone. `standard`,
+ * `echomancer-andrew`, `ava`, and `libby` are here because a stored book
+ * with any of those ids is still stock.
  */
 export function isBaselineStockCatalogId(id?: string | null): boolean {
   return (
@@ -367,6 +400,7 @@ export function isBaselineStockCatalogId(id?: string | null): boolean {
     id === LIBBY_CATALOG_VOICE_ID ||
     id === RYAN_CATALOG_VOICE_ID ||
     id === "george" ||
+    id === KOKORO_HEART_VOICE_ID ||
     id === "sowell" ||
     id === MICHELLE_CATALOG_VOICE_ID ||
     id === RANDOLPH_CATALOG_VOICE_ID

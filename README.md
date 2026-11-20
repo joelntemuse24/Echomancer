@@ -1,7 +1,7 @@
 # Echomancer v2
 
 Transform documents into audiobooks with stock narrators — **Drew**
-(default), **Ava**, **Libby**, **George**, and **Walter** — plus optional
+(default), **Heart**, **George**, and **Walter** — plus optional
 voice cloning.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
@@ -25,8 +25,8 @@ Ready sections can play while the rest of the book generates.
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Drew = self-hosted Kokoro-82M (default); Ava / Libby = Edge;
-             George / Walter = shared Kokoro CPU app; user clones optional
+TTS          Drew, Heart, George, Walter = shared Kokoro CPU app
+             (Drew is the fine-tuned default); user clones optional
 Hosting      Vercel + always-on VPS worker (Whole book)
 ```
 
@@ -59,9 +59,10 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 - Node.js 20+
 - Turso database
 - Optional: Fish API key (voice cloning, and a book already stored as Clara)
-- Edge stock (Ava / Libby) needs no Fish or Azure key
-- Optional: Drew, George, and Walter need the shared Kokoro CPU endpoint
-  (`DREW_*`, `GEORGE_*`, `SOWELL_*`); without it the default falls back to Ava
+- Optional: Drew, Heart, George, and Walter need the shared Kokoro CPU endpoint
+  (`DREW_*`, `HEART_*`, `GEORGE_*`, `SOWELL_*`). A request that names no voice
+  is Drew, and 503 when that endpoint is unset. A book already stored as Ava
+  or Libby stays on Edge and needs no Fish or Azure key
 - A book already stored as Andrew keeps its audio and downloads. New requests
   use Drew. A book already stored as Echomancer Andrew keeps its Paradee
   audio; a new request that names that voice uses Drew. A book already stored

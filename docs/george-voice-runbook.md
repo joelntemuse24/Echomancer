@@ -15,7 +15,7 @@ and two phonemizers: American for the Sowell pack, British (`lang_code='b'`)
 for `bm_george`. Drew is the second resident kmodel when its volume is
 mounted.
 
-George, Walter, and Drew share one sixteen-container fleet. A book's lanes
+George, Heart, Walter, and Drew share one sixteen-container fleet. A book's lanes
 are its exact share of that fleet among the Kokoro books running now
 (`planKokoroBookLanes`; quotas sum to the fleet and are re-read on every
 claim), and the `kokoro` provider-slot rows are the hard cross-process cap,
@@ -30,8 +30,8 @@ two. On this app both methods are the same `speak` endpoint. Set
 An older app that ignores `voice` does not get to store audio: the
 worker rejects a body with no `bm_george` header.
 
-`SOWELL_MAX_CONTAINERS` is one fleet knob for all three narrators. Raising it
-raises the shared pool for George, Walter, and Drew together; it is not a
+`SOWELL_MAX_CONTAINERS` is one fleet knob for all four narrators. Raising it
+raises the shared pool for George, Heart, Walter, and Drew together; it is not a
 per-voice setting. It defaults to 16, and the worker clamps a book's
 `SOWELL_BOOK_LANES` to it.
 

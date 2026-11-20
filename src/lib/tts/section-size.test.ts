@@ -215,6 +215,7 @@ describe("Kokoro CPU section sizing", () => {
     expect(isKokoroCpuProvider("drew")).toBe(true);
     expect(isKokoroCpuProvider("sowell")).toBe(true);
     expect(isKokoroCpuProvider("george")).toBe(true);
+    expect(isKokoroCpuProvider("heart")).toBe(true);
     expect(isKokoroCpuProvider("DREW")).toBe(true);
     // Every other engine keeps its own packing.
     for (const other of ["edge", "google", "fish", "paradee", "gemini", "grok", "openrouter", ""]) {

@@ -242,6 +242,7 @@ export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   if (
     voice.provider === "sowell" ||
     voice.provider === "george" ||
+    voice.provider === "heart" ||
     voice.provider === "drew"
   ) {
     return true;

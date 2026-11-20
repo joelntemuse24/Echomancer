@@ -3,7 +3,8 @@
  * Librivox / Archive.org narrators Joel clones separately.
  *
  * To ship one: add a row here, a matching `voices.json` card, and that
- * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Clara is unlisted and still resolves.
+ * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Clara is unlisted and still resolves
+ * for a book already stored as Clara. A new request that names her uses Heart.
  * Do not invent rejected Edge females.
  */
 

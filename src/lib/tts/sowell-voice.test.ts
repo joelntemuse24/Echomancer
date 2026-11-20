@@ -62,8 +62,6 @@ describe("sowell voice", () => {
     expect(listed.map((voice) => voice.id)).not.toContain("sowell");
     expect(voicesForPath(listed, "standard").map((voice) => voice.id)).toEqual([
       "drew",
-      "ava",
-      "libby",
     ]);
     expect(listed.map((voice) => voice.id)).not.toContain("echomancer-andrew");
     expect(() => sowellEndpoint()).toThrow(SowellNotConfiguredError);
@@ -84,13 +82,13 @@ describe("sowell voice", () => {
     expect(voice?.displayName).toMatch(/^Walter/);
     const catalog = await listCatalogVoices();
     const listed = catalog.map((item) => item.id);
-    expect(listed.slice(0, 3)).toEqual(["drew", "ava", "libby"]);
+    expect(listed[0]).toBe("drew");
+    expect(listed).not.toContain("ava");
+    expect(listed).not.toContain("libby");
     expect(listed).not.toContain("echomancer-andrew");
     expect(listed).toContain("sowell");
     expect(voicesForPath(catalog, "standard").map((voice) => voice.id)).toEqual([
       "drew",
-      "ava",
-      "libby",
       "sowell",
     ]);
     expect(voicesForPath(catalog, "standard").at(-1)?.displayName).toMatch(/^Walter/);

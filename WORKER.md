@@ -271,10 +271,10 @@ The post-Fish squeak check is off. Joel labelled 20 excerpts; the 10 the
 spectral detector flagged were all normal speech (0/10 true positives).
 Do not set `TTS_SQUEAK_CHECK=1` on this host.
 
-Edge stock (Andrew / Ava / Libby / Ryan, plus legacy Michelle) needs no Fish key. A book
+Edge stock for a book already stored as Andrew, Ava, Libby, Ryan, or Michelle needs no Fish key. A book
 already stored as Clara, and user clones, need `FISH_API_KEY`. Listen-prep fallback uses the same
 `OPENROUTER_API_KEY` as Vercel.
-A book already stored as Randolph plays its saved audio. New requests use Andrew on Edge.
+A book already stored as Randolph plays its saved audio. New requests use Drew.
 
 ## Vercel env (production)
 
@@ -321,7 +321,7 @@ Do not remove the sidecar while stored books still resolve to it.
 
 Install, model files, and the pm2 unit: `scripts/paradee/README.md`. Set
 `PARADEE_SECRET` here and in the sidecar when the model is exposed. Drew,
-Ava, Libby, George, Walter, and Fish are unchanged.
+Heart, George, Walter, and Fish are unchanged.
 
 ## Smoke
 

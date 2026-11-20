@@ -109,16 +109,8 @@ describe("voices catalog", () => {
     const body = (await response.json()) as {
       voices: { id: string; displayName: string; expressive?: unknown }[];
     };
-    expect(body.voices.map((voice) => voice.id)).toEqual([
-      "drew",
-      "ava",
-      "libby",
-    ]);
-    expect(body.voices.map((voice) => voice.displayName)).toEqual([
-      "Drew",
-      "Ava",
-      "Libby",
-    ]);
+    expect(body.voices.map((voice) => voice.id)).toEqual(["drew"]);
+    expect(body.voices.map((voice) => voice.displayName)).toEqual(["Drew"]);
     expect(body.voices.map((voice) => voice.id)).not.toContain("standard");
     expect(body.voices.map((voice) => voice.id)).not.toContain(
       "echomancer-andrew"
@@ -141,9 +133,7 @@ describe("voices catalog", () => {
         generationEta: { sections: number } | null;
       }[];
     };
-    // A 7,000-char Edge book at 4,000 chars/section is two sections.
-    const edge = body.voices.find((voice) => voice.id === "ava");
-    expect(edge?.generationEta?.sections).toBe(2);
+    // Ava and Libby are unlisted, so the response has no Edge card.
     // A Kokoro book packs at ~700, so it is ten sections, not four: the
     // pre-job estimate must not understate it.
     const kokoro = body.voices.find((voice) => voice.id === "drew");

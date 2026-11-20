@@ -30,8 +30,10 @@ describe("george voice", () => {
     const listed = (await listCatalogVoices()).map((voice) => voice.id);
     expect(listed).not.toContain("george");
     expect(listed).not.toContain("ryan");
-    // Drew is the default and is absent too unless its own endpoint is set.
-    expect(listed).toEqual(["ava", "libby"]);
+    // Drew and Heart are absent too unless their own endpoints are set.
+    expect(listed).toEqual([]);
+    expect(listed).not.toContain("ava");
+    expect(listed).not.toContain("libby");
     expect(listed).not.toContain("echomancer-andrew");
   });
 

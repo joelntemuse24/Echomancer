@@ -6,8 +6,8 @@ WAV bytes. There is no shared temporary file.
 
 Two kmodels stay resident:
 
-* stock `kokoro-v1_0.pth`, which speaks Walter (`am_sowell`) and George
-  (`bm_george`)
+* stock `kokoro-v1_0.pth`, which speaks Walter (`am_sowell`), George
+  (`bm_george`), and Heart (`af_heart`)
 * the Drew checkpoint, which speaks Drew only (see `drew.py`)
 
 Drew's kmodel is loaded lazily, on the first Drew request, so a Walter-only
@@ -31,6 +31,8 @@ import torch
 from pack import (
     GEORGE_VOICE_FILE,
     GEORGE_VOICE_ID,
+    HEART_VOICE_FILE,
+    HEART_VOICE_ID,
     PINNED_REPO,
     PINNED_REVISION,
     PINNED_WEIGHTS,
@@ -38,6 +40,7 @@ from pack import (
     PackError,
     canonical_kokoro_voice,
     check_george_voice,
+    check_heart_voice,
     check_pack,
     load_manifest,
     manifest_path,
@@ -380,7 +383,7 @@ class SowellEngine:
         )
         model = KModel(repo_id=PINNED_REPO, config=config, model=weights).eval()
         self._threads = apply_thread_budget()
-        # One model. American phonemes for the Sowell pack, British for George.
+        # One model. American phonemes for Walter and Heart, British for George.
         self._pipelines = {
             "a": KPipeline(lang_code="a", repo_id=PINNED_REPO, model=model),
             "b": KPipeline(lang_code="b", repo_id=PINNED_REPO, model=model),
@@ -389,6 +392,9 @@ class SowellEngine:
             SOWELL_VOICE_ID: pin_style(pack, fixed_style_index(SOWELL_VOICE_ID)),
             GEORGE_VOICE_ID: pin_style(
                 self._load_george_voice(), fixed_style_index(GEORGE_VOICE_ID)
+            ),
+            HEART_VOICE_ID: pin_style(
+                self._load_heart_voice(), fixed_style_index(HEART_VOICE_ID)
             ),
         }
         self.init_count += 1
@@ -407,6 +413,21 @@ class SowellEngine:
             )
         )
         return check_george_voice(downloaded)
+
+    def _load_heart_voice(self) -> torch.Tensor:
+        baked = Path(os.environ.get("HEART_VOICE", "/opt/sowell/voices/af_heart.pt"))
+        if baked.is_file():
+            return check_heart_voice(baked)
+        from huggingface_hub import hf_hub_download
+
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=PINNED_REPO,
+                filename=HEART_VOICE_FILE,
+                revision=PINNED_REVISION,
+            )
+        )
+        return check_heart_voice(downloaded)
 
     def _render_locked(
         self,

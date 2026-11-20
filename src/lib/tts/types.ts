@@ -1,5 +1,5 @@
 /**
- * Stock TTS types — slim catalog (Drew / Ava / Libby / George, plus Walter
+ * Stock TTS types — slim catalog (Drew / Heart / George, plus Walter
  * when configured) + Fish clones + optional OpenRouter / direct adapters.
  * Echomancer Andrew (`echomancer-andrew`, Paradee) is an unlisted legacy id.
  * Premium HD models stay gated.
@@ -12,7 +12,10 @@ export type StockProvider =
   | "openrouter"
   /** Direct Fish Audio — cloned voices (requires FISH_API_KEY) */
   | "fish"
-  /** Microsoft Edge online TTS — Ava / Libby, and stored Andrew / Ryan rows */
+  /**
+   * Microsoft Edge online TTS — stored Andrew, Ava, Libby, Ryan, and
+   * Michelle rows. New requests that name Ava or Libby use Heart.
+   */
   | "edge"
   /**
    * Self-hosted Paradee v1.1 int8 ONNX student. Unlisted. A book already
@@ -35,6 +38,11 @@ export type StockProvider =
    * British phonemes. Not OpenRouter and not the Walter pack.
    */
   | "george"
+  /**
+   * Heart, Kokoro-82M af_heart on the same Modal CPU app. American phonemes,
+   * stock base model. Not Drew's fine-tune and not the Walter pack.
+   */
+  | "heart"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;

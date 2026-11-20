@@ -14,11 +14,20 @@ import {
   coercePlainCatalogVoiceId,
   plainStockLock,
   RYAN_NEURAL_VOICE_ID,
+  AVA_NEURAL_VOICE_ID,
+  LIBBY_NEURAL_VOICE_ID,
+  MICHELLE_NEURAL_VOICE_ID,
+  CLARA_FISH_REFERENCE_ID,
   DREW_CATALOG_VOICE_ID,
-  LIBBY_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
+import {
+  HEART_CATALOG_VOICE_ID,
+  HEART_DISPLAY_NAME,
+  HEART_PROVIDER_VOICE_ID,
+  heartReady,
+} from "@/lib/tts/heart-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { drewReady } from "@/lib/tts/drew-voice";
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
@@ -121,9 +130,9 @@ export async function POST(request: NextRequest) {
       ? coercePlainCatalogVoiceId(requestedVoiceId)
       : undefined;
     // A stale client that names Paradee (provider plus voice id, no catalog
-    // id) is Drew. Without a voice id the default narrator still applies, so
-    // Ava stays the fallback while Drew's endpoint is unset. A request that
-    // also names Ava, Libby, George, Walter, or Drew keeps that id.
+    // id) is Drew. Without a voice id the default narrator is Drew. A request
+    // that names Ava, Libby, Clara, or Michelle is Heart. One that names
+    // George, Walter, or Drew keeps that id.
     const paradeeWithoutCatalog =
       !requestedVoiceId &&
       parsed.ttsProvider === "paradee" &&
@@ -167,17 +176,48 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Ava, Libby, Clara, and Michelle are retired. A new request that names
+    // any of them — by catalog id, or by the Edge / Fish voice id with no
+    // catalog id — is Heart. A clone id is never this path. This is decided
+    // before the no-voice default, so a body that only carries Ava's neural
+    // id is not stored as Drew.
+    const namesHeartByCatalog =
+      !isFishCloneCatalogId(requestedVoiceId) &&
+      (coercedVoiceId === HEART_CATALOG_VOICE_ID ||
+        requestedVoiceId === HEART_CATALOG_VOICE_ID);
+    // A body with no catalog id can still name the retired voice by its
+    // provider voice id. An explicit catalog id wins, so an Andrew request
+    // that also carries Clara's old Fish reference stays Drew.
+    const namesHeartByVoice =
+      !requestedVoiceId &&
+      !isFishCloneCatalogId(parsed.providerVoiceId) &&
+      (parsed.providerVoiceId === HEART_PROVIDER_VOICE_ID ||
+        parsed.providerVoiceId === AVA_NEURAL_VOICE_ID ||
+        parsed.providerVoiceId === LIBBY_NEURAL_VOICE_ID ||
+        parsed.providerVoiceId === MICHELLE_NEURAL_VOICE_ID ||
+        parsed.providerVoiceId === CLARA_FISH_REFERENCE_ID);
+    const namesHeart = namesHeartByCatalog || namesHeartByVoice;
+    if (namesHeart && !heartReady()) {
+      throw new AppError(
+        "HEART_NOT_CONFIGURED",
+        "Heart is not configured.",
+        503
+      );
+    }
+
     // Drew is the product default and lives on our own CPU app. A request
     // that names it (or a retired id coerce maps here: Andrew/`standard`,
     // Echomancer Andrew, or a Paradee body with no catalog id) fails closed
     // when the endpoint is unset, rather than inserting a row nothing can
-    // speak — and rather than starting a new Paradee take.
+    // speak — and rather than starting a new Paradee take. A request that
+    // already named Heart is not this default.
     const drewRequest =
-      requestedVoiceId === DREW_CATALOG_VOICE_ID ||
-      coercedVoiceId === DREW_CATALOG_VOICE_ID ||
-      parsed.providerVoiceId === "drew" ||
-      catalog?.id === DREW_CATALOG_VOICE_ID ||
-      paradeeWithoutCatalog;
+      !namesHeart &&
+      (requestedVoiceId === DREW_CATALOG_VOICE_ID ||
+        coercedVoiceId === DREW_CATALOG_VOICE_ID ||
+        parsed.providerVoiceId === "drew" ||
+        catalog?.id === DREW_CATALOG_VOICE_ID ||
+        paradeeWithoutCatalog);
     if (drewRequest && !drewReady()) {
       throw new AppError(
         "DREW_NOT_CONFIGURED",
@@ -210,38 +250,55 @@ export async function POST(request: NextRequest) {
       );
     }
     const georgeRequest = namesRyan && georgeReady();
-    const lock = georgeRequest || drewRequest ? null : plainStockLock(catalog?.id);
+    const heartRequest = namesHeart && heartReady();
+    if (heartRequest && catalog?.id !== HEART_CATALOG_VOICE_ID) {
+      catalog = await getCatalogVoice(HEART_CATALOG_VOICE_ID, {
+        hdEnabled: true,
+        userId: session.userId,
+      });
+    }
+    const lock =
+      georgeRequest || drewRequest || heartRequest
+        ? null
+        : plainStockLock(catalog?.id);
     const ttsProvider = drewRequest
       ? "drew"
       : sowellRequest
         ? "sowell"
-        : georgeRequest
-          ? "george"
-          : lock
-            ? lock.provider
-            : parsed.ttsProvider ||
-              catalog?.provider ||
-              getDefaultCatalogVoice().provider;
+        : heartRequest
+          ? "heart"
+          : georgeRequest
+            ? "george"
+            : lock
+              ? lock.provider
+              : parsed.ttsProvider ||
+                catalog?.provider ||
+                getDefaultCatalogVoice().provider;
     const providerVoiceId = drewRequest
       ? "drew"
       : sowellRequest
         ? "am_sowell_avg"
-        : georgeRequest
-          ? "bm_george"
-          : lock
-            ? lock.providerVoiceId
-            : parsed.providerVoiceId ||
-              catalog?.providerVoiceId ||
-              getDefaultCatalogVoice().providerVoiceId;
+        : heartRequest
+          ? HEART_PROVIDER_VOICE_ID
+          : georgeRequest
+            ? "bm_george"
+            : lock
+              ? lock.providerVoiceId
+              : parsed.providerVoiceId ||
+                catalog?.providerVoiceId ||
+                getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = drewRequest
       ? DREW_CATALOG_VOICE_ID
-      : georgeRequest
-        ? GEORGE_CATALOG_VOICE_ID
-        : catalog?.id || coercedVoiceId || null;
+      : heartRequest
+        ? HEART_CATALOG_VOICE_ID
+        : georgeRequest
+          ? GEORGE_CATALOG_VOICE_ID
+          : catalog?.id || coercedVoiceId || null;
     let requestedName = stripExpressiveLabel(parsed.voiceName || "");
     if (
-      catalog?.id === LIBBY_CATALOG_VOICE_ID &&
-      /^clara$/i.test(requestedName)
+      (catalog?.id === HEART_CATALOG_VOICE_ID ||
+        catalogVoiceId === HEART_CATALOG_VOICE_ID) &&
+      /^(?:ava|libby|clara|michelle)$/i.test(requestedName)
     ) {
       requestedName = "";
     }
@@ -257,7 +314,10 @@ export async function POST(request: NextRequest) {
     ) {
       requestedName = "";
     }
-    const voiceName = requestedName || catalog?.displayName || providerVoiceId;
+    const voiceName =
+      requestedName ||
+      catalog?.displayName ||
+      (heartRequest ? HEART_DISPLAY_NAME : providerVoiceId);
 
     if (!ttsProvider || !providerVoiceId) {
       throw new AppError(
@@ -280,11 +340,13 @@ export async function POST(request: NextRequest) {
       ? "kokoro/drew"
       : sowellRequest
         ? "sowell/am_sowell_avg"
-        : georgeRequest
-          ? "kokoro/bm_george"
-          : lock
-            ? lock.model
-            : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+        : heartRequest
+          ? "kokoro/af_heart"
+          : georgeRequest
+            ? "kokoro/bm_george"
+            : lock
+              ? lock.model
+              : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&

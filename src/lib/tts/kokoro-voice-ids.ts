@@ -15,9 +15,12 @@ export const DREW_VOICE_ID = "drew";
 export const WALTER_VOICE_ID = "sowell";
 /** George — stock Kokoro `bm_george`. */
 export const KOKORO_GEORGE_VOICE_ID = "george";
+/** Heart — stock Kokoro `af_heart`. */
+export const KOKORO_HEART_VOICE_ID = "heart";
 
 export const KOKORO_CPU_VOICE_IDS = [
   DREW_VOICE_ID,
+  KOKORO_HEART_VOICE_ID,
   WALTER_VOICE_ID,
   KOKORO_GEORGE_VOICE_ID,
 ] as const;

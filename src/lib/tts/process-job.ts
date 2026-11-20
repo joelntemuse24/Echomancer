@@ -153,6 +153,7 @@ import {
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
+import { HEART_CACHE_VARIANT } from "@/lib/tts/heart-voice";
 import { drewCacheVariant } from "@/lib/tts/drew-voice";
 import {
   SOWELL_CACHE_VARIANT,
@@ -532,6 +533,7 @@ export function takehomeCacheVariant(
   if (providerId === "paradee") return "paradee-paragraph-v1";
   if (providerId === "sowell") return SOWELL_CACHE_VARIANT;
   if (providerId === "george") return GEORGE_CACHE_VARIANT;
+  if (providerId === "heart") return HEART_CACHE_VARIANT;
   if (providerId === "drew") return drewCacheVariant();
   return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
 }

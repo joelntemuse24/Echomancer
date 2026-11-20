@@ -95,6 +95,11 @@ beforeEach(async () => {
   delete process.env.TAKEHOME_TRIGGER_FALLBACK;
   delete process.env.TRIGGER_SECRET_KEY;
   await resetDatabase();
+  // A request that names no voice is Drew, and Drew is stored only when its
+  // endpoint is set. These tests fake synthesis.
+  process.env.DREW_ENABLED = "1";
+  process.env.DREW_URL = "https://example.modal.run";
+  process.env.DREW_TOKEN = "token";
   const providers = await import("@/lib/tts/providers");
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
     createFakeProvider()
@@ -112,6 +117,9 @@ afterEach(() => {
   delete process.env.TAKEHOME_TRIGGER_FALLBACK;
   delete process.env.TRIGGER_SECRET_KEY;
   delete process.env.VERCEL_ENV;
+  delete process.env.DREW_ENABLED;
+  delete process.env.DREW_URL;
+  delete process.env.DREW_TOKEN;
 });
 
 describe("document extract", () => {
