@@ -2,7 +2,7 @@
 
 misaki's English G2P runs `spacy.cli.download("en_core_web_sm")` on first use
 when the package is missing, and `engine.py` asks `hf_hub_download` for
-Kokoro's config, weights, and `bm_george` voice. Those fetches used to happen
+Kokoro's config, weights, `bm_george`, and `af_heart`. Those fetches used to happen
 inside `@modal.enter` on a scaled-from-zero container, which put a Hub round
 trip in front of the first section of a book.
 
@@ -60,8 +60,10 @@ def test_hf_home_is_set_before_the_baked_hub_downloads() -> None:
     # The Kokoro weights and config are fetched into that cache.
     kokoro_fetch = text.index("hf_hub_download(repo_id='hexgrad/Kokoro-82M'")
     george_fetch = text.index("filename='voices/bm_george.pt'")
+    heart_fetch = text.index("filename='voices/af_heart.pt'")
     assert hf_home < kokoro_fetch
     assert hf_home < george_fetch
+    assert hf_home < heart_fetch
     assert "config.json" in text
     assert "kokoro-v1_0.pth" in text
     # Pinned revision, matching `scripts/sowell/pack.py`.

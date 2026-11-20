@@ -1,5 +1,7 @@
 /**
- * Server-side Edge stock voices (Andrew / Ava / Libby / Ryan) via Edge online TTS.
+ * Server-side Edge stock voices for books already stored as Andrew, Ava,
+ * Libby, Ryan, or Michelle. A new request that names Ava or Libby is Heart
+ * and does not reach this adapter.
  * No Azure subscription. Used for Whole book, Live Stream, and Live Listen
  * fallback when the browser does not expose the matching neural.
  */

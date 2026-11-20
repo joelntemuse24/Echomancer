@@ -1,6 +1,7 @@
 import { resolveStockSelection } from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
+import { HEART_CATALOG_VOICE_ID } from "@/lib/tts/heart-voice";
 import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import {
@@ -54,6 +55,11 @@ export function isListedGeorgeVoice(voice: PathVoice): boolean {
   return voice.id === GEORGE_CATALOG_VOICE_ID && voice.provider === "george";
 }
 
+/** Heart is listed as one of the slim ids, but only when the server sent it. */
+export function isListedHeartVoice(voice: PathVoice): boolean {
+  return voice.id === HEART_CATALOG_VOICE_ID && voice.provider === "heart";
+}
+
 /** Drew is listed as one of the slim ids, but only when the server sent it. */
 export function isListedDrewVoice(voice: PathVoice): boolean {
   return voice.id === DREW_CATALOG_VOICE_ID && voice.provider === "drew";
@@ -82,9 +88,9 @@ export function stockCardAudition(
 /**
  * Standard = slim stock in picker order, then Walter when the server listed it.
  *
- * A listed card must come from the provider that speaks it. Drew and George
- * are on the Kokoro CPU app, so an `edge` row carrying their id is not that
- * voice and is dropped — the same rule Walter already had. The provider check
+ * A listed card must come from the provider that speaks it. Drew, Heart, and
+ * George are on the Kokoro CPU app, so an `edge` row carrying their id is not
+ * that voice and is dropped — the same rule Walter already had. The provider check
  * runs **before** the id map is built, so a stray row with a duplicated id
  * cannot mask the card the server actually sent.
  */
@@ -95,6 +101,7 @@ export function voicesForPath<T extends PathVoice>(
   if (path === "standard") {
     const trusted = voices.filter((voice) => {
       if (voice.id === GEORGE_CATALOG_VOICE_ID) return isListedGeorgeVoice(voice);
+      if (voice.id === HEART_CATALOG_VOICE_ID) return isListedHeartVoice(voice);
       if (voice.id === DREW_CATALOG_VOICE_ID) return isListedDrewVoice(voice);
       if (voice.id === SOWELL_CATALOG_VOICE_ID) return isListedWalterVoice(voice);
       return true;

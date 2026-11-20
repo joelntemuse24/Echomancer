@@ -13,6 +13,8 @@ class VoiceAllowlist(unittest.TestCase):
         self.assertEqual(canonical_kokoro_voice("am_sowell_avg"), "am_sowell")
         self.assertEqual(canonical_kokoro_voice("george"), "bm_george")
         self.assertEqual(canonical_kokoro_voice("bm_george"), "bm_george")
+        self.assertEqual(canonical_kokoro_voice("heart"), "af_heart")
+        self.assertEqual(canonical_kokoro_voice("af_heart"), "af_heart")
         # Drew and its retired name resolve to the Drew voice, never to a pack.
         self.assertEqual(canonical_kokoro_voice("drew"), "drew")
         self.assertEqual(canonical_kokoro_voice("andrew"), "drew")

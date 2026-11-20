@@ -57,10 +57,10 @@ export const KOKORO_CPU_FIRST_SECTION_CHARS = 400;
 /** Second section: a step up before the steady target. */
 export const KOKORO_CPU_SECOND_SECTION_CHARS = 550;
 
-/** True for the three catalog ids served by the Kokoro CPU fleet. */
+/** True for the catalog ids served by the Kokoro CPU fleet. */
 export function isKokoroCpuProvider(provider?: string | null): boolean {
   const id = provider?.toLowerCase() || "";
-  return id === "sowell" || id === "drew" || id === "george";
+  return id === "sowell" || id === "drew" || id === "george" || id === "heart";
 }
 
 /**
@@ -207,6 +207,7 @@ export function hardMaxCharsForModel(opts: {
   if (
     provider === "sowell" ||
     provider === "george" ||
+    provider === "heart" ||
     provider === "drew"
   ) {
     return Math.min(target, 2000);
@@ -236,7 +237,12 @@ export function maxCharsForModel(opts: {
   model?: string | null;
   catalogMax?: number | null;
 }): number {
-  if (opts.provider === "sowell" || opts.provider === "george" || opts.provider === "drew") {
+  if (
+    opts.provider === "sowell" ||
+    opts.provider === "george" ||
+    opts.provider === "heart" ||
+    opts.provider === "drew"
+  ) {
     return 2000;
   }
   if (opts.catalogMax && opts.catalogMax > 0) return opts.catalogMax;

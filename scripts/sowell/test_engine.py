@@ -271,6 +271,7 @@ class FixedStyle(unittest.TestCase):
         self.assertEqual(fixed_style_index("drew"), 300)
         self.assertIsNone(fixed_style_index("am_sowell"))
         self.assertIsNone(fixed_style_index("bm_george"))
+        self.assertIsNone(fixed_style_index("af_heart"))
 
     def test_render_sees_one_vector_and_the_same_speed(self) -> None:
         eng, seen = DrewSpeedMultiply.engine(self)  # type: ignore[arg-type]

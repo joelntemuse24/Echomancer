@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import torch
 
-from pack import GEORGE_VOICE_ID, SOWELL_VOICE_ID, PackError
+from pack import GEORGE_VOICE_ID, HEART_VOICE_ID, SOWELL_VOICE_ID, PackError
 
 
 def fixed_style_index(voice: str) -> int | None:
@@ -22,7 +22,7 @@ def fixed_style_index(voice: str) -> int | None:
 
     Drew's index lives next to the checkpoint path. Walter's is None until
     a measurement says the Sowell pack moves with length the way Drew's
-    does. George is a stock Kokoro pack and stays indexed.
+    does. George and Heart are stock Kokoro packs and stay indexed.
     """
     from drew import DREW_FIXED_STYLE_INDEX, DREW_VOICE_ID
     from pack import SOWELL_FIXED_STYLE_INDEX
@@ -31,7 +31,7 @@ def fixed_style_index(voice: str) -> int | None:
         return DREW_FIXED_STYLE_INDEX
     if voice == SOWELL_VOICE_ID:
         return SOWELL_FIXED_STYLE_INDEX
-    if voice == GEORGE_VOICE_ID:
+    if voice == GEORGE_VOICE_ID or voice == HEART_VOICE_ID:
         return None
     return None
 

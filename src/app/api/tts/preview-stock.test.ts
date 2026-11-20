@@ -85,6 +85,44 @@ describe("stock preview", () => {
     expect(audio.equals(recorded)).toBe(true);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
   });
+
+  it("serves Ava's own sample until Esther is configured, then Esther's", async () => {
+    const avaFile = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "ava.mp3")
+    );
+    const estherFile = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "heart.mp3")
+    );
+    const before = await previewPost(
+      await buildRequest("/api/tts/preview", {
+        method: "POST",
+        userId: USER_A,
+        body: { catalogVoiceId: "ava" },
+      })
+    );
+    expect(before.status).toBe(200);
+    expect(Buffer.from(await before.arrayBuffer()).equals(avaFile)).toBe(true);
+
+    process.env.HEART_ENABLED = "1";
+    process.env.HEART_URL = "https://example.modal.run";
+    process.env.HEART_TOKEN = "token";
+    try {
+      const after = await previewPost(
+        await buildRequest("/api/tts/preview", {
+          method: "POST",
+          userId: USER_A,
+          body: { catalogVoiceId: "ava" },
+        })
+      );
+      expect(after.status).toBe(200);
+      expect(Buffer.from(await after.arrayBuffer()).equals(estherFile)).toBe(true);
+      expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.HEART_ENABLED;
+      delete process.env.HEART_URL;
+      delete process.env.HEART_TOKEN;
+    }
+  });
 });
 
 describe("voices catalog", () => {
@@ -109,11 +147,7 @@ describe("voices catalog", () => {
     const body = (await response.json()) as {
       voices: { id: string; displayName: string; expressive?: unknown }[];
     };
-    expect(body.voices.map((voice) => voice.id)).toEqual([
-      "drew",
-      "ava",
-      "libby",
-    ]);
+    expect(body.voices.map((voice) => voice.id)).toEqual(["drew", "ava", "libby"]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
       "Drew",
       "Ava",
@@ -141,11 +175,9 @@ describe("voices catalog", () => {
         generationEta: { sections: number } | null;
       }[];
     };
-    // A 7,000-char Edge book at 4,000 chars/section is two sections.
-    const edge = body.voices.find((voice) => voice.id === "ava");
-    expect(edge?.generationEta?.sections).toBe(2);
-    // A Kokoro book packs at ~700, so it is ten sections, not four: the
-    // pre-job estimate must not understate it.
+    // Ava and Libby stay listed until Esther is configured. A Kokoro book
+    // packs at ~700, so Drew is ten sections, not four: the pre-job
+    // estimate must not understate it.
     const kokoro = body.voices.find((voice) => voice.id === "drew");
     expect(kokoro?.generationEta?.sections).toBe(10);
   });

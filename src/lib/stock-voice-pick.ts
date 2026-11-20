@@ -4,6 +4,7 @@
  */
 
 import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
+import { HEART_CATALOG_VOICE_ID } from "@/lib/tts/heart-voice";
 import { DREW_CATALOG_VOICE_ID } from "@/lib/tts/drew-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
@@ -41,9 +42,9 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    // Michelle left the pile for Ava. Clara left it for Libby. Andrew and
-    // Echomancer Andrew are retired, so a saved "standard" or
-    // "echomancer-andrew" pick lands on Drew — `coerce` does that.
+    // Andrew and Echomancer Andrew land on Drew. Ava, Libby, Clara, and
+    // Michelle keep their ids here; the catalog response decides whether
+    // they highlight Esther. `coerce` does the Drew rewrite.
     // A clone id is stored as itself and checked against this person's list
     // before it is selected.
     const catalogVoiceId = isCloneCatalogId(parsed.catalogVoiceId)
@@ -80,9 +81,45 @@ export function clearStockVoicePick(
 }
 
 function coerceRememberedStockId(id: string): string {
-  let catalogVoiceId = coercePlainCatalogVoiceId(id);
-  if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
-  return catalogVoiceId;
+  return coercePlainCatalogVoiceId(id);
+}
+
+const ESTHER_PREDECESSOR_IDS = new Set([
+  "ava",
+  "libby",
+  "clara",
+  "michelle",
+  HEART_CATALOG_VOICE_ID,
+]);
+
+/**
+ * Map a saved pick or a suggestion onto a card the voices response actually
+ * includes. Esther replaces Ava and Libby only while her card is present.
+ * While Ava is still listed, a heart suggestion or a saved Esther pick
+ * highlights Ava, and Clara stays on Libby.
+ */
+export function listedCatalogVoiceId(
+  id: string | null | undefined,
+  availableIds: readonly string[]
+): string | null | undefined {
+  if (!id) return id;
+  const available = new Set(availableIds);
+  if (available.has(id)) return id;
+  if (ESTHER_PREDECESSOR_IDS.has(id) && available.has(HEART_CATALOG_VOICE_ID)) {
+    return HEART_CATALOG_VOICE_ID;
+  }
+  if (id === "clara" && available.has("libby")) return "libby";
+  if (
+    (id === HEART_CATALOG_VOICE_ID ||
+      id === "ava" ||
+      id === "libby" ||
+      id === "michelle") &&
+    available.has("ava") &&
+    !available.has(HEART_CATALOG_VOICE_ID)
+  ) {
+    return "ava";
+  }
+  return id;
 }
 
 /**
@@ -94,19 +131,22 @@ export function resolveStockSelection(input: {
   explicitId?: string | null;
   suggestedId?: string | null;
 }): string | null {
+  const explicitId = listedCatalogVoiceId(input.explicitId, input.availableIds);
+  const suggestedId = listedCatalogVoiceId(input.suggestedId, input.availableIds);
   const available = new Set(input.availableIds);
-  if (input.explicitId && available.has(input.explicitId)) return input.explicitId;
-  // A saved Walter or George pick stays theirs. When the endpoint is off the
-  // card is gone, and Drew is not substituted for it.
+  if (explicitId && available.has(explicitId)) return explicitId;
+  // A saved Walter, Esther, George, or Drew pick stays theirs. When that
+  // card is gone and no predecessor is listed, Drew is not substituted.
   if (
-    input.explicitId === SOWELL_CATALOG_VOICE_ID ||
-    input.explicitId === GEORGE_CATALOG_VOICE_ID ||
-    input.explicitId === DREW_CATALOG_VOICE_ID
+    explicitId === SOWELL_CATALOG_VOICE_ID ||
+    explicitId === GEORGE_CATALOG_VOICE_ID ||
+    explicitId === HEART_CATALOG_VOICE_ID ||
+    explicitId === DREW_CATALOG_VOICE_ID
   ) {
     return null;
   }
-  if (input.suggestedId && available.has(input.suggestedId)) {
-    return input.suggestedId;
+  if (suggestedId && available.has(suggestedId)) {
+    return suggestedId;
   }
   return input.availableIds[0] ?? null;
 }

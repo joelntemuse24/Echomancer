@@ -11,6 +11,7 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { readStockPreview } from "@/lib/tts/stock-preview-file";
+import { heartReady } from "@/lib/tts/heart-voice";
 import {
   coercePlainCatalogVoiceId,
   DREW_CATALOG_VOICE_ID,
@@ -76,7 +77,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const coercedId = coercePlainCatalogVoiceId(requestedId);
+    const coercedId = coercePlainCatalogVoiceId(requestedId, {
+      heart: heartReady(),
+    });
     const recorded = await readStockPreview(coercedId);
     if (recorded) {
       return previewAudioResponse(recorded, "audio/mpeg");

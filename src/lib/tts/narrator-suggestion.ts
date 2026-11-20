@@ -3,7 +3,7 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-const STOCK_IDS = ["standard", "ava", "libby", "george"] as const;
+const STOCK_IDS = ["standard", "heart", "george"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
 export type NarratorKind =
@@ -41,7 +41,9 @@ function kindLabelFor(kind: NarratorKind, novelKind: string | null): string {
 
 /**
  * Enforce the product rules. The model may not move nonfiction off Andrew
- * or history off Ryan. A stored `expressive` delivery becomes standard.
+ * (Drew, once the request is stored) or history off George. Romance and the
+ * retired female ids land on Heart. A stored `expressive` delivery becomes
+ * standard.
  */
 export function coerceNarratorRecommendation(
   raw: unknown
@@ -70,10 +72,13 @@ export function coerceNarratorRecommendation(
   } else if (kind === "history") {
     catalogVoiceId = "george";
     novelKind = "";
-  } else if (catalogVoiceId === "michelle") {
-    catalogVoiceId = "ava";
-  } else if (catalogVoiceId === "clara") {
-    catalogVoiceId = "libby";
+  } else if (
+    catalogVoiceId === "michelle" ||
+    catalogVoiceId === "clara" ||
+    catalogVoiceId === "ava" ||
+    catalogVoiceId === "libby"
+  ) {
+    catalogVoiceId = "heart";
   } else if (catalogVoiceId === "randolph") {
     catalogVoiceId = "standard";
   } else if (!isStockId(catalogVoiceId)) {
@@ -115,7 +120,8 @@ function majority<T extends string>(values: T[]): T | null {
 
 /**
  * One suggestion from the per-chunk notes. No second pass over the book.
- * Product rules still force nonfiction onto Andrew and history onto Ryan.
+ * Product rules still force nonfiction onto Andrew and history onto George.
+ * A romance, or any note that still names Ava or Libby, uses Heart.
  */
 export function narratorFromChunkNotes(
   notes: ListenChunkNote[]
@@ -133,7 +139,7 @@ export function narratorFromChunkNotes(
   let catalogVoiceId: NarratorCatalogVoiceId = "standard";
   if (kind === "novel") {
     if (/romance|cozy|contemporary/.test(novelKind)) {
-      catalogVoiceId = "ava";
+      catalogVoiceId = "heart";
     } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
       catalogVoiceId = "george";
     } else if (/thriller|horror|fantasy/.test(novelKind) || dialogue === "high") {

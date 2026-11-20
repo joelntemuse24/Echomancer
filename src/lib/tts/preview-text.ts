@@ -7,15 +7,16 @@
  * Accent is steered via Gemini input direction / soft stylePrompt instead.
  * (Embedding accent claims + aggressive prompts returned empty Gemini audio.)
  *
- * Drew, Ava, Libby, George, and Walter ship a recording of this line at
- * `public/voice-previews/<catalog id>.mp3`. George is a local Kokoro
- * `bm_george` take. Walter (catalog id `sowell`) is a local Kokoro
- * `am_sowell` take of the same words. Drew's file is a pinned-row take
- * mastered like a book section. Change the words and re-record those files
- * together, and master every Kokoro take with
- * `scripts/previews/master-preview.ts` so a preview sounds like its books.
- * Ryan's and Andrew's files stay for books that already use them; the
- * picker plays neither.
+ * Drew, Heart, George, and Walter ship a recording of this line at
+ * `public/voice-previews/<catalog id>.mp3`. Heart is a local Kokoro
+ * `af_heart` take. George is a local Kokoro `bm_george` take. Walter
+ * (catalog id `sowell`) is a local Kokoro `am_sowell` take of the same
+ * words. Drew's file is a pinned-row take mastered like a book section.
+ * Change the words and re-record those files together, and master every
+ * Kokoro take with `scripts/previews/master-preview.ts` so a preview sounds
+ * like its books. Ava's, Libby's, Ryan's, and Andrew's files stay on disk
+ * for books that already use them; the picker plays none of them. A request
+ * that names Ava or Libby is served Heart's sample.
  */
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";

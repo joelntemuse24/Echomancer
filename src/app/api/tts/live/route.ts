@@ -33,6 +33,7 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { heartReady } from "@/lib/tts/heart-voice";
 import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
 import {
   deliveryUserInputFromUnknown,
@@ -166,7 +167,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     // A stale Echomancer Andrew id is Drew before lookup, so this route
     // never binds a new request to the unlisted Paradee row.
     const catalog = await getCatalogVoice(
-      coercePlainCatalogVoiceId(input.catalogVoiceId),
+      coercePlainCatalogVoiceId(input.catalogVoiceId, { heart: heartReady() }),
       {
         hdEnabled: true,
         userId,

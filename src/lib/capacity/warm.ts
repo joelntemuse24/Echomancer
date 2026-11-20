@@ -1,6 +1,6 @@
 /**
  * Shared cold-start for the general CPU app and the Kokoro CPU app that
- * serves Drew, Walter, and George.
+ * serves Drew, Walter, George, and Heart.
  *
  * One row per pool, not per person. A click inside the hold does not extend
  * it and does not send another request, so it cannot keep a container up or
@@ -16,6 +16,7 @@
 
 import { execute, queryOne } from "@/lib/turso";
 import { georgeEndpoint, georgeReady } from "@/lib/tts/george-voice";
+import { heartEndpoint, heartReady } from "@/lib/tts/heart-voice";
 import { sowellEndpoint, sowellReady } from "@/lib/tts/sowell-voice";
 import { drewEndpoint, drewReady } from "@/lib/tts/drew-voice";
 import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
@@ -143,6 +144,13 @@ function kokoroTarget(env: NodeJS.ProcessEnv): { url: string; token: string } | 
   try {
     if (georgeReady(env)) {
       return { url: georgeEndpoint(env), token: env.GEORGE_TOKEN?.trim() || "" };
+    }
+  } catch {
+    /* Heart's endpoint is the same app when George is unset. */
+  }
+  try {
+    if (heartReady(env)) {
+      return { url: heartEndpoint(env), token: env.HEART_TOKEN?.trim() || "" };
     }
   } catch {
     return null;

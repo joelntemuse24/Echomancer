@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { acceptJobPoll, commitUserStop, generationStatus } from "./generation-status";
 
-const providers = ["drew", "george", "sowell", "fish", "modal", "edge"] as const;
+const providers = ["drew", "heart", "george", "sowell", "fish", "modal", "edge"] as const;
 
 describe("generationStatus", () => {
   it("uses the same section ratio for Kokoro, Fish, and S2", () => {

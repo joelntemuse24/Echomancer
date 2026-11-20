@@ -2,8 +2,8 @@
 
 > Documents → audiobook. Shipped stock voices are **Drew** (catalog id
 > `drew`, a fine-tuned Kokoro-82M on our own CPU app, the app default),
-> **Ava** (`en-US-AvaNeural`, not Dragon HD), **Libby** (Edge
-> `en-GB-LibbyNeural`), **George** (Kokoro `bm_george`), and **Walter**
+> **Esther** (Kokoro `af_heart`, American female, catalog id `heart`,
+> customer name `HEART_DISPLAY_NAME`), **George** (Kokoro `bm_george`), and **Walter**
 > (listed name for the `sowell` Kokoro pack). **Andrew is retired**: catalog
 > id `standard` (Edge `en-US-AndrewNeural`) is unlisted and still resolves,
 > so a book already made with Andrew keeps playing and is not re-spoken; a
@@ -13,9 +13,18 @@
 > keeps playing and is not re-spoken; a new request or saved pick that names
 > it lands on Drew. The Paradee adapter stays for those stored rows. Ryan is
 > unlisted for the same reason and a new request that names him uses
-> George. Clara and Michelle are unlisted and still
-> resolve for books already made with them. A new request that names Clara
-> uses Libby. One that names Randolph or Google uses Drew. A book already
+> George. **Ava and Libby stay listed until Esther is configured.** Catalog
+> ids `ava` (Edge `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`)
+> stay on the picker, and a new request that names either stays on Edge,
+> until `HEART_ENABLED`, `HEART_URL`, and `HEART_TOKEN` are all set. After
+> that they are unlisted. A book already made with either keeps playing on
+> Edge and is not re-spoken. A new request or saved pick that names either
+> lands on Esther only once that endpoint is set. Clara and Michelle are
+> unlisted and still resolve for books already made with them (Clara on
+> Fish, Michelle on Edge). Until Esther is configured, a new request that
+> names Clara uses Libby and one that names Michelle stays on Edge. After
+> that, a new request that names Clara or Michelle uses Esther. One that
+> names Randolph or Google uses Drew. A book already
 > stored as Randolph keeps its audio and is not spoken again. Do not add rejected
 > Edge females (Jenny, Sonia, Aria) or Ava
 > Dragon HD. **Fish voice cloning** trains on the direct Fish API
@@ -342,8 +351,10 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Drew** (`drew` → a fine-tuned Kokoro-82M with its
 own kmodel weights and voice pack, on the shared Modal CPU app; the app
 default, listed only when `DREW_ENABLED`, `DREW_URL`, and `DREW_TOKEN` are set),
-**Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
-`en-GB-LibbyNeural`), **George** (`george` → Kokoro `bm_george` on the
+**Esther** (`heart` → Kokoro `af_heart` on the same Modal CPU app, stock
+Kokoro-82M weights, American phonemes, listed only when `HEART_ENABLED`,
+`HEART_URL`, and `HEART_TOKEN` are set; the customer name is
+`HEART_DISPLAY_NAME`, which is Esther), **George** (`george` → Kokoro `bm_george` on the
 same Modal CPU app, British phonemes, listed only when
 `GEORGE_ENABLED`, `GEORGE_URL`, and `GEORGE_TOKEN` are set), and **Walter**
 (the listed name for the `sowell` Kokoro pack, listed only when
@@ -360,24 +371,37 @@ to Drew. The Paradee adapter is not deleted. A new request that names
 Randolph or a Google Cloud voice is also Drew. Ryan is not listed, and a
 new request that names him uses George, or 503 `GEORGE_NOT_CONFIGURED`
 when that endpoint is unset. A request naming Drew with its endpoint unset
-is 503 `DREW_NOT_CONFIGURED`. No Gemini / MiniMax / rejected Edge females
-(Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are not
-listed. `SLIM_STOCK_VOICE_IDS` lists Drew, Ava, Libby, and George. The
-customer UI renders George only when the voices response includes provider
-`george`, Drew only when it includes provider `drew`, and a Walter card only
+is 503 `DREW_NOT_CONFIGURED`. A request that names no voice is Drew, and
+503 `DREW_NOT_CONFIGURED` when that endpoint is unset. Ava and Libby stay
+listed, and a new request that names either stays on Edge, until Esther's
+endpoint is set. After that they are unlisted, a stored book still
+resolves, and a new request or saved pick that names either is Esther.
+An explicit `heart` request while the endpoint is unset is 503
+`HEART_NOT_CONFIGURED` and inserts nothing. No Gemini / MiniMax / rejected
+Edge females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle
+are not listed. Until Esther is configured, Clara uses Libby and Michelle
+stays on Edge. After that, a new request that names either is Esther.
+`SLIM_STOCK_VOICE_IDS` lists Drew, Ava, Libby, Esther, and George so the
+client can order whichever the server sent. The customer UI renders Esther
+only when the voices response includes provider `heart`, George only when it includes
+provider `george`, Drew only when it includes provider `drew`, and a Walter card only
 when it includes provider `sowell`. Walter's id is still `sowell`, so stored
 books and `public/voice-previews/sowell.mp3` are unchanged. When the
 response omits a card it is absent, and a saved pick of that voice does
 not highlight Drew.
 Picker samples for the listed stock voices are committed recordings at
-`public/voice-previews/<id>.mp3` (`drew`, `ava`, `libby`, `george`, `sowell`).
-`standard.mp3`, `ryan.mp3`, and `echomancer-andrew.mp3` remain on disk.
-A request that names Andrew or Echomancer Andrew is served Drew's sample.
+`public/voice-previews/<id>.mp3` (`drew`, `heart`, `george`, `sowell`, and
+`ava` / `libby` while those cards are listed).
+`standard.mp3`, `ryan.mp3`, and `echomancer-andrew.mp3`
+remain on disk. A request that names Andrew or Echomancer Andrew is served
+Drew's sample. While Ava or Libby is listed, that card plays its own file.
+Once Esther is configured, a preview request that names Ava or Libby is
+served Esther's sample.
 Re-record the listed samples when `PREVIEW_TEXT` changes.
 Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
-**Kokoro CPU lanes (Drew, Walter, George):** all three narrators come from one
+**Kokoro CPU lanes (Drew, Esther, Walter, George):** all four narrators come from one
 Modal app, `echomancer-sowell` (`modal/sowell_worker.py`, image
 `workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 16,
 clamped 1..16 at deploy) containers at 2 CPU and 6 GB each,
@@ -453,7 +477,7 @@ yes/no rise or an exclamation. A curly apostrophe is the same first word
 as an ASCII one, so What’s stays a yes/no question. The picker sample
 stays the unruled file until it is re-recorded after the flag is on.
 
-**Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
+**Stored Andrew / Ava / Libby / Ryan / Michelle (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
@@ -462,7 +486,8 @@ copy.
 
 **Clara (curated Fish stock, unlisted):** `src/lib/tts/curated-fish-stock.ts`
 still resolves her reference for a book already stored as Clara. New picks
-and new job requests that name Clara use Libby. Synthesis for a stored Clara
+and new job requests that name Clara use Esther once that endpoint is set,
+and Libby until then. Synthesis for a stored Clara
 job uses `fishTtsProvider` **with** `reference_id`. Do not send OpenRouter
 catalog UUIDs.
 
@@ -474,8 +499,10 @@ per upload. Each chunk returns a short note (kind, tone, point of view,
 dialogue). The suggestion is the aggregate of those notes. It does not
 send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)`. Articles, biography, and general
-nonfiction preselect Andrew. History preselects Ryan. A novel may be
-any stock voice. Clones are never suggested. The person
+nonfiction preselect Andrew (a new book stores Drew). History preselects
+George. Romance, cozy, and contemporary novels preselect Esther. While Ava
+is still listed, that suggestion highlights Ava. Any other
+novel may be a listed stock voice. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
 leaves the picker as it was. The list shows immediately. A short waiting
@@ -1237,7 +1264,7 @@ above as the intended design, not current behaviour.
 `live`, `preview`, `voices`), but `isHdVoice()` can never return true for a
 listed voice: `voices.json` has no `minimax` / `speech-01` / `speech-02` model
 and no `hd` tag, the listed catalog is the fixed `SLIM_STOCK_VOICE_IDS`
-(Drew, Ava, Libby, George),
+(Drew, Heart, George),
 and clones are tagged `cloned` / `fish-audio` / `custom`. Both variables and
 the surrounding 403/filter call sites are inert until an HD voice is added to
 the catalog.
@@ -1255,7 +1282,7 @@ take-home spawn. All voices use the same stock pipeline.
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued` when the text is ready, or `waiting` while the upload is still `uploaded` or `extracting`. The path is owner-checked with `getOwnedUploadByPath` (`pending` and streams stay `TEXT_NOT_READY`). A second tap for the same book and voice returns that live job, including one parked `waiting`. The reservation is `takehome_create_keys` (one statement). Historical duplicate rows are kept. The oldest live row is the one returned. A failed or cancelled book can be created again. Make audiobook opens the player, which shows "Reading your book" and calls `advanceStuckExtract` while it waits. The worker claims `waiting`, returns `deferred` on the first tick (the TTS slot is released, the drain cadence picks it up again), and adopts the upload's failure message if the read failed. `waiting` is not `queued` or `processing`, so a claim that only matches those two statuses does not pick it up. When a read finishes — the VM extract hook, Vercel `extractUploadedDocument`, a stall fail, and the Cloudflare Worker — that upload's `waiting` take-homes become `queued`, or `failed` with the upload's message, and the VM hook wakes the drain. A `waiting` job whose file is already `ready` or `failed` also counts as runnable, so a book created while its file was still being read gets a turn at the next wave even if that handoff was missed. The drain already claims `waiting`.
 2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence. The first section is about 800 characters for every provider, including Fish, and it ends on a sentence. A heading does not close a section until it holds about 1,500 characters; a shorter chapter stays a marker inside the section, and finalize times it from that text offset. Edge and Google run a rolling pool: the tick claims the next claimable index whenever a lane frees instead of waiting on the slowest claim in one batch (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8, up to 16; with a tick deadline the pool keeps claiming until that deadline, and with no deadline a no-deadline tick keeps the fan-out-sized claim budget). Claims are in-memory and every finished section writes `segments_json`, so a restarted worker re-claims only unfinished sections. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A Fish book whose pack leaves a short tail after a multiple of 5 folds that tail into the previous section when it is the same chapter and still under the hard max. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. Transcription is **self-hosted Whisper by default** (`TTS_QA_PROVIDER=local`, `scripts/whisper-qa.py`, `faster-whisper` `base` int8 on CPU): no API key, no per-minute bill, ~5% WER on neural TTS at RTF ~0.02 (0.07 CPU-minutes per audio-minute), measured on the 4-vCPU worker class. Edge synthesis runs at about 3.8 audio-seconds per wall-second, so Whisper keeps up with full-book generation and **every section is checked**; nothing is sampled. `TTS_QA_PROVIDER=deepgram` selects the older hosted `deepgram/nova-3` path through `OPENROUTER_API_KEY` (5s wall cap, worker thread), and `TTS_QA_PROVIDER=off` or `TTS_SECTION_QA_ENABLED=0` skips the check. An unrecognised provider value falls back to `local`, never to the paid endpoint. Local transcription is capped at `audioSeconds x 0.4` wall (10s floor, 180s ceiling) via `TTS_QA_WHISPER_BUDGET_MS`, because a flat 5s was too short for a 227-second section. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. When no transcriber can run, the worker logs the reason once (`qa skipped: whisper sidecar missing` or `qa skipped: deepgram needs OPENROUTER_API_KEY`) and finishes the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
-4. Each section is mastered as soon as it is synthesized. Stock, Kokoro (Drew, Walter, George), Fish, and Paradee use the podcast chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 128 kbps. A Modal clone section uses the S2 spectral chain (already applied in the container) and loudnorm −19 LUFS / −3 dBTP (`MODAL_S2_MASTERING`). Both graphs insert the shared voice curve (`src/lib/tts/voice-eq.ts`, `TTS_VOICE_EQ=0` turns it off) immediately before loudnorm, in that same ffmpeg pass. Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. Frame positions come from the MP3 headers, so a long book does not start one ffprobe per section. A section under four seconds is re-encoded with the same crossfade into its neighbor (the rest of that neighbor stays a packet copy), so one heading does not send the book through the full encode. The fallback encode is limited to the decoded audio, and an upload that already landed is not marked failed when the lease has moved on. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
+4. Each section is mastered as soon as it is synthesized. Stock, Kokoro (Drew, Heart, Walter, George), Fish, and Paradee use the podcast chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 128 kbps. A Modal clone section uses the S2 spectral chain (already applied in the container) and loudnorm −19 LUFS / −3 dBTP (`MODAL_S2_MASTERING`). Both graphs insert the shared voice curve (`src/lib/tts/voice-eq.ts`, `TTS_VOICE_EQ=0` turns it off) immediately before loudnorm, in that same ffmpeg pass. Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. Frame positions come from the MP3 headers, so a long book does not start one ffprobe per section. A section under four seconds is re-encoded with the same crossfade into its neighbor (the rest of that neighbor stays a packet copy), so one heading does not send the book through the full encode. The fallback encode is limited to the decoded audio, and an upload that already landed is not marked failed when the lease has moved on. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
 5. Frontend polls and can play ready sections early. When the last section is
    mastered, the job is marked `ready` with `audio_storage_path` still null
    and the lease kept, then `materializeFullAudiobook` runs in that same

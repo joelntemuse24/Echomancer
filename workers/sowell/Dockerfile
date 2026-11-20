@@ -1,4 +1,4 @@
-# Kokoro CPU image for Drew, Walter, and George. Official Python, not Debian
+# Kokoro CPU image for Drew, Walter, George, and Heart. Official Python, not Debian
 # apt python, so later `python -m pip` layers are not blocked by PEP 668.
 # Do not apt-install python3. Do not query pip's config. The voice pack is a
 # build input and is not part of the Next.js bundle.
@@ -14,8 +14,8 @@
 #     `spacy.cli.download` on first use when the package is missing. That was
 #     a network fetch in the middle of the first section of a book.
 #   * `hexgrad/Kokoro-82M` `config.json` and `kokoro-v1_0.pth` at the pinned
-#     revision, plus the `bm_george.pt` voice. `engine.py` asks
-#     `hf_hub_download` for these, which would otherwise touch the Hub.
+#     revision, plus the `bm_george.pt` and `af_heart.pt` voices. `engine.py`
+#     asks `hf_hub_download` for these, which would otherwise touch the Hub.
 #   * `HF_HOME` is set **before** those fetches so the runtime reads the same
 #     cache directory the build filled.
 #
@@ -54,9 +54,10 @@ RUN python -c "import spacy; v=spacy.__version__.split('.'); assert (v[0], v[1])
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-${SPACY_MODEL_VERSION}/en_core_web_sm-${SPACY_MODEL_VERSION}-py3-none-any.whl" \
   && python -c "import en_core_web_sm, spacy; nlp=spacy.load('en_core_web_sm'); assert nlp('The harbor was quiet.').text"
 
-# Kokoro's config and weights, and the pinned British voice. The same revision
-# `scripts/sowell/pack.py` checks. These land in $HF_HOME, so `engine.py`'s
-# `hf_hub_download` calls are cache hits on a cold container.
+# Kokoro's config and weights, and the pinned British and American stock
+# voices. The same revision `scripts/sowell/pack.py` checks. These land in
+# $HF_HOME, so `engine.py`'s `hf_hub_download` calls are cache hits on a
+# cold container.
 ENV KOKORO_REVISION=f3ff3571791e39611d31c381e3a41a3af07b4987
 RUN python -c "from huggingface_hub import hf_hub_download; [hf_hub_download(repo_id='hexgrad/Kokoro-82M', filename=f, revision='f3ff3571791e39611d31c381e3a41a3af07b4987') for f in ('config.json', 'kokoro-v1_0.pth')]"
 
@@ -69,6 +70,12 @@ COPY voices/sowell/am_sowell_avg.pt /opt/sowell/voices/am_sowell_avg.pt
 ENV GEORGE_VOICE=/opt/sowell/voices/bm_george.pt
 ENV GEORGE_VOICE_SHA256=f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b
 RUN python -c "import hashlib,os,shutil; from pathlib import Path; from huggingface_hub import hf_hub_download; p=Path(hf_hub_download(repo_id='hexgrad/Kokoro-82M', filename='voices/bm_george.pt', revision='f3ff3571791e39611d31c381e3a41a3af07b4987')); d=hashlib.sha256(p.read_bytes()).hexdigest(); assert d==os.environ['GEORGE_VOICE_SHA256'], d; shutil.copy(p, os.environ['GEORGE_VOICE'])"
+
+# Official af_heart at the same pinned Kokoro revision. Stock pack on the
+# base model, not Drew's fine-tune. A mismatch fails the image.
+ENV HEART_VOICE=/opt/sowell/voices/af_heart.pt
+ENV HEART_VOICE_SHA256=0ab5709b8ffab19bfd849cd11d98f75b60af7733253ad0d67b12382a102cb4ff
+RUN python -c "import hashlib,os,shutil; from pathlib import Path; from huggingface_hub import hf_hub_download; p=Path(hf_hub_download(repo_id='hexgrad/Kokoro-82M', filename='voices/af_heart.pt', revision='f3ff3571791e39611d31c381e3a41a3af07b4987')); d=hashlib.sha256(p.read_bytes()).hexdigest(); assert d==os.environ['HEART_VOICE_SHA256'], d; shutil.copy(p, os.environ['HEART_VOICE'])"
 
 ENV SOWELL_PACK=/opt/sowell/voices/am_sowell_avg.pt
 ENV SOWELL_MANIFEST=/opt/sowell/voices/manifest.json

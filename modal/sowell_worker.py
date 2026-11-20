@@ -1,9 +1,10 @@
-"""Drew, Walter, and George on Modal CPU.
+"""Drew, Walter, George, and Heart on Modal CPU.
 
 A separate app from echomancer-cpu and echomancer-s2-clone. It is the same
 `echomancer-sowell` app the Walter/George voices already ship from: Renaming
-Walter is a copy change, and Drew is a second resident model on that app, not
-a third fleet.
+Walter is a copy change, Drew is a second resident model on that app, and
+Heart is the stock `af_heart` pack on the same base model as George. None
+of them is a separate fleet.
 
     modal deploy modal/sowell_worker.py
 

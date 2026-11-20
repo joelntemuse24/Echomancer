@@ -84,7 +84,10 @@ describe("sowell voice", () => {
     expect(voice?.displayName).toMatch(/^Walter/);
     const catalog = await listCatalogVoices();
     const listed = catalog.map((item) => item.id);
-    expect(listed.slice(0, 3)).toEqual(["drew", "ava", "libby"]);
+    expect(listed[0]).toBe("drew");
+    expect(listed).toContain("ava");
+    expect(listed).toContain("libby");
+    expect(listed).not.toContain("heart");
     expect(listed).not.toContain("echomancer-andrew");
     expect(listed).toContain("sowell");
     expect(voicesForPath(catalog, "standard").map((voice) => voice.id)).toEqual([
