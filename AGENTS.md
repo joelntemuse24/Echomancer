@@ -7,7 +7,11 @@
 > (listed name for the `sowell` Kokoro pack). **Andrew is retired**: catalog
 > id `standard` (Edge `en-US-AndrewNeural`) is unlisted and still resolves,
 > so a book already made with Andrew keeps playing and is not re-spoken; a
-> new request or saved pick that names Andrew lands on Drew. Ryan is
+> new request or saved pick that names Andrew lands on Drew. **Echomancer
+> Andrew is retired** the same way: catalog id `echomancer-andrew` (self-hosted
+> Paradee) is unlisted and still resolves, so a book already made with it
+> keeps playing and is not re-spoken; a new request or saved pick that names
+> it lands on Drew. The Paradee adapter stays for those stored rows. Ryan is
 > unlisted for the same reason and a new request that names him uses
 > George. Clara and Michelle are unlisted and still
 > resolve for books already made with them. A new request that names Clara
@@ -338,7 +342,6 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Drew** (`drew` → a fine-tuned Kokoro-82M with its
 own kmodel weights and voice pack, on the shared Modal CPU app; the app
 default, listed only when `DREW_ENABLED`, `DREW_URL`, and `DREW_TOKEN` are set),
-**Echomancer Andrew** (`echomancer-andrew` → self-hosted Paradee),
 **Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
 `en-GB-LibbyNeural`), **George** (`george` → Kokoro `bm_george` on the
 same Modal CPU app, British phonemes, listed only when
@@ -349,24 +352,28 @@ clones. **Andrew is retired.** Catalog id `standard` (Edge
 `en-US-AndrewNeural`) is unlisted and still resolves, so a book already
 made with Andrew keeps playing and downloading that audio and is never
 re-spoken; a new request or saved pick that names Andrew/`standard` is
-coerced to Drew by `coercePlainCatalogVoiceId`. A new request that names
+coerced to Drew by `coercePlainCatalogVoiceId`. **Echomancer Andrew is
+retired the same way.** Catalog id `echomancer-andrew` (self-hosted Paradee)
+is unlisted and still resolves, so a book already made with it keeps playing
+and is never re-spoken; a new request or saved pick that names it is coerced
+to Drew. The Paradee adapter is not deleted. A new request that names
 Randolph or a Google Cloud voice is also Drew. Ryan is not listed, and a
 new request that names him uses George, or 503 `GEORGE_NOT_CONFIGURED`
 when that endpoint is unset. A request naming Drew with its endpoint unset
 is 503 `DREW_NOT_CONFIGURED`. No Gemini / MiniMax / rejected Edge females
 (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are not
-listed. `SLIM_STOCK_VOICE_IDS` lists Drew, Echomancer Andrew, Ava, Libby,
-and George. The customer UI renders George only when the voices response
-includes provider `george`, Drew only when it includes provider `drew`, and
-a Walter card only when it includes provider `sowell`. Walter's id is still
-`sowell`, so stored books and `public/voice-previews/sowell.mp3` are
-unchanged. Drew has no committed sample yet: it renders once through
-`POST /api/tts/preview`. When the response omits a card it is absent, and a
-saved pick of that voice does not highlight Drew.
+listed. `SLIM_STOCK_VOICE_IDS` lists Drew, Ava, Libby, and George. The
+customer UI renders George only when the voices response includes provider
+`george`, Drew only when it includes provider `drew`, and a Walter card only
+when it includes provider `sowell`. Walter's id is still `sowell`, so stored
+books and `public/voice-previews/sowell.mp3` are unchanged. When the
+response omits a card it is absent, and a saved pick of that voice does
+not highlight Drew.
 Picker samples for the listed stock voices are committed recordings at
-`public/voice-previews/<id>.mp3` (`echomancer-andrew`, `ava`,
-`libby`, `george`, `sowell`). `standard.mp3` and `ryan.mp3` remain for a
-stored Andrew or Ryan book. Re-record them when `PREVIEW_TEXT` changes.
+`public/voice-previews/<id>.mp3` (`drew`, `ava`, `libby`, `george`, `sowell`).
+`standard.mp3`, `ryan.mp3`, and `echomancer-andrew.mp3` remain on disk.
+A request that names Andrew or Echomancer Andrew is served Drew's sample.
+Re-record the listed samples when `PREVIEW_TEXT` changes.
 Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
@@ -1229,7 +1236,8 @@ above as the intended design, not current behaviour.
 **Dormant today.** The gate is wired at every entry (`jobs`, `takehome`,
 `live`, `preview`, `voices`), but `isHdVoice()` can never return true for a
 listed voice: `voices.json` has no `minimax` / `speech-01` / `speech-02` model
-and no `hd` tag, the listed catalog is the five fixed `SLIM_STOCK_VOICE_IDS`,
+and no `hd` tag, the listed catalog is the fixed `SLIM_STOCK_VOICE_IDS`
+(Drew, Ava, Libby, George),
 and clones are tagged `cloned` / `fish-audio` / `custom`. Both variables and
 the surrounding 403/filter call sites are inert until an HD voice is added to
 the catalog.

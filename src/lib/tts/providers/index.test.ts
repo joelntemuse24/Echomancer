@@ -88,6 +88,23 @@ describe("resolveStockAdapter", () => {
           catalogVoiceId: "standard",
         }).id
       ).toBe("edge");
+      // A resume still carries the stored id. An Edge-shaped provider hint
+      // must not pull that book off Paradee, and a Drew row must not be
+      // pulled onto Paradee by a leftover model string.
+      expect(
+        resolveStockAdapter({
+          provider: "edge",
+          model: "edge/en-US-AndrewNeural",
+          catalogVoiceId: "echomancer-andrew",
+        }).id
+      ).toBe("paradee");
+      expect(
+        resolveStockAdapter({
+          provider: "drew",
+          model: "paradee/paradee-v1.1-int8",
+          catalogVoiceId: "drew",
+        }).id
+      ).toBe("drew");
     } finally {
       if (previousOr === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previousOr;
@@ -110,9 +127,9 @@ describe("resolveStockAdapter", () => {
       expect(isStandardVoice(hint)).toBe(false);
       expect(isEdgeStockVoice(hint)).toBe(false);
     }
-    expect(coercePlainCatalogVoiceId("echomancer-andrew")).toBe(
-      "echomancer-andrew"
-    );
+    // A new request names Drew. A stored row still resolves as Paradee above.
+    expect(coercePlainCatalogVoiceId("echomancer-andrew")).toBe("drew");
+    expect(coercePlainCatalogVoiceId("Echomancer Andrew")).toBe("drew");
   });
 
   it("refuses a stored Google voice instead of speaking it", () => {

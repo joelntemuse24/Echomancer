@@ -57,6 +57,22 @@ describe("stock voice pick", () => {
       catalogVoiceId: "drew",
       delivery: "standard",
     });
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "echomancer-andrew", delivery: "standard" })
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "drew",
+      delivery: "standard",
+    });
+    writeStockVoicePick(
+      { catalogVoiceId: "echomancer-andrew", delivery: "standard" },
+      storage
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "drew",
+      delivery: "standard",
+    });
   });
 
   it("moves a saved Clara pick onto Libby", () => {
@@ -104,7 +120,7 @@ describe("stock voice pick", () => {
     });
     expect(
       resolveStockSelection({
-        availableIds: ["drew", "echomancer-andrew", "ava", "libby", "ryan", "sowell"],
+        availableIds: ["drew", "ava", "libby", "george", "sowell"],
         explicitId: "sowell",
         suggestedId: "drew",
       })
@@ -119,7 +135,7 @@ describe("stock voice pick", () => {
     // The same rule holds for a Drew pick when its endpoint is down.
     expect(
       resolveStockSelection({
-        availableIds: ["echomancer-andrew", "ava", "libby"],
+        availableIds: ["ava", "libby"],
         explicitId: "drew",
         suggestedId: "ava",
       })

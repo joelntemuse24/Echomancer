@@ -90,10 +90,10 @@ export class RetiredGoogleVoiceError extends Error {
 }
 
 /**
- * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). The
- * self-hosted Echomancer Andrew (a `paradee` row) is checked first and stays on
- * its own adapter. A stored
- * Google / Randolph row is not spoken again. A stored `fish` provider stays
+ * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). A stored
+ * Echomancer Andrew row (provider `paradee`) stays on its own adapter. A new
+ * request that names that id is coerced to Drew before insert, so this branch
+ * is a stored book. A stored Google / Randolph row is not spoken again. A stored `fish` provider stays
  * on Fish. Fish clones always use the direct Fish adapter (private reference
  * ids). When FISH_API_KEY is set, leftover Fish catalog voices also use the
  * direct adapter. OpenRouter is the fallback for other stock ids.
@@ -121,8 +121,8 @@ export function resolveStockAdapter(opts: {
   ) {
     throw new RetiredGoogleVoiceError();
   }
-  // The self-hosted Paradee student keeps its own adapter. Checked before the
-  // Edge branch so no Edge-shaped hint can pull it back onto `standard`.
+  // Drew, Walter, and George match their own id or provider. A stored
+  // Paradee row matches none of these, so it is not re-spoken as Drew.
   if (
     opts.catalogVoiceId === DREW_CATALOG_VOICE_ID ||
     opts.provider === "drew"
@@ -141,6 +141,10 @@ export function resolveStockAdapter(opts: {
   ) {
     return georgeTtsProvider;
   }
+  // A stored Echomancer Andrew row: its catalog id, provider `paradee`, or
+  // a `paradee/` model. After the Kokoro id checks, so a Drew row whose
+  // options still mention Paradee stays Drew. Before Edge, so this row is
+  // not pulled onto `standard`.
   if (isEchomancerAndrewVoice(hint)) {
     return paradeeTtsProvider;
   }

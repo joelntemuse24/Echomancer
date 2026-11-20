@@ -84,17 +84,20 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
 }
 
 /**
- * Product catalog is five stock narrators + user clones:
+ * Product catalog is Drew, Ava, Libby, and George, plus Walter when its
+ * endpoint is up, plus user clones:
  *   - Drew (`drew`, the default, fine-tuned Kokoro-82M on the CPU app)
- *   - Echomancer Andrew (`echomancer-andrew` → self-hosted Paradee)
  *   - Ava (`ava` → en-US-AvaNeural)
  *   - Libby (`libby` → en-GB-LibbyNeural)
  *   - George (`george` → Kokoro `bm_george`, only when configured)
  *   - Plus Walter (`sowell`, Kokoro pack) when its endpoint is up
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
- * Retired ids are not listed: Andrew (`standard`, Edge), Ryan, Michelle,
- * Clara, Randolph. `getCatalogVoice` still resolves each for a stored job.
+ * Retired ids are not listed: Echomancer Andrew (`echomancer-andrew`,
+ * Paradee), Andrew (`standard`, Edge), Ryan, Michelle, Clara, Randolph.
+ * `getCatalogVoice` still resolves Echomancer Andrew, Andrew, Ryan, Michelle,
+ * and Clara for a stored job. A new request that names Echomancer Andrew
+ * uses Drew.
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
  * resolves legacy `fish-narrator` / `or:` / `research:` / `gemini-*` ids for
@@ -180,7 +183,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Andrew, Ava, Libby, Ryan). Clones are merged at the voices API. */
+/** Slim catalog (Drew, Ava, Libby, George). Walter is appended when configured. Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {

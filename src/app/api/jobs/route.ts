@@ -120,6 +120,14 @@ export async function POST(request: NextRequest) {
     const coercedVoiceId = requestedVoiceId
       ? coercePlainCatalogVoiceId(requestedVoiceId)
       : undefined;
+    // A stale client that names Paradee (provider plus voice id, no catalog
+    // id) is Drew. Without a voice id the default narrator still applies, so
+    // Ava stays the fallback while Drew's endpoint is unset. A request that
+    // also names Ava, Libby, George, Walter, or Drew keeps that id.
+    const paradeeWithoutCatalog =
+      !requestedVoiceId &&
+      parsed.ttsProvider === "paradee" &&
+      Boolean(parsed.providerVoiceId);
     let catalog = coercedVoiceId
       ? await getCatalogVoice(coercedVoiceId, {
           hdEnabled: true,
@@ -150,7 +158,8 @@ export async function POST(request: NextRequest) {
         /expressive/i.test(
           `${requestedVoiceId} ${parsed.stockDelivery ?? ""} ${parsed.voiceName ?? ""}`
         )) ||
-        namesGoogle)
+        namesGoogle ||
+        paradeeWithoutCatalog)
     ) {
       catalog = await getCatalogVoice(DREW_CATALOG_VOICE_ID, {
         hdEnabled: true,
@@ -159,14 +168,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Drew is the product default and lives on our own CPU app. A request
-    // that names it (or the retired Andrew/`standard` id, which coerce maps
-    // here) fails closed when the endpoint is unset, rather than inserting a
-    // row nothing can speak.
+    // that names it (or a retired id coerce maps here: Andrew/`standard`,
+    // Echomancer Andrew, or a Paradee body with no catalog id) fails closed
+    // when the endpoint is unset, rather than inserting a row nothing can
+    // speak — and rather than starting a new Paradee take.
     const drewRequest =
       requestedVoiceId === DREW_CATALOG_VOICE_ID ||
       coercedVoiceId === DREW_CATALOG_VOICE_ID ||
       parsed.providerVoiceId === "drew" ||
-      catalog?.id === DREW_CATALOG_VOICE_ID;
+      catalog?.id === DREW_CATALOG_VOICE_ID ||
+      paradeeWithoutCatalog;
     if (drewRequest && !drewReady()) {
       throw new AppError(
         "DREW_NOT_CONFIGURED",
@@ -234,12 +245,15 @@ export async function POST(request: NextRequest) {
     ) {
       requestedName = "";
     }
-    // A book stored as Andrew keeps that name; a new request that named him
-    // is Drew now, so the old label is not carried onto the new row.
+    // A book stored as Andrew keeps that name; a new request that named him,
+    // or that named Echomancer Andrew, is Drew now, so the old label is not
+    // carried onto the new row.
     if (
       (catalog?.id === DREW_CATALOG_VOICE_ID ||
         catalogVoiceId === DREW_CATALOG_VOICE_ID) &&
-      /^(?:randolph|andrew|standard)$/i.test(requestedName)
+      /^(?:randolph|andrew|standard|echomancer andrew|echomancer-andrew)$/i.test(
+        requestedName
+      )
     ) {
       requestedName = "";
     }

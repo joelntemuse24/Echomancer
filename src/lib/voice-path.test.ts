@@ -48,9 +48,12 @@ describe("voicesForPath", () => {
     expect(voicesForPath(voices, "standard").map((v) => v.id)).toEqual([
       ...SLIM_STOCK_VOICE_IDS,
     ]);
-    // The retired Andrew row is never in the pile even though it is present.
+    // Retired Andrew rows stay out of the pile even when the payload has them.
     expect(voicesForPath(voices, "standard").map((v) => v.id)).not.toContain(
       "standard"
+    );
+    expect(voicesForPath(voices, "standard").map((v) => v.id)).not.toContain(
+      "echomancer-andrew"
     );
   });
 
@@ -72,7 +75,7 @@ describe("voicesForPath", () => {
     ).toEqual([...SLIM_STOCK_VOICE_IDS]);
   });
 
-  it("adds a Walter card after the five when the server listed that provider", () => {
+  it("adds a Walter card after the slim list when the server listed that provider", () => {
     const walter = {
       id: "sowell",
       provider: "sowell" as const,

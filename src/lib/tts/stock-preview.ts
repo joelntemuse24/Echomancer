@@ -26,9 +26,10 @@ export const COMMITTED_PREVIEW_IDS: readonly string[] = [
 /**
  * Public URL for a listed stock narrator's sample.
  *
- * Andrew resolves to Drew's catalog id because Andrew is retired and a
- * request that names him lands on Drew. Walter resolves through its unchanged
- * `sowell` id. Echomancer Andrew and George have their own committed takes.
+ * Andrew and Echomancer Andrew resolve to Drew's catalog id because both
+ * are retired and a request that names either lands on Drew. Walter resolves
+ * through its unchanged `sowell` id. George has its own committed take. The
+ * old `echomancer-andrew.mp3` file stays on disk and is not a listed sample.
  * Safe to import from client components. The file reader lives in
  * `stock-preview-file.ts`.
  */

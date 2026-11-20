@@ -46,7 +46,7 @@
     "locale": "en-US",
     "gender": "male",
     "style": "narration",
-    "tags": ["stock", "paradee", "audiobook", "male", "self-hosted"],
+    "tags": ["legacy", "paradee", "audiobook", "male", "self-hosted"],
     "latencyClass": "balanced",
     "model": "paradee/paradee-v1.1-int8",
     "recommendedForLongForm": true,
@@ -54,7 +54,7 @@
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Echomancer Andrew, a self-hosted Paradee v1.1 fp32 student distilled for this app and run on the worker CPU. Same delivery as Andrew, generated on our own machine."
+    "qualityNotes": "Retired: not listed. Books already made with Echomancer Andrew keep playing and downloading this Paradee audio and are never re-spoken. A new request that names Echomancer Andrew uses Drew."
   },
   {
     "id": "ava",

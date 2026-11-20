@@ -87,37 +87,35 @@ describe("Standard slim catalog", () => {
     delete process.env.DREW_TOKEN;
   });
 
-  it("lists Drew, Ava, and Libby, and keeps Andrew and Ryan off the list", async () => {
+  it("lists Drew, Ava, and Libby, and keeps Andrew, Echomancer Andrew, and Ryan off the list", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
-      "echomancer-andrew",
       "ava",
       "libby",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
       "Drew",
-      "Echomancer Andrew",
       "Ava",
       "Libby",
     ]);
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
     expect(voices.map((v) => v.id)).not.toContain("standard");
+    expect(voices.map((v) => v.id)).not.toContain("echomancer-andrew");
     expect(voices[0]!.provider).toBe("drew");
     expect(voices[0]!.providerVoiceId).toBe("drew");
-    expect(voices[1]!.provider).toBe("paradee");
-    expect(voices[1]!.model).toBe("paradee/paradee-v1.1-int8");
-    expect(voices[2]!.providerVoiceId).toBe("en-US-AvaNeural");
-    expect(voices[3]!.providerVoiceId).toBe("en-GB-LibbyNeural");
-    expect(voices[3]!.provider).toBe("edge");
+    expect(voices[1]!.provider).toBe("edge");
+    expect(voices[1]!.providerVoiceId).toBe("en-US-AvaNeural");
+    expect(voices[2]!.providerVoiceId).toBe("en-GB-LibbyNeural");
+    expect(voices[2]!.provider).toBe("edge");
     expect(voices.map((v) => v.id)).not.toContain("ryan");
     expect(voices.map((v) => v.id)).not.toContain("george");
     expect(voices.map((v) => v.id)).not.toContain("standard");
-    // Drew replaces the retired Edge male; the Paradee student stays listed
-    // under its own self-hosted name.
+    // Drew replaces both retired US males. Neither name is on the list.
     expect(voices.map((v) => v.displayName)).toContain("Drew");
     expect(voices.map((v) => v.displayName)).not.toContain("Andrew");
+    expect(voices.map((v) => v.displayName)).not.toContain("Echomancer Andrew");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
         /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
@@ -158,9 +156,10 @@ describe("Standard slim catalog", () => {
       const walter = voices.find((v) => v.id === "sowell");
       expect(walter?.displayName).toBe("Walter");
       expect(walter?.friendlyName).toBe("Walter");
-      // `echomancer-andrew` is a different, still-listed voice (Paradee). The
-      // retired Edge `standard` row is the one that must be gone.
+      // Both retired US males stay off the list. Walter's card does not
+      // bring either of them back.
       expect(voices.map((v) => v.id)).not.toContain("standard");
+      expect(voices.map((v) => v.id)).not.toContain("echomancer-andrew");
       expect(voices.map((v) => v.id)).not.toContain("ryan");
       expect(voices.map((v) => v.displayName)).not.toContain("Sowell");
       expect(voices.map((v) => v.displayName)).not.toContain("Andrew");
@@ -189,6 +188,17 @@ describe("Standard slim catalog", () => {
       provider: "edge",
       providerVoiceId: "en-US-AndrewNeural",
     });
+  });
+
+  it("still resolves the unlisted Echomancer Andrew row for a stored book", async () => {
+    await expect(getCatalogVoice("echomancer-andrew")).resolves.toMatchObject({
+      id: "echomancer-andrew",
+      provider: "paradee",
+      providerVoiceId: "paradee-v1.1-int8",
+      displayName: "Echomancer Andrew",
+    });
+    const listed = await listCatalogVoices();
+    expect(listed.map((voice) => voice.id)).not.toContain("echomancer-andrew");
   });
 
   it("resolves Ava and Clara by id and drops Randolph", async () => {
@@ -236,10 +246,10 @@ describe("Standard slim catalog", () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
-      "echomancer-andrew",
       "ava",
       "libby",
     ]);
+    expect(voices.map((v) => v.id)).not.toContain("echomancer-andrew");
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });
 });

@@ -33,6 +33,7 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
 import {
   deliveryUserInputFromUnknown,
   type DeliveryUserInput,
@@ -162,10 +163,15 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const input = await parseLiveInput(request);
     if (input instanceof NextResponse) return input;
 
-    const catalog = await getCatalogVoice(input.catalogVoiceId, {
-      hdEnabled: true,
-      userId,
-    });
+    // A stale Echomancer Andrew id is Drew before lookup, so this route
+    // never binds a new request to the unlisted Paradee row.
+    const catalog = await getCatalogVoice(
+      coercePlainCatalogVoiceId(input.catalogVoiceId),
+      {
+        hdEnabled: true,
+        userId,
+      }
+    );
     if (!catalog) {
       return NextResponse.json(
         { error: "That voice isn't available." },

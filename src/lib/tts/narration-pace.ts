@@ -117,8 +117,10 @@ export function isDenseAcademicText(text: string): boolean {
  * Clones of conversational refs and dense academic start ~0.85;
  * stock Narrator on conversational prose stays 1.0.
  *
- * Echomancer Andrew stays at 1.0: Paradee was distilled from Edge Andrew at
- * 1.0x (~150 WPM), so the Fish academic heuristic would only slow it down.
+ * A stored Echomancer Andrew book stays at 1.0: Paradee was distilled from
+ * Edge Andrew at 1.0x (~150 WPM), so the Fish academic heuristic would only
+ * slow it down. The id is unlisted; this still applies to a row already
+ * stored with it. A new request is coerced to Drew before it gets here.
  *
  * Drew stays at 1.0 too, and for a stronger reason. Its container renders 1.0
  * at Kokoro speed 0.88, which already **is** real Andrew's natural pace. This

@@ -308,17 +308,20 @@ HTTP 200).
 
 Logs: `pm2 logs echomancer-takehome` (`[takehome-worker] …`).
 
-## Paradee (self-hosted "Echomancer Andrew")
+## Paradee (stored Echomancer Andrew books)
 
-The `echomancer-andrew` stock voice does not call a hosted TTS API. It runs
+Echomancer Andrew (`echomancer-andrew`) is unlisted. A new request uses Drew.
+A book already stored with that id still resolves and is spoken here, and
+its row is not rewritten. The voice does not call a hosted TTS API. It runs
 the Paradee v1.1 int8 ONNX student on this VM's CPU behind the small Python
 sidecar in `scripts/paradee/server.py`, listening on `127.0.0.1:8791`.
-Whole books synthesize here directly (`PARADEE_URL`); a Vercel preview goes
-through `POST /paradee/synthesize` on this worker.
+Whole books that are already on this provider synthesize here directly
+(`PARADEE_URL`); `POST /paradee/synthesize` on this worker remains the proxy.
+Do not remove the sidecar while stored books still resolve to it.
 
 Install, model files, and the pm2 unit: `scripts/paradee/README.md`. Set
-`PARADEE_SECRET` here and in the sidecar when the model is exposed. All other
-voices (Edge Andrew, Ava, Libby, Ryan, Fish) are unchanged.
+`PARADEE_SECRET` here and in the sidecar when the model is exposed. Drew,
+Ava, Libby, George, Walter, and Fish are unchanged.
 
 ## Smoke
 

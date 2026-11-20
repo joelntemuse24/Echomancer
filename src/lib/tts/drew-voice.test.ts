@@ -77,6 +77,7 @@ describe("Drew identity", () => {
     expect(listed[0]!.displayName).toBe("Drew");
     expect(listed[0]!.provider).toBe("drew");
     expect(listed.map((voice) => voice.id)).not.toContain("standard");
+    expect(listed.map((voice) => voice.id)).not.toContain("echomancer-andrew");
     expect(voicesForPath(listed, "standard")[0]?.displayName).toBe("Drew");
   });
 
@@ -166,6 +167,7 @@ describe("Drew identity", () => {
   it("serves a committed Drew preview", () => {
     expect(stockPreviewUrl("drew")).toBe("/voice-previews/drew.mp3");
     expect(stockPreviewUrl("standard")).toBe("/voice-previews/drew.mp3");
+    expect(stockPreviewUrl("echomancer-andrew")).toBe("/voice-previews/drew.mp3");
     expect(stockPreviewUrl("sowell")).toBe("/voice-previews/sowell.mp3");
   });
 });

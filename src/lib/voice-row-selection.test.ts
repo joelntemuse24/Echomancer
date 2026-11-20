@@ -10,7 +10,6 @@ import {
 const rows: Array<{ id: string; kind: VoiceRowKind }> = [
   { id: "ava", kind: "stock" },
   { id: "libby", kind: "stock" },
-  { id: "echomancer-andrew", kind: "stock" },
   { id: "drew", kind: "kokoro" },
   { id: "george", kind: "kokoro" },
   { id: "sowell", kind: "kokoro" },
@@ -48,7 +47,7 @@ describe("voice row selection", () => {
   });
 
   it("presses Drew on a fresh load, and keeps Walter pressed after it was previewed", () => {
-    const ids = ["drew", "echomancer-andrew", "ava", "libby", "george", "sowell"];
+    const ids = ["drew", "ava", "libby", "george", "sowell"];
     const fresh = resolveStockSelection({
       availableIds: ids,
       explicitId: null,

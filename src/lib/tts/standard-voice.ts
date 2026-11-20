@@ -2,7 +2,6 @@
  * Stock narrators shown in the slim catalog.
  *
  *   Drew      → fine-tuned Kokoro-82M, own kmodel (catalog id `drew`, default)
- *   Echomancer Andrew → self-hosted Paradee
  *   Ava       → Edge `en-US-AvaNeural` (non-HD; Dragon HD is not on this route)
  *   Libby     → Edge `en-GB-LibbyNeural`
  *   George    → Kokoro `bm_george` when that endpoint is set
@@ -14,6 +13,12 @@
  * row is never rewritten and never re-spoken. A *new* request or saved pick
  * that names Andrew/`standard` lands on Drew (`coercePlainCatalogVoiceId`),
  * because that is the same narrator slot with the successor voice.
+ *
+ * **Echomancer Andrew is retired the same way.** Catalog id
+ * `echomancer-andrew` was the self-hosted Paradee student. It stays an
+ * unlisted legacy id: a book already stored with it still resolves, plays,
+ * and is never rewritten or re-spoken. A new request or saved pick that
+ * names it lands on Drew. The Paradee adapter stays for those stored rows.
  *
  * Ryan is unlisted for the same reason and a new request that names him uses
  * George. Clara stays resolvable for books already made with her, and is not
@@ -38,8 +43,8 @@ export const STANDARD_CATALOG_VOICE_ID = "standard";
 /** The app default narrator. Alias of `DREW_VOICE_ID`, exported for callers. */
 export const DREW_CATALOG_VOICE_ID = DREW_VOICE_ID;
 /**
- * Self-hosted Paradee student distilled from the Echomancer narrator. It is a
- * separate voice with its own provider, so it never resolves to Edge Standard.
+ * Retired Paradee student. Unlisted; a stored Echomancer Andrew book still
+ * resolves to it and is never rewritten. A new request uses Drew.
  */
 export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
 export const AVA_CATALOG_VOICE_ID = "ava";
@@ -66,10 +71,9 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Drew, Echomancer Andrew, Ava, Libby, George. */
+/** Slim picker order: Drew, Ava, Libby, George. Walter is appended when listed. */
 export const SLIM_STOCK_VOICE_IDS = [
   DREW_CATALOG_VOICE_ID,
-  ECHOMANCER_ANDREW_CATALOG_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
   "george",
@@ -103,6 +107,10 @@ export const STOCK_DISPLAY_NAMES = {
    * picker never lists it, so this string is only read for that stored book.
    */
   [STANDARD_CATALOG_VOICE_ID]: "Andrew",
+  /**
+   * The retired Paradee row. A book stored as Echomancer Andrew still shows
+   * this name; the picker never lists it.
+   */
   [ECHOMANCER_ANDREW_CATALOG_VOICE_ID]: "Echomancer Andrew",
   [AVA_CATALOG_VOICE_ID]: "Ava",
   [LIBBY_CATALOG_VOICE_ID]: "Libby",
@@ -164,8 +172,9 @@ export function stockDisplayName(id?: string | null): string | null {
 }
 
 /**
- * The self-hosted Paradee student. Its own catalog id, provider and model
- * prefix all identify it, so it is never mistaken for the Edge `standard` row.
+ * The retired Paradee row. Its own catalog id, provider and model prefix all
+ * identify a stored book, so it is never mistaken for the Edge `standard`
+ * row or for Drew. A new request is coerced to Drew before it is inserted.
  */
 export function isEchomancerAndrewVoice(voice: VoiceHint): boolean {
   if (voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID) return true;
@@ -310,6 +319,12 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
    */
   andrew: DREW_CATALOG_VOICE_ID,
   drew: DREW_CATALOG_VOICE_ID,
+  /**
+   * Echomancer Andrew is retired. A new request or saved pick that names the
+   * Paradee id lands on Drew. A stored book keeps its row untouched.
+   */
+  "echomancer-andrew": DREW_CATALOG_VOICE_ID,
+  "echomancer andrew": DREW_CATALOG_VOICE_ID,
   ava: AVA_CATALOG_VOICE_ID,
   libby: LIBBY_CATALOG_VOICE_ID,
   clara: LIBBY_CATALOG_VOICE_ID,
@@ -325,9 +340,10 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
 /**
  * Saved picks and new job requests that still name an Expressive variant
  * land on the matching plain stock id. A bare "expressive" is Drew.
- * A request that still says Andrew or Randolph uses Drew. One that says
- * Clara uses Libby, and one that says Ryan uses George. A stored book is
- * not coerced: this runs before insert and on a saved pick, never on a row.
+ * A request that still says Andrew, Echomancer Andrew, or Randolph uses
+ * Drew. One that says Clara uses Libby, and one that says Ryan uses George.
+ * A stored book is not coerced: this runs before insert and on a saved
+ * pick, never on a row.
  */
 export function coercePlainCatalogVoiceId(raw: string): string {
   const stripped = raw.trim().replace(EXPRESSIVE_TAIL, "").trim();
@@ -338,8 +354,9 @@ export function coercePlainCatalogVoiceId(raw: string): string {
 }
 
 /**
- * Listed stock plus legacy Michelle / Randolph / Andrew. Not Clara, not a
- * user clone. `standard` is here because a stored Andrew job is still stock.
+ * Listed stock plus legacy Michelle / Randolph / Andrew / Echomancer Andrew.
+ * Not Clara, not a user clone. `standard` and `echomancer-andrew` are here
+ * because a stored book with either id is still stock.
  */
 export function isBaselineStockCatalogId(id?: string | null): boolean {
   return (
