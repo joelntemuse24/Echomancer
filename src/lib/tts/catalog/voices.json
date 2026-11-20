@@ -41,7 +41,7 @@
     "id": "heart",
     "provider": "heart",
     "providerVoiceId": "af_heart",
-    "displayName": "Heart",
+    "displayName": "Esther",
     "language": "English",
     "locale": "en-US",
     "gender": "female",
@@ -54,7 +54,7 @@
     "maxCharsPerRequest": 2000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Heart, Kokoro-82M af_heart on the Modal CPU app. Stock base model, American phonemes. Listed only when that endpoint is configured. Not Drew's fine-tune, not OpenRouter, and not the Sowell pack. A book already stored as Ava, Libby, or Michelle keeps its Edge audio. A book already stored as Clara keeps its Fish audio."
+    "qualityNotes": "Esther, Kokoro-82M af_heart on the Modal CPU app. Catalog id heart. Stock base model, American phonemes. Listed only when that endpoint is configured. Not Drew's fine-tune, not OpenRouter, and not the Sowell pack. A book already stored as Ava, Libby, or Michelle keeps its Edge audio. A book already stored as Clara keeps its Fish audio."
   },
   {
     "id": "echomancer-andrew",

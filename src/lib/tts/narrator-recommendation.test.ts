@@ -98,7 +98,7 @@ describe("withNarratorRecommendation", () => {
         delivery: "expressive",
       })
     ).toMatchObject({ catalogVoiceId: "heart", delivery: "standard" });
-    expect(withNarratorRecommendation("Heart", true)).toBe("Heart (recommended)");
+    expect(withNarratorRecommendation("Esther", true)).toBe("Esther (recommended)");
     expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
   });
 });

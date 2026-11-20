@@ -14,8 +14,11 @@ import {
   coercePlainCatalogVoiceId,
   plainStockLock,
   RYAN_NEURAL_VOICE_ID,
+  AVA_CATALOG_VOICE_ID,
   AVA_NEURAL_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
   LIBBY_NEURAL_VOICE_ID,
+  MICHELLE_CATALOG_VOICE_ID,
   MICHELLE_NEURAL_VOICE_ID,
   CLARA_FISH_REFERENCE_ID,
   DREW_CATALOG_VOICE_ID,
@@ -126,13 +129,16 @@ export async function POST(request: NextRequest) {
     }
 
     const requestedVoiceId = parsed.catalogVoiceId;
+    // Esther replaces Ava and Libby only once her endpoint is set. Until
+    // then those ids stay on Edge, so a merge before rollout does not 503
+    // the live picker. A request that names no voice is Drew.
+    const heartLive = heartReady();
     const coercedVoiceId = requestedVoiceId
-      ? coercePlainCatalogVoiceId(requestedVoiceId)
+      ? coercePlainCatalogVoiceId(requestedVoiceId, { heart: heartLive })
       : undefined;
     // A stale client that names Paradee (provider plus voice id, no catalog
-    // id) is Drew. Without a voice id the default narrator is Drew. A request
-    // that names Ava, Libby, Clara, or Michelle is Heart. One that names
-    // George, Walter, or Drew keeps that id.
+    // id) is Drew. Without a voice id the default narrator is Drew. One that
+    // names George, Walter, or Drew keeps that id.
     const paradeeWithoutCatalog =
       !requestedVoiceId &&
       parsed.ttsProvider === "paradee" &&
@@ -176,33 +182,45 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Ava, Libby, Clara, and Michelle are retired. A new request that names
-    // any of them — by catalog id, or by the Edge / Fish voice id with no
-    // catalog id — is Heart. A clone id is never this path. This is decided
-    // before the no-voice default, so a body that only carries Ava's neural
-    // id is not stored as Drew.
-    const namesHeartByCatalog =
+    // An explicit Esther request fails closed while her endpoint is unset.
+    // Ava, Libby, Clara, and Michelle do not: they stay on Edge (Clara on
+    // Libby) until the endpoint is set, and then they are Esther. A clone
+    // id is never this path. A body that only carries Ava's neural id is
+    // not stored as Drew.
+    const explicitHeart =
       !isFishCloneCatalogId(requestedVoiceId) &&
       (coercedVoiceId === HEART_CATALOG_VOICE_ID ||
-        requestedVoiceId === HEART_CATALOG_VOICE_ID);
-    // A body with no catalog id can still name the retired voice by its
-    // provider voice id. An explicit catalog id wins, so an Andrew request
-    // that also carries Clara's old Fish reference stays Drew.
-    const namesHeartByVoice =
+        requestedVoiceId === HEART_CATALOG_VOICE_ID ||
+        requestedVoiceId === HEART_PROVIDER_VOICE_ID ||
+        (!requestedVoiceId &&
+          parsed.providerVoiceId === HEART_PROVIDER_VOICE_ID));
+    const retiredFemaleNeural =
       !requestedVoiceId &&
       !isFishCloneCatalogId(parsed.providerVoiceId) &&
-      (parsed.providerVoiceId === HEART_PROVIDER_VOICE_ID ||
-        parsed.providerVoiceId === AVA_NEURAL_VOICE_ID ||
+      (parsed.providerVoiceId === AVA_NEURAL_VOICE_ID ||
         parsed.providerVoiceId === LIBBY_NEURAL_VOICE_ID ||
         parsed.providerVoiceId === MICHELLE_NEURAL_VOICE_ID ||
         parsed.providerVoiceId === CLARA_FISH_REFERENCE_ID);
-    const namesHeart = namesHeartByCatalog || namesHeartByVoice;
-    if (namesHeart && !heartReady()) {
+    if (explicitHeart && !heartLive) {
       throw new AppError(
         "HEART_NOT_CONFIGURED",
-        "Heart is not configured.",
+        "Esther is not configured.",
         503
       );
+    }
+    const namesHeart = heartLive && (explicitHeart || retiredFemaleNeural);
+    if (!heartLive && retiredFemaleNeural && !catalog) {
+      const edgeId =
+        parsed.providerVoiceId === LIBBY_NEURAL_VOICE_ID ||
+        parsed.providerVoiceId === CLARA_FISH_REFERENCE_ID
+          ? LIBBY_CATALOG_VOICE_ID
+          : parsed.providerVoiceId === MICHELLE_NEURAL_VOICE_ID
+            ? MICHELLE_CATALOG_VOICE_ID
+            : AVA_CATALOG_VOICE_ID;
+      catalog = await getCatalogVoice(edgeId, {
+        hdEnabled: true,
+        userId: session.userId,
+      });
     }
 
     // Drew is the product default and lives on our own CPU app. A request
@@ -210,7 +228,7 @@ export async function POST(request: NextRequest) {
     // Echomancer Andrew, or a Paradee body with no catalog id) fails closed
     // when the endpoint is unset, rather than inserting a row nothing can
     // speak — and rather than starting a new Paradee take. A request that
-    // already named Heart is not this default.
+    // already named Esther is not this default.
     const drewRequest =
       !namesHeart &&
       (requestedVoiceId === DREW_CATALOG_VOICE_ID ||

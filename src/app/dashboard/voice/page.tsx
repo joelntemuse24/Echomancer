@@ -49,7 +49,6 @@ import { toast } from "sonner";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import { PreviewAudioController } from "@/lib/preview-audio";
 import {
-  narratorMarksVoice,
   withNarratorRecommendation,
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
@@ -75,6 +74,7 @@ import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
 import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
   clearStockVoicePick,
+  listedCatalogVoiceId,
   readStockVoicePick,
   rememberedCloneOnRestore,
   writeStockVoicePick,
@@ -1328,9 +1328,15 @@ export default function VoiceSelectionPage() {
       previewPreparingId === voice.id || (isLoadingPreview && !isPlaying);
     const isPreviewFailed =
       previewFailedId === voice.id && !isPreparing && !isPlaying;
+    const listedSuggestion = narrator
+      ? listedCatalogVoiceId(
+          narrator.catalogVoiceId,
+          stockVoices.map((item) => item.id)
+        )
+      : null;
     const label = withNarratorRecommendation(
       voiceTitle(voice),
-      narrator ? narratorMarksVoice(narrator, voice.id) : false
+      listedSuggestion === voice.id
     );
     const voiceNote = cloned
       ? [VOICE_PATH.cloneMark, duplicateCloneDateLabel(cloneVoices, voice)]

@@ -27,11 +27,11 @@ export const COMMITTED_PREVIEW_IDS: readonly string[] = [
  * Public URL for a listed stock narrator's sample.
  *
  * Andrew and Echomancer Andrew resolve to Drew's catalog id because both
- * are retired and a request that names either lands on Drew. Ava, Libby,
- * Clara, and Michelle resolve to Heart. Walter resolves through its
- * unchanged `sowell` id. Heart and George each have their own committed
- * take. The old `ava.mp3`, `libby.mp3`, and `echomancer-andrew.mp3` files
- * stay on disk and are not listed samples.
+ * are retired and a request that names either lands on Drew. Ava's card
+ * plays `ava.mp3` and Libby's plays `libby.mp3` while those cards are
+ * listed. The preview API serves Esther's file for those ids only once
+ * her endpoint is set. Walter resolves through its unchanged `sowell` id.
+ * Esther and George each have their own committed take.
  * Safe to import from client components. The file reader lives in
  * `stock-preview-file.ts`.
  */

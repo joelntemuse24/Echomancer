@@ -2,8 +2,8 @@
 
 > Documents → audiobook. Shipped stock voices are **Drew** (catalog id
 > `drew`, a fine-tuned Kokoro-82M on our own CPU app, the app default),
-> **Heart** (Kokoro `af_heart`, American female, customer name in
-> `HEART_DISPLAY_NAME`), **George** (Kokoro `bm_george`), and **Walter**
+> **Esther** (Kokoro `af_heart`, American female, catalog id `heart`,
+> customer name `HEART_DISPLAY_NAME`), **George** (Kokoro `bm_george`), and **Walter**
 > (listed name for the `sowell` Kokoro pack). **Andrew is retired**: catalog
 > id `standard` (Edge `en-US-AndrewNeural`) is unlisted and still resolves,
 > so a book already made with Andrew keeps playing and is not re-spoken; a
@@ -13,13 +13,17 @@
 > keeps playing and is not re-spoken; a new request or saved pick that names
 > it lands on Drew. The Paradee adapter stays for those stored rows. Ryan is
 > unlisted for the same reason and a new request that names him uses
-> George. **Ava and Libby are retired** the same way: catalog ids `ava`
-> (Edge `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`) are
-> unlisted and still resolve, so a book already made with either keeps
-> playing on Edge and is not re-spoken; a new request or saved pick that
-> names either lands on Heart. Clara and Michelle are unlisted and still
-> resolve for books already made with them (Clara on Fish, Michelle on
-> Edge). A new request that names Clara or Michelle uses Heart. One that
+> George. **Ava and Libby stay listed until Esther is configured.** Catalog
+> ids `ava` (Edge `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`)
+> stay on the picker, and a new request that names either stays on Edge,
+> until `HEART_ENABLED`, `HEART_URL`, and `HEART_TOKEN` are all set. After
+> that they are unlisted. A book already made with either keeps playing on
+> Edge and is not re-spoken. A new request or saved pick that names either
+> lands on Esther only once that endpoint is set. Clara and Michelle are
+> unlisted and still resolve for books already made with them (Clara on
+> Fish, Michelle on Edge). Until Esther is configured, a new request that
+> names Clara uses Libby and one that names Michelle stays on Edge. After
+> that, a new request that names Clara or Michelle uses Esther. One that
 > names Randolph or Google uses Drew. A book already
 > stored as Randolph keeps its audio and is not spoken again. Do not add rejected
 > Edge females (Jenny, Sonia, Aria) or Ava
@@ -347,10 +351,10 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Drew** (`drew` → a fine-tuned Kokoro-82M with its
 own kmodel weights and voice pack, on the shared Modal CPU app; the app
 default, listed only when `DREW_ENABLED`, `DREW_URL`, and `DREW_TOKEN` are set),
-**Heart** (`heart` → Kokoro `af_heart` on the same Modal CPU app, stock
+**Esther** (`heart` → Kokoro `af_heart` on the same Modal CPU app, stock
 Kokoro-82M weights, American phonemes, listed only when `HEART_ENABLED`,
 `HEART_URL`, and `HEART_TOKEN` are set; the customer name is
-`HEART_DISPLAY_NAME`), **George** (`george` → Kokoro `bm_george` on the
+`HEART_DISPLAY_NAME`, which is Esther), **George** (`george` → Kokoro `bm_george` on the
 same Modal CPU app, British phonemes, listed only when
 `GEORGE_ENABLED`, `GEORGE_URL`, and `GEORGE_TOKEN` are set), and **Walter**
 (the listed name for the `sowell` Kokoro pack, listed only when
@@ -368,29 +372,36 @@ Randolph or a Google Cloud voice is also Drew. Ryan is not listed, and a
 new request that names him uses George, or 503 `GEORGE_NOT_CONFIGURED`
 when that endpoint is unset. A request naming Drew with its endpoint unset
 is 503 `DREW_NOT_CONFIGURED`. A request that names no voice is Drew, and
-503 `DREW_NOT_CONFIGURED` when that endpoint is unset. Ava and Libby are
-retired: unlisted, still resolved for a stored book, and a new request or
-saved pick that names either is Heart, or 503 `HEART_NOT_CONFIGURED` when
-that endpoint is unset. No Gemini / MiniMax / rejected Edge females
-(Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are not
-listed; a new request that names either is Heart. `SLIM_STOCK_VOICE_IDS`
-lists Drew, Heart, and George. The customer UI renders Heart only when the
-voices response includes provider `heart`, George only when it includes
+503 `DREW_NOT_CONFIGURED` when that endpoint is unset. Ava and Libby stay
+listed, and a new request that names either stays on Edge, until Esther's
+endpoint is set. After that they are unlisted, a stored book still
+resolves, and a new request or saved pick that names either is Esther.
+An explicit `heart` request while the endpoint is unset is 503
+`HEART_NOT_CONFIGURED` and inserts nothing. No Gemini / MiniMax / rejected
+Edge females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle
+are not listed. Until Esther is configured, Clara uses Libby and Michelle
+stays on Edge. After that, a new request that names either is Esther.
+`SLIM_STOCK_VOICE_IDS` lists Drew, Ava, Libby, Esther, and George so the
+client can order whichever the server sent. The customer UI renders Esther
+only when the voices response includes provider `heart`, George only when it includes
 provider `george`, Drew only when it includes provider `drew`, and a Walter card only
 when it includes provider `sowell`. Walter's id is still `sowell`, so stored
 books and `public/voice-previews/sowell.mp3` are unchanged. When the
 response omits a card it is absent, and a saved pick of that voice does
 not highlight Drew.
 Picker samples for the listed stock voices are committed recordings at
-`public/voice-previews/<id>.mp3` (`drew`, `heart`, `george`, `sowell`).
-`ava.mp3`, `libby.mp3`, `standard.mp3`, `ryan.mp3`, and `echomancer-andrew.mp3`
+`public/voice-previews/<id>.mp3` (`drew`, `heart`, `george`, `sowell`, and
+`ava` / `libby` while those cards are listed).
+`standard.mp3`, `ryan.mp3`, and `echomancer-andrew.mp3`
 remain on disk. A request that names Andrew or Echomancer Andrew is served
-Drew's sample. A request that names Ava or Libby is served Heart's sample.
+Drew's sample. While Ava or Libby is listed, that card plays its own file.
+Once Esther is configured, a preview request that names Ava or Libby is
+served Esther's sample.
 Re-record the listed samples when `PREVIEW_TEXT` changes.
 Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
-**Kokoro CPU lanes (Drew, Heart, Walter, George):** all four narrators come from one
+**Kokoro CPU lanes (Drew, Esther, Walter, George):** all four narrators come from one
 Modal app, `echomancer-sowell` (`modal/sowell_worker.py`, image
 `workers/sowell/Dockerfile`). The fleet is `SOWELL_MAX_CONTAINERS` (default 16,
 clamped 1..16 at deploy) containers at 2 CPU and 6 GB each,
@@ -475,7 +486,8 @@ copy.
 
 **Clara (curated Fish stock, unlisted):** `src/lib/tts/curated-fish-stock.ts`
 still resolves her reference for a book already stored as Clara. New picks
-and new job requests that name Clara use Heart. Synthesis for a stored Clara
+and new job requests that name Clara use Esther once that endpoint is set,
+and Libby until then. Synthesis for a stored Clara
 job uses `fishTtsProvider` **with** `reference_id`. Do not send OpenRouter
 catalog UUIDs.
 
@@ -488,7 +500,8 @@ dialogue). The suggestion is the aggregate of those notes. It does not
 send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)`. Articles, biography, and general
 nonfiction preselect Andrew (a new book stores Drew). History preselects
-George. Romance, cozy, and contemporary novels preselect Heart. Any other
+George. Romance, cozy, and contemporary novels preselect Esther. While Ava
+is still listed, that suggestion highlights Ava. Any other
 novel may be a listed stock voice. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply

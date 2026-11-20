@@ -15,7 +15,10 @@ import {
   isFishCloneCatalogId,
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
-import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import {
+  AVA_CATALOG_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
+} from "@/lib/tts/standard-voice";
 import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import {
   HEART_CATALOG_VOICE_ID,
@@ -98,18 +101,34 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
  *   - Plus Walter (`sowell`, Kokoro pack) when its endpoint is up
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
- * Retired ids are not listed: Ava, Libby, Echomancer Andrew
+ * Until Esther's endpoint is set, the list is Drew, Ava, Libby, and George
+ * (Walter when his endpoint is set). After it is set, Ava and Libby leave
+ * and Esther (`heart`) sits between Drew and George. Echomancer Andrew
  * (`echomancer-andrew`, Paradee), Andrew (`standard`, Edge), Ryan, Michelle,
- * Clara, Randolph. `getCatalogVoice` still resolves those rows for a stored
- * job. A new request that names Echomancer Andrew uses Drew. One that names
- * Ava, Libby, Clara, or Michelle uses Heart.
+ * Clara, and Randolph stay unlisted. `getCatalogVoice` still resolves those
+ * rows for a stored job. A new request that names Echomancer Andrew uses
+ * Drew. One that names Ava, Libby, Clara, or Michelle uses Esther only
+ * once that endpoint is set; until then Ava and Libby stay on Edge, Clara
+ * uses Libby, and Michelle stays on Edge.
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
  * resolves legacy `fish-narrator` / `or:` / `research:` / `gemini-*` ids for
  * in-flight jobs.
  */
+function listedStockIds(): readonly string[] {
+  if (heartReady()) {
+    return [DREW_CATALOG_VOICE_ID, HEART_CATALOG_VOICE_ID, GEORGE_CATALOG_VOICE_ID];
+  }
+  return [
+    DREW_CATALOG_VOICE_ID,
+    AVA_CATALOG_VOICE_ID,
+    LIBBY_CATALOG_VOICE_ID,
+    GEORGE_CATALOG_VOICE_ID,
+  ];
+}
+
 function listSlimDefaultCatalogVoices(): CatalogVoice[] {
-  const slim = SLIM_STOCK_VOICE_IDS.map((id) =>
+  const slim = listedStockIds().map((id) =>
     staticVoices.find((v) => v.id === id)
   ).map((v) => (v ? withHeartName(v) : v)).filter((v): v is CatalogVoice => {
     if (!v) return false;
@@ -190,7 +209,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Drew, Heart, George). Walter is appended when configured. Clones are merged at the voices API. */
+/** Slim catalog. Esther off: Drew, Ava, Libby, George. Esther on: Drew, Esther, George. Walter is appended when configured. Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
@@ -275,8 +294,9 @@ function withHeartName(voice: CatalogVoice): CatalogVoice {
  *
  * Drew is the product default. A no-voice request names Drew even when the
  * endpoint is unset; the job route then fails closed (`DREW_NOT_CONFIGURED`)
- * instead of storing a row on a retired Edge voice. Heart is the female
- * Kokoro voice and is chosen only when a request or a suggestion names it.
+ * instead of storing a row on a retired Edge voice. Esther (catalog id
+ * `heart`) is chosen only when a request names her, or names Ava, Libby,
+ * Clara, or Michelle after her endpoint is set.
  */
 export function getDefaultCatalogVoice(): CatalogVoice {
   const chosen =

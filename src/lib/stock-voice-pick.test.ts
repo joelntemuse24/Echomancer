@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   clearStockVoicePick,
+  listedCatalogVoiceId,
   readStockVoicePick,
   rememberedCloneOnRestore,
   resolveStockSelection,
@@ -29,7 +30,7 @@ describe("stock voice pick", () => {
       storage
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "heart",
+      catalogVoiceId: "ava",
       delivery: "standard",
     });
     // Andrew is retired: a saved Andrew/Randolph/standard pick lands on Drew.
@@ -75,28 +76,67 @@ describe("stock voice pick", () => {
     });
   });
 
-  it("moves a saved Clara pick onto Heart", () => {
+  it("keeps a saved Clara pick on Libby until Esther is listed", () => {
     const storage = memoryStore();
     storage.setItem(
       "ec_stock_voice_pick",
       JSON.stringify({ catalogVoiceId: "clara", delivery: "standard" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "heart",
+      catalogVoiceId: "libby",
       delivery: "standard",
     });
   });
 
-  it("moves a saved Michelle pick onto Heart", () => {
+  it("keeps a saved Michelle pick until Esther is listed", () => {
     const storage = memoryStore();
     storage.setItem(
       "ec_stock_voice_pick",
       JSON.stringify({ catalogVoiceId: "michelle", delivery: "expressive" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "heart",
+      catalogVoiceId: "michelle",
       delivery: "standard",
     });
+  });
+
+  it("highlights Esther only when her card is listed, and Ava while Ava is", () => {
+    expect(
+      resolveStockSelection({
+        availableIds: ["drew", "ava", "libby", "george"],
+        explicitId: "ava",
+        suggestedId: "heart",
+      })
+    ).toBe("ava");
+    expect(
+      resolveStockSelection({
+        availableIds: ["drew", "heart", "george"],
+        explicitId: "ava",
+        suggestedId: "drew",
+      })
+    ).toBe("heart");
+    expect(
+      resolveStockSelection({
+        availableIds: ["drew", "heart", "george"],
+        explicitId: "libby",
+      })
+    ).toBe("heart");
+    expect(
+      resolveStockSelection({
+        availableIds: ["drew", "ava", "libby", "george"],
+        explicitId: null,
+        suggestedId: "heart",
+      })
+    ).toBe("ava");
+    expect(
+      listedCatalogVoiceId("heart", ["drew", "ava", "libby", "george"])
+    ).toBe("ava");
+    expect(
+      resolveStockSelection({
+        availableIds: ["drew", "ava", "libby", "george"],
+        explicitId: "clara",
+      })
+    ).toBe("libby");
   });
 
   it("ignores empty and broken storage", () => {

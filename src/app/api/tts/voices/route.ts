@@ -158,9 +158,10 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Drew, Heart, and George, plus Walter when its endpoint is set, and
-    // session clones. Ava, Libby, Andrew, Ryan, Clara, Randolph, and Michelle
-    // are not listed.
+    // Drew, Esther, and George once Esther's endpoint is set; Drew, Ava,
+    // Libby, and George until then. Walter joins when his endpoint is set.
+    // Session clones are included. Andrew, Ryan, Clara, Randolph, and
+    // Michelle are not listed.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;

@@ -2,7 +2,7 @@
  * Stock narrators shown in the slim catalog.
  *
  *   Drew      → fine-tuned Kokoro-82M, own kmodel (catalog id `drew`, default)
- *   Heart     → Kokoro `af_heart` when that endpoint is set
+ *   Esther    → Kokoro `af_heart` (catalog id `heart`) when that endpoint is set
  *   George    → Kokoro `bm_george` when that endpoint is set
  *
  * **Andrew is retired.** Catalog id `standard` was Edge
@@ -22,14 +22,18 @@
  * Ryan is unlisted for the same reason and a new request that names him uses
  * George.
  *
- * **Ava and Libby are retired the same way.** Catalog ids `ava` (Edge
- * `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`) stay unlisted
- * legacy ids: a book already stored with either still resolves, plays, and
- * is never rewritten or re-spoken. A new request or saved pick that names
- * Ava, Libby, Clara, or Michelle lands on Heart. Clara stays on Fish for a
- * book already stored as Clara. Michelle stays on Edge for a book already
- * stored as Michelle. One that names Randolph or a Google Cloud voice uses
- * Drew. Do not add rejected Edge females (Jenny, Sonia, Aria) or Ava Dragon HD.
+ * **Ava and Libby stay listed until Esther is configured.** Catalog ids
+ * `ava` (Edge `en-US-AvaNeural`) and `libby` (Edge `en-GB-LibbyNeural`)
+ * remain on the picker, and a new request that names either stays on Edge,
+ * until `HEART_ENABLED`, `HEART_URL`, and `HEART_TOKEN` are set. After that
+ * they are unlisted and a new request or saved pick lands on Esther
+ * (catalog id `heart`). A book already stored with either still resolves,
+ * plays, and is never rewritten or re-spoken. Until Esther is configured,
+ * a new request that names Clara uses Libby and one that names Michelle
+ * stays on Edge. After that, both land on Esther. A stored Clara book stays
+ * on Fish. A stored Michelle book stays on Edge. One that names Randolph or
+ * a Google Cloud voice uses Drew. Do not add rejected Edge females
+ * (Jenny, Sonia, Aria) or Ava Dragon HD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
  * User clones stay on the Fish `clone:<uuid>` path.
@@ -57,19 +61,21 @@ export const DREW_CATALOG_VOICE_ID = DREW_VOICE_ID;
  */
 export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
 /**
- * Retired Edge Ava. Unlisted; a stored Ava book still resolves to it and is
- * never rewritten. A new request uses Heart.
+ * Edge Ava. Listed until Esther is configured. A stored Ava book still
+ * resolves to it and is never rewritten. A new request uses Esther only
+ * once that endpoint is set.
  */
 export const AVA_CATALOG_VOICE_ID = "ava";
 /**
- * Retired Edge Libby. Unlisted; a stored Libby book still resolves to it and
- * is never rewritten. A new request uses Heart.
+ * Edge Libby. Listed until Esther is configured. A stored Libby book still
+ * resolves to it and is never rewritten. A new request uses Esther only
+ * once that endpoint is set.
  */
 export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";
 /**
  * Not listed. A stored Michelle book still resolves on Edge. A new request
- * or saved pick that names Michelle uses Heart.
+ * stays on Edge until Esther is configured, then uses Esther.
  */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 /** Old catalog id. New requests and saved picks use Andrew. */
@@ -77,7 +83,8 @@ export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
 /**
- * Edge females auditioned and rejected. Heart replaced Ava and Libby.
+ * Edge females auditioned and rejected. Esther replaces Ava and Libby
+ * once her endpoint is set.
  * Dragon HD Ava is a different voice and is not on the free Edge route.
  */
 export const REJECTED_EDGE_FEMALE_LABELS = [
@@ -90,9 +97,15 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Drew, Heart, George. Walter is appended when listed. */
+/**
+ * Picker order for every id the voices API might send. The server omits
+ * the ones that are not live. Esther off: Drew, Ava, Libby, George.
+ * Esther on: Drew, Esther (`heart`), George. Walter is appended when listed.
+ */
 export const SLIM_STOCK_VOICE_IDS = [
   DREW_CATALOG_VOICE_ID,
+  AVA_CATALOG_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
   KOKORO_HEART_VOICE_ID,
   "george",
 ] as const;
@@ -353,14 +366,16 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
   "echomancer-andrew": DREW_CATALOG_VOICE_ID,
   "echomancer andrew": DREW_CATALOG_VOICE_ID,
   /**
-   * Ava, Libby, Clara, and Michelle are retired for new requests. A stored
-   * book keeps its own id. This map runs before insert and on a saved pick.
+   * Ava and Libby stay themselves until Esther is listed. Clara stays on
+   * Libby in that same gap, which is where a new Clara request already
+   * landed. Michelle stays Michelle. `{ heart: true }` moves all four.
    */
-  ava: KOKORO_HEART_VOICE_ID,
-  libby: KOKORO_HEART_VOICE_ID,
-  clara: KOKORO_HEART_VOICE_ID,
-  michelle: KOKORO_HEART_VOICE_ID,
+  ava: AVA_CATALOG_VOICE_ID,
+  libby: LIBBY_CATALOG_VOICE_ID,
+  clara: LIBBY_CATALOG_VOICE_ID,
+  michelle: MICHELLE_CATALOG_VOICE_ID,
   heart: KOKORO_HEART_VOICE_ID,
+  af_heart: KOKORO_HEART_VOICE_ID,
   ryan: "george",
   george: "george",
   sowell: "sowell",
@@ -373,16 +388,38 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
  * Saved picks and new job requests that still name an Expressive variant
  * land on the matching plain stock id. A bare "expressive" is Drew.
  * A request that still says Andrew, Echomancer Andrew, or Randolph uses
- * Drew. One that says Ava, Libby, Clara, or Michelle uses Heart, and one
- * that says Ryan uses George. A stored book is not coerced: this runs
- * before insert and on a saved pick, never on a row.
+ * Drew. One that says Ryan uses George. Ava, Libby, Clara, and Michelle
+ * stay on their Edge (Clara on Libby) until `heart` is set, and then use
+ * Esther. A stored book is not coerced: this runs before insert and on a
+ * saved pick, never on a row.
  */
-export function coercePlainCatalogVoiceId(raw: string): string {
+export type CoerceCatalogOptions = {
+  /** Move Ava, Libby, Clara, and Michelle onto Esther. Off until she is listed. */
+  heart?: boolean;
+};
+
+const ESTHER_SUCCESSOR_KEYS = new Set([
+  "ava",
+  "libby",
+  "clara",
+  "michelle",
+  "heart",
+  "af_heart",
+]);
+
+export function coercePlainCatalogVoiceId(
+  raw: string,
+  options?: CoerceCatalogOptions
+): string {
   const stripped = raw.trim().replace(EXPRESSIVE_TAIL, "").trim();
   if (!stripped || /^expressive$/i.test(stripped)) {
     return DREW_CATALOG_VOICE_ID;
   }
-  return PLAIN_ID_ALIASES[stripped.toLowerCase()] ?? stripped;
+  const key = stripped.toLowerCase();
+  if (options?.heart && ESTHER_SUCCESSOR_KEYS.has(key)) {
+    return KOKORO_HEART_VOICE_ID;
+  }
+  return PLAIN_ID_ALIASES[key] ?? stripped;
 }
 
 /**

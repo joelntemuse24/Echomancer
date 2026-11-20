@@ -87,18 +87,18 @@ describe("Standard slim catalog", () => {
     delete process.env.DREW_TOKEN;
   });
 
-  it("lists Drew and keeps Ava, Libby, Andrew, Echomancer Andrew, and Ryan off the list", async () => {
+  it("lists Drew, Ava, and Libby until Esther is configured", async () => {
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
-    expect(voices.map((v) => v.displayName)).toEqual(["Drew"]);
+    expect(voices.map((v) => v.id)).toEqual(["drew", "ava", "libby"]);
+    expect(voices.map((v) => v.displayName)).toEqual(["Drew", "Ava", "Libby"]);
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
     expect(voices.map((v) => v.id)).not.toContain("standard");
     expect(voices.map((v) => v.id)).not.toContain("echomancer-andrew");
     expect(voices[0]!.provider).toBe("drew");
     expect(voices[0]!.providerVoiceId).toBe("drew");
-    expect(voices.map((v) => v.id)).not.toContain("ava");
-    expect(voices.map((v) => v.id)).not.toContain("libby");
+    expect(voices.map((v) => v.id)).toContain("ava");
+    expect(voices.map((v) => v.id)).toContain("libby");
     expect(voices.map((v) => v.id)).not.toContain("heart");
     expect(voices.map((v) => v.id)).not.toContain("ryan");
     expect(voices.map((v) => v.id)).not.toContain("george");
@@ -235,7 +235,7 @@ describe("Standard slim catalog", () => {
     mocks.isResearchPreviewConfigured.mockReturnValue(true);
     mocks.listResearchPreviewVoices.mockReturnValue([researchStoryteller]);
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
+    expect(voices.map((v) => v.id)).toEqual(["drew", "ava", "libby"]);
     expect(voices.map((v) => v.id)).not.toContain("echomancer-andrew");
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });

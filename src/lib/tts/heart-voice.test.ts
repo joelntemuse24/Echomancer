@@ -59,8 +59,7 @@ describe("heart voice", () => {
     expect(await getCatalogVoice("heart")).toBeUndefined();
     const listed = (await listCatalogVoices()).map((voice) => voice.id);
     expect(listed).not.toContain("heart");
-    expect(listed).not.toContain("ava");
-    expect(listed).not.toContain("libby");
+    expect(listed).toEqual(["ava", "libby"]);
   });
 
   it("lists Heart between Drew and George, under the one display-name constant", async () => {
@@ -69,7 +68,8 @@ describe("heart voice", () => {
     expect(voice?.provider).toBe("heart");
     expect(voice?.providerVoiceId).toBe("af_heart");
     expect(voice?.locale).toBe("en-US");
-    expect(voice?.displayName).toBe(HEART_DISPLAY_NAME);
+    expect(HEART_DISPLAY_NAME).toBe("Esther");
+    expect(voice?.displayName).toBe("Esther");
     const listed = (await listCatalogVoices()).map((item) => item.id);
     expect(listed).toEqual(["drew", "heart", "george"]);
     expect(listed).not.toContain("ava");
@@ -161,10 +161,10 @@ describe("heart voice", () => {
     }
   });
 
-  it("serves a mastered Heart sample and Heart's sample for a retired Ava id", () => {
+  it("serves Esther's sample for her card and Ava's own sample while Ava is listed", () => {
     expect(stockPreviewUrl("heart")).toBe("/voice-previews/heart.mp3");
-    expect(stockPreviewUrl("ava")).toBe("/voice-previews/heart.mp3");
-    expect(stockPreviewUrl("libby")).toBe("/voice-previews/heart.mp3");
+    expect(stockPreviewUrl("ava")).toBe("/voice-previews/ava.mp3");
+    expect(stockPreviewUrl("libby")).toBe("/voice-previews/libby.mp3");
     const file = path.join(process.cwd(), "public/voice-previews/heart.mp3");
     expect(existsSync(file)).toBe(true);
     const probe = spawnSync(

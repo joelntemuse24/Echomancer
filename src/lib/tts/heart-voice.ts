@@ -9,8 +9,8 @@
  */
 
 export const HEART_CATALOG_VOICE_ID = "heart";
-/** The one customer-facing name. Rename this constant to rename the voice. */
-export const HEART_DISPLAY_NAME = "Heart";
+/** The one customer-facing name. Catalog id, pack, and env names stay `heart`. */
+export const HEART_DISPLAY_NAME = "Esther";
 export const HEART_PROVIDER_VOICE_ID = "af_heart";
 /** Pinned Kokoro-82M revision. The voice file hash is checked in the image. */
 export const HEART_KOKORO_REVISION = "f3ff3571791e39611d31c381e3a41a3af07b4987";
@@ -41,12 +41,12 @@ export class HeartNotConfiguredError extends Error {
 /** The Modal endpoint, or a throw. Loopback is refused on the take-home VM. */
 export function heartEndpoint(env: NodeJS.ProcessEnv = process.env): string {
   if (!heartEnabled(env)) {
-    throw new HeartNotConfiguredError("Heart is not enabled.");
+    throw new HeartNotConfiguredError("Esther is not enabled.");
   }
   const raw = env.HEART_URL?.trim() || "";
-  if (!raw) throw new HeartNotConfiguredError("Heart is not configured (HEART_URL).");
+  if (!raw) throw new HeartNotConfiguredError("Esther is not configured (HEART_URL).");
   if (!env.HEART_TOKEN?.trim()) {
-    throw new HeartNotConfiguredError("Heart is not configured (HEART_TOKEN).");
+    throw new HeartNotConfiguredError("Esther is not configured (HEART_TOKEN).");
   }
   let url: URL;
   try {

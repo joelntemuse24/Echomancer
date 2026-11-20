@@ -147,9 +147,11 @@ the provider's message.
 
 Echomancer turns an uploaded document into listen-able audio. The slim catalog
 (`SLIM_STOCK_VOICE_IDS` in `src/lib/tts/standard-voice.ts`) is **Drew**
-(catalog id `drew`, fine-tuned Kokoro-82M, the default), **Heart** (Kokoro
-`af_heart`, customer name `HEART_DISPLAY_NAME`), and
+(catalog id `drew`, fine-tuned Kokoro-82M, the default), **Esther** (Kokoro
+`af_heart`, catalog id `heart`, customer name `HEART_DISPLAY_NAME`), and
 **George** (Kokoro `bm_george`, listed only when that endpoint is set).
+Until Esther's endpoint is set, Ava and Libby stay listed and a new request
+that names either stays on Edge.
 **Walter** (catalog id `sowell`) is listed after those when its endpoint is
 set. **Echomancer Andrew** (`echomancer-andrew`, self-hosted Paradee,
 `src/lib/tts/providers/paradee.ts`) is unlisted. A book already stored with
@@ -158,9 +160,11 @@ names it uses Drew. The Paradee adapter stays for those stored rows. Edge
 Andrew (`standard`) is unlisted the same way, and a new request that names
 him uses Drew. Ryan is unlisted and a new request that names him uses George.
 Clara and Michelle stay resolvable for books already made with them and are
-not listed. A new request that names Clara or Michelle uses Heart. Ava and
-Libby are unlisted the same way: a stored book stays on Edge, and a new
-request that names either uses Heart. Randolph is not
+not listed. Until Esther is configured, a new request that names Clara uses
+Libby and one that names Michelle stays on Edge. After that, a new request
+that names Clara or Michelle uses Esther. Ava and Libby stay listed until
+that same endpoint is set: a stored book stays on Edge, and a new request
+that names either uses Esther only once she is configured. Randolph is not
 synthesized. A stored Randolph book still plays and downloads; a new request
 that names Randolph or Google uses Drew. Optional **Fish voice cloning** trains on the direct Fish
 API (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container
@@ -192,7 +196,7 @@ Two customer paths:
 | Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Always-on VPS worker |
 
 `generation_mode` is always `"stock"` in v2. The Voice tab opens on the
-slim pile (Drew, Heart, George, and Walter when that endpoint is set). Clone is the other path.
+slim pile (Drew, Esther, George, and Walter when that endpoint is set; Ava and Libby stay until Esther is configured). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
@@ -1207,7 +1211,7 @@ for that one recovery.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Drew (`drew`), Heart (`heart`), George, then Walter (`sowell`) when its endpoint is set; clones merged in the voices API. Ava, Libby, Echomancer Andrew (`echomancer-andrew`), Andrew (`standard`), and Ryan are unlisted but still resolve for stored books. A new request that names Ava or Libby uses Heart. A new request that names Echomancer Andrew uses Drew |
+| `listCatalogVoices(filters)` | Slim catalog. Until Esther's endpoint is set: Drew (`drew`), Ava, Libby, George, then Walter (`sowell`) when its endpoint is set. After that: Drew, Esther (`heart`), George, then Walter. Clones are merged in the voices API. Echomancer Andrew (`echomancer-andrew`), Andrew (`standard`), and Ryan stay unlisted and still resolve for stored books. A new request that names Ava or Libby uses Esther only once that endpoint is set, and stays on Edge until then. A new request that names Echomancer Andrew uses Drew |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Drew (`drew`). A no-voice request is 503 `DREW_NOT_CONFIGURED` when that endpoint is unset |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -1348,7 +1352,7 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 
 ### `src/lib/tts/providers/edge.ts` + `src/lib/tts/edge-tts.ts`
 
-**Stored Andrew / Ava / Libby / Michelle** path. New requests that name Ava or Libby use Heart and do not reach this adapter. Talks to Microsoft Edge’s undocumented Read Aloud
+**Stored Andrew / Ava / Libby / Michelle** path. Once Esther is configured, new requests that name Ava or Libby use Esther and do not reach this adapter. Until then they stay on Edge. Talks to Microsoft Edge’s undocumented Read Aloud
 websocket (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`)
 with a `Sec-MS-GEC` token — the same protocol as current Python `edge-tts`.
 No Azure Speech subscription. Output is MP3. Voice id is `en-US-AndrewNeural`
@@ -1396,7 +1400,7 @@ Andrew (`standard`) or Echomancer Andrew (`echomancer-andrew`) is served
 Drew's sample and does not call Paradee or Edge. `standard.mp3`,
 `ryan.mp3`, and `echomancer-andrew.mp3` stay on disk and are not listed.
 A missing file falls through to browser speech, then live synthesis.
-Ava's and Libby's old ids play Heart's file. Randolph's old id plays Drew's. Fish clones
+While Ava and Libby are listed, their cards play `ava.mp3` and `libby.mp3`. Once Esther is configured, a preview request that names either plays `heart.mp3`. Randolph's old id plays Drew's. Fish clones
 still use `GET /api/tts/live`.
 
 ### `src/lib/tts/providers/openrouter.ts`
@@ -2511,7 +2515,7 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voices tab opens on Drew, Heart, and George, plus Walter when that endpoint is set. The heading is
+- The Voices tab opens on Drew, Ava, and Libby until Esther is configured, and on Drew, Esther, and George after that, plus Walter when that endpoint is set. The heading is
   **Voice**. Each row’s preview plays with one tap, with or without an upload.
   A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`,
   including a `clone:` id. After upload or paste that id stays selected when
@@ -2528,8 +2532,8 @@ corner of the landing and dashboard footers, at low opacity.
   replaced by the stock suggestion (`selectionOnStandardPath`). YouTube clipping for an anonymous
   session says to sign in (`GET /api/clips` `reason: "sign-in"`). The upload
   control is the one on this page.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind. Romance, cozy, and contemporary use Heart. Any other novel may be Drew, Heart, or George. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Drew, Heart, George, plus Walter when listed). Drew is catalog id `drew`. Heart is Kokoro `af_heart` (customer name `HEART_DISPLAY_NAME`). George is Kokoro `bm_george`. Walter's id is still `sowell`. Ava, Libby, Echomancer Andrew (`echomancer-andrew`, Paradee), Andrew (`standard`), Ryan, Clara, Randolph, and Michelle are not listed. A stored Ava or Libby book still resolves on Edge; a new request or saved pick that names either uses Heart. A stored Echomancer Andrew book still resolves; a new request or saved pick that names that id uses Drew. Each listed name is one tappable preview. Narration delivery prefs are not shown here.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind. Romance, cozy, and contemporary use Esther. While Ava is still listed, that suggestion highlights Ava. Any other novel may be Drew, Esther, or George. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- Standard: slim stock only. Until Esther is configured the list is Drew, Ava, and Libby, plus George and Walter when those endpoints are set. After that it is Drew, Esther, and George, plus Walter. Drew is catalog id `drew`. Esther is Kokoro `af_heart` (catalog id `heart`, customer name `HEART_DISPLAY_NAME`). George is Kokoro `bm_george`. Walter's id is still `sowell`. Echomancer Andrew (`echomancer-andrew`, Paradee), Andrew (`standard`), Ryan, Clara, Randolph, and Michelle are not listed. A stored Ava or Libby book still resolves on Edge; a new request or saved pick that names either uses Esther only once that endpoint is set. A stored Echomancer Andrew book still resolves; a new request or saved pick that names that id uses Drew. Each listed name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks
   **Make audiobook**; warn does not).

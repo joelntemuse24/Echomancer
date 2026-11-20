@@ -45,7 +45,7 @@ describe("standard voice identity", () => {
     expect(isStandardCatalogId(FISH_NARRATOR_VOICE_ID)).toBe(false);
     expect(AVA_NEURAL_VOICE_ID).toBe("en-US-AvaNeural");
     expect(LIBBY_NEURAL_VOICE_ID).toBe("en-GB-LibbyNeural");
-    expect(SLIM_STOCK_VOICE_IDS).toEqual(["drew", "heart", "george"]);
+    expect(SLIM_STOCK_VOICE_IDS).toEqual(["drew", "ava", "libby", "heart", "george"]);
     expect(SLIM_STOCK_VOICE_IDS).not.toContain("echomancer-andrew");
   });
 
@@ -56,7 +56,7 @@ describe("standard voice identity", () => {
     expect(stockDisplayName("echomancer-andrew")).toBe("Echomancer Andrew");
     expect(stockDisplayName("ava")).toBe("Ava");
     expect(stockDisplayName("libby")).toBe("Libby");
-    expect(stockDisplayName("heart")).toBe("Heart");
+    expect(stockDisplayName("heart")).toBe("Esther");
     expect(stockDisplayName("michelle")).toBe("Michelle");
     expect(stockDisplayName("clara")).toBe("Clara");
     expect(stockDisplayName("randolph")).toBe("Randolph");
@@ -218,11 +218,15 @@ describe("standard voice identity", () => {
     expect(coercePlainCatalogVoiceId("expressive")).toBe("drew");
     expect(coercePlainCatalogVoiceId("walter")).toBe("sowell");
     expect(coercePlainCatalogVoiceId("sowell")).toBe("sowell");
-    expect(coercePlainCatalogVoiceId("clara")).toBe("heart");
-    expect(coercePlainCatalogVoiceId("ava")).toBe("heart");
-    expect(coercePlainCatalogVoiceId("libby")).toBe("heart");
-    expect(coercePlainCatalogVoiceId("michelle")).toBe("heart");
+    expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
+    expect(coercePlainCatalogVoiceId("ava")).toBe("ava");
+    expect(coercePlainCatalogVoiceId("libby")).toBe("libby");
+    expect(coercePlainCatalogVoiceId("michelle")).toBe("michelle");
     expect(coercePlainCatalogVoiceId("heart")).toBe("heart");
+    expect(coercePlainCatalogVoiceId("ava", { heart: true })).toBe("heart");
+    expect(coercePlainCatalogVoiceId("libby", { heart: true })).toBe("heart");
+    expect(coercePlainCatalogVoiceId("clara", { heart: true })).toBe("heart");
+    expect(coercePlainCatalogVoiceId("michelle", { heart: true })).toBe("heart");
     expect(coercePlainCatalogVoiceId("clone:abc")).toBe("clone:abc");
     expect(stripExpressiveLabel("Andrew (Expressive)")).toBe("Andrew");
     // The unlisted Andrew id still resolves its Edge row for a stored book.
@@ -246,9 +250,19 @@ describe("standard voice identity", () => {
       provider: "edge",
       providerVoiceId: "en-US-AvaNeural",
     });
-    expect(plainStockLock(coercePlainCatalogVoiceId("clara"))).toBeNull();
-    expect(plainStockLock(coercePlainCatalogVoiceId("ava"))).toBeNull();
-    expect(plainStockLock(coercePlainCatalogVoiceId("michelle"))).toBeNull();
+    expect(plainStockLock(coercePlainCatalogVoiceId("clara"))).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-GB-LibbyNeural",
+    });
+    expect(plainStockLock(coercePlainCatalogVoiceId("ava"))).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-US-AvaNeural",
+    });
+    expect(plainStockLock(coercePlainCatalogVoiceId("michelle"))).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-US-MichelleNeural",
+    });
+    expect(plainStockLock(coercePlainCatalogVoiceId("ava", { heart: true }))).toBeNull();
     expect(isLibbyVoice({ id: LIBBY_CATALOG_VOICE_ID })).toBe(true);
   });
 
