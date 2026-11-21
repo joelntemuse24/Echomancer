@@ -25,6 +25,7 @@ import {
   type SectionSpan,
 } from "@/lib/player/playback-position";
 import { resumeAudioGraphs } from "@/lib/player/audio-graph";
+import { elementIsPlaying } from "@/lib/player/element-playback";
 import {
   installMediaSessionActions,
   mediaSessionMetadata,
@@ -79,7 +80,6 @@ export type PlaybackReport = {
    * land inside the part the element happens to hold.
    */
   parts: readonly SectionSpan[];
-  playing: boolean;
   seekable: boolean;
   play: (() => void) | null;
   pause: (() => void) | null;
@@ -93,6 +93,15 @@ export type PlaybackReport = {
 type PlaybackShell = {
   /** The one element. Never recreated, never unmounted, never cleared on pause. */
   audioRef: RefObject<HTMLAudioElement | null>;
+  /**
+   * Whether that element is playing right now, from its own events.
+   *
+   * This is the page's only source for the transport icon. A page that kept
+   * its own copy started from "paused" on every mount, and a book that never
+   * stopped fires no `play` event — so re-entering the player showed Play over
+   * playing audio and the tap was a no-op.
+   */
+  playing: boolean;
   /** Point the element at a source for this book. Same URL is a no-op. */
   setSource: (src: string, jobId: string) => void;
   /** Release the source, but only when it belongs to `jobId`. */
@@ -553,7 +562,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const position = report?.active ? report.position : element + offset;
       const duration =
         report?.active && report.duration > 0 ? report.duration : elementDuration + offset;
-      const playing = !audio.paused && !audio.ended;
+      // The same rule the page uses, so the strip and the platform never
+      // disagree with the transport about whether audio is running.
+      const playing = elementIsPlaying(audio);
       if (position > 0.5) lastPositionRef.current = position;
       publishSession(position, duration, playing);
       saveResume();
@@ -617,6 +628,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("durationchange", publish);
     audio.addEventListener("loadedmetadata", publish);
     audio.addEventListener("ended", publish);
+    // A source clear can land here without a pause the listener already saw.
+    audio.addEventListener("emptied", publish);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", saveNow);
     return () => {
@@ -627,6 +640,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("durationchange", publish);
       audio.removeEventListener("loadedmetadata", publish);
       audio.removeEventListener("ended", publish);
+      audio.removeEventListener("emptied", publish);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", saveNow);
     };
@@ -648,13 +662,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
     const report = reportRef.current;
     if (report?.active) {
-      publishSession(report.position, report.duration, report.playing);
+      // The element decides whether this is playing; the page only reports
+      // where the book clock is.
+      publishSession(report.position, report.duration, elementIsPlaying(audioRef.current));
       return;
     }
     publishSession(
       element + bookOffsetRef.current,
       elementDuration + bookOffsetRef.current,
-      !audio.paused && !audio.ended
+      elementIsPlaying(audio)
     );
     // `publishSession` reads everything else through refs on purpose.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -743,7 +759,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         media.metadata = new MediaMetadata(metadata);
       }
 
-      publishSession(report.position, report.duration, report.playing);
+      // The element decides whether this is playing; the page only reports
+      // where the book clock is.
+      publishSession(report.position, report.duration, elementIsPlaying(audioRef.current));
 
       setIdentity((prev) => {
         const voice = metadata.artist ?? null;
@@ -751,7 +769,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           prev.jobId === report.jobId &&
           prev.title === metadata.title &&
           prev.voice === voice &&
-          prev.playing === report.playing &&
           prev.canSeek === report.seekable
         ) {
           return prev;
@@ -760,13 +777,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           jobId: report.jobId,
           title: metadata.title,
           voice,
-          playing: report.playing,
+          playing: prev.playing,
           canSeek: report.seekable,
-          started: prev.started || report.playing,
+          started: prev.started,
         };
       });
     },
-    [mediaSession, publishSession]
+    [audioRef, mediaSession, publishSession]
   );
 
   const detachSession = useCallback(() => {
@@ -782,8 +799,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }, [release]);
 
   const value = useMemo<PlaybackShell>(
-    () => ({ audioRef, setSource, releaseForJob, release, reportSession, detachSession }),
-    [audioRef, release, releaseForJob, reportSession, detachSession, setSource]
+    () => ({
+      audioRef,
+      playing: identity.playing,
+      setSource,
+      releaseForJob,
+      release,
+      reportSession,
+      detachSession,
+    }),
+    [audioRef, identity.playing, release, releaseForJob, reportSession, detachSession, setSource]
   );
 
   const routeJobId = playerIdFromPathname(pathname);

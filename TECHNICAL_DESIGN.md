@@ -2980,6 +2980,29 @@ itself, so a 4 Hz clock never re-renders the page under it. Its transport is
 a labelled button pair, its progress bar is a native range input with
 `aria-valuetext`, and its title links back to the player.
 
+**Play/pause is the element's, not the page's.** The page renders
+`usePlayback().playing`, which the shell derives from the one element's own
+`play` / `playing` / `pause` / `ended` / `emptied` / `loadedmetadata` events
+(`elementIsPlaying`). A page-local `useState(false)` was wrong in both
+directions: navigating away unmounts the page while the element keeps
+playing, and a book that never stopped fires no `play` event, so re-entry
+showed Play over playing audio and its tap called `play()` on an
+already-playing element — which resolves without doing anything. The tap
+handler reads the element again at tap time for the same reason, and so do
+seek and skip: a handler closed over an older render must not start a book
+the listener has paused. `ended`, and a decode `error`, are not playing
+(`play()` on either does nothing useful). The page report carries the book
+clock and the transport (`reportSession`) but not `playing`; only the element
+can say that.
+
+Re-entry adopts the live element rather than the stored row: the same file
+(ignoring a cache-busting `?r=` and an absolute origin), its part from
+`partIndexForSrc`, its playhead and a finite duration. A playhead that is
+already playing, past the start, or on a later part is not moved to a stored
+or server row, and the page does not re-point `src` or reload. Paused at the
+start of that same file still takes the stored resume, on the URL the element
+already holds.
+
 ### Shell
 
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
