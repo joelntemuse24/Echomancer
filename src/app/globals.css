@@ -228,9 +228,23 @@ html[data-auth="out"] .auth-pane-out,
 html[data-auth="in"] .auth-pane-in {
   display: contents;
 }
-.home-intro {
-  display: none;
+
+/* The mini player's seek strip: a thin track with a small thumb. */
+.mini-seek::-webkit-slider-thumb {
+  appearance: none;
+  height: 0.75rem;
+  width: 0.75rem;
+  border-radius: 9999px;
+  background: currentColor;
 }
-html[data-auth="out"] .home-intro {
-  display: block;
+.mini-seek::-moz-range-thumb {
+  height: 0.75rem;
+  width: 0.75rem;
+  border: none;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.mini-seek:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 4px;
 }

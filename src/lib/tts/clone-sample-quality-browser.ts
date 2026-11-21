@@ -4,6 +4,7 @@
  * The prepared WAV is what we upload. The server remeasures that WAV.
  */
 
+import { resumeAudioGraphs, trackAudioContext } from "@/lib/player/audio-graph";
 import { evaluateCloneSampleQuality, type CloneSampleQualityReport } from "@/lib/tts/clone-sample-quality";
 import { prepareClonePcm } from "@/lib/tts/clone-sample-prepare";
 import { floatToWavBytes } from "@/lib/youtube/wav-bytes";
@@ -70,6 +71,10 @@ export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneF
   const Ctor = audioContextCtor();
   if (!Ctor) return { file, report: null, prepareMs: 0, decoded: false };
   const ctx = openContext(Ctor);
+  // A graph opened here is tracked so a later listen can resume it instead of
+  // being left with a suspended context that some browsers mute.
+  const untrack = trackAudioContext(ctx);
+  void resumeAudioGraphs();
   try {
     const raw = await file.arrayBuffer();
     const audio = await ctx.decodeAudioData(raw.slice(0));
@@ -98,6 +103,7 @@ export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneF
       decoded: false,
     };
   } finally {
+    untrack();
     await ctx.close().catch(() => {});
   }
 }

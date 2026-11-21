@@ -2435,9 +2435,9 @@ Moving between Home, Library, Voices, and a player does not wait on a
 server render of the viewer. Those shells are client pages. The first paint
 reads a non-HttpOnly `ec_signed_in` hint (`1` or `0`, no name or email)
 that the proxy sets from the already-verified session. An inline script
-sets `html[data-auth]` before paint, so Sign in and `PRIVACY.intro` show
-for a signed-out visitor without `GET /api/viewer`, and a signed-in visitor
-does not flash either. The header slot keeps its size. Unknown stays blank
+sets `html[data-auth]` before paint, so Sign in shows for a signed-out
+visitor without `GET /api/viewer`, and a signed-in visitor does not flash
+either. The header slot keeps its size. Unknown stays blank
 until the viewer answers. `GET /api/viewer` (`src/app/api/viewer/route.ts`)
 then fills the name: a signed-out cookie never touches Turso, and a
 signed-in one is a user-row read plus `isMarkupOperator`. A missing user
@@ -2488,12 +2488,15 @@ type on those surfaces is unchanged.
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
-Text / URL, primary CTA. No hero essay, format tip, or feature grid.
-Signed-out home shows `PRIVACY.intro`. Voices and Library are not in the
+Text / URL, primary CTA. No hero essay, format tip, feature grid, or
+privacy blurb: the wordmark and the composer are the page, and `/privacy`
+is the one place the statement lives. Voices and Library are not in the
 bar. Sign in opens a menu that lists them, and a signed-in name opens the
 same destinations. Home does not
 show a cookie or “books will move” sentence, or the plus. That plus
-stays in the dashboard chrome (Library, Voices, player). `/sign-in` is the
+stays in the dashboard chrome (Library, Voices, player) as an icon whose
+name is `NAV.newBook`; it is absent wherever the page already opens a book
+upload, which today is `/` only (`showHeaderNewBook`). `/sign-in` is the
 title and the Google / email controls, with no password or cookie explanation.
 Those cookie facts stay on `/privacy` only. Library, Voices, and the emailed
 confirm page do not repeat them. An empty signed-out library is just empty.
@@ -2584,9 +2587,17 @@ corner of the landing and dashboard footers, at low opacity.
 
 Whole-book audio is `job.audio_url` → `/api/storage/audiobooks/<jobId>/full.mp3`,
 which 302s to a presigned R2 URL (§11), so playback bytes come from R2. The
-`<audio>` element sets no `crossOrigin` and is not routed through Web Audio
-(a cross-origin source would make Web Audio output silence; R2 CORS is not
-required for element playback). The job poll is
+`<audio>` element lives in the **root-layout playback shell**
+(`src/components/playback-provider.tsx`), not on this page: a route change
+must not unmount it. That shell also keeps the stored playhead moving while
+no player page is mounted (`src/lib/player/shell-resume.ts`, every 5s and on
+`pagehide`), because otherwise the position froze at the moment of
+navigation and closing a tab from the mini player reopened the book there.
+It sets no `crossOrigin` and is not routed through Web
+Audio (a cross-origin source would make Web Audio output silence; R2 CORS is
+not required for element playback). Any AudioContext the app does open is
+tracked by `src/lib/player/audio-graph.ts` and resumed before a shell Play,
+so a suspended graph cannot mute a resumed listen. The job poll is
 a `setTimeout` loop: streams every 10s; a generating book at 2s, ×1.5 while
 nothing changes up to 20s, back to 2s on a change. A hidden tab does not poll
 unless audio is playing or the player is waiting on the next section, and it
@@ -2619,8 +2630,12 @@ A queued take-home whose upload is not ready yet shows **Reading your book**
 (`Preparing audio…` / `Generating`), play with thin pause bars, ±10s skip
 icons, a thin-line seek
 scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
-**1×**: tap the compact label to cycle, or a small chevron to pick any
-rate from **0.8×** to **1.5×** in **0.05** steps. One `max-w-2xl` column: transport spacing and play size
+the **remembered rate** (1× until the listener picks one): tap the compact
+label to cycle, or a small chevron to pick any rate from **0.8×** to
+**1.5×** in **0.05** steps. That rate is one `localStorage` key
+(`ec-player-speed`) for every book and survives a reload and the next book;
+a stored value that is not a preset snaps to the nearest one. One
+`max-w-2xl` column: transport spacing and play size
 step up at `md`, and the cluster is vertically centered on desktop so it
 does not read as a stretched phone. The speed list opens up on mobile
 (above the tab bar) and down on desktop. Mobile uses a solid overlay so
@@ -2703,8 +2718,12 @@ chapter — a sub-chapter when the part has them. `[` and `]` do the same on
 a wide screen. The scrubber draws a hairline at each top-level start and
 shows the chapter name while it is dragged. A book with fewer than two
 skip points shows none of this. Media Session carries the book title, the
-chapter as artist, the voice as album, the playhead, and play, pause,
-seek, and chapter skip. There is no cover artwork to attach. The downloaded MP3 carries the same
+chapter as artist, the voice as album, `icon-512.png` as artwork, the
+playhead (`setPositionState`), and play, pause, seekbackward,
+seekforward, seekto, and chapter skip. The page reports that state and its
+own transport to the shell (`reportSession`); the shell installs the
+handlers once in the root layout, so they outlive the page. See
+`docs/mobile-background-playback.md` for what each browser allows. The downloaded MP3 carries the same
 chapters as ID3v2.3 CHAP frames: finalize muxes an ffmetadata1 chapter file
 in with `-c copy` (one fast pass, no extra encode); a mux failure ships the
 plain file.
@@ -2839,7 +2858,30 @@ do not see it. The operator can open markup for any job id.
 No Web Audio. Audio plays from a cross-origin R2 URL, and
 `createMediaElementSource` on a cross-origin element outputs silence. The old
 graph only applied a fixed 0.75 gain, now `audio.volume = 0.75`. Speed via
-`playbackRate`. Same hook API as before.
+`playbackRate`, read from the shared preference store
+(`src/hooks/use-playback-speed.ts` → `SPEED_PREF_KEY`, one key for every book),
+so a reload and the next book keep the chosen 0.8×–1.5× rate. A stored value
+that is not a preset is snapped to the nearest one
+(`normalizePlaybackSpeed`). Same hook API as before.
+
+### Playback shell — `src/components/playback-provider.tsx`
+
+One `<audio>` in the root layout. The player page points it at a source
+(`setSource`), reports the book clock and its transport (`reportSession`), and
+on unmount only calls `detachSession` — the element, `src`, metadata, and
+action handlers all stay. `src` is released by exactly three things: the mini
+player's Close, a different book's source, and a book that may no longer play
+(`releaseForJob`). A pause, a hidden tab, `pagehide`, and `beforeunload` never
+release it; recording the position on those events is unchanged
+(`use-playback-resume.ts`).
+
+The mini player is a labelled `<section>` above the mobile tab bar with a
+spacer of its own height, so it never covers a page. It appears only once the
+listener has actually started the book (`started`) and the route no longer
+matches it (`playerIdFromPathname`). It reads the playhead from the element
+itself, so a 4 Hz clock never re-renders the page under it. Its transport is
+a labelled button pair, its progress bar is a native range input with
+`aria-valuetext`, and its title links back to the player.
 
 ### Shell
 

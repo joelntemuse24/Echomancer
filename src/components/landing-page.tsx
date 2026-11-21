@@ -19,7 +19,7 @@ import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { warmJobs } from "@/lib/nav/screen-cache";
-import { LANDING, PRIVACY } from "@/lib/ux-copy";
+import { LANDING } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 type PasteKind = "text" | "url";
@@ -224,9 +224,6 @@ export function LandingPage() {
             <h1>
               <Wordmark size="hero" />
             </h1>
-            <p className="home-intro mt-6 font-sans text-sm text-muted-foreground">
-              {PRIVACY.intro}
-            </p>
           </div>
 
           <div className="space-y-8 font-sans">

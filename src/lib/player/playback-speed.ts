@@ -6,10 +6,11 @@
  * One quiet cycle control in the player, plus a small chevron that opens
  * the same preset list — not a pill row.
  *
- * Nothing writes a speed preference. A reload starts at 1×, so the old
- * implicit 1.15× start cannot come back from storage. A rate picked during
- * the visit stays on the element until reload, including 1.15× when the
- * listener chooses that step.
+ * The choice is remembered in localStorage (`SPEED_PREF_KEY`) across books
+ * and reloads, so a listener who reads at 1.2× keeps that rate. An older
+ * release reset to 1× on reload; that behaviour is deliberately reversed.
+ * Storage is read through {@link normalizePlaybackSpeed}, so a hand-edited
+ * or stale value can only land on a real preset.
  */
 
 const SPEED_MIN_CENTS = 80;
@@ -66,6 +67,33 @@ export function formatPlaybackSpeed(speed: number): string {
 
 export function playbackSpeedsMatch(a: number, b: number): boolean {
   return centsOf(a) === centsOf(b);
+}
+
+/**
+ * The stored rate, snapped to the nearest preset. A missing, unparsable, or
+ * out-of-range value is the default 1× rather than a raw rate the element
+ * could be asked to play.
+ */
+export function normalizePlaybackSpeed(value: unknown): PlaybackSpeed {
+  const raw = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(raw)) return DEFAULT_PLAYBACK_SPEED as PlaybackSpeed;
+  const index = playbackSpeedIndex(raw);
+  if (index >= 0) return PLAYBACK_SPEED_PRESETS[index]!;
+  if (raw <= PLAYBACK_SPEED_PRESETS[0]!) return PLAYBACK_SPEED_PRESETS[0]!;
+  if (raw >= PLAYBACK_SPEED_PRESETS[PLAYBACK_SPEED_PRESETS.length - 1]!) {
+    return PLAYBACK_SPEED_PRESETS[PLAYBACK_SPEED_PRESETS.length - 1]!;
+  }
+  // Between two presets: the nearest, so a stored 1.22 reads as 1.2×.
+  let nearest = PLAYBACK_SPEED_PRESETS[0]!;
+  let gap = Infinity;
+  for (const rate of PLAYBACK_SPEED_PRESETS) {
+    const nextGap = Math.abs(centsOf(rate) - centsOf(raw));
+    if (nextGap < gap) {
+      gap = nextGap;
+      nearest = rate;
+    }
+  }
+  return nearest;
 }
 
 /**
