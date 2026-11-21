@@ -90,6 +90,11 @@ export interface CatalogVoice {
   usdPerAudioHour?: number;
   /** Unix seconds or milliseconds. Set for a user's clone so duplicate names can show a date. */
   createdAt?: number | null;
+  /**
+   * Same-origin path for a stored clone sample. The preview route still
+   * checks the session. This is not a signed storage URL.
+   */
+  previewUrl?: string;
 }
 
 export interface SynthesizeInput {

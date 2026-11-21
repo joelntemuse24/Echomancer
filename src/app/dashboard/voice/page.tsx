@@ -66,10 +66,18 @@ import {
   classifyClonePreviewRead,
   CLONE_PREVIEW_POLL_MS,
   clonePreparingAfterTokenCheck,
+  clonePreviewButtonState,
+  clonePreviewUiAfterRead,
+  clonePreviewUiOnPlay,
   PREVIEW_PREPARING_LABEL,
   PREVIEW_RETRY_LABEL,
   previewControlLabel,
+  type ClonePreviewButtonState,
 } from "@/lib/tts/clone-preview-phase";
+import {
+  clonePreviewPollUrl,
+  clonePreviewProbeUrl,
+} from "@/lib/tts/clone-preview-url";
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
 import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
@@ -164,6 +172,8 @@ interface CatalogVoice {
   latencyClass: string;
   listenRecommended?: boolean;
   createdAt?: number | null;
+  /** Set when this clone already has a stored preview. Played like a stock sample. */
+  previewUrl?: string;
 }
 
 function voiceTitle(v: CatalogVoice): string {
@@ -246,6 +256,32 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
   if (isClonedVoice(v)) return true;
   if (v.model.toLowerCase().includes("fish-audio")) return true;
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");
+}
+
+function previewGlyph(state: ClonePreviewButtonState) {
+  if (state === "preparing") {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 font-sans text-xs"
+        role="status"
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        <span>{PREVIEW_PREPARING_LABEL}</span>
+      </span>
+    );
+  }
+  if (state === "loading") {
+    return <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />;
+  }
+  if (state === "failed") {
+    return (
+      <span className="inline-flex items-center font-sans text-xs">
+        {PREVIEW_RETRY_LABEL}
+      </span>
+    );
+  }
+  if (state === "playing") return <Square className="h-3.5 w-3.5" />;
+  return <Play className="h-3.5 w-3.5" />;
 }
 
 async function previewFailure(
@@ -754,10 +790,12 @@ export default function VoiceSelectionPage() {
   /**
    * A saved clone's preview URL.
    *
-   * The first Play reads storage. A miss enqueues one Fish bake of the
-   * standard line. Later reads only poll. `PREVIEW_BAKE_FAILED` and a poll
-   * that ends still preparing both return null so the row can show Try again.
-   * Retry is `POST { retry: true }`, which is the only way to bake again.
+   * The first Play reads storage. That GET has no cache-buster, so a stored
+   * clip can stay in the browser cache. A miss enqueues one Fish bake of the
+   * standard line, and only that 202 turns the row to Preparing. Later reads
+   * only poll, and those polls keep a cache-buster. `PREVIEW_BAKE_FAILED` and
+   * a poll that ends still preparing both return null so the row can show Try
+   * again. Retry is `POST { retry: true }`, which is the only way to bake again.
    */
   const clonedPreviewUrl = async (
     voice: CatalogVoice,
@@ -798,10 +836,11 @@ export default function VoiceSelectionPage() {
             await fetch(path, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              cache: "no-store",
               body: JSON.stringify({ retry: true }),
             })
           )
-        : await clipFrom(await fetch(`${path}?_=${Date.now()}`));
+        : await clipFrom(await fetch(clonePreviewProbeUrl(voice.id)));
       if (!current()) {
         releasePreview(voice.id, token);
         return null;
@@ -809,8 +848,9 @@ export default function VoiceSelectionPage() {
       if (first.kind === "audio") return first.url;
       if (first.kind === "failed") return null;
 
-      // The request path does not render. The worker bakes the clip.
-      applyPreparing(voice.id, token, true);
+      // The request path does not render. Preparing is this 202 only.
+      const baking = clonePreviewUiAfterRead(voice.id, "preparing");
+      if (baking.preparingId) applyPreparing(voice.id, token, true);
       if (!current()) {
         releasePreview(voice.id, token);
         return null;
@@ -823,7 +863,9 @@ export default function VoiceSelectionPage() {
           return null;
         }
         const ready = await clipFrom(
-          await fetch(`${path}?poll=1&_=${Date.now()}`)
+          await fetch(clonePreviewPollUrl(voice.id, Date.now()), {
+            cache: "no-store",
+          })
         );
         if (!current()) {
           releasePreview(voice.id, token);
@@ -893,10 +935,11 @@ export default function VoiceSelectionPage() {
     if (next) selectVoice(next, { dismissSample: !isClonedVoice(voice) });
     const token = ++previewTokenRef.current;
     previewOwnerRef.current = token;
+    const opening = clonePreviewUiOnPlay(voice.id);
     setPreviewingId(null);
-    setPreviewFailedId(null);
-    setPreviewPreparingId(isClonedVoice(voice) ? voice.id : null);
-    setPreviewLoading(voice.id);
+    setPreviewFailedId(opening.failedId);
+    setPreviewPreparingId(opening.preparingId);
+    setPreviewLoading(opening.loadingId);
 
     const audio = getPreviewAudio();
     const still = () => previewTokenRef.current === token;
@@ -927,7 +970,9 @@ export default function VoiceSelectionPage() {
       setPreviewingId(voice.id);
     };
 
-    const recorded = isClonedVoice(voice) ? null : stockPreviewUrl(voice.id);
+    const recorded = isClonedVoice(voice)
+      ? voice.previewUrl || null
+      : stockPreviewUrl(voice.id);
     if (recorded) {
       const outcome = await audio.play([recorded], {
         onStart: markPlaying,
@@ -1324,10 +1369,14 @@ export default function VoiceSelectionPage() {
     const isPlaying = previewingId === voice.id;
     const isSelected = rowIsPressed(selectedVoiceId, voice.id) && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
-    const isPreparing =
-      previewPreparingId === voice.id || (isLoadingPreview && !isPlaying);
-    const isPreviewFailed =
-      previewFailedId === voice.id && !isPreparing && !isPlaying;
+    const previewState = clonePreviewButtonState({
+      preparing: previewPreparingId === voice.id,
+      loading: isLoadingPreview,
+      playing: isPlaying,
+      failed: previewFailedId === voice.id,
+    });
+    const isPreparing = previewState === "preparing";
+    const isPreviewFailed = previewState === "failed";
     const listedSuggestion = narrator
       ? listedCatalogVoiceId(
           narrator.catalogVoiceId,
@@ -1358,24 +1407,8 @@ export default function VoiceSelectionPage() {
           ? "text-foreground"
           : "text-muted-foreground hover:text-foreground"
       }`;
-    const glyph = (loading: boolean, playing: boolean, failed: boolean) =>
-      loading ? (
-        <span
-          className="inline-flex items-center gap-1.5 font-sans text-xs"
-          role="status"
-        >
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-          <span>{PREVIEW_PREPARING_LABEL}</span>
-        </span>
-      ) : failed ? (
-        <span className="inline-flex items-center font-sans text-xs">
-          {PREVIEW_RETRY_LABEL}
-        </span>
-      ) : playing ? (
-        <Square className="h-3.5 w-3.5" />
-      ) : (
-        <Play className="h-3.5 w-3.5" />
-      );
+    const glyph = previewGlyph(previewState);
+    const previewWide = isPreparing || isPreviewFailed;
     const saveRename = async () => {
       if (renameCancelRef.current) {
         renameCancelRef.current = false;
@@ -1425,11 +1458,12 @@ export default function VoiceSelectionPage() {
                 onClick={() => {
                   void previewVoice(voice);
                 }}
+                aria-busy={isPreparing || previewState === "loading" || undefined}
                 className={`inline-flex h-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-muted-foreground ${
-                  isPreparing || isPreviewFailed ? "w-auto gap-1 px-1" : "w-11"
+                  previewWide ? "w-auto gap-1 px-1" : "w-11"
                 }`}
               >
-                {glyph(isPreparing, isPlaying && !isPreparing, isPreviewFailed)}
+                {glyph}
               </button>
               {renamingId === voice.id ? (
                 <input
@@ -1505,10 +1539,10 @@ export default function VoiceSelectionPage() {
           >
             <span
               className={`inline-flex h-11 shrink-0 items-center justify-center text-muted-foreground ${
-                isPreparing ? "w-auto px-1" : "w-11"
+                previewWide ? "w-auto px-1" : "w-11"
               }`}
             >
-              {selectOnly ? null : glyph(isPreparing, isPlaying && !isPreparing, false)}
+              {selectOnly ? null : glyph}
             </span>
             <span className="min-w-0 truncate">{label}</span>
             {isSelected ? (

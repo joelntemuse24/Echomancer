@@ -24,6 +24,7 @@ import {
   planClonePreview,
   previewAudioResponse,
 } from "@/lib/tts/clone-preview";
+import { rememberClonePreviewPath } from "@/lib/tts/clone-preview-record";
 import { storeClonePreview, type ClonePreviewEngine } from "@/lib/tts/clone-preview-store";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { catalogIdForClone, cloneRowIdFromCatalogId, isFishCloneCatalogId } from "@/lib/tts/fish-clone";
@@ -176,7 +177,10 @@ async function releaseClonePreviewBake(rowId: string): Promise<void> {
   ).catch(() => {});
 }
 
-async function noteBakeSuccess(rowId: string): Promise<void> {
+async function noteBakeSuccess(
+  rowId: string,
+  storagePath?: string | null
+): Promise<void> {
   await execute(
     `UPDATE cloned_voices
      SET preview_bake_attempts = 0,
@@ -186,6 +190,8 @@ async function noteBakeSuccess(rowId: string): Promise<void> {
      WHERE id = ?`,
     [rowId]
   ).catch(() => {});
+  // Separate from the ledger write. A missing column must not drop the success.
+  if (storagePath) await rememberClonePreviewPath(rowId, storagePath);
 }
 
 async function noteBakeFailure(rowId: string, now: number): Promise<void> {
@@ -366,7 +372,7 @@ async function runBake(rawId: string, opts?: { force?: boolean }): Promise<BakeP
     CLONE_PREVIEW_BAKE_ENGINE
   );
   if (existing) {
-    await noteBakeSuccess(rowId);
+    await noteBakeSuccess(rowId, existing.path);
     return { status: 200, audio: existing.audio, replayed: true };
   }
 
@@ -402,7 +408,7 @@ async function runBake(rawId: string, opts?: { force?: boolean }): Promise<BakeP
       await noteBakeFailure(rowId, nowMs());
       return failedPayload(backoffMs((ledger?.attempts ?? 0) + 1));
     }
-    await noteBakeSuccess(rowId);
+    await noteBakeSuccess(rowId, writePath);
     return { status: 200, audio: result.audio };
   } catch (err) {
     await noteBakeFailure(rowId, nowMs());

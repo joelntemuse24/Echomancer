@@ -199,29 +199,62 @@ export async function listFiles(directory: string): Promise<string[]> {
   }
 }
 
+function missingObject(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const named = err as {
+    name?: string;
+    code?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (named.code === "ENOENT" || named.code === "ENOTDIR") return true;
+  const name = named.name || named.Code;
+  if (name === "NotFound" || name === "NoSuchKey") return true;
+  return named.$metadata?.httpStatusCode === 404;
+}
+
 /**
- * Get file metadata
+ * Size and mtime of one object.
+ *
+ * `null` means the object is not there. Any other failure is thrown, so a
+ * caller can tell a miss from a storage outage.
  */
-export async function getFileMetadata(storagePath: string): Promise<{ size: number; modified: Date } | null> {
+export async function readObjectStat(
+  storagePath: string
+): Promise<{ size: number; modified: Date } | null> {
   if (isR2Configured()) {
     try {
       const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
       const { getR2Client } = await import("@/lib/r2-storage");
       const client = getR2Client();
       const bucket = process.env.R2_BUCKET_NAME || "echomancer-audio";
-      const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: storagePath }));
-      return { size: response.ContentLength || 0, modified: response.LastModified || new Date() };
-    } catch {
-      return null;
+      const response = await client.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: storagePath })
+      );
+      return {
+        size: response.ContentLength || 0,
+        modified: response.LastModified || new Date(),
+      };
+    } catch (err) {
+      if (missingObject(err)) return null;
+      throw err;
     }
   }
   try {
-    const filePath = path.join(STORAGE_ROOT, storagePath);
-    const stats = await fs.stat(filePath);
-    return {
-      size: stats.size,
-      modified: stats.mtime,
-    };
+    const stats = await fs.stat(path.join(STORAGE_ROOT, storagePath));
+    return { size: stats.size, modified: stats.mtime };
+  } catch (err) {
+    if (missingObject(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * Get file metadata. A missing object and a storage error are both `null`.
+ */
+export async function getFileMetadata(storagePath: string): Promise<{ size: number; modified: Date } | null> {
+  try {
+    return await readObjectStat(storagePath);
   } catch {
     return null;
   }

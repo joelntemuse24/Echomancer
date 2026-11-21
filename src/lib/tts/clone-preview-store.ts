@@ -21,16 +21,19 @@
  * stored under an S2 key and then served as "the S2 preview".
  *
  * Lookup therefore tries, in order:
- *   1. the current engine's v2 key (`previews/clones/<row>/<hash>.mp3`),
- *   2. the legacy engine-free v1 key, i.e. the older Fish 2.1 MP3.
+ *   1. the fish v2 key — every new bake is stored here,
+ *   2. the legacy engine-free v1 key, i.e. the older Fish 2.1 MP3,
+ *   3. an older s2-pro v2 key, if one was written before bakes moved to fish.
  *
- * Write always goes to the v2 key. Nothing is ever written to a key whose
- * engine name does not match the engine that produced the bytes.
+ * A clip that exists is one read when it is a fish bake, and the next read
+ * when it is a legacy file. Write always goes to the fish v2 key. Nothing is
+ * ever written to a key whose engine name does not match the engine that
+ * produced the bytes.
  */
 
 import { createHash } from "crypto";
-import { downloadFile, uploadFile } from "@/lib/storage";
-import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
+import { downloadFile, readObjectStat, uploadFile } from "@/lib/storage";
+import { isEmptyOrSilentAudio, MIN_AUDIBLE_BYTES } from "@/lib/tts/audio-guard";
 import {
   cloneRowIdFromCatalogId,
   isFishCloneCatalogId,
@@ -139,26 +142,49 @@ export function legacyClonePreviewStoragePath(
  * Fish trained, and the legacy v1 object is a Fish 2.1 Pro take. Drama 3 has no
  * key here at all, so a take from it can never be found — that is the point.
  *
- * The current engine's take comes first so a clone whose preview was rendered
- * on the engine that also narrates its books plays that one. The other engine's
- * key is still read, because a preview costs a cold GPU restore if it has to be
- * re-rendered and a perfectly good take of the same voice may already exist
- * under the other engine. The legacy v1 file last: it is the oldest, and its
- * recipe predates both keys.
+ * Fish first: that is the key a new bake writes, so a stored clip is one
+ * read. Legacy v1 is next, for clones baked before the engine suffix.
+ * s2-pro is last. It is still this voice, and it is still found. The
+ * `engine` argument is kept so callers do not change; it does not reorder
+ * the reads.
  */
 export function clonePreviewLookupPaths(
   input: ClonePreviewKeyInput,
-  engine: ClonePreviewEngine = "s2-pro"
+  engine: ClonePreviewEngine = "fish"
 ): string[] {
+  void engine;
   const candidates = [
-    clonePreviewStoragePath(input, engine),
-    clonePreviewStoragePath(input, engine === "s2-pro" ? "fish" : "s2-pro"),
+    clonePreviewStoragePath(input, "fish"),
     legacyClonePreviewStoragePath(input),
+    clonePreviewStoragePath(input, "s2-pro"),
   ];
   return candidates.filter(
     (path, index, all): path is string =>
       Boolean(path) && all.indexOf(path) === index
   );
+}
+
+/**
+ * Short cache key for a stored clip.
+ *
+ * The recipe and the object key are both in the hash, so a recipe bump or a
+ * different file (fish, legacy, s2-pro) is a different URL.
+ */
+export function clonePreviewVersionToken(storagePath: string): string {
+  return createHash("sha256")
+    .update(CLONE_PREVIEW_RECIPE)
+    .update("\0")
+    .update(storagePath)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/** Same-origin URL the picker can play and the browser can cache. */
+export function clonePreviewPublicUrl(
+  catalogVoiceId: string,
+  storagePath: string
+): string {
+  return `/api/tts/clones/${encodeURIComponent(catalogVoiceId)}/preview?v=${clonePreviewVersionToken(storagePath)}`;
 }
 
 /** The stored preview, or null when there is none yet (or it is unusable). */
@@ -183,13 +209,54 @@ export type StoredClonePreview = { path: string; audio: Buffer };
  */
 export async function readFirstStoredClonePreview(
   input: ClonePreviewKeyInput,
-  engine: ClonePreviewEngine = "s2-pro"
+  engine: ClonePreviewEngine = "fish"
 ): Promise<StoredClonePreview | null> {
   for (const path of clonePreviewLookupPaths(input, engine)) {
     const audio = await readStoredClonePreview(path);
     if (audio) return { path, audio };
   }
   return null;
+}
+
+export type LocatedClonePreview =
+  | { path: string }
+  | "miss"
+  | "error";
+
+/**
+ * The first key that already holds a clip, without downloading it.
+ *
+ * `"miss"` means every candidate was absent or too small. `"error"` means
+ * storage could not be read, so the caller must not remember a miss.
+ * A silent object can still be large enough to count; the preview route
+ * is what refuses to serve it. This does not bake.
+ */
+export async function locateClonePreview(
+  input: ClonePreviewKeyInput,
+  engine: ClonePreviewEngine = "fish"
+): Promise<LocatedClonePreview> {
+  let sawError = false;
+  for (const path of clonePreviewLookupPaths(input, engine)) {
+    try {
+      const stat = await readObjectStat(path);
+      if (stat && stat.size >= MIN_AUDIBLE_BYTES) return { path };
+    } catch {
+      sawError = true;
+    }
+  }
+  return sawError ? "error" : "miss";
+}
+
+/**
+ * The first key that already holds a clip, without downloading it.
+ * A storage error is a miss for callers that only need a path.
+ */
+export async function findExistingClonePreviewPath(
+  input: ClonePreviewKeyInput,
+  engine: ClonePreviewEngine = "fish"
+): Promise<string | null> {
+  const located = await locateClonePreview(input, engine);
+  return located === "miss" || located === "error" ? null : located.path;
 }
 
 /** Store a finished preview. Never throws; returns whether it was written. */

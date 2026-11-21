@@ -113,9 +113,10 @@ describe("clone preview keys", () => {
     expect(legacy).not.toBe(clonePreviewStoragePath(base, "fish"));
   });
 
-  it("looks up the current engine, then the other engine, then the legacy file", () => {
-    // Pinned to `s2-pro` so the assertion does not depend on whether this
-    // environment has `MODAL_S2_TTS_URL` set.
+  it("looks up fish, then the legacy file, then s2-pro", () => {
+    // Pinned with an explicit engine so the assertion does not depend on
+    // whether this environment has `MODAL_S2_TTS_URL` set. The engine argument
+    // does not change the order.
     const plan = planClonePreview({
       catalogVoiceId: base.catalogVoiceId,
       text: PREVIEW_TEXT,
@@ -129,9 +130,17 @@ describe("clone preview keys", () => {
     // Both engine keys are this voice; the legacy v1 object is too. Drama 3 has
     // no key at all, so a take from it can never be found here.
     expect(paths).toHaveLength(3);
-    expect(paths[0]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro"));
-    expect(paths[1]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish"));
-    expect(paths[2]).toMatch(/^previews\/clones\/abc-123\//);
+    expect(paths[0]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish"));
+    expect(paths[1]).toBe(
+      legacyClonePreviewStoragePath({
+        catalogVoiceId: voice.id,
+        providerVoiceId: voice.providerVoiceId,
+        model: voice.model,
+        script: plan.script,
+        speed: plan.speed,
+      })
+    );
+    expect(paths[2]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro"));
     expect(new Set(paths).size).toBe(3);
     expect(paths.join()).not.toMatch(/drama/i);
   });

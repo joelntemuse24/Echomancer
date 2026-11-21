@@ -84,12 +84,19 @@ Two key families, and why:
 | `clone-preview-v2-<engine>` (`s2-pro` / `fish`) | A take from a known engine | New bakes write `fish` only. An older `s2-pro` file is still read. |
 | `clone-preview-v1` (engine-free, legacy) | The Fish 2.1 Pro previews rendered before the S2 pool existed | Nothing, today — read-only |
 
-Lookup tries the current engine's v2 key, then the other real engine's v2
-key (`fish` or `s2-pro`), then the legacy engine-free key. Both real engines
-speak the reference Fish trained. The legacy files are this clone's voice
+Lookup tries the fish v2 key, then the legacy engine-free key, then an older
+`s2-pro` v2 key. Both real engines speak the reference Fish trained, so a
+stored clip is one read when it is a fish bake. The legacy files are this clone's voice
 (Fish 2.1 trained the reference), already paid for, and already in storage, so
 an older clone plays instantly. There is no migration: reproducing the old
 hash makes those files findable.
+
+A stored 200 is `private, max-age=31536000, immutable`, with an ETag and
+`Vary: Cookie`. `CDN-Cache-Control` and `Vercel-CDN-Cache-Control` are
+`no-store`. `GET /api/tts/voices` adds `previewUrl` for a clone whose key is
+already known. The first list stats an unknown clone (at most the three
+lookup keys, four clones at a time) and remembers the hit, or a miss for ten
+minutes. A later list does not stat, and it does not bake.
 
 Drama 3 has no key, so a take from that path can never be served as this
 clone's preview. On 2026-11-06 a Drama 3 fallback render was stored under an
