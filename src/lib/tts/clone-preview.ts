@@ -25,8 +25,15 @@
 
 import { createHash } from "crypto";
 
+import { mapPool } from "@/lib/async-pool";
 import type { DeliveryUserInput } from "@/lib/tts/delivery-settings";
 import { resolveDeliverySettings } from "@/lib/tts/delivery-settings";
+import {
+  catalogIdForClone,
+  cloneRowIdFromCatalogId,
+  isFishCloneCatalogId,
+  type ClonedVoiceRow,
+} from "@/lib/tts/fish-clone";
 import {
   fishSpeedForRequest,
   initialNarrationSpeed,
@@ -34,13 +41,19 @@ import {
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { usesModalClone } from "@/lib/tts/providers/modal-clone";
+import {
+  CLONE_PREVIEW_ABSENT_TTL_SEC,
+  CLONE_PREVIEW_PATH_ABSENT,
+  rememberClonePreviewMiss,
+  rememberClonePreviewPath,
+} from "@/lib/tts/clone-preview-record";
 import {
   clonePreviewLookupPaths,
   clonePreviewPublicUrl,
   clonePreviewStoragePath,
   findExistingClonePreviewPath,
+  locateClonePreview,
   readFirstStoredClonePreview,
   type ClonePreviewEngine,
   type ClonePreviewKeyInput,
@@ -52,6 +65,16 @@ export const CLONE_PREVIEW_AUDIO_CACHE = "private, max-age=31536000, immutable";
 
 /** A bake in progress, or a failed bake, must not be replayed from cache. */
 export const CLONE_PREVIEW_STATUS_CACHE = "private, no-store";
+
+/**
+ * Shared caches, including the Vercel CDN, must not store a clone preview.
+ * The browser still follows `Cache-Control`. `private` alone is the spec;
+ * these two headers are what Vercel reads for its own cache.
+ */
+export const CLONE_PREVIEW_CDN_CACHE = "no-store";
+
+/** How many unknown clones a voices request may stat at once. */
+export const CLONE_PREVIEW_PROBE_CONCURRENCY = 4;
 
 /** Same ceiling the live route applies to any sample text. */
 export const MAX_PREVIEW_CHARS = 2_000;
@@ -251,14 +274,30 @@ export function previewAudioResponse(
   });
 }
 
+/** Headers that keep one person's clip in their browser and out of a shared cache. */
+export function clonePreviewCacheHeaders(
+  cacheControl: string
+): Record<string, string> {
+  return {
+    "Cache-Control": cacheControl,
+    "CDN-Cache-Control": CLONE_PREVIEW_CDN_CACHE,
+    "Vercel-CDN-Cache-Control": CLONE_PREVIEW_CDN_CACHE,
+    Vary: "Cookie",
+  };
+}
+
+/** `202` and `409` (and any other non-audio answer) must not be stored. */
+export function clonePreviewStatusHeaders(): Record<string, string> {
+  return clonePreviewCacheHeaders(CLONE_PREVIEW_STATUS_CACHE);
+}
+
 function previewAudioHeaders(
   etag: string,
   source?: "stored" | "generated"
 ): Record<string, string> {
   const headers: Record<string, string> = {
-    "Cache-Control": CLONE_PREVIEW_AUDIO_CACHE,
+    ...clonePreviewCacheHeaders(CLONE_PREVIEW_AUDIO_CACHE),
     ETag: etag,
-    Vary: "Cookie",
   };
   if (source) headers["X-Echomancer-Preview"] = source;
   return headers;
@@ -292,4 +331,81 @@ export async function cloneCatalogPreviewUrl(
   const plan = planClonePreview({ catalogVoiceId: voice.id, text: PREVIEW_TEXT });
   const path = await findExistingClonePreviewPath(keyInputFor(voice, plan));
   return path ? clonePreviewPublicUrl(voice.id, path) : null;
+}
+
+/** Remember a clip the preview route or the bake just found. */
+export async function noteStoredClonePreview(
+  catalogVoiceId: string,
+  storagePath: string
+): Promise<void> {
+  const id = isFishCloneCatalogId(catalogVoiceId)
+    ? catalogVoiceId
+    : `clone:${catalogVoiceId}`;
+  const rowId = cloneRowIdFromCatalogId(id);
+  if (!rowId || !storagePath) return;
+  await rememberClonePreviewPath(rowId, storagePath);
+}
+
+function rememberedPreviewUrl(
+  voice: ClonePreviewVoice,
+  row: ClonedVoiceRow,
+  nowSec: number
+): { url: string } | "skip" | "probe" {
+  const plan = planClonePreview({ catalogVoiceId: voice.id, text: PREVIEW_TEXT });
+  const candidates = clonePreviewLookupPaths(keyInputFor(voice, plan));
+  const saved = row.preview_storage_path;
+  if (saved && candidates.includes(saved)) {
+    return { url: clonePreviewPublicUrl(voice.id, saved) };
+  }
+  const probedAt = Number(row.preview_probed_at) || 0;
+  if (
+    saved === CLONE_PREVIEW_PATH_ABSENT &&
+    probedAt > 0 &&
+    nowSec - probedAt < CLONE_PREVIEW_ABSENT_TTL_SEC
+  ) {
+    return "skip";
+  }
+  return "probe";
+}
+
+/**
+ * Fill `previewUrl` for clones that already have a clip.
+ *
+ * A remembered key is free. Unknown clones are stated a few at a time, then
+ * the hit or the miss is stored. Nothing here bakes, and a storage error is
+ * not remembered as "no clip".
+ */
+export async function attachClonePreviewUrls<T extends ClonePreviewVoice>(
+  voices: T[],
+  rows: readonly ClonedVoiceRow[]
+): Promise<Array<T & { previewUrl?: string }>> {
+  const byCatalog = new Map(rows.map((row) => [catalogIdForClone(row.id), row]));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const out: Array<T & { previewUrl?: string }> = voices.map((voice) => ({ ...voice }));
+  const pending: { voice: T; index: number; row: ClonedVoiceRow }[] = [];
+  voices.forEach((voice, index) => {
+    if (!isFishCloneCatalogId(voice.id)) return;
+    const row = byCatalog.get(voice.id);
+    if (!row) return;
+    const remembered = rememberedPreviewUrl(voice, row, nowSec);
+    if (remembered === "skip") return;
+    if (remembered !== "probe") {
+      out[index] = { ...voice, previewUrl: remembered.url };
+      return;
+    }
+    pending.push({ voice, index, row });
+  });
+
+  await mapPool(pending, CLONE_PREVIEW_PROBE_CONCURRENCY, async ({ voice, index, row }) => {
+    const plan = planClonePreview({ catalogVoiceId: voice.id, text: PREVIEW_TEXT });
+    const located = await locateClonePreview(keyInputFor(voice, plan));
+    if (located === "error") return;
+    if (located === "miss") {
+      await rememberClonePreviewMiss(row.id, row.preview_storage_path, nowSec);
+      return;
+    }
+    await rememberClonePreviewPath(row.id, located.path);
+    out[index] = { ...voice, previewUrl: clonePreviewPublicUrl(voice.id, located.path) };
+  });
+  return out;
 }

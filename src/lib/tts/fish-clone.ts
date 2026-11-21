@@ -38,6 +38,13 @@ export type ClonedVoiceRow = {
   source_consented_at: number | null;
   /** Spoken text of the reference clip; needed by the S2-Pro clone path. */
   reference_transcript: string | null;
+  /**
+   * Storage key of a clip this clone can already play, or `""` after a miss.
+   * Null or absent means the list has not looked yet.
+   */
+  preview_storage_path?: string | null;
+  /** Unix seconds of the last miss. A hit clears it. */
+  preview_probed_at?: number | null;
   created_at: number;
   deleted_at: number | null;
 };

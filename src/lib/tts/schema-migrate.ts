@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   preview_bake_not_before INTEGER,
   preview_bake_terminal INTEGER NOT NULL DEFAULT 0,
   preview_bake_running_until INTEGER,
+  preview_storage_path TEXT,
+  preview_probed_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
@@ -205,6 +207,10 @@ const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
   { name: "preview_bake_not_before", def: "INTEGER" },
   { name: "preview_bake_terminal", def: "INTEGER NOT NULL DEFAULT 0" },
   { name: "preview_bake_running_until", def: "INTEGER" },
+  // Key of a stored clone preview, or '' after a miss. Null means not looked up.
+  // preview_probed_at is the miss clock so a later bake is found again.
+  { name: "preview_storage_path", def: "TEXT" },
+  { name: "preview_probed_at", def: "INTEGER" },
 ];
 
 /**

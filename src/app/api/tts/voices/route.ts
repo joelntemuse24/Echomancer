@@ -29,8 +29,7 @@ import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
 import { requestClonePoolPrewarm } from "@/lib/jobs/takehome-worker-client";
 import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 import { isKokoroCpuProvider, kokoroCpuSectionChars } from "@/lib/tts/section-size";
-import { cloneCatalogPreviewUrl } from "@/lib/tts/clone-preview";
-import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
+import { attachClonePreviewUrls } from "@/lib/tts/clone-preview";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
   priceEstimate: {
@@ -46,6 +45,8 @@ type VoiceWithPrice = EnrichedCatalogVoice & {
 };
 
 export const runtime = "nodejs";
+/** The list includes this session's clones. It must not be a shared cache entry. */
+export const dynamic = "force-dynamic";
 
 // A cache miss fans out to OpenRouter's model listing, so the catalog is worth
 // metering; it fails closed to keep that fan-out bounded.
@@ -144,19 +145,6 @@ export async function GET(request: NextRequest) {
         });
       }
       clones = enrichCatalogVoices(rows.map(clonedVoiceToCatalog));
-      // A stored clip gets the same kind of URL a stock sample has. Nothing
-      // here bakes: a clone with no preview stays without one until Play.
-      clones = await Promise.all(
-        clones.map(async (voice) => {
-          if (!isFishCloneCatalogId(voice.id)) return voice;
-          try {
-            const previewUrl = await cloneCatalogPreviewUrl(voice);
-            return previewUrl ? { ...voice, previewUrl } : voice;
-          } catch {
-            return voice;
-          }
-        })
-      );
       if (q) {
         const needle = q.toLowerCase();
         clones = clones.filter(
@@ -167,6 +155,14 @@ export async function GET(request: NextRequest) {
       }
       if (provider && provider.toLowerCase() !== "fish") {
         clones = [];
+      } else if (clones.length > 0) {
+        // A remembered key is free. An unknown clone is stated, a few at a
+        // time, and the result is stored. This does not bake.
+        try {
+          clones = await attachClonePreviewUrls(clones, rows);
+        } catch {
+          /* the list still renders; Play can read storage itself */
+        }
       }
     }
 

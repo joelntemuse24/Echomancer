@@ -91,6 +91,13 @@ stored clip is one read when it is a fish bake. The legacy files are this clone'
 an older clone plays instantly. There is no migration: reproducing the old
 hash makes those files findable.
 
+A stored 200 is `private, max-age=31536000, immutable`, with an ETag and
+`Vary: Cookie`. `CDN-Cache-Control` and `Vercel-CDN-Cache-Control` are
+`no-store`. `GET /api/tts/voices` adds `previewUrl` for a clone whose key is
+already known. The first list stats an unknown clone (at most the three
+lookup keys, four clones at a time) and remembers the hit, or a miss for ten
+minutes. A later list does not stat, and it does not bake.
+
 Drama 3 has no key, so a take from that path can never be served as this
 clone's preview. On 2026-11-06 a Drama 3 fallback render was stored under an
 S2 key and then served as "the S2 preview"; the recipe bump and the single

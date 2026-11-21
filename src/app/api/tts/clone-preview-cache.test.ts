@@ -51,6 +51,15 @@ function fakeMp3(fill: number): Buffer {
   return bytes;
 }
 
+/** A private response must not be a shared or CDN cache entry. */
+function expectSharedCacheOff(res: Response) {
+  const cache = res.headers.get("cache-control") ?? "";
+  expect(cache).not.toMatch(/\bpublic\b|s-maxage/i);
+  expect(res.headers.get("cdn-cache-control")).toBe("no-store");
+  expect(res.headers.get("vercel-cdn-cache-control")).toBe("no-store");
+  expect(res.headers.get("vary")).toMatch(/cookie/i);
+}
+
 /** Every outbound provider call this route made. */
 function providerMock(fill = 7) {
   return vi.fn(
@@ -133,6 +142,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(res.headers.get("x-echomancer-preview")).toBe("stored");
     expect(res.headers.get("content-type")).toBe("audio/mpeg");
     expect(res.headers.get("cache-control")).toBe(CLONE_PREVIEW_AUDIO_CACHE);
+    expectSharedCacheOff(res);
     expect(res.headers.get("etag")).toMatch(/^"[0-9a-f]{32}"$/);
     expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -160,6 +170,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(second.status).toBe(304);
     expect(second.headers.get("etag")).toBe(etag);
     expect(second.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    expectSharedCacheOff(second);
     expect(Buffer.from(await second.arrayBuffer()).length).toBe(0);
   });
 
@@ -173,6 +184,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(res.status).toBe(202);
     expect((await res.json()).code).toBe("PREVIEW_PREPARING");
     expect(res.headers.get("cache-control")).toBe(CLONE_PREVIEW_STATUS_CACHE);
+    expectSharedCacheOff(res);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -189,6 +201,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     const res = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
     expect(res.status).toBe(409);
     expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expectSharedCacheOff(res);
   });
 
   it("accepts the catalog id as well as the row id", async () => {
@@ -202,6 +215,30 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect((await res.json()).code).toBe("PREVIEW_PREPARING");
   });
 
+  it("plays the stored clip on the next poll and does not start another bake", async () => {
+    const clone = await makeClone();
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const waiting = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
+    expect(waiting.status).toBe(202);
+
+    const stored = fakeMp3(12);
+    const path = clonePreviewWritePath(voiceOf(clone), planFor(clone))!;
+    await putObject(path, stored);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const poll = await GET(
+      await buildRequest(clonePreviewPollUrl(catalogIdForClone(clone.id), 50), {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(poll.status).toBe(200);
+    expect(poll.headers.get("x-echomancer-preview")).toBe("stored");
+    expect(Buffer.from(await poll.arrayBuffer()).equals(stored)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports another session's clone as 404 and never reads its clip", async () => {
     const clone = await makeClone();
     const stored = fakeMp3(11);
@@ -211,6 +248,7 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     const res = await GET(await request(clone.id, USER_B), routeParams({ id: clone.id }));
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type") || "").toMatch(/json/);
+    expectSharedCacheOff(res);
   });
 
   it("returns 503 when cloning is not configured", async () => {
@@ -516,7 +554,7 @@ describe("GET /api/tts/voices previewUrl", () => {
     const plan = planFor(clone);
     const fish = clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish")!;
     await putObject(fish, fakeMp3(9));
-    const meta = vi.spyOn(storage, "getFileMetadata");
+    const meta = vi.spyOn(storage, "readObjectStat");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -544,6 +582,16 @@ describe("GET /api/tts/voices previewUrl", () => {
       )
     );
     expect(fetchMock).not.toHaveBeenCalled();
+
+    meta.mockClear();
+    const again = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    const againBody = (await again.json()) as {
+      voices: { id: string; previewUrl?: string }[];
+    };
+    expect(againBody.voices.find((item) => item.id === voice.id)?.previewUrl).toBe(
+      clonePreviewPublicUrl(voice.id, fish)
+    );
+    expect(meta).not.toHaveBeenCalled();
   });
 
   it("omits previewUrl when the clone has no stored clip", async () => {
@@ -559,5 +607,63 @@ describe("GET /api/tts/voices previewUrl", () => {
     expect(listed).toBeTruthy();
     expect(listed?.previewUrl).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+
+    const stat = vi.spyOn(storage, "readObjectStat");
+    const second = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    const secondBody = (await second.json()) as {
+      voices: { id: string; previewUrl?: string }[];
+    };
+    expect(
+      secondBody.voices.find((item) => item.id === catalogIdForClone(clone.id))?.previewUrl
+    ).toBeUndefined();
+    expect(stat).not.toHaveBeenCalled();
+  });
+
+  it("does not remember a miss when storage cannot be read", async () => {
+    const clone = await makeClone();
+    vi.spyOn(storage, "readObjectStat").mockRejectedValue(new Error("storage down"));
+    const { GET } = await import("@/app/api/tts/voices/route");
+    const first = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    const firstBody = (await first.json()) as {
+      voices: { id: string; previewUrl?: string }[];
+    };
+    expect(
+      firstBody.voices.find((item) => item.id === catalogIdForClone(clone.id))?.previewUrl
+    ).toBeUndefined();
+
+    vi.mocked(storage.readObjectStat).mockRestore();
+    const stat = vi.spyOn(storage, "readObjectStat");
+    await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    expect(stat.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("keeps another person's clip off this list", async () => {
+    const clone = await makeClone();
+    const voice = voiceOf(clone);
+    await putObject(clonePreviewWritePath(voice, planFor(clone))!, fakeMp3(9));
+    const { GET } = await import("@/app/api/tts/voices/route");
+    const res = await GET(await buildRequest("/api/tts/voices", { userId: USER_B }));
+    const body = (await res.json()) as { voices: { id: string; previewUrl?: string }[] };
+    expect(body.voices.some((item) => item.id === voice.id)).toBe(false);
+    expect(body.voices.some((item) => item.previewUrl?.includes(clone.id))).toBe(false);
+  });
+
+  it("uses the path a bake just stored and does not stat again", async () => {
+    const clone = await makeClone();
+    vi.stubGlobal("fetch", providerMock(8));
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    expect((await bakeClonePreview(clone.id)).status).toBe(200);
+    const stat = vi.spyOn(storage, "readObjectStat");
+    const { GET } = await import("@/app/api/tts/voices/route");
+    const res = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    const body = (await res.json()) as { voices: { id: string; previewUrl?: string }[] };
+    const listed = body.voices.find((item) => item.id === catalogIdForClone(clone.id));
+    expect(listed?.previewUrl).toBe(
+      clonePreviewPublicUrl(
+        catalogIdForClone(clone.id),
+        clonePreviewWritePath(voiceOf(clone), planFor(clone))!
+      )
+    );
+    expect(stat).not.toHaveBeenCalled();
   });
 });

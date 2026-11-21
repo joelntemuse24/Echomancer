@@ -1232,9 +1232,15 @@ adapter for listen streams. A saved clone's preview is a **stored MP3** of `PREV
 clone's Fish reference. `GET /api/tts/clones/[id]/preview` replays a stored
 take (fish v2, then the legacy engine-free key, then an older s2-pro file) and never
 synthesizes. A stored clip is `private, max-age=31536000, immutable` with an
-ETag. The URL carries a version token from that key and the recipe, so a
+ETag and `Vary: Cookie`. The browser may keep that response.
+`CDN-Cache-Control` and `Vercel-CDN-Cache-Control` are `no-store`, so the
+Vercel CDN does not. The URL carries a version token from that key and the recipe, so a
 recipe change misses the browser cache. The first read has no cache-buster.
-`202` and `409` are `private, no-store`. The picker says "Preparing preview…"
+`202` and `409` are `private, no-store` with the same CDN headers. `GET /api/tts/voices`
+returns `previewUrl` for this session's clone when a key is already known.
+The first list for an unknown clone stats storage (at most three keys, four
+clones at a time) and remembers the hit, or a miss for ten minutes. Later
+lists do not stat. The list does not bake. The picker says "Preparing preview…"
 only after a 202. A miss enqueues one Fish bake on the worker
 (`cloneProviderPin: "fish"`, `allowFallback: false`) and stores it only under
 the fish v2 key. The S2 pool is not consulted, so a cold pool cannot block

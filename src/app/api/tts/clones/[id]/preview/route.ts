@@ -39,9 +39,10 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import {
-  CLONE_PREVIEW_STATUS_CACHE,
   clonePreviewReadPaths,
+  clonePreviewStatusHeaders,
   findStoredClonePreview,
+  noteStoredClonePreview,
   planClonePreview,
   previewAudioOrNotModified,
 } from "@/lib/tts/clone-preview";
@@ -53,8 +54,12 @@ import {
 } from "@/lib/tts/clone-preview-job";
 
 export const runtime = "nodejs";
+/** One person's clip. Never a static or shared cache entry. */
+export const dynamic = "force-dynamic";
 /** The request only reads storage or enqueues. The worker renders the line. */
 export const maxDuration = 60;
+
+const PRIVATE_JSON = clonePreviewStatusHeaders();
 
 // A cache probe is far cheaper than a synthesis call, so this limit is only
 // abuse cover. The render below has its own, much tighter, meter.
@@ -82,7 +87,7 @@ async function ownedClone(request: NextRequest, raw: string) {
 function storagePathOr404(): NextResponse {
   return NextResponse.json(
     { error: "That sample isn't available.", code: "NOT_FOUND" },
-    { status: 404 }
+    { status: 404, headers: PRIVATE_JSON }
   );
 }
 
@@ -94,7 +99,7 @@ function bakeFailed(retryAfterMs: number): NextResponse {
       retryAfterMs,
       engine: CLONE_PREVIEW_BAKE_ENGINE,
     },
-    { status: 409, headers: { "Cache-Control": CLONE_PREVIEW_STATUS_CACHE } }
+    { status: 409, headers: PRIVATE_JSON }
   );
 }
 
@@ -105,7 +110,7 @@ function bakePreparing(): NextResponse {
       code: "PREVIEW_PREPARING",
       engine: CLONE_PREVIEW_BAKE_ENGINE,
     },
-    { status: 202, headers: { "Cache-Control": CLONE_PREVIEW_STATUS_CACHE } }
+    { status: 202, headers: PRIVATE_JSON }
   );
 }
 
@@ -141,7 +146,7 @@ export async function GET(
     if (!isFishConfigured()) {
       return NextResponse.json(
         { error: "Cloning isn't available right now.", code: "FISH_NOT_CONFIGURED" },
-        { status: 503 }
+        { status: 503, headers: PRIVATE_JSON }
       );
     }
 
@@ -153,7 +158,7 @@ export async function GET(
     ) {
       return NextResponse.json(
         { error: "Too fast. Wait a minute." },
-        { status: 429 }
+        { status: 429, headers: PRIVATE_JSON }
       );
     }
 
@@ -163,7 +168,7 @@ export async function GET(
     if (!owned) {
       return NextResponse.json(
         { error: "That voice isn't available.", code: "NOT_FOUND" },
-        { status: 404 }
+        { status: 404, headers: PRIVATE_JSON }
       );
     }
     const { catalog } = owned;
@@ -180,6 +185,7 @@ export async function GET(
       planClonePreview({ catalogVoiceId: catalog.id, text: PREVIEW_TEXT })
     );
     if (stored) {
+      await noteStoredClonePreview(catalog.id, stored.path);
       return previewAudioOrNotModified(request, stored.audio, "stored", stored.path);
     }
 
@@ -202,7 +208,7 @@ export async function POST(
     if (!isFishConfigured()) {
       return NextResponse.json(
         { error: "Cloning isn't available right now.", code: "FISH_NOT_CONFIGURED" },
-        { status: 503 }
+        { status: 503, headers: PRIVATE_JSON }
       );
     }
 
@@ -214,7 +220,7 @@ export async function POST(
     ) {
       return NextResponse.json(
         { error: "Too fast. Wait a minute." },
-        { status: 429 }
+        { status: 429, headers: PRIVATE_JSON }
       );
     }
 
@@ -223,7 +229,7 @@ export async function POST(
     if (!owned) {
       return NextResponse.json(
         { error: "That voice isn't available.", code: "NOT_FOUND" },
-        { status: 404 }
+        { status: 404, headers: PRIVATE_JSON }
       );
     }
     const { catalog } = owned;
@@ -237,6 +243,7 @@ export async function POST(
     // A clip that already exists is the preview. Retry does not render it again.
     const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT);
     if (existing) {
+      await noteStoredClonePreview(catalog.id, existing.path);
       return previewAudioOrNotModified(request, existing.audio, "stored", existing.path);
     }
 

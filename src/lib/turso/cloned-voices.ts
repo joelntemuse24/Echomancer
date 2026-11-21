@@ -8,7 +8,7 @@ import {
   parseCloneAccent,
 } from "@/lib/tts/clone-accent";
 
-const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, reference_transcript, created_at, deleted_at`;
+const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, reference_transcript, preview_storage_path, preview_probed_at, created_at, deleted_at`;
 
 export async function listClonedVoicesForUser(
   userId: string

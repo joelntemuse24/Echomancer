@@ -101,6 +101,8 @@ describe("ensureTtsJobColumns", () => {
     "preview_bake_not_before",
     "preview_bake_terminal",
     "preview_bake_running_until",
+    "preview_storage_path",
+    "preview_probed_at",
   ])("does not take the hot path when cloned_voices.%s is missing", async (column) => {
     // No clone column may be omitted from the check again.
     await resetDatabase();

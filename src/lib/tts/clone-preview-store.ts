@@ -32,7 +32,7 @@
  */
 
 import { createHash } from "crypto";
-import { downloadFile, getFileMetadata, uploadFile } from "@/lib/storage";
+import { downloadFile, readObjectStat, uploadFile } from "@/lib/storage";
 import { isEmptyOrSilentAudio, MIN_AUDIBLE_BYTES } from "@/lib/tts/audio-guard";
 import {
   cloneRowIdFromCatalogId,
@@ -218,22 +218,45 @@ export async function readFirstStoredClonePreview(
   return null;
 }
 
+export type LocatedClonePreview =
+  | { path: string }
+  | "miss"
+  | "error";
+
 /**
  * The first key that already holds a clip, without downloading it.
  *
- * The voices list uses this so a card can play the stored MP3 the way a
- * stock voice plays its file. It does not bake. A silent object still has
- * a size; the preview route is what refuses to serve it.
+ * `"miss"` means every candidate was absent or too small. `"error"` means
+ * storage could not be read, so the caller must not remember a miss.
+ * A silent object can still be large enough to count; the preview route
+ * is what refuses to serve it. This does not bake.
+ */
+export async function locateClonePreview(
+  input: ClonePreviewKeyInput,
+  engine: ClonePreviewEngine = "fish"
+): Promise<LocatedClonePreview> {
+  let sawError = false;
+  for (const path of clonePreviewLookupPaths(input, engine)) {
+    try {
+      const stat = await readObjectStat(path);
+      if (stat && stat.size >= MIN_AUDIBLE_BYTES) return { path };
+    } catch {
+      sawError = true;
+    }
+  }
+  return sawError ? "error" : "miss";
+}
+
+/**
+ * The first key that already holds a clip, without downloading it.
+ * A storage error is a miss for callers that only need a path.
  */
 export async function findExistingClonePreviewPath(
   input: ClonePreviewKeyInput,
   engine: ClonePreviewEngine = "fish"
 ): Promise<string | null> {
-  for (const path of clonePreviewLookupPaths(input, engine)) {
-    const meta = await getFileMetadata(path);
-    if (meta && meta.size >= MIN_AUDIBLE_BYTES) return path;
-  }
-  return null;
+  const located = await locateClonePreview(input, engine);
+  return located === "miss" || located === "error" ? null : located.path;
 }
 
 /** Store a finished preview. Never throws; returns whether it was written. */
