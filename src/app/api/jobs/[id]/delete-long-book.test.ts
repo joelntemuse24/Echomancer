@@ -18,7 +18,12 @@ import {
 } from "@/test/harness";
 import { execute, queryOne } from "@/lib/turso";
 import * as storage from "@/lib/storage";
-import { audiobookObjectPrefix } from "@/lib/jobs/delete-owned-job";
+import {
+  audiobookObjectPrefix,
+  keysUnderPrefix,
+  purgeDeletedJobStorage,
+  uploadObjectPrefix,
+} from "@/lib/jobs/delete-owned-job";
 
 const LONG_JOB = "7c1bcf22-0000-4000-8000-000000000293";
 const SIBLING_JOB = "7c1bcf22-0000-4000-8000-000000000294";
@@ -249,5 +254,219 @@ describe("DELETE /api/jobs/[id] long book", () => {
     expect(audiobookObjectPrefix(LONG_JOB)).toBe(`audiobooks/${LONG_JOB}/`);
     expect(audiobookObjectPrefix("../other")).toBeNull();
     expect(audiobookObjectPrefix("a/b")).toBeNull();
+    expect(audiobookObjectPrefix(".")).toBeNull();
+    expect(uploadObjectPrefix(`pdfs/${UPLOAD_ID_A}/content.txt`)).toBe(
+      `pdfs/${UPLOAD_ID_A}/`
+    );
+    expect(uploadObjectPrefix("pdfs/.")).toBeNull();
+    expect(uploadObjectPrefix(`pdfs/${UPLOAD_ID_A}`)).toBeNull();
+    const prefix = `audiobooks/${LONG_JOB}/`;
+    expect(
+      keysUnderPrefix(
+        [
+          `${prefix}sections/0000.mp3`,
+          `audiobooks/${LONG_JOB}-extra/sections/0000.mp3`,
+          `${prefix}../other.mp3`,
+          `pdfs/${UPLOAD_ID_A}-extra/content.txt`,
+        ],
+        prefix
+      )
+    ).toEqual([`${prefix}sections/0000.mp3`]);
+  });
+
+  it("does not purge a book that is still in the library", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Still here. ".repeat(10),
+    });
+    await seedJob({
+      id: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "ready",
+    });
+    await writeObjects(`audiobooks/${LONG_JOB}/sections`, 2);
+
+    await purgeDeletedJobStorage({
+      jobId: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: "pdfs/someone-else/content.txt",
+    });
+
+    expect(deleteBatches).toEqual([]);
+    expect(await originalListFiles(`audiobooks/${LONG_JOB}/`)).toHaveLength(2);
+    expect(await storage.fileExists(pdfPath)).toBe(true);
+  });
+
+  it("leaves a neighboring prefix alone and drops an injected key", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Chapter one. ".repeat(10),
+    });
+    await seedJob({
+      id: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "ready",
+    });
+    await writeObjects(`audiobooks/${LONG_JOB}/sections`, 2);
+    await writeObjects(`audiobooks/${LONG_JOB}-extra/sections`, 1);
+    await writeObjects(`pdfs/${UPLOAD_ID_A}-extra`, 1);
+
+    vi.spyOn(storage, "listFiles").mockImplementation(async (directory) => {
+      listedPrefixes.push(directory);
+      const found = await originalListFiles(directory);
+      return [
+        ...found,
+        `audiobooks/${LONG_JOB}-extra/sections/0000.mp3`,
+        `audiobooks/${LONG_JOB}/../other.mp3`,
+      ];
+    });
+
+    const { DELETE } = await import("@/app/api/jobs/[id]/route");
+    const response = await DELETE(
+      await buildRequest(`/api/jobs/${LONG_JOB}`, { userId: USER_A, method: "DELETE" }),
+      routeParams({ id: LONG_JOB })
+    );
+    expect(response.status).toBe(200);
+    await flushPurges();
+
+    const keys = deleteBatches.flat();
+    expect(keys.some((key) => key.includes("-extra"))).toBe(false);
+    expect(keys.some((key) => key.includes(".."))).toBe(false);
+    expect(await originalListFiles(`audiobooks/${LONG_JOB}-extra/`)).toHaveLength(1);
+    expect(await originalListFiles(`pdfs/${UPLOAD_ID_A}-extra`)).toHaveLength(1);
+    expect(await originalListFiles(`audiobooks/${LONG_JOB}/`)).toEqual([]);
+  });
+
+  it("keeps the upload folder when a sibling uses another file in it", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Shared chapter. ".repeat(8),
+    });
+    await seedJob({
+      id: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "ready",
+    });
+    await seedJob({
+      id: SIBLING_JOB,
+      userId: USER_A,
+      pdfStoragePath: `pdfs/${UPLOAD_ID_A}/listen-cleaned.txt`,
+      status: "queued",
+    });
+
+    const { DELETE } = await import("@/app/api/jobs/[id]/route");
+    const response = await DELETE(
+      await buildRequest(`/api/jobs/${LONG_JOB}`, { userId: USER_A, method: "DELETE" }),
+      routeParams({ id: LONG_JOB })
+    );
+    expect(response.status).toBe(200);
+    await flushPurges();
+    expect(await storage.fileExists(pdfPath)).toBe(true);
+    expect(
+      await queryOne(`SELECT id FROM uploads WHERE id = ?`, [UPLOAD_ID_A])
+    ).toBeTruthy();
+  });
+
+  it("cancels a running book and does not let retry or a claim bring it back", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Still generating. ".repeat(12),
+    });
+    await seedJob({
+      id: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "processing",
+      jobKind: "takehome",
+    });
+    await execute(
+      `UPDATE jobs SET processing_lease_token = ?, lease_expires_at = unixepoch() + 90
+       WHERE id = ?`,
+      ["lease-still-held", LONG_JOB]
+    );
+
+    const { DELETE, PATCH } = await import("@/app/api/jobs/[id]/route");
+    const response = await DELETE(
+      await buildRequest(`/api/jobs/${LONG_JOB}`, { userId: USER_A, method: "DELETE" }),
+      routeParams({ id: LONG_JOB })
+    );
+    expect(response.status).toBe(200);
+    const row = await jobRow(LONG_JOB);
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.status).toBe("cancelled");
+    expect(row?.processing_lease_token).toBeNull();
+
+    const { claimTakehomeLease } = await import("@/lib/tts/process-job");
+    expect(await claimTakehomeLease(LONG_JOB)).toBeNull();
+
+    const retry = await PATCH(
+      await buildRequest(`/api/jobs/${LONG_JOB}`, {
+        userId: USER_A,
+        method: "PATCH",
+        body: { action: "retry" },
+      }),
+      routeParams({ id: LONG_JOB })
+    );
+    expect(retry.status).toBe(404);
+    expect((await jobRow(LONG_JOB))?.status).toBe("cancelled");
+    expect((await jobRow(LONG_JOB))?.deleted_at).toBeTruthy();
+  });
+
+  it("does not play a soft-deleted book while its file is still stored", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Play me. ".repeat(8),
+    });
+    await seedJob({
+      id: LONG_JOB,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "ready",
+      audioStoragePath: `audiobooks/${LONG_JOB}/sections/0000.mp3`,
+    });
+    await writeObjects(`audiobooks/${LONG_JOB}/sections`, 1);
+
+    const { DELETE } = await import("@/app/api/jobs/[id]/route");
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const deleted = await DELETE(
+      await buildRequest(`/api/jobs/${LONG_JOB}`, { userId: USER_A, method: "DELETE" }),
+      routeParams({ id: LONG_JOB })
+    );
+    expect(deleted.status).toBe(200);
+
+    const playback = await GET(
+      await buildRequest(
+        `/api/storage/audiobooks/${LONG_JOB}/sections/0000.mp3`,
+        { userId: USER_A }
+      ),
+      routeParams({
+        path: ["audiobooks", LONG_JOB, "sections", "0000.mp3"],
+      })
+    );
+    expect(playback.status).toBe(404);
+    expect(await originalListFiles(`audiobooks/${LONG_JOB}/`)).toHaveLength(1);
+  });
+
+  it("refuses a local key that leaves the storage root", async () => {
+    const probe = path.resolve(process.env.STORAGE_PATH || "", "..", "echo-delete-probe-1534.txt");
+    await writeFile(probe, "keep");
+    try {
+      await expect(originalDeleteFiles(["../echo-delete-probe-1534.txt"])).rejects.toThrow(
+        /outside the storage root/
+      );
+      const { readFile } = await import("fs/promises");
+      expect(await readFile(probe, "utf8")).toBe("keep");
+    } finally {
+      const { unlink } = await import("fs/promises");
+      await unlink(probe).catch(() => undefined);
+    }
   });
 });

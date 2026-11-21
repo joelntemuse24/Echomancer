@@ -11,12 +11,14 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  deleteFile,
   downloadFile,
   downloadFileToPath,
   uploadFile,
   uploadFileFromPath,
   uploadFileWithPrefix,
 } from "@/lib/storage";
+import { jobAudiobookClosed } from "@/lib/jobs/job-audiobook-closed";
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import {
   loadFrozenSectionOutline,
@@ -568,6 +570,25 @@ async function sectionsInSpeakable(
   }
 }
 
+/**
+ * Store one audiobook object, then remove it if the book was deleted or
+ * cancelled while the upload was in flight.
+ */
+async function putAudiobookObject(
+  jobId: string,
+  write: () => Promise<{ path: string }>
+): Promise<{ path: string }> {
+  if (await jobAudiobookClosed(jobId)) {
+    throw new Error("job closed before audiobook upload");
+  }
+  const uploaded = await write();
+  if (await jobAudiobookClosed(jobId)) {
+    await deleteFile(uploaded.path).catch(() => undefined);
+    throw new Error("job closed before audiobook upload");
+  }
+  return uploaded;
+}
+
 export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
@@ -631,22 +652,26 @@ export async function materializeFullAudiobook(
           {
             download: downloadFileToPath,
             upload: async (localPath, contentType) => {
-              const uploaded = await uploadFileFromPath(
-                `audiobooks/${jobId}`,
-                "full.mp3",
-                localPath,
-                contentType
+              const uploaded = await putAudiobookObject(jobId, () =>
+                uploadFileFromPath(
+                  `audiobooks/${jobId}`,
+                  "full.mp3",
+                  localPath,
+                  contentType
+                )
               );
               return uploaded.path;
             },
             uploadWithPrefix: async (prefix, localPath, contentType, skipBytes) => {
-              const uploaded = await uploadFileWithPrefix(
-                `audiobooks/${jobId}`,
-                "full.mp3",
-                prefix,
-                localPath,
-                contentType,
-                skipBytes
+              const uploaded = await putAudiobookObject(jobId, () =>
+                uploadFileWithPrefix(
+                  `audiobooks/${jobId}`,
+                  "full.mp3",
+                  prefix,
+                  localPath,
+                  contentType,
+                  skipBytes
+                )
               );
               return uploaded.path;
             },
@@ -666,7 +691,8 @@ export async function materializeFullAudiobook(
           // The measured length is the only source a browser can trust for
           // a copy-joined book, so persist it for the player.
           await execute(
-            "UPDATE jobs SET duration_seconds = ?, updated_at = unixepoch() WHERE id = ?",
+            `UPDATE jobs SET duration_seconds = ?, updated_at = unixepoch()
+             WHERE id = ? AND deleted_at IS NULL`,
             [Math.round(streamed.totalSeconds), jobId]
           ).catch(() => undefined);
           // sectionStarts follow the `ready` array order; chapters index sections.
@@ -690,31 +716,35 @@ export async function materializeFullAudiobook(
               ? timedTree
               : playbackChaptersWithTimes(spans, startsBySection, streamed.totalSeconds);
           if (chapters.length > 0) {
-            await uploadFile(
-              `audiobooks/${jobId}`,
-              PLAYBACK_CHAPTERS_NAME,
-              Buffer.from(
-                JSON.stringify({
-                  chapters,
-                  sectionStarts: startsBySection,
-                  totalSeconds: streamed.totalSeconds,
-                }),
-                "utf8"
-              ),
-              "application/json"
+            await putAudiobookObject(jobId, () =>
+              uploadFile(
+                `audiobooks/${jobId}`,
+                PLAYBACK_CHAPTERS_NAME,
+                Buffer.from(
+                  JSON.stringify({
+                    chapters,
+                    sectionStarts: startsBySection,
+                    totalSeconds: streamed.totalSeconds,
+                  }),
+                  "utf8"
+                ),
+                "application/json"
+              )
             )
               .then(async () => {
-                await uploadFile(
-                  `audiobooks/${jobId}`,
-                  "section-starts.json",
-                  Buffer.from(
-                    JSON.stringify({
-                      sectionStarts: startsBySection,
-                      totalSeconds: streamed.totalSeconds,
-                    }),
-                    "utf8"
-                  ),
-                  "application/json"
+                await putAudiobookObject(jobId, () =>
+                  uploadFile(
+                    `audiobooks/${jobId}`,
+                    "section-starts.json",
+                    Buffer.from(
+                      JSON.stringify({
+                        sectionStarts: startsBySection,
+                        totalSeconds: streamed.totalSeconds,
+                      }),
+                      "utf8"
+                    ),
+                    "application/json"
+                  )
                 ).catch(() => undefined);
                 console.log(
                   `[Job ${jobId}] playback chapters timed (${chapters.length} chapters, ${Math.round(streamed.totalSeconds!)}s)`
@@ -776,11 +806,13 @@ export async function materializeFullAudiobook(
   }
   if (!built) return null;
 
-  const dry = await uploadFile(
-    `audiobooks/${jobId}`,
-    `full.${built.format.extension}`,
-    built.buffer,
-    built.format.contentType
+  const dry = await putAudiobookObject(jobId, () =>
+    uploadFile(
+      `audiobooks/${jobId}`,
+      `full.${built.format.extension}`,
+      built.buffer,
+      built.format.contentType
+    )
   );
   console.log(
     `[Job ${jobId}] wrote dry audiobook ${dry.path} (${built.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections)`
@@ -797,11 +829,13 @@ export async function materializeFullAudiobook(
     logPrefix: `[Job ${jobId}]`,
   });
   if (mastered.mastered && !mastered.buffer.equals(built.buffer)) {
-    await uploadFile(
-      `audiobooks/${jobId}`,
-      `full.${built.format.extension}`,
-      mastered.buffer,
-      built.format.contentType
+    await putAudiobookObject(jobId, () =>
+      uploadFile(
+        `audiobooks/${jobId}`,
+        `full.${built.format.extension}`,
+        mastered.buffer,
+        built.format.contentType
+      )
     );
     console.log(
       `[Job ${jobId}] overwrote full audiobook ${dry.path} after remaster (${mastered.buffer.length} bytes)`
@@ -832,11 +866,8 @@ async function zipAndUploadSections(
   }
   if (parts.length === 0) return null;
   const zip = await zipSectionBuffers(parts);
-  const uploaded = await uploadFile(
-    `audiobooks/${jobId}`,
-    "sections.zip",
-    zip,
-    "application/zip"
+  const uploaded = await putAudiobookObject(jobId, () =>
+    uploadFile(`audiobooks/${jobId}`, "sections.zip", zip, "application/zip")
   );
   console.log(
     `[Job ${jobId}] shipped section zip ${uploaded.path} (${parts.length} sections) because remux was unavailable`

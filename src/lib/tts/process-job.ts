@@ -827,7 +827,9 @@ async function heartbeatLease(
 ): Promise<boolean> {
   const result = await execute(
     `UPDATE jobs SET lease_expires_at = unixepoch() + ?, updated_at = unixepoch()
-     WHERE id = ? AND processing_lease_token = ?`,
+     WHERE id = ? AND processing_lease_token = ?
+       AND deleted_at IS NULL
+       AND status IN ('queued', 'processing', 'waiting')`,
     [ttlSeconds, jobId, token]
   );
   return result.rowsAffected > 0;
@@ -862,7 +864,9 @@ async function releaseLease(
          processing_started_at = NULL,
          sched_not_before = unixepoch() + ?,
          updated_at = unixepoch()
-       WHERE id = ? AND processing_lease_token = ?`,
+       WHERE id = ? AND processing_lease_token = ?
+         AND deleted_at IS NULL
+         AND status IN ('queued', 'processing', 'waiting')`,
       [patch.errorMessage ?? null, newLeaseToken(), delay, delay, jobId, token]
     );
     return;
@@ -873,7 +877,9 @@ async function releaseLease(
        processing_started_at = NULL,
        sched_not_before = CASE WHEN ? > 0 THEN unixepoch() + ? ELSE NULL END,
        updated_at = unixepoch()
-     WHERE id = ? AND processing_lease_token = ?`,
+     WHERE id = ? AND processing_lease_token = ?
+       AND deleted_at IS NULL
+       AND status IN ('queued', 'processing', 'waiting')`,
     [patch.status, patch.errorMessage ?? null, delay, delay, jobId, token]
   );
 }
@@ -1379,7 +1385,8 @@ async function writeWithLease(
   sql: string,
   args: (string | number | null)[]
 ): Promise<void> {
-  const result = await execute(sql, [...args, jobId, token]);
+  const guarded = /\bdeleted_at\b/.test(sql) ? sql : `${sql} AND deleted_at IS NULL`;
+  const result = await execute(guarded, [...args, jobId, token]);
   if (result.rowsAffected === 0) throw new LeaseLostError(jobId);
 }
 
@@ -1534,6 +1541,21 @@ export async function processTakehomeTick(
         err instanceof Error ? err.message : err
       );
     });
+    // An upload that started before the delete can land after the route's
+    // purge. This removes that prefix only when the row is already deleted.
+    await purgeDeletedAudiobookIfNeeded(jobId);
+  }
+}
+
+async function purgeDeletedAudiobookIfNeeded(jobId: string): Promise<void> {
+  try {
+    const { purgeDeletedAudiobook } = await import("@/lib/jobs/delete-owned-job");
+    await purgeDeletedAudiobook(jobId);
+  } catch (err) {
+    console.warn(
+      `[Job ${jobId}] deleted-book purge skipped`,
+      err instanceof Error ? err.message : err
+    );
   }
 }
 
@@ -3599,7 +3621,8 @@ async function runClaimedTick(
       if (markedReady && !uploadedPath) {
         await execute(
           `UPDATE jobs SET warning = ?, updated_at = unixepoch()
-           WHERE id = ? AND status = 'ready' AND audio_storage_path IS NULL`,
+           WHERE id = ? AND status = 'ready' AND deleted_at IS NULL
+             AND audio_storage_path IS NULL`,
           ["The full download is still being prepared.", jobId]
         ).catch(() => undefined);
       }

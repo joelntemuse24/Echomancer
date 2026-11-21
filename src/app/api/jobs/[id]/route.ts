@@ -207,6 +207,7 @@ export async function DELETE(
     await stopBookRemotely(job.id, "deleted");
     await scheduleDeletedJobPurge({
       jobId: job.id,
+      userId: job.user_id,
       pdfStoragePath: job.pdf_storage_path,
     });
     return NextResponse.json({ success: true, message: "Job deleted" });
@@ -232,10 +233,14 @@ export async function PATCH(
         );
       }
       await requireOwnedJob(request, id);
-      await execute(
-        `UPDATE jobs SET book_title = ?, updated_at = unixepoch() WHERE id = ?`,
+      const renamed = await execute(
+        `UPDATE jobs SET book_title = ?, updated_at = unixepoch()
+         WHERE id = ? AND deleted_at IS NULL`,
         [parsed.data.bookTitle, id]
       );
+      if (renamed.rowsAffected === 0) {
+        return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      }
       return NextResponse.json({ success: true, bookTitle: parsed.data.bookTitle });
     }
 
@@ -291,7 +296,7 @@ export async function PATCH(
     // Resume from the lowest unready index. Ready section files stay put.
     // Timings restart with the attempt: ETA measures throughput from the first
     // section of this run, not from one finished days ago.
-    await execute(
+    const requeued = await execute(
       `UPDATE jobs SET status = 'queued', progress = ?, current_section = ?,
        next_section_index = ?, error_message = NULL,
        processing_started_at = NULL, processing_lease_token = NULL,
@@ -299,7 +304,7 @@ export async function PATCH(
        generation_started_at = NULL, first_section_at = NULL,
        last_section_at = NULL,
        updated_at = unixepoch()
-       WHERE id = ?`,
+       WHERE id = ? AND deleted_at IS NULL AND status = 'failed'`,
       [
         narrationProgressPercent(done, total),
         done,
@@ -307,6 +312,9 @@ export async function PATCH(
         id,
       ]
     );
+    if (requeued.rowsAffected === 0) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
 
     if (job.job_kind === "takehome" || job.job_kind == null) {
       await enqueueTakehomeAdvance(id);

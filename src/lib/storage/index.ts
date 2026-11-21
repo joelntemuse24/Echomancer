@@ -171,6 +171,20 @@ export async function deleteFile(storagePath: string): Promise<void> {
 const LOCAL_UNLINK_WIDTH = 32;
 
 /**
+ * A local key may only name a file under STORAGE_ROOT.
+ * `..`, an empty segment, or an absolute path is refused.
+ */
+function localPathForKey(storagePath: string): string | null {
+  if (!storagePath || storagePath.includes("\0")) return null;
+  const parts = storagePath.split(/[/\\]/);
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return null;
+  const root = path.resolve(STORAGE_ROOT);
+  const target = path.resolve(root, ...parts);
+  if (target !== root && !target.startsWith(root + path.sep)) return null;
+  return target;
+}
+
+/**
  * Delete many objects. On R2 this is DeleteObjects, 1,000 keys per call.
  * A missing object is success. Duplicate keys are sent once.
  */
@@ -189,17 +203,26 @@ export async function deleteFiles(storagePaths: readonly string[]): Promise<void
     return;
   }
 
+  let refused = 0;
   for (let offset = 0; offset < keys.length; offset += LOCAL_UNLINK_WIDTH) {
     const batch = keys.slice(offset, offset + LOCAL_UNLINK_WIDTH);
     await Promise.all(
       batch.map(async (storagePath) => {
+        const target = localPathForKey(storagePath);
+        if (!target) {
+          refused += 1;
+          return;
+        }
         try {
-          await fs.unlink(path.join(STORAGE_ROOT, storagePath));
+          await fs.unlink(target);
         } catch (err) {
           if (!missingObject(err)) throw err;
         }
       })
     );
+  }
+  if (refused > 0) {
+    throw new Error(`Refusing ${refused} storage key(s) outside the storage root`);
   }
 }
 
