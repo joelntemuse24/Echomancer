@@ -33,6 +33,7 @@
 
 import { createHash } from "crypto";
 import { downloadFile, readObjectStat, uploadFile } from "@/lib/storage";
+import { clonePreviewMediaUrl } from "@/lib/tts/clone-preview-media";
 import { isEmptyOrSilentAudio, MIN_AUDIBLE_BYTES } from "@/lib/tts/audio-guard";
 import {
   cloneRowIdFromCatalogId,
@@ -179,12 +180,19 @@ export function clonePreviewVersionToken(storagePath: string): string {
     .slice(0, 16);
 }
 
-/** Same-origin URL the picker can play and the browser can cache. */
+/**
+ * Cookie-free URL for a clip the caller has already authorized.
+ *
+ * The catalog id is not in the path: possession of the signature is the
+ * grant, and the edge can cache it without `Vary: Cookie`. An empty string
+ * means the key is not a preview object.
+ */
 export function clonePreviewPublicUrl(
   catalogVoiceId: string,
   storagePath: string
 ): string {
-  return `/api/tts/clones/${encodeURIComponent(catalogVoiceId)}/preview?v=${clonePreviewVersionToken(storagePath)}`;
+  void catalogVoiceId;
+  return clonePreviewMediaUrl(storagePath);
 }
 
 /** The stored preview, or null when there is none yet (or it is unusable). */
@@ -228,8 +236,9 @@ export type LocatedClonePreview =
  *
  * `"miss"` means every candidate was absent or too small. `"error"` means
  * storage could not be read, so the caller must not remember a miss.
- * A silent object can still be large enough to count; the preview route
- * is what refuses to serve it. This does not bake.
+ * A silent object can still be large enough to count. The bytes route
+ * refuses it from the opening bytes, so it is not cached as audio. This
+ * does not bake.
  */
 export async function locateClonePreview(
   input: ClonePreviewKeyInput,

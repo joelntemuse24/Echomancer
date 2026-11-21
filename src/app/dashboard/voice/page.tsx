@@ -60,7 +60,7 @@ import {
   isEdgeStockVoice,
   SLIM_STOCK_VOICE_IDS,
 } from "@/lib/tts/standard-voice";
-import { requestCapacityWarm } from "@/lib/capacity/client";
+import { capacityWarmForVoiceSelect, requestCapacityWarm } from "@/lib/capacity/client";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   classifyClonePreviewRead,
@@ -78,6 +78,10 @@ import {
   clonePreviewPollUrl,
   clonePreviewProbeUrl,
 } from "@/lib/tts/clone-preview-url";
+import {
+  currentClonePreviewPreloadMode,
+  planClonePreviewPreload,
+} from "@/lib/tts/clone-preview-preload";
 import { rowIsPressed, voiceIdAfterRowAction } from "@/lib/voice-row-selection";
 import { cloneUploadLead } from "@/lib/youtube/clone-upload-copy";
 import {
@@ -103,7 +107,6 @@ import {
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import { duplicateCloneDateLabel } from "@/lib/clone-list-label";
-import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
 import { voiceIdAfterPathChange } from "@/lib/voice-path-selection";
 import {
   isPersistableStandardVoiceId,
@@ -600,6 +603,36 @@ export default function VoiceSelectionPage() {
     ? (allVoices.find((voice) => voice.id === soloVoiceId) ?? null)
     : null;
   const selectableVoices = activePath === "clone" ? pathVoices : mainVoices;
+
+  useEffect(() => {
+    const plan = planClonePreviewPreload({
+      voices: selectableVoices,
+      selectedId: selectedVoiceId,
+      mode: currentClonePreviewPreloadMode(),
+    });
+    if (plan.length === 0) return;
+    const warmed: HTMLAudioElement[] = [];
+    let cancelled = false;
+    const start = () => {
+      if (cancelled) return;
+      for (const item of plan) {
+        const audio = new Audio();
+        audio.preload = item.preload;
+        audio.src = item.url;
+        warmed.push(audio);
+      }
+    };
+    const idleId = window.requestIdleCallback
+      ? window.requestIdleCallback(start, { timeout: 1500 })
+      : null;
+    const timerId = idleId == null ? window.setTimeout(start, 200) : null;
+    return () => {
+      cancelled = true;
+      if (idleId != null) window.cancelIdleCallback(idleId);
+      if (timerId != null) window.clearTimeout(timerId);
+      for (const audio of warmed) audio.src = "";
+    };
+  }, [selectableVoices, selectedVoiceId]);
   const selectedVoice =
     selectableVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
   const pendingSample =
@@ -704,9 +737,8 @@ export default function VoiceSelectionPage() {
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
     rememberVoice(id);
-    if (id.startsWith("clone:") || isKokoroCpuVoiceId(id)) {
-      requestCapacityWarm({ voiceId: id, reason: "voice" });
-    }
+    const warm = capacityWarmForVoiceSelect(id);
+    if (warm) requestCapacityWarm(warm);
     if (activePath === "clone" && isPersistableStandardVoiceId(id)) {
       setVoicePath(null);
     }

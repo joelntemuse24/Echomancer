@@ -6,6 +6,7 @@ import {
   isAllZeroBytes,
   isEmptyOrSilentAudio,
   isEmptyOrSilentStreamPayload,
+  previewObjectUnusable,
 } from "./audio-guard";
 import { createWavHeader, pcmToWav } from "./pcm-wav";
 
@@ -80,6 +81,27 @@ describe("byte helpers", () => {
     expect(isAllZeroBytes(Buffer.alloc(10))).toBe(true);
     expect(isAllZeroBytes(Buffer.from([0, 0, 1]))).toBe(false);
     expect(hasNonZeroByte(Buffer.from([0, 0, 1]))).toBe(true);
+  });
+});
+
+describe("previewObjectUnusable", () => {
+  it("refuses a zero-filled opening and a file that is too small", () => {
+    expect(previewObjectUnusable(4096, Buffer.alloc(64), true)).toBe(true);
+    expect(previewObjectUnusable(MIN_AUDIBLE_BYTES - 1, Buffer.from([0xff, 0xfb]), true)).toBe(
+      true
+    );
+    const shortMp3 = Buffer.alloc(MIN_MP3_SPEECH_BYTES - 1, 0x5a);
+    shortMp3[0] = 0xff;
+    shortMp3[1] = 0xfb;
+    expect(previewObjectUnusable(shortMp3.length, shortMp3.subarray(0, 64), true)).toBe(true);
+  });
+
+  it("accepts an MP3 frame and does not judge a later range from zeros", () => {
+    const mp3 = Buffer.alloc(64, 0x5a);
+    mp3[0] = 0xff;
+    mp3[1] = 0xfb;
+    expect(previewObjectUnusable(4096, mp3, true)).toBe(false);
+    expect(previewObjectUnusable(4096, Buffer.alloc(32), false)).toBe(false);
   });
 });
 

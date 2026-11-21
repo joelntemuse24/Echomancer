@@ -48,10 +48,12 @@ import {
   rememberClonePreviewMiss,
   rememberClonePreviewPath,
 } from "@/lib/tts/clone-preview-record";
+import { isClonePreviewObjectPath } from "@/lib/tts/clone-preview-media";
 import {
   clonePreviewLookupPaths,
   clonePreviewPublicUrl,
   clonePreviewStoragePath,
+  clonePreviewVersionToken,
   findExistingClonePreviewPath,
   locateClonePreview,
   readFirstStoredClonePreview,
@@ -59,6 +61,7 @@ import {
   type ClonePreviewKeyInput,
   type StoredClonePreview,
 } from "@/lib/tts/clone-preview-store";
+import { clonePreviewStreamResponse } from "@/lib/tts/clone-preview-stream";
 
 /** A stored clip can sit in the browser cache until the recipe or the key changes. */
 export const CLONE_PREVIEW_AUDIO_CACHE = "private, max-age=31536000, immutable";
@@ -330,7 +333,109 @@ export async function cloneCatalogPreviewUrl(
 ): Promise<string | null> {
   const plan = planClonePreview({ catalogVoiceId: voice.id, text: PREVIEW_TEXT });
   const path = await findExistingClonePreviewPath(keyInputFor(voice, plan));
-  return path ? clonePreviewPublicUrl(voice.id, path) : null;
+  if (!path) return null;
+  return clonePreviewPublicUrl(voice.id, path) || null;
+}
+
+const FILE_VERSION_TOKEN = /^[a-f0-9]{16}$/;
+
+/**
+ * A remembered key this voice is allowed to stream.
+ *
+ * The column is not a free-form object key. It has to be one of this
+ * clone's fish, legacy, or s2-pro paths, so a poisoned value cannot read
+ * another clone's preview.
+ */
+function candidateSavedPath(
+  savedPath: string | null | undefined,
+  candidates: readonly string[]
+): string | null {
+  if (!savedPath || savedPath === CLONE_PREVIEW_PATH_ABSENT) return null;
+  if (!isClonePreviewObjectPath(savedPath)) return null;
+  return candidates.includes(savedPath) ? savedPath : null;
+}
+
+/**
+ * The object to stream, with no storage read.
+ *
+ * A 16-hex `v` token is the recipe plus one candidate key. The stored
+ * `preview_storage_path` is used when that token is absent or does not
+ * match, and only when it is one of this clone's keys. Anything else
+ * (including the probe's recipe id, or a path for a different clone) is a
+ * miss here, and the caller may walk the keys.
+ */
+export function resolveClonePreviewHotPath(input: {
+  voice: ClonePreviewVoice;
+  plan: ClonePreviewPlan;
+  savedPath: string | null | undefined;
+  versionToken: string | null | undefined;
+}): { path: string; resolve: "stored" | "token" } | null {
+  const candidates = clonePreviewLookupPaths(keyInputFor(input.voice, input.plan));
+  const token = input.versionToken?.trim() || "";
+  if (FILE_VERSION_TOKEN.test(token)) {
+    const matched = candidates.find((path) => clonePreviewVersionToken(path) === token);
+    if (matched) return { path: matched, resolve: "token" };
+  }
+  const saved = candidateSavedPath(input.savedPath, candidates);
+  if (saved) return { path: saved, resolve: "stored" };
+  return null;
+}
+
+type PreviewHeaderRequest = {
+  headers: { get(name: string): string | null };
+  signal?: AbortSignal;
+};
+
+/**
+ * Serve a stored clip. The hot path streams a candidate key and refuses a
+ * silent or non-audio object from its opening bytes. A token that misses
+ * still tries the remembered key before the walk. The walk downloads each
+ * remaining key and still refuses a silent file.
+ */
+export async function respondStoredClonePreview(input: {
+  request: PreviewHeaderRequest;
+  voice: ClonePreviewVoice;
+  plan: ClonePreviewPlan;
+  savedPath: string | null | undefined;
+  versionToken: string | null;
+}): Promise<Response | null> {
+  const startedAt = performance.now();
+  const candidates = clonePreviewLookupPaths(keyInputFor(input.voice, input.plan));
+  const hot = resolveClonePreviewHotPath(input);
+  const saved = candidateSavedPath(input.savedPath, candidates);
+  const attempts: { path: string; resolve: "stored" | "token" }[] = [];
+  if (hot) attempts.push(hot);
+  if (saved && saved !== hot?.path) attempts.push({ path: saved, resolve: "stored" });
+  for (const attempt of attempts) {
+    const streamed = await clonePreviewStreamResponse(input.request, attempt.path, {
+      cache: "private",
+      resolve: attempt.resolve,
+      startedAt,
+    });
+    if (streamed) {
+      if (input.savedPath !== attempt.path) {
+        void noteStoredClonePreview(input.voice.id, attempt.path);
+      }
+      return streamed;
+    }
+  }
+
+  const walkedAt = performance.now();
+  const stored = await findStoredClonePreview(input.voice, input.plan);
+  if (!stored) return null;
+  await noteStoredClonePreview(input.voice.id, stored.path);
+  const response = previewAudioOrNotModified(
+    input.request,
+    stored.audio,
+    "stored",
+    stored.path
+  );
+  response.headers.set("X-Echomancer-Preview-Resolve", "walk");
+  response.headers.set(
+    "Server-Timing",
+    `walk;dur=${(performance.now() - walkedAt).toFixed(1)}, total;dur=${(performance.now() - startedAt).toFixed(1)}`
+  );
+  return response;
 }
 
 /** Remember a clip the preview route or the bake just found. */
@@ -355,7 +460,8 @@ function rememberedPreviewUrl(
   const candidates = clonePreviewLookupPaths(keyInputFor(voice, plan));
   const saved = row.preview_storage_path;
   if (saved && candidates.includes(saved)) {
-    return { url: clonePreviewPublicUrl(voice.id, saved) };
+    const url = clonePreviewPublicUrl(voice.id, saved);
+    if (url) return { url };
   }
   const probedAt = Number(row.preview_probed_at) || 0;
   if (
@@ -405,7 +511,8 @@ export async function attachClonePreviewUrls<T extends ClonePreviewVoice>(
       return;
     }
     await rememberClonePreviewPath(row.id, located.path);
-    out[index] = { ...voice, previewUrl: clonePreviewPublicUrl(voice.id, located.path) };
+    const url = clonePreviewPublicUrl(voice.id, located.path);
+    if (url) out[index] = { ...voice, previewUrl: url };
   });
   return out;
 }

@@ -1,7 +1,6 @@
 /**
- * The voice list is on Vercel. Modal credentials live on the worker, so a
- * person who already has a trained clone asks the worker to restore while
- * they are still choosing. An account with no clone must not.
+ * The voice list must not ask the worker to restore an S2 container.
+ * A preview is a stored MP3. A clone book restores on its own tick.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,7 +59,7 @@ describe("voice list clone prewarm", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("asks the worker to restore when a trained clone is on the list", async () => {
+  it("does not ask the worker to restore when a trained clone is on the list", async () => {
     await execute(
       `INSERT INTO cloned_voices
          (id, user_id, fish_voice_id, title, sample_storage_path, state, model)
@@ -80,12 +79,9 @@ describe("voice list clone prewarm", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { voices: { id: string }[] };
     expect(body.voices.some((voice) => voice.id.startsWith("clone:"))).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://worker.test/clone-prewarm");
-    expect(init?.method).toBe("POST");
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer s3cret");
-    expect(JSON.parse(String(init?.body))).toEqual({ userId: USER });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls).not.toContain("https://worker.test/clone-prewarm");
   });
 
   it("does not restore when clones are rendered somewhere else", async () => {

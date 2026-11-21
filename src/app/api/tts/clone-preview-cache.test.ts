@@ -39,6 +39,8 @@ import {
   clonePreviewPollUrl,
   clonePreviewProbeUrl,
 } from "@/lib/tts/clone-preview-url";
+import { rememberClonePreviewPath } from "@/lib/tts/clone-preview-record";
+import { verifyClonePreviewMediaToken } from "@/lib/tts/clone-preview-media";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import * as storage from "@/lib/storage";
 import { uploadFile } from "@/lib/storage";
@@ -148,11 +150,75 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("streams the remembered key and does not walk the other keys", async () => {
+    const clone = await makeClone();
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    const legacy = legacyClonePreviewStoragePath({
+      catalogVoiceId: voice.id,
+      providerVoiceId: voice.providerVoiceId,
+      model: voice.model,
+      script: plan.script,
+      speed: plan.speed,
+    })!;
+    const stored = fakeMp3(13);
+    await putObject(legacy, stored);
+    await rememberClonePreviewPath(clone.id, legacy);
+    const download = vi.spyOn(storage, "downloadFile");
+    const stat = vi.spyOn(storage, "readObjectStat");
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-echomancer-preview")).toBe("stored");
+    expect(res.headers.get("x-echomancer-preview-resolve")).toBe("stored");
+    expect(res.headers.get("server-timing")).toMatch(/open;dur=\d/);
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expectSharedCacheOff(res);
+    expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
+    expect(download).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
+  });
+
+  it("uses a file token without stating the other keys", async () => {
+    const clone = await makeClone();
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    const key = {
+      catalogVoiceId: voice.id,
+      providerVoiceId: voice.providerVoiceId,
+      model: voice.model,
+      script: plan.script,
+      speed: plan.speed,
+    };
+    const legacy = legacyClonePreviewStoragePath(key)!;
+    const stored = fakeMp3(14);
+    await putObject(legacy, stored);
+    const download = vi.spyOn(storage, "downloadFile");
+    const token = clonePreviewVersionToken(legacy);
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(
+      await buildRequest(`/api/tts/clones/${clone.id}/preview?v=${token}`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-echomancer-preview-resolve")).toBe("token");
+    expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it("answers 304 when the browser still has this clip", async () => {
     const clone = await makeClone();
     const stored = fakeMp3(11);
     const path = clonePreviewWritePath(voiceOf(clone), planFor(clone))!;
     await putObject(path, stored);
+    await rememberClonePreviewPath(clone.id, path);
 
     const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
     const first = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
@@ -460,8 +526,7 @@ describe("preview key derivation", () => {
     const fish = clonePreviewStoragePath(key, "fish")!;
     const legacy = legacyClonePreviewStoragePath(key)!;
     const fishToken = clonePreviewVersionToken(fish);
-    const legacyToken = clonePreviewVersionToken(legacy);
-    expect(fishToken).not.toBe(legacyToken);
+    expect(fishToken).not.toBe(clonePreviewVersionToken(legacy));
     expect(fishToken).toBe(
       createHash("sha256")
         .update(CLONE_PREVIEW_RECIPE)
@@ -479,8 +544,16 @@ describe("preview key derivation", () => {
     expect(fishToken).not.toBe(otherRecipe);
 
     const url = clonePreviewPublicUrl(key.catalogVoiceId, fish);
-    expect(new URL(url, "http://localhost").searchParams.get("v")).toBe(fishToken);
-    expect(url).not.toMatch(/[?&]_=/);
+    expect(url.startsWith("/api/tts/clone-preview/")).toBe(true);
+    expect(url).not.toContain(key.catalogVoiceId);
+    expect(url).not.toMatch(/[?&](?:v|_)=/);
+    const signed = decodeURIComponent(url.slice("/api/tts/clone-preview/".length));
+    expect(verifyClonePreviewMediaToken(signed)).toBe(fish);
+    const legacyUrl = clonePreviewPublicUrl(key.catalogVoiceId, legacy);
+    expect(legacyUrl).not.toBe(url);
+    expect(verifyClonePreviewMediaToken(
+      decodeURIComponent(legacyUrl.slice("/api/tts/clone-preview/".length))
+    )).toBe(legacy);
     const probe = clonePreviewProbeUrl(key.catalogVoiceId);
     expect(probe).toBe(
       `/api/tts/clones/${encodeURIComponent(key.catalogVoiceId)}/preview?v=${encodeURIComponent(CLONE_PREVIEW_RECIPE)}`
@@ -544,6 +617,77 @@ describe("preview key derivation", () => {
     );
     expect(res.status).toBe(202);
     expect((await res.json()).code).toBe("PREVIEW_PREPARING");
+  });
+
+  it("refuses a remembered silent file and still bakes", async () => {
+    const clone = await makeClone();
+    const path = clonePreviewWritePath(voiceOf(clone), planFor(clone))!;
+    await putObject(path, Buffer.alloc(4096, 0));
+    await rememberClonePreviewPath(clone.id, path);
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(
+      await buildRequest(`/api/tts/clones/${clone.id}/preview`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(res.status).toBe(202);
+    expect((await res.json()).code).toBe("PREVIEW_PREPARING");
+  });
+
+  it("does not open a remembered path that is another clone's object", async () => {
+    const clone = await makeClone();
+    const other =
+      "previews/clones/other-row/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp3";
+    await putObject(other, fakeMp3(3));
+    await rememberClonePreviewPath(clone.id, other);
+    const opened = vi.spyOn(storage, "openStoredBody");
+    const download = vi.spyOn(storage, "downloadFile");
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(
+      await buildRequest(`/api/tts/clones/${clone.id}/preview`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(res.status).toBe(202);
+    expect(opened.mock.calls.map((call) => call[0])).not.toContain(other);
+    expect(download.mock.calls.map((call) => call[0])).not.toContain(other);
+  });
+
+  it("serves the remembered key when the token's object is silent", async () => {
+    const clone = await makeClone();
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    const key = {
+      catalogVoiceId: voice.id,
+      providerVoiceId: voice.providerVoiceId,
+      model: voice.model,
+      script: plan.script,
+      speed: plan.speed,
+    };
+    const fish = clonePreviewStoragePath(key, "fish")!;
+    const legacy = legacyClonePreviewStoragePath(key)!;
+    await putObject(fish, Buffer.alloc(4096, 0));
+    const stored = fakeMp3(15);
+    await putObject(legacy, stored);
+    await rememberClonePreviewPath(clone.id, legacy);
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(
+      await buildRequest(
+        `/api/tts/clones/${clone.id}/preview?v=${clonePreviewVersionToken(fish)}`,
+        { userId: USER_A, method: "GET" }
+      ),
+      routeParams({ id: clone.id })
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-echomancer-preview-resolve")).toBe("stored");
+    expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
   });
 });
 

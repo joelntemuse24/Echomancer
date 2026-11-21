@@ -134,6 +134,33 @@ export function isEmptyOrSilentAudio(
 }
 
 /**
+ * True when a stored preview must not be streamed from this slice.
+ *
+ * The hot path peeks at the first bytes instead of buffering the MP3.
+ * A later range (a tail probe) is not judged from those bytes: MP3 padding
+ * can be zeros. A slice that includes byte 0 is refused when it is too
+ * small to be speech, all zeros, HTML/JSON, or a WAV (the full-file walk
+ * is what can still accept a real WAV).
+ */
+export function previewObjectUnusable(
+  totalSize: number,
+  prefix: Uint8Array,
+  includesFileStart: boolean
+): boolean {
+  if (!Number.isFinite(totalSize) || totalSize < MIN_AUDIBLE_BYTES) return true;
+  if (!includesFileStart) return false;
+  if (prefix.byteLength === 0) return true;
+  if (isAllZeroBytes(prefix)) return true;
+  if (looksLikeNonSpeechContainer(prefix)) return true;
+  if (isRiffWave(prefix)) return true;
+  const afterId3 = skipId3(prefix);
+  const id3FillsPeek = afterId3 > 0 && afterId3 >= prefix.byteLength;
+  const mp3Like = id3FillsPeek || looksLikeMpegFrame(prefix, afterId3);
+  if (mp3Like && totalSize < MIN_MP3_SPEECH_BYTES) return true;
+  return false;
+}
+
+/**
  * Same question for a live stream: the header is emitted before any samples
  * arrive, so judge the concatenated payload rather than each chunk.
  */

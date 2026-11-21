@@ -5,8 +5,11 @@
  *
  * This never synthesizes. Selecting a voice the person already made must play
  * the object that is already in storage, because the alternative — rendering
- * the line again — can mean waiting on a scale-to-zero GPU pool. It is tried in
- * this order:
+ * the line again — can mean waiting on a scale-to-zero GPU pool. A remembered
+ * `preview_storage_path` is streamed only when it is one of this clone's
+ * candidate keys. A 16-hex `v` token names one of those keys. A silent or
+ * non-audio opening is refused. A token that misses still tries the
+ * remembered key. The walk below runs when those objects are missing:
  *
  *   1. the fish v2 key, which is where a new bake is stored,
  *   2. the legacy engine-free preview key, which holds the Fish 2.1 Pro MP3s
@@ -35,16 +38,14 @@ import {
   rateLimitIdentity,
 } from "@/lib/rate-limit";
 import { isFishConfigured } from "@/lib/tts/providers/fish";
-import { getCatalogVoice } from "@/lib/tts/catalog";
-import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
+import { isFishCloneCatalogId, cloneRowIdFromCatalogId, clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
+import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import {
   clonePreviewReadPaths,
   clonePreviewStatusHeaders,
-  findStoredClonePreview,
-  noteStoredClonePreview,
   planClonePreview,
-  previewAudioOrNotModified,
+  respondStoredClonePreview,
 } from "@/lib/tts/clone-preview";
 import {
   claimClonePreviewBake,
@@ -74,14 +75,13 @@ const previewRenderRateLimit = createRateLimiter("clone-preview-render", 6, 60_0
 });
 
 /** The caller's own clone, or null (which the route reports as 404). */
-async function ownedClone(request: NextRequest, raw: string) {
-  const session = await requireSession(request);
+async function ownedClone(userId: string, raw: string) {
   const catalogVoiceId = isFishCloneCatalogId(raw) ? raw : `clone:${raw}`;
-  const catalog = await getCatalogVoice(catalogVoiceId, {
-    hdEnabled: true,
-    userId: session.userId,
-  });
-  return catalog ? { session, catalog } : null;
+  const rowId = cloneRowIdFromCatalogId(catalogVoiceId);
+  if (!rowId) return null;
+  const row = await getClonedVoiceForUser(userId, rowId);
+  if (!row) return null;
+  return { catalog: clonedVoiceToCatalog(row), row };
 }
 
 function storagePathOr404(): NextResponse {
@@ -164,30 +164,29 @@ export async function GET(
 
     const { id: raw } = await ctx.params;
     // User-scoped: another session's clone resolves to nothing at all.
-    const owned = await ownedClone(request, raw);
+    const owned = await ownedClone(session.userId, raw);
     if (!owned) {
       return NextResponse.json(
         { error: "That voice isn't available.", code: "NOT_FOUND" },
         { status: 404, headers: PRIVATE_JSON }
       );
     }
-    const { catalog } = owned;
-    const paths = clonePreviewReadPaths(
-      catalog,
-      planClonePreview({ catalogVoiceId: catalog.id, text: PREVIEW_TEXT })
-    );
+    const { catalog, row } = owned;
+    const plan = planClonePreview({ catalogVoiceId: catalog.id, text: PREVIEW_TEXT });
+    const paths = clonePreviewReadPaths(catalog, plan);
     if (paths.length === 0) return storagePathOr404();
 
-    // Read-only. `/api/tts/live` is never reached from here, so a saved voice
-    // cannot start a synthesis just because someone pressed play.
-    const stored = await findStoredClonePreview(
-      catalog,
-      planClonePreview({ catalogVoiceId: catalog.id, text: PREVIEW_TEXT })
-    );
-    if (stored) {
-      await noteStoredClonePreview(catalog.id, stored.path);
-      return previewAudioOrNotModified(request, stored.audio, "stored", stored.path);
-    }
+    // Read-only. A remembered key or a `v` token is streamed. The key walk
+    // runs only when that object is missing. `/api/tts/live` is never reached
+    // from here, so a saved voice cannot start a synthesis on play.
+    const stored = await respondStoredClonePreview({
+      request,
+      voice: catalog,
+      plan,
+      savedPath: row.preview_storage_path,
+      versionToken: new URL(request.url).searchParams.get("v"),
+    });
+    if (stored) return stored;
 
     // Nothing stored yet. The first Play enqueues one Fish bake. A poll
     // (`poll=1`) only reads the ledger, so it cannot start another.
@@ -225,14 +224,14 @@ export async function POST(
     }
 
     const { id: raw } = await ctx.params;
-    const owned = await ownedClone(request, raw);
+    const owned = await ownedClone(session.userId, raw);
     if (!owned) {
       return NextResponse.json(
         { error: "That voice isn't available.", code: "NOT_FOUND" },
         { status: 404, headers: PRIVATE_JSON }
       );
     }
-    const { catalog } = owned;
+    const { catalog, row } = owned;
     const plan = planClonePreview({
       catalogVoiceId: catalog.id,
       text: PREVIEW_TEXT,
@@ -241,11 +240,14 @@ export async function POST(
     if (paths.length === 0) return storagePathOr404();
 
     // A clip that already exists is the preview. Retry does not render it again.
-    const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT);
-    if (existing) {
-      await noteStoredClonePreview(catalog.id, existing.path);
-      return previewAudioOrNotModified(request, existing.audio, "stored", existing.path);
-    }
+    const existing = await respondStoredClonePreview({
+      request,
+      voice: catalog,
+      plan,
+      savedPath: row.preview_storage_path,
+      versionToken: null,
+    });
+    if (existing) return existing;
 
     let force = false;
     try {

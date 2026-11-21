@@ -137,10 +137,11 @@ export async function enqueueExtractOnWorker(uploadId: string): Promise<void> {
 }
 
 /**
- * Ask the VM to start a clone-pool restore. The voice list runs on Vercel,
- * which does not hold `MODAL_TOKEN_ID`; the worker does. One attempt, and a
- * missing worker or a network error is ignored: the list must still render,
- * and the tick pre-warms again when the book actually starts.
+ * Ask the VM to start a clone-pool restore.
+ *
+ * The voice list and preview Play must not call this. That request held a
+ * Vercel function until the worker timed out, and a preview does not need
+ * a GPU. A clone book restores on its own tick.
  */
 export async function requestClonePoolPrewarm(userId: string): Promise<boolean> {
   const url = takehomeWorkerUrl();

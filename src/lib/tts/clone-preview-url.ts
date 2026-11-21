@@ -7,9 +7,11 @@
  * fetches again. Polls after a 202 keep a cache-buster: those answers are
  * `no-store`, and a cached 202 must not satisfy the next poll.
  *
- * When the voices list already knows the stored key it sends a richer `v`
- * (`clonePreviewPublicUrl`) that also includes that key. This probe is the
- * read used when that URL is not on the card yet.
+ * When the voices list already knows the stored key it sends a signed
+ * cookie-free URL (`clonePreviewPublicUrl`) instead of this probe. This
+ * probe is the read used when that URL is not on the card yet. The `v`
+ * here is the recipe id, not a file token, so the handler does not treat
+ * it as a known object.
  */
 
 /** Keep equal to `CLONE_PREVIEW_RECIPE` in `clone-preview-store.ts`. */
