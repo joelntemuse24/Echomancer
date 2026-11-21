@@ -19,9 +19,11 @@
  *
  * Books may use the S2 pool. The preview bake does not. It is one Fish render
  * of `PREVIEW_TEXT` with this clone's `reference_id`, stored under the `fish`
- * key. Lookup still finds an older `s2-pro` take, that fish take, and the
- * legacy Fish 2.1 file. Drama 3 has no key.
+ * key. Lookup reads that fish key, then the legacy Fish 2.1 file, then an
+ * older `s2-pro` take. Drama 3 has no key.
  */
+
+import { createHash } from "crypto";
 
 import type { DeliveryUserInput } from "@/lib/tts/delivery-settings";
 import { resolveDeliverySettings } from "@/lib/tts/delivery-settings";
@@ -36,12 +38,20 @@ import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 import {
   clonePreviewLookupPaths,
+  clonePreviewPublicUrl,
   clonePreviewStoragePath,
+  findExistingClonePreviewPath,
   readFirstStoredClonePreview,
   type ClonePreviewEngine,
   type ClonePreviewKeyInput,
   type StoredClonePreview,
 } from "@/lib/tts/clone-preview-store";
+
+/** A stored clip can sit in the browser cache until the recipe or the key changes. */
+export const CLONE_PREVIEW_AUDIO_CACHE = "private, max-age=31536000, immutable";
+
+/** A bake in progress, or a failed bake, must not be replayed from cache. */
+export const CLONE_PREVIEW_STATUS_CACHE = "private, no-store";
 
 /** Same ceiling the live route applies to any sample text. */
 export const MAX_PREVIEW_CHARS = 2_000;
@@ -58,7 +68,8 @@ export type ClonePreviewPlan = {
  *
  * Read from configuration only, so the answer is stable for the lifetime of a
  * request: a preview rendered by S2 is keyed `s2-pro`, and one rendered by the
- * direct Fish API is keyed `fish`. Neither is ever looked up under the other.
+ * direct Fish API is keyed `fish`. Lookup still tries fish, then legacy, then
+ * s2-pro, whatever this returns. New bakes pass `fish` explicitly.
  */
 export function clonePreviewEngine(catalogVoiceId: string): ClonePreviewEngine {
   return usesModalClone(catalogVoiceId) ? "s2-pro" : "fish";
@@ -160,9 +171,9 @@ export function clonePreviewWritePath(
 export const clonePreviewPathForCatalog = clonePreviewWritePath;
 
 /**
- * Every key that may already hold this clone's preview, best first: the
- * current engine's take, then the legacy engine-free key that holds the Fish
- * 2.1 Pro MP3s rendered before the S2 pool existed.
+ * Every key that may already hold this clone's preview, best first: the fish
+ * bake, then the legacy engine-free key that holds the Fish 2.1 Pro MP3s,
+ * then an older s2-pro take.
  */
 export function clonePreviewReadPaths(
   voice: ClonePreviewVoice,
@@ -192,25 +203,93 @@ export async function findStoredClonePreview(
   return readFirstStoredClonePreview(keyInputFor(voice, plan), engine);
 }
 
+/** Strong ETag for one stored (or just generated) clip. */
+export function clonePreviewEtag(
+  storagePath: string,
+  audio: Uint8Array
+): string {
+  const hash = createHash("sha256")
+    .update(storagePath)
+    .update(audio)
+    .digest("hex")
+    .slice(0, 32);
+  return `"${hash}"`;
+}
+
+/** True when `If-None-Match` already names this clip, or is `*`. */
+export function ifNoneMatchSatisfied(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  return header.split(",").some((part) => {
+    const token = part.trim();
+    return token === "*" || token === etag;
+  });
+}
+
 /**
  * A finished clip the browser can hand straight to an audio element.
  *
- * `private, max-age=3600` matters: the picker keeps the bytes as an object URL
- * for the session, and this header stops a reload from re-fetching them. A
- * one-liner take is tens of kilobytes, so serving the bytes is simpler and
- * faster than a presign round-trip plus a second connection to R2.
+ * `private, max-age=31536000, immutable` plus an ETag: the URL's version
+ * token changes when the recipe or the stored key changes, so the browser
+ * may keep the bytes for a year. A one-liner take is tens of kilobytes, so
+ * serving the bytes is simpler and faster than a presign round-trip plus a
+ * second connection to R2. `Vary: Cookie` keeps one person's clip off
+ * another's cache entry.
  */
 export function previewAudioResponse(
   audio: Buffer | Uint8Array,
-  source: "stored" | "generated"
+  source: "stored" | "generated",
+  storagePath?: string | null
 ): Response {
-  return new Response(new Uint8Array(audio), {
+  const bytes = new Uint8Array(audio);
+  return new Response(bytes, {
     status: 200,
     headers: {
       "Content-Type": "audio/mpeg",
-      "Content-Length": String(audio.length),
-      "Cache-Control": "private, max-age=3600",
-      "X-Echomancer-Preview": source,
+      "Content-Length": String(bytes.byteLength),
+      ...previewAudioHeaders(clonePreviewEtag(storagePath || source, bytes), source),
     },
   });
+}
+
+function previewAudioHeaders(
+  etag: string,
+  source?: "stored" | "generated"
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Cache-Control": CLONE_PREVIEW_AUDIO_CACHE,
+    ETag: etag,
+    Vary: "Cookie",
+  };
+  if (source) headers["X-Echomancer-Preview"] = source;
+  return headers;
+}
+
+/**
+ * 200 with the bytes, or 304 when the browser already has this ETag.
+ * The 304 carries the same cache headers so the entry stays immutable.
+ */
+export function previewAudioOrNotModified(
+  request: { headers: { get(name: string): string | null } },
+  audio: Buffer | Uint8Array,
+  source: "stored" | "generated",
+  storagePath?: string | null
+): Response {
+  const bytes = new Uint8Array(audio);
+  const etag = clonePreviewEtag(storagePath || source, bytes);
+  if (ifNoneMatchSatisfied(request.headers.get("if-none-match"), etag)) {
+    return new Response(null, { status: 304, headers: previewAudioHeaders(etag) });
+  }
+  return previewAudioResponse(audio, source, storagePath);
+}
+
+/**
+ * URL for a clone that already has a stored preview, or null when it does not.
+ * Does not bake and does not download the MP3.
+ */
+export async function cloneCatalogPreviewUrl(
+  voice: ClonePreviewVoice
+): Promise<string | null> {
+  const plan = planClonePreview({ catalogVoiceId: voice.id, text: PREVIEW_TEXT });
+  const path = await findExistingClonePreviewPath(keyInputFor(voice, plan));
+  return path ? clonePreviewPublicUrl(voice.id, path) : null;
 }

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   classifyClonePreviewRead,
   clonePreparingAfterTokenCheck,
+  clonePreviewButtonState,
+  clonePreviewShowsPreparing,
+  clonePreviewUiAfterRead,
+  clonePreviewUiOnPlay,
   PREVIEW_PREPARING_LABEL,
   previewControl,
   previewControlLabel,
@@ -46,6 +50,47 @@ describe("previewControl", () => {
     expect(previewControlLabel({ preparing: false, playing: false, name: "Voice" })).toBe(
       "Play Voice"
     );
+  });
+});
+
+describe("stored preview versus a bake", () => {
+  it("never sets Preparing for a stored clip, and does after a 202", () => {
+    const voiceId = "clone:abc";
+    const opening = clonePreviewUiOnPlay(voiceId);
+    expect(opening.preparingId).toBeNull();
+    expect(opening.loadingId).toBe(voiceId);
+
+    const stored = clonePreviewUiAfterRead(voiceId, "audio");
+    expect(stored.preparingId).toBeNull();
+    const storedButton = clonePreviewButtonState({
+      preparing: stored.preparingId === voiceId,
+      loading: stored.loadingId === voiceId,
+      playing: false,
+    });
+    expect(storedButton).toBe("loading");
+    expect(clonePreviewShowsPreparing(storedButton)).toBe(false);
+
+    const baking = clonePreviewUiAfterRead(voiceId, "preparing");
+    expect(baking.preparingId).toBe(voiceId);
+    const bakingButton = clonePreviewButtonState({
+      preparing: baking.preparingId === voiceId,
+      loading: baking.loadingId === voiceId,
+      playing: false,
+    });
+    expect(bakingButton).toBe("preparing");
+    expect(clonePreviewShowsPreparing(bakingButton)).toBe(true);
+
+    const failed = clonePreviewUiAfterRead(voiceId, "failed");
+    expect(failed.preparingId).toBeNull();
+    expect(failed.failedId).toBe(voiceId);
+    expect(
+      clonePreviewButtonState({
+        preparing: false,
+        loading: false,
+        playing: false,
+        failed: true,
+      })
+    ).toBe("failed");
   });
 });
 

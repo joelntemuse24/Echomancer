@@ -46,7 +46,8 @@ import {
   isStorablePreview,
   MAX_PREVIEW_CHARS,
   planClonePreview,
-  previewAudioResponse,
+  CLONE_PREVIEW_STATUS_CACHE,
+  previewAudioOrNotModified,
 } from "@/lib/tts/clone-preview";
 import { z } from "zod";
 
@@ -224,15 +225,17 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const isClonePreview =
       isStorablePreview(input.text) && isFishCloneCatalogId(catalog.id);
     if (isClonePreview) {
-      // Any saved take answers: the current engine's, the Fish preview, or
-      // the legacy Fish 2.1 object. A missing one-liner is baked by Play or
+      // Any saved take answers: the fish bake, the legacy Fish 2.1 object, or
+      // an older s2-pro file. A missing one-liner is baked by Play or
       // by clone creation, never by this stream, so a page that hits live
       // cannot start Fish or a GPU.
       const stored = await findStoredClonePreview(catalog, plan, input.text);
-      if (stored) return previewAudioResponse(stored.audio, "stored");
+      if (stored) {
+        return previewAudioOrNotModified(request, stored.audio, "stored", stored.path);
+      }
       return NextResponse.json(
         { error: "Preparing preview", code: "PREVIEW_PREPARING" },
-        { status: 202 }
+        { status: 202, headers: { "Cache-Control": CLONE_PREVIEW_STATUS_CACHE } }
       );
     }
 

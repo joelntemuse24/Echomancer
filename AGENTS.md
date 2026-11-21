@@ -1230,8 +1230,12 @@ TTS (`latency=balanced`) so previews progressive-play without buffering the whol
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
 adapter for listen streams. A saved clone's preview is a **stored MP3** of `PREVIEW_TEXT` spoken by that
 clone's Fish reference. `GET /api/tts/clones/[id]/preview` replays a stored
-take (s2-pro v2, fish v2, then the legacy engine-free key) and never
-synthesizes. A miss enqueues one Fish bake on the worker
+take (fish v2, then the legacy engine-free key, then an older s2-pro file) and never
+synthesizes. A stored clip is `private, max-age=31536000, immutable` with an
+ETag. The URL carries a version token from that key and the recipe, so a
+recipe change misses the browser cache. The first read has no cache-buster.
+`202` and `409` are `private, no-store`. The picker says "Preparing preview…"
+only after a 202. A miss enqueues one Fish bake on the worker
 (`cloneProviderPin: "fish"`, `allowFallback: false`) and stores it only under
 the fish v2 key. The S2 pool is not consulted, so a cold pool cannot block
 the preview and the bake does not start a GPU. Creating a clone enqueues that

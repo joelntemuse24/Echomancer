@@ -8,9 +8,10 @@
  * the line again — can mean waiting on a scale-to-zero GPU pool. It is tried in
  * this order:
  *
- *   1. the take this clone's current engine rendered,
+ *   1. the fish v2 key, which is where a new bake is stored,
  *   2. the legacy engine-free preview key, which holds the Fish 2.1 Pro MP3s
- *      written before the S2 pool existed.
+ *      written before the S2 pool existed,
+ *   3. an older s2-pro v2 key.
  *
  * Both are this clone's voice. When nothing is stored, Play asks the worker
  * for one Fish bake of `PREVIEW_TEXT` (the clone's own reference, never the
@@ -38,10 +39,11 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import {
+  CLONE_PREVIEW_STATUS_CACHE,
   clonePreviewReadPaths,
   findStoredClonePreview,
   planClonePreview,
-  previewAudioResponse,
+  previewAudioOrNotModified,
 } from "@/lib/tts/clone-preview";
 import {
   claimClonePreviewBake,
@@ -92,7 +94,7 @@ function bakeFailed(retryAfterMs: number): NextResponse {
       retryAfterMs,
       engine: CLONE_PREVIEW_BAKE_ENGINE,
     },
-    { status: 409 }
+    { status: 409, headers: { "Cache-Control": CLONE_PREVIEW_STATUS_CACHE } }
   );
 }
 
@@ -103,7 +105,7 @@ function bakePreparing(): NextResponse {
       code: "PREVIEW_PREPARING",
       engine: CLONE_PREVIEW_BAKE_ENGINE,
     },
-    { status: 202 }
+    { status: 202, headers: { "Cache-Control": CLONE_PREVIEW_STATUS_CACHE } }
   );
 }
 
@@ -177,7 +179,9 @@ export async function GET(
       catalog,
       planClonePreview({ catalogVoiceId: catalog.id, text: PREVIEW_TEXT })
     );
-    if (stored) return previewAudioResponse(stored.audio, "stored");
+    if (stored) {
+      return previewAudioOrNotModified(request, stored.audio, "stored", stored.path);
+    }
 
     // Nothing stored yet. The first Play enqueues one Fish bake. A poll
     // (`poll=1`) only reads the ledger, so it cannot start another.
@@ -232,7 +236,9 @@ export async function POST(
 
     // A clip that already exists is the preview. Retry does not render it again.
     const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT);
-    if (existing) return previewAudioResponse(existing.audio, "stored");
+    if (existing) {
+      return previewAudioOrNotModified(request, existing.audio, "stored", existing.path);
+    }
 
     let force = false;
     try {

@@ -11,11 +11,14 @@
  *   4. Both routes derive the same key, so a write can always be found again.
  */
 
+import { createHash } from "crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { USER_A, USER_B, buildRequest, resetDatabase, routeParams } from "@/test/harness";
 import { insertClonedVoice } from "@/lib/turso/cloned-voices";
 import { catalogIdForClone } from "@/lib/tts/fish-clone";
 import {
+  CLONE_PREVIEW_AUDIO_CACHE,
+  CLONE_PREVIEW_STATUS_CACHE,
   clonePreviewReadPaths,
   clonePreviewWritePath,
   findStoredClonePreview,
@@ -23,11 +26,21 @@ import {
   previewDeliveryInput,
 } from "@/lib/tts/clone-preview";
 import {
+  CLONE_PREVIEW_RECIPE,
+  clonePreviewPublicUrl,
   clonePreviewStoragePath,
+  clonePreviewVersionToken,
   legacyClonePreviewStoragePath,
+  readFirstStoredClonePreview,
   readStoredClonePreview,
 } from "@/lib/tts/clone-preview-store";
+import {
+  CLONE_PREVIEW_REQUEST_VERSION,
+  clonePreviewPollUrl,
+  clonePreviewProbeUrl,
+} from "@/lib/tts/clone-preview-url";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import * as storage from "@/lib/storage";
 import { uploadFile } from "@/lib/storage";
 
 /** Looks like an MP3 to the silence guard. */
@@ -119,8 +132,35 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("x-echomancer-preview")).toBe("stored");
     expect(res.headers.get("content-type")).toBe("audio/mpeg");
+    expect(res.headers.get("cache-control")).toBe(CLONE_PREVIEW_AUDIO_CACHE);
+    expect(res.headers.get("etag")).toMatch(/^"[0-9a-f]{32}"$/);
     expect(Buffer.from(await res.arrayBuffer()).equals(stored)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("answers 304 when the browser still has this clip", async () => {
+    const clone = await makeClone();
+    const stored = fakeMp3(11);
+    const path = clonePreviewWritePath(voiceOf(clone), planFor(clone))!;
+    await putObject(path, stored);
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const first = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+
+    const second = await GET(
+      await buildRequest(`/api/tts/clones/${clone.id}/preview?v=clone-preview-v2`, {
+        userId: USER_A,
+        method: "GET",
+        headers: { "if-none-match": etag! },
+      }),
+      routeParams({ id: clone.id })
+    );
+    expect(second.status).toBe(304);
+    expect(second.headers.get("etag")).toBe(etag);
+    expect(second.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    expect(Buffer.from(await second.arrayBuffer()).length).toBe(0);
   });
 
   it("enqueues one bake and does not render when nothing is stored", async () => {
@@ -132,7 +172,23 @@ describe("GET /api/tts/clones/[id]/preview", () => {
     const res = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
     expect(res.status).toBe(202);
     expect((await res.json()).code).toBe("PREVIEW_PREPARING");
+    expect(res.headers.get("cache-control")).toBe(CLONE_PREVIEW_STATUS_CACHE);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends no-store on a failed bake", async () => {
+    const clone = await makeClone();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("reference not found", { status: 422 }))
+    );
+    const { bakeClonePreview } = await import("@/lib/tts/clone-preview-job");
+    expect((await bakeClonePreview(clone.id)).status).toBe(409);
+
+    const { GET } = await import("@/app/api/tts/clones/[id]/preview/route");
+    const res = await GET(await request(clone.id, USER_A), routeParams({ id: clone.id }));
+    expect(res.status).toBe(409);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("accepts the catalog id as well as the row id", async () => {
@@ -307,26 +363,94 @@ describe("preview key derivation", () => {
     expect(legacyClonePreviewStoragePath(key)).not.toBe(s2);
   });
 
-  it("reads every key that holds this voice, current engine first", () => {
+  it("reads fish, then the legacy file, then s2-pro", () => {
     const clone = { id: CLONE_ID, fish_voice_id: "fish-ref-wolfe", model: "s2.1-pro-free" };
     const voice = voiceOf(clone);
     const plan = planFor(clone);
+    const key = {
+      catalogVoiceId: voice.id,
+      providerVoiceId: voice.providerVoiceId,
+      model: voice.model,
+      script: plan.script,
+      speed: plan.speed,
+    };
     const paths = clonePreviewReadPaths(voice, plan, PREVIEW_TEXT, "s2-pro");
-    // s2-pro, then the other legitimate engine (fish), then the legacy Fish
-    // 2.1 file. All three are this voice; none of them is Drama 3.
+    // Asking for s2-pro does not put that key first. New bakes are fish.
     expect(paths).toHaveLength(3);
-    expect(paths[0]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro"));
-    expect(paths[1]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish"));
-    expect(paths[2]).toBe(
-      legacyClonePreviewStoragePath({
-        catalogVoiceId: voice.id,
-        providerVoiceId: voice.providerVoiceId,
-        model: voice.model,
-        script: plan.script,
-        speed: plan.speed,
-      })
-    );
+    expect(paths[0]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish"));
+    expect(paths[1]).toBe(legacyClonePreviewStoragePath(key));
+    expect(paths[2]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro"));
     expect(new Set(paths).size).toBe(3);
+    expect(paths.join()).not.toMatch(/drama/i);
+  });
+
+  it("stops after the fish object, and reads legacy before s2-pro", async () => {
+    const key = {
+      catalogVoiceId: catalogIdForClone(CLONE_ID),
+      providerVoiceId: "fish-ref-wolfe",
+      model: "s2.1-pro-free",
+      script: PREVIEW_TEXT,
+      speed: 1,
+    };
+    const fish = clonePreviewStoragePath(key, "fish")!;
+    const legacy = legacyClonePreviewStoragePath(key)!;
+    const s2 = clonePreviewStoragePath(key, "s2-pro")!;
+    await putObject(fish, fakeMp3(4));
+    const download = vi.spyOn(storage, "downloadFile");
+    const found = await readFirstStoredClonePreview(key, "s2-pro");
+    expect(found?.path).toBe(fish);
+    expect(download.mock.calls.map((call) => call[0])).toEqual([fish]);
+    download.mockClear();
+
+    await storage.deleteFile(fish);
+    await putObject(legacy, fakeMp3(5));
+    const older = await readFirstStoredClonePreview(key, "s2-pro");
+    expect(older?.path).toBe(legacy);
+    expect(download.mock.calls.map((call) => call[0])).toEqual([fish, legacy]);
+    expect(download.mock.calls.map((call) => call[0])).not.toContain(s2);
+  });
+
+  it("changes the preview URL when the stored key or the recipe changes", () => {
+    const key = {
+      catalogVoiceId: catalogIdForClone(CLONE_ID),
+      providerVoiceId: "fish-ref-wolfe",
+      model: "s2.1-pro-free",
+      script: PREVIEW_TEXT,
+      speed: 1,
+    };
+    expect(CLONE_PREVIEW_REQUEST_VERSION).toBe(CLONE_PREVIEW_RECIPE);
+    const fish = clonePreviewStoragePath(key, "fish")!;
+    const legacy = legacyClonePreviewStoragePath(key)!;
+    const fishToken = clonePreviewVersionToken(fish);
+    const legacyToken = clonePreviewVersionToken(legacy);
+    expect(fishToken).not.toBe(legacyToken);
+    expect(fishToken).toBe(
+      createHash("sha256")
+        .update(CLONE_PREVIEW_RECIPE)
+        .update("\0")
+        .update(fish)
+        .digest("hex")
+        .slice(0, 16)
+    );
+    const otherRecipe = createHash("sha256")
+      .update("clone-preview-v3")
+      .update("\0")
+      .update(fish)
+      .digest("hex")
+      .slice(0, 16);
+    expect(fishToken).not.toBe(otherRecipe);
+
+    const url = clonePreviewPublicUrl(key.catalogVoiceId, fish);
+    expect(new URL(url, "http://localhost").searchParams.get("v")).toBe(fishToken);
+    expect(url).not.toMatch(/[?&]_=/);
+    const probe = clonePreviewProbeUrl(key.catalogVoiceId);
+    expect(probe).toBe(
+      `/api/tts/clones/${encodeURIComponent(key.catalogVoiceId)}/preview?v=${encodeURIComponent(CLONE_PREVIEW_RECIPE)}`
+    );
+    expect(probe).not.toMatch(/[?&]_=/);
+    expect(clonePreviewPollUrl(key.catalogVoiceId, 50)).toBe(
+      `/api/tts/clones/${encodeURIComponent(key.catalogVoiceId)}/preview?poll=1&_=50`
+    );
   });
 
   it("reads the other engine's take so a stored clip is never re-rendered", () => {
@@ -382,5 +506,58 @@ describe("preview key derivation", () => {
     );
     expect(res.status).toBe(202);
     expect((await res.json()).code).toBe("PREVIEW_PREPARING");
+  });
+});
+
+describe("GET /api/tts/voices previewUrl", () => {
+  it("points a stored clone at its versioned clip and does not bake a missing one", async () => {
+    const clone = await makeClone();
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    const fish = clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish")!;
+    await putObject(fish, fakeMp3(9));
+    const meta = vi.spyOn(storage, "getFileMetadata");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { GET } = await import("@/app/api/tts/voices/route");
+    const res = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      voices: { id: string; previewUrl?: string }[];
+    };
+    const listed = body.voices.find((item) => item.id === voice.id);
+    expect(listed?.previewUrl).toBe(clonePreviewPublicUrl(voice.id, fish));
+    expect(listed?.previewUrl).not.toMatch(/[?&]_=/);
+    const heads = meta.mock.calls.map((call) => call[0]);
+    expect(heads[0]).toBe(fish);
+    expect(heads).not.toContain(
+      clonePreviewStoragePath(
+        {
+          catalogVoiceId: voice.id,
+          providerVoiceId: voice.providerVoiceId,
+          model: voice.model,
+          script: plan.script,
+          speed: plan.speed,
+        },
+        "s2-pro"
+      )
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("omits previewUrl when the clone has no stored clip", async () => {
+    const clone = await makeClone();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await import("@/app/api/tts/voices/route");
+    const res = await GET(await buildRequest("/api/tts/voices", { userId: USER_A }));
+    const body = (await res.json()) as {
+      voices: { id: string; previewUrl?: string }[];
+    };
+    const listed = body.voices.find((item) => item.id === catalogIdForClone(clone.id));
+    expect(listed).toBeTruthy();
+    expect(listed?.previewUrl).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -29,6 +29,8 @@ import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
 import { requestClonePoolPrewarm } from "@/lib/jobs/takehome-worker-client";
 import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 import { isKokoroCpuProvider, kokoroCpuSectionChars } from "@/lib/tts/section-size";
+import { cloneCatalogPreviewUrl } from "@/lib/tts/clone-preview";
+import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
   priceEstimate: {
@@ -142,6 +144,19 @@ export async function GET(request: NextRequest) {
         });
       }
       clones = enrichCatalogVoices(rows.map(clonedVoiceToCatalog));
+      // A stored clip gets the same kind of URL a stock sample has. Nothing
+      // here bakes: a clone with no preview stays without one until Play.
+      clones = await Promise.all(
+        clones.map(async (voice) => {
+          if (!isFishCloneCatalogId(voice.id)) return voice;
+          try {
+            const previewUrl = await cloneCatalogPreviewUrl(voice);
+            return previewUrl ? { ...voice, previewUrl } : voice;
+          } catch {
+            return voice;
+          }
+        })
+      );
       if (q) {
         const needle = q.toLowerCase();
         clones = clones.filter(
