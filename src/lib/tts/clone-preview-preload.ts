@@ -2,8 +2,9 @@
  * Cheap preload for clone previews that are already on screen.
  *
  * Metadata asks the browser for the start of the file, not a full download
- * of every card. One selected clip may preload fully on a fast link. Save-data
- * and 2G preload nothing.
+ * of every card. One selected clip may preload fully on 4G. Save-data, 2G,
+ * 3G, and a browser with no network hint (mobile Safari) do not preload
+ * the list.
  */
 
 export const CLONE_PREVIEW_PRELOAD_CAP = 8;
@@ -21,12 +22,14 @@ type NetworkHint = {
 export function clonePreviewPreloadMode(
   connection?: NetworkHint
 ): ClonePreviewPreloadMode {
-  // No network hint (Safari, and this module under Node) stays at metadata.
-  // A full preload of every card is what we are avoiding on mobile data.
-  if (!connection) return { list: "metadata", selected: "metadata" };
+  // No Network Information API (mobile Safari). Preload the selected clip
+  // only. A metadata preload of every card downloads those MP3s on cellular.
+  if (!connection) return { list: "none", selected: "metadata" };
   if (connection.saveData) return { list: "none", selected: "none" };
   const type = connection.effectiveType;
   if (type === "slow-2g" || type === "2g") return { list: "none", selected: "none" };
+  // 3G is still a metered mobile link. One selected clip, not the list.
+  if (type === "3g") return { list: "none", selected: "metadata" };
   if (type === "4g") return { list: "metadata", selected: "auto" };
   return { list: "metadata", selected: "metadata" };
 }

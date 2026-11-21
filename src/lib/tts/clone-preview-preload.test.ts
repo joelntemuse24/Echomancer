@@ -26,18 +26,24 @@ describe("clone preview preload", () => {
     });
   });
 
-  it("stays at metadata unless the link is 4G", () => {
+  it("preloads only the selected clip when the link is slow or unknown", () => {
+    // Mobile Safari has no Network Information API, so it must not fetch
+    // every card. 3G is the same: one selected clip, not the list.
     expect(clonePreviewPreloadMode(null)).toEqual({
-      list: "metadata",
+      list: "none",
       selected: "metadata",
     });
     expect(clonePreviewPreloadMode({ effectiveType: "3g" })).toEqual({
-      list: "metadata",
+      list: "none",
       selected: "metadata",
     });
     expect(clonePreviewPreloadMode({ effectiveType: "4g" })).toEqual({
       list: "metadata",
       selected: "auto",
+    });
+    expect(clonePreviewPreloadMode({})).toEqual({
+      list: "metadata",
+      selected: "metadata",
     });
   });
 

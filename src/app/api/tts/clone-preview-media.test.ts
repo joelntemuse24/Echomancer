@@ -39,6 +39,10 @@ describe("clone preview media token", () => {
     const flipped = token!.slice(0, -1) + (token!.endsWith("a") ? "b" : "a");
     expect(verifyClonePreviewMediaToken(flipped)).toBeNull();
     expect(verifyClonePreviewMediaToken(`${token}~extra`)).toBeNull();
+    const other =
+      "previews/clones/other-row/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp3";
+    const swapped = `${Buffer.from(other, "utf8").toString("base64url")}~${token!.slice(token!.indexOf("~") + 1)}`;
+    expect(verifyClonePreviewMediaToken(swapped)).toBeNull();
   });
 
   it("builds a URL with no clone id and no query", () => {
@@ -67,7 +71,7 @@ describe("GET /api/tts/clone-preview/[token]", () => {
     expect(res.headers.get("vercel-cdn-cache-control")).toBe(
       "public, max-age=31536000, immutable"
     );
-    expect(res.headers.get("vary")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Range");
     expect(res.headers.get("set-cookie")).toBeNull();
     expect(res.headers.get("etag")).toBe(clonePreviewPathEtag(PATH));
     expect(res.headers.get("x-echomancer-preview-resolve")).toBe("stored");
@@ -90,7 +94,51 @@ describe("GET /api/tts/clone-preview/[token]", () => {
     expect(partial.status).toBe(206);
     expect(partial.headers.get("content-range")).toBe(`bytes 0-99/${bytes.length}`);
     expect(partial.headers.get("content-length")).toBe("100");
+    expect(partial.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(partial.headers.get("cdn-cache-control")).toBe("no-store");
+    expect(partial.headers.get("vary")).toBe("Range");
     expect((await partial.arrayBuffer()).byteLength).toBe(100);
+
+    const openEnded = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: { range: "bytes=0-" },
+      }),
+      routeParams({ token })
+    );
+    expect(openEnded.status).toBe(200);
+    expect(openEnded.headers.get("content-range")).toBeNull();
+    expect(Buffer.from(await openEnded.arrayBuffer()).equals(bytes)).toBe(true);
+
+    const probe = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: { range: "bytes=0-1" },
+      }),
+      routeParams({ token })
+    );
+    expect(probe.status).toBe(206);
+    expect(probe.headers.get("content-range")).toBe(`bytes 0-1/${bytes.length}`);
+    expect(probe.headers.get("content-length")).toBe("2");
+    expect(Buffer.from(await probe.arrayBuffer()).equals(bytes.subarray(0, 2))).toBe(true);
+
+    const tail = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: { range: `bytes=-32` },
+      }),
+      routeParams({ token })
+    );
+    expect(tail.status).toBe(206);
+    expect(tail.headers.get("content-length")).toBe("32");
+    expect(tail.headers.get("cdn-cache-control")).toBe("no-store");
+
+    const unsatisfiable = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: { range: "bytes=999999-999999" },
+      }),
+      routeParams({ token })
+    );
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get("content-range")).toBe(`bytes */${bytes.length}`);
+    expect(unsatisfiable.headers.get("cache-control")).toBe("private, no-store");
 
     const cached = await GET(
       new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
@@ -100,7 +148,42 @@ describe("GET /api/tts/clone-preview/[token]", () => {
     );
     expect(cached.status).toBe(304);
     expect(cached.headers.get("cache-control")).toMatch(/^public/);
+    expect(cached.headers.get("cdn-cache-control")).toBe("no-store");
     expect((await cached.arrayBuffer()).byteLength).toBe(0);
+
+    const starred = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: { "if-none-match": "*" },
+      }),
+      routeParams({ token })
+    );
+    expect(starred.status).toBe(200);
+    expect(Buffer.from(await starred.arrayBuffer()).equals(bytes)).toBe(true);
+
+    const rangedMatch = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`, {
+        headers: {
+          range: "bytes=0-1",
+          "if-none-match": clonePreviewPathEtag(PATH),
+        },
+      }),
+      routeParams({ token })
+    );
+    expect(rangedMatch.status).toBe(206);
+    expect(Buffer.from(await rangedMatch.arrayBuffer()).equals(bytes.subarray(0, 2))).toBe(true);
+  });
+
+  it("refuses a zero-filled object instead of caching silence", async () => {
+    await put(Buffer.alloc(4096, 0));
+    const token = signClonePreviewMediaToken(PATH)!;
+    const { GET } = await import("@/app/api/tts/clone-preview/[token]/route");
+    const res = await GET(
+      new NextRequest(`https://echomancer.xyz/api/tts/clone-preview/${token}`),
+      routeParams({ token })
+    );
+    expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("cdn-cache-control")).toBe("no-store");
   });
 
   it("rejects a bad token without reading storage", async () => {

@@ -1230,21 +1230,32 @@ TTS (`latency=balanced`) so previews progressive-play without buffering the whol
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
 adapter for listen streams. A saved clone's preview is a **stored MP3** of `PREVIEW_TEXT` spoken by that
 clone's Fish reference. `GET /api/tts/clones/[id]/preview` replays a stored
-take and never synthesizes. A remembered `preview_storage_path`, or a 16-hex
-`v` token that names one candidate key, is streamed from that object. The
-fish v2, legacy engine-free, and older s2-pro keys are opened only when that
-object is missing. The picker does not play this cookie route. `previewUrl`
-is `/api/tts/clone-preview/<payload>~<hmac>`: the voices list checks
-ownership, then the bytes route checks the signature and streams. That
-response is `public, max-age=31536000, immutable` on `Cache-Control`,
-`CDN-Cache-Control`, and `Vercel-CDN-Cache-Control`, with no `Vary: Cookie`.
-The proxy does not set a session cookie on that path. The authenticated
-route stays `private, max-age=31536000, immutable` with `Vary: Cookie` and
-CDN `no-store`. `202` and `409` stay `private, no-store`. `GET /api/tts/voices`
+take and never synthesizes. A remembered `preview_storage_path` is streamed only when it is this clone's
+fish v2, legacy engine-free, or older s2-pro key. A 16-hex `v` token names
+one of those keys. The opening bytes must look like audio: a zero-filled or
+non-audio object is refused, and the walk still refuses a silent file. A
+token whose object is missing or refused still tries the remembered key
+before that walk. The picker does not play this cookie route. `previewUrl`
+is `/api/tts/clone-preview/<payload>~<hmac>`. The HMAC key is
+`getSessionSecret()` (`SESSION_SECRET`, else `INTERNAL_JOB_SECRET`); no new
+env var. The prefix keeps it distinct from a session cookie. Comparison is
+`timingSafeEqual`. The path must match
+`previews/clones/<id>/<hash>.mp3`. The signature has no expiry. A full read
+(`bytes=0-` or no Range) is `public, max-age=31536000, immutable` with
+`Vary: Range` and no `Vary: Cookie`. Any other range is `206` with
+`Cache-Control: private, max-age=3600`, CDN `no-store`, and `Vary: Range`,
+so a Safari `bytes=0-1` probe cannot become the cached object. Rotating the
+secret fails a new fetch; a full 200 already in a browser or the CDN can
+remain for that year. Bump the media prefix to cut new signatures the same
+way. The proxy does not set a session cookie on that path. The authenticated
+route stays `private, max-age=31536000, immutable` for a full read, with
+`Vary: Range, Cookie` and CDN `no-store`. `202` and `409` stay
+`private, no-store`. `GET /api/tts/voices`
 returns that signed `previewUrl` when a key is already known, and does not
-ask the worker to prewarm S2. The picker preloads visible clone previews as
-metadata (one selected clip may preload fully on 4G; save-data and 2G
-preload nothing) and does not POST `/api/capacity/warm` for a clone.
+ask the worker to prewarm S2. The picker preloads the selected clip as
+metadata. On 4G it may fully preload that clip and metadata-preload up to
+8. Save-data, 2G, 3G, and a browser with no network hint (mobile Safari)
+do not preload the list. Selecting a clone does not POST `/api/capacity/warm`.
 The first list for an unknown clone stats storage (at most three keys, four
 clones at a time) and remembers the hit, or a miss for ten minutes. Later
 lists do not stat. The list does not bake. The picker says "Preparing preview…"

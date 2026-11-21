@@ -340,12 +340,29 @@ export async function cloneCatalogPreviewUrl(
 const FILE_VERSION_TOKEN = /^[a-f0-9]{16}$/;
 
 /**
+ * A remembered key this voice is allowed to stream.
+ *
+ * The column is not a free-form object key. It has to be one of this
+ * clone's fish, legacy, or s2-pro paths, so a poisoned value cannot read
+ * another clone's preview.
+ */
+function candidateSavedPath(
+  savedPath: string | null | undefined,
+  candidates: readonly string[]
+): string | null {
+  if (!savedPath || savedPath === CLONE_PREVIEW_PATH_ABSENT) return null;
+  if (!isClonePreviewObjectPath(savedPath)) return null;
+  return candidates.includes(savedPath) ? savedPath : null;
+}
+
+/**
  * The object to stream, with no storage read.
  *
  * A 16-hex `v` token is the recipe plus one candidate key. The stored
  * `preview_storage_path` is used when that token is absent or does not
- * match. Anything else (including the probe's recipe id) is a miss here,
- * and the caller may walk the keys.
+ * match, and only when it is one of this clone's keys. Anything else
+ * (including the probe's recipe id, or a path for a different clone) is a
+ * miss here, and the caller may walk the keys.
  */
 export function resolveClonePreviewHotPath(input: {
   voice: ClonePreviewVoice;
@@ -353,18 +370,13 @@ export function resolveClonePreviewHotPath(input: {
   savedPath: string | null | undefined;
   versionToken: string | null | undefined;
 }): { path: string; resolve: "stored" | "token" } | null {
-  const saved =
-    input.savedPath &&
-    input.savedPath !== CLONE_PREVIEW_PATH_ABSENT &&
-    isClonePreviewObjectPath(input.savedPath)
-      ? input.savedPath
-      : null;
+  const candidates = clonePreviewLookupPaths(keyInputFor(input.voice, input.plan));
   const token = input.versionToken?.trim() || "";
   if (FILE_VERSION_TOKEN.test(token)) {
-    const candidates = clonePreviewLookupPaths(keyInputFor(input.voice, input.plan));
     const matched = candidates.find((path) => clonePreviewVersionToken(path) === token);
     if (matched) return { path: matched, resolve: "token" };
   }
+  const saved = candidateSavedPath(input.savedPath, candidates);
   if (saved) return { path: saved, resolve: "stored" };
   return null;
 }
@@ -375,9 +387,10 @@ type PreviewHeaderRequest = {
 };
 
 /**
- * Serve a stored clip. The hot path streams the known key and does not
- * download the file to inspect it. A miss falls back to the key walk,
- * which still refuses a silent object.
+ * Serve a stored clip. The hot path streams a candidate key and refuses a
+ * silent or non-audio object from its opening bytes. A token that misses
+ * still tries the remembered key before the walk. The walk downloads each
+ * remaining key and still refuses a silent file.
  */
 export async function respondStoredClonePreview(input: {
   request: PreviewHeaderRequest;
@@ -387,16 +400,21 @@ export async function respondStoredClonePreview(input: {
   versionToken: string | null;
 }): Promise<Response | null> {
   const startedAt = performance.now();
+  const candidates = clonePreviewLookupPaths(keyInputFor(input.voice, input.plan));
   const hot = resolveClonePreviewHotPath(input);
-  if (hot) {
-    const streamed = await clonePreviewStreamResponse(input.request, hot.path, {
+  const saved = candidateSavedPath(input.savedPath, candidates);
+  const attempts: { path: string; resolve: "stored" | "token" }[] = [];
+  if (hot) attempts.push(hot);
+  if (saved && saved !== hot?.path) attempts.push({ path: saved, resolve: "stored" });
+  for (const attempt of attempts) {
+    const streamed = await clonePreviewStreamResponse(input.request, attempt.path, {
       cache: "private",
-      resolve: hot.resolve,
+      resolve: attempt.resolve,
       startedAt,
     });
     if (streamed) {
-      if (input.savedPath !== hot.path) {
-        void noteStoredClonePreview(input.voice.id, hot.path);
+      if (input.savedPath !== attempt.path) {
+        void noteStoredClonePreview(input.voice.id, attempt.path);
       }
       return streamed;
     }

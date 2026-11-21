@@ -5,8 +5,16 @@
  * route checks the signature and nothing else: no session, no cookie, so
  * the edge can cache the response. The path is confined to
  * `previews/clones/<id>/<hash>.mp3`. A signature over any other key is
- * rejected, and the HMAC uses the session secret so the URL cannot be
- * guessed from the clone id.
+ * rejected.
+ *
+ * The HMAC key is `getSessionSecret()`: `SESSION_SECRET`, or
+ * `INTERNAL_JOB_SECRET` when that is unset. Production already has one of
+ * those, so this URL does not need a new env var. The prefix below keeps
+ * the MAC distinct from a session cookie. The signature does not carry an
+ * expiry. A full-file response may be cached for a year, so rotating the
+ * secret makes a new fetch fail while a copy already in a browser or the
+ * CDN can remain until that max-age. Bump `MEDIA_PREFIX` to invalidate new
+ * fetches the same way. Only this caller's own preview keys are signed.
  */
 
 import { createHmac, timingSafeEqual } from "crypto";

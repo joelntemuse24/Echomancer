@@ -6,9 +6,10 @@
  * This never synthesizes. Selecting a voice the person already made must play
  * the object that is already in storage, because the alternative — rendering
  * the line again — can mean waiting on a scale-to-zero GPU pool. A remembered
- * `preview_storage_path`, or a 16-hex `v` token that names one candidate key,
- * is streamed and the other keys are not opened. The walk below runs only
- * when that object is missing:
+ * `preview_storage_path` is streamed only when it is one of this clone's
+ * candidate keys. A 16-hex `v` token names one of those keys. A silent or
+ * non-audio opening is refused. A token that misses still tries the
+ * remembered key. The walk below runs when those objects are missing:
  *
  *   1. the fish v2 key, which is where a new bake is stored,
  *   2. the legacy engine-free preview key, which holds the Fish 2.1 Pro MP3s

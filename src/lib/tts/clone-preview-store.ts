@@ -236,8 +236,9 @@ export type LocatedClonePreview =
  *
  * `"miss"` means every candidate was absent or too small. `"error"` means
  * storage could not be read, so the caller must not remember a miss.
- * A silent object can still be large enough to count; the preview route
- * is what refuses to serve it. This does not bake.
+ * A silent object can still be large enough to count. The bytes route
+ * refuses it from the opening bytes, so it is not cached as audio. This
+ * does not bake.
  */
 export async function locateClonePreview(
   input: ClonePreviewKeyInput,
