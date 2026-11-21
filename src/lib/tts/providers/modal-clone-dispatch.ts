@@ -53,6 +53,7 @@ import {
   S2ControlRejected,
   S2ControlUnavailable,
   S2NotFoundSettled,
+  S2ProtocolMismatch,
 } from "@/lib/tts/providers/modal-clone-call";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import {
@@ -1009,7 +1010,9 @@ async function runWave(
           !sameKeyMiss &&
           !(error instanceof ModalCloneColdError) &&
           !(error instanceof ModalCloneLaneBusyError) &&
-          !(error instanceof ModalCloneProviderError);
+          !(error instanceof ModalCloneProviderError) &&
+          !(error instanceof S2ProtocolMismatch) &&
+          !(error instanceof S2ControlRejected);
         if (opts.jobId && error instanceof ModalCloneProviderError) {
           // A 500 is this book's container failing. The next call is
           // cold-sized. A timeout already drops warmth inside the client
@@ -1072,9 +1075,13 @@ async function runWave(
     } else if (err instanceof ModalCloneColdError) {
       poolCold = true;
       poolReason = err.message;
-    } else if (err instanceof S2ControlRejected) {
+    } else if (err instanceof S2ControlRejected || err instanceof S2ProtocolMismatch) {
+      // A different protocol used to fall through to the GPU web endpoint.
+      // That POST is a second H100 input. Stop the book here. Leaving the
+      // error unclassified retried the same sections on the next tick.
       controlRejected = err.message;
-      log(`[S2 lanes] control rejected the submit (${err.status}): ${err.message}`);
+      const status = err instanceof S2ControlRejected ? err.status : "protocol";
+      log(`[S2 lanes] control rejected the submit (${status}): ${err.message}`);
     } else if (err instanceof S2ControlUnavailable && !err.giveUp) {
       for (const index of result.lane) {
         if (!staged.has(index) && !unconfirmedIndexes.includes(index)) {

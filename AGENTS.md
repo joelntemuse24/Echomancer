@@ -893,10 +893,11 @@ busy-not-cold backstop.
   download it. (A legacy `drama3` row is re-pinned before this point, so it
   follows whichever real engine that resolves to.)
 - **The book's render is one container.** With `MODAL_S2_CONTROL_URL` set,
-  every render (batch, single section, preview) is `s2_control` →
-  `render_batch.spawn`. The worker does not POST `synthesize` or
-  `synthesize_batch` on the GPU class, and a protocol mismatch does not
-  fall through to those hosts. `status()` from cover, restore_check, and
+  every book render (a batch, or a single section as a one-row batch) is
+  `s2_control` → `render_batch.spawn`. Saved-clone previews stay on Fish.
+  The worker does not POST `synthesize` or `synthesize_batch` on the GPU
+  class. A protocol mismatch does not fall through to those hosts; the
+  book stops. `status()` from cover, restore_check, and
   prewarm is a light input. `@modal.concurrent(max_inputs=2)` lets it share
   the container with `render_batch`, so it does not open a second H100.
   A prewarm that times out cancels with `terminate_containers=False`, so
