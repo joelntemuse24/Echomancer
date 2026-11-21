@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { capacityWarmForVoiceSelect } from "@/lib/capacity/client";
 import { execute, queryOne } from "@/lib/turso";
 import { resetDatabase } from "@/test/harness";
 import {
@@ -72,7 +73,25 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     expect(poolsForWarm({ reason: "voice", voiceId: "drew" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "sowell" })).toEqual(["kokoro"]);
     expect(poolsForWarm({ reason: "voice", voiceId: "ava" })).toEqual([]);
-    expect(poolsForWarm({ reason: "voice", voiceId: "clone:abc" })).toEqual(["s2"]);
+    expect(poolsForWarm({ reason: "voice", voiceId: "clone:abc" })).toEqual([]);
+  });
+
+  it("does not post an S2 warm when a clone is only selected", async () => {
+    const fetchImpl = vi.fn();
+    const result = await warmSharedCapacity({
+      reason: "voice",
+      voiceId: "clone:abc",
+      now: 1,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(result).toEqual({ pools: [], posted: [] });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(capacityWarmForVoiceSelect("clone:abc")).toBeNull();
+    expect(capacityWarmForVoiceSelect("ava")).toBeNull();
+    expect(capacityWarmForVoiceSelect("drew")).toEqual({
+      voiceId: "drew",
+      reason: "voice",
+    });
   });
 
   it("points the Kokoro pool at Drew's endpoint first, then Walter's", () => {

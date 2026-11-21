@@ -1,4 +1,4 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { listCatalogVoices } from "@/lib/tts/catalog";
 import { estimatePriceEur, TARGET_PRICE_EUR } from "@/lib/tts/pricing";
 import {
@@ -26,8 +26,6 @@ import {
 } from "@/lib/tts/voice-persona";
 import { listClonedVoicesForUser } from "@/lib/turso/cloned-voices";
 import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
-import { requestClonePoolPrewarm } from "@/lib/jobs/takehome-worker-client";
-import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 import { isKokoroCpuProvider, kokoroCpuSectionChars } from "@/lib/tts/section-size";
 import { attachClonePreviewUrls } from "@/lib/tts/clone-preview";
 
@@ -131,19 +129,8 @@ export async function GET(request: NextRequest) {
     let clones: EnrichedCatalogVoice[] = [];
     if (userId && isFishConfigured()) {
       const rows = await listClonedVoicesForUser(userId);
-      // A trained clone means the next book may need a GPU. Start the
-      // restore now, while this list is on screen, instead of when section 0
-      // is sent. Vercel has no Modal token; the worker does. `after` keeps
-      // the POST off the list's response. A miss still renders the voices.
-      if (
-        userId.startsWith("user_") &&
-        rows.some((row) => row.state === "trained") &&
-        usesModalClone("clone:pool")
-      ) {
-        after(() => {
-          void requestClonePoolPrewarm(userId);
-        });
-      }
+      // The list does not warm the S2 pool. A preview is a stored MP3, and
+      // a GPU restore belongs to the tick that is about to speak a clone book.
       clones = enrichCatalogVoices(rows.map(clonedVoiceToCatalog));
       if (q) {
         const needle = q.toLowerCase();

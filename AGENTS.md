@@ -1230,14 +1230,21 @@ TTS (`latency=balanced`) so previews progressive-play without buffering the whol
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
 adapter for listen streams. A saved clone's preview is a **stored MP3** of `PREVIEW_TEXT` spoken by that
 clone's Fish reference. `GET /api/tts/clones/[id]/preview` replays a stored
-take (fish v2, then the legacy engine-free key, then an older s2-pro file) and never
-synthesizes. A stored clip is `private, max-age=31536000, immutable` with an
-ETag and `Vary: Cookie`. The browser may keep that response.
-`CDN-Cache-Control` and `Vercel-CDN-Cache-Control` are `no-store`, so the
-Vercel CDN does not. The URL carries a version token from that key and the recipe, so a
-recipe change misses the browser cache. The first read has no cache-buster.
-`202` and `409` are `private, no-store` with the same CDN headers. `GET /api/tts/voices`
-returns `previewUrl` for this session's clone when a key is already known.
+take and never synthesizes. A remembered `preview_storage_path`, or a 16-hex
+`v` token that names one candidate key, is streamed from that object. The
+fish v2, legacy engine-free, and older s2-pro keys are opened only when that
+object is missing. The picker does not play this cookie route. `previewUrl`
+is `/api/tts/clone-preview/<payload>~<hmac>`: the voices list checks
+ownership, then the bytes route checks the signature and streams. That
+response is `public, max-age=31536000, immutable` on `Cache-Control`,
+`CDN-Cache-Control`, and `Vercel-CDN-Cache-Control`, with no `Vary: Cookie`.
+The proxy does not set a session cookie on that path. The authenticated
+route stays `private, max-age=31536000, immutable` with `Vary: Cookie` and
+CDN `no-store`. `202` and `409` stay `private, no-store`. `GET /api/tts/voices`
+returns that signed `previewUrl` when a key is already known, and does not
+ask the worker to prewarm S2. The picker preloads visible clone previews as
+metadata (one selected clip may preload fully on 4G; save-data and 2G
+preload nothing) and does not POST `/api/capacity/warm` for a clone.
 The first list for an unknown clone stats storage (at most three keys, four
 clones at a time) and remembers the hit, or a miss for ten minutes. Later
 lists do not stat. The list does not bake. The picker says "Preparing preview…"

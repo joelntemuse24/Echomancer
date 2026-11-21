@@ -4,6 +4,22 @@
  */
 
 import { readStockVoicePick } from "@/lib/stock-voice-pick";
+import { isKokoroCpuVoiceId } from "@/lib/tts/kokoro-voice-ids";
+
+/**
+ * What a picker selection may warm.
+ *
+ * Kokoro narrators warm their CPU app. A clone does not: Play is a stored
+ * MP3, and posting `/api/capacity/warm` for `s2` starts a GPU the preview
+ * never uses.
+ */
+export function capacityWarmForVoiceSelect(
+  voiceId: string
+): { voiceId: string; reason: "voice" } | null {
+  if (!voiceId || voiceId.startsWith("clone:")) return null;
+  if (!isKokoroCpuVoiceId(voiceId)) return null;
+  return { voiceId, reason: "voice" };
+}
 
 export function requestCapacityWarm(input: {
   voiceId?: string | null;

@@ -75,7 +75,10 @@ export function poolsForWarm(input: {
 }): WarmPool[] {
   const voice = (input.voiceId ?? "").trim();
   const kokoro = isKokoroCpuVoiceId(voice);
-  if (input.reason === "voice" && voice.startsWith("clone:")) return ["s2"];
+  // A clone preview and the voice list do not wake S2. `reason: "create"`
+  // stays on CPU (and Kokoro for those narrators). The clone book's own
+  // tick is what may restore a GPU, and only once a book exists.
+  if (input.reason === "voice" && voice.startsWith("clone:")) return [];
   if (input.reason === "voice") return kokoro ? ["kokoro"] : [];
   return kokoro ? ["cpu", "kokoro"] : ["cpu"];
 }

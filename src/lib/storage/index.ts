@@ -5,6 +5,11 @@ import { Readable } from "stream";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
 import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, uploadFileWithPrefix as r2UploadFileWithPrefix, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
+import {
+  parseByteRange,
+  RangeNotSatisfiableError,
+  singleByteRangeHeader,
+} from "@/lib/storage/byte-range";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -287,6 +292,103 @@ export async function openDownloadBody(
     body: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
     contentLength: meta.size,
   };
+}
+
+export type OpenedStoredBody = {
+  statusCode: 200 | 206;
+  contentType: string;
+  contentLength: number;
+  contentRange?: string;
+  /** Size of the whole object, not the slice. */
+  totalSize: number;
+  /** Unread. Callers that reject the object must cancel it. */
+  body: ReadableStream<Uint8Array>;
+};
+
+/**
+ * Open one object and return its body unread.
+ *
+ * A full read (`downloadFile`) holds the first byte until the whole MP3 is
+ * in memory. Playback of a short clip needs the headers and the first
+ * frames. `bytes=0-` is the whole object and is answered as 200. Any other
+ * single range is a 206 of that slice only.
+ */
+export async function openStoredBody(
+  storagePath: string,
+  rangeHeader: string | null | undefined,
+  signal?: AbortSignal
+): Promise<OpenedStoredBody | null> {
+  if (!storagePath || storagePath.includes("..") || storagePath.startsWith("/")) {
+    return null;
+  }
+  const range = previewByteRange(rangeHeader);
+
+  if (isR2Configured()) {
+    try {
+      const opened = await openObject(storagePath, range, { signal });
+      const total = totalSizeFromContentRange(opened.contentRange) ?? opened.contentLength;
+      return {
+        statusCode: opened.statusCode,
+        contentType: opened.contentType || "application/octet-stream",
+        contentLength: opened.contentLength,
+        contentRange: opened.contentRange,
+        totalSize: total,
+        body: opened.body,
+      };
+    } catch (err) {
+      if (err instanceof RangeNotSatisfiableError) throw err;
+      if (missingObject(err)) return null;
+      throw err;
+    }
+  }
+
+  let size: number;
+  try {
+    const stats = await fs.stat(path.join(STORAGE_ROOT, storagePath));
+    if (!stats.isFile()) return null;
+    size = stats.size;
+  } catch (err) {
+    if (missingObject(err)) return null;
+    throw err;
+  }
+
+  const parsed = range ? parseByteRange(range, size) : null;
+  if (parsed === "unsatisfiable") throw new RangeNotSatisfiableError(size);
+  const start = parsed?.start ?? 0;
+  const end = parsed?.end ?? Math.max(0, size - 1);
+  const partial = parsed != null && (start !== 0 || end !== size - 1);
+  const nodeStream = createReadStream(getFullPath(storagePath), {
+    start,
+    end: size === 0 ? 0 : end,
+  });
+  if (signal) {
+    const abort = () => nodeStream.destroy();
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  }
+  const contentLength = size === 0 ? 0 : end - start + 1;
+  return {
+    statusCode: partial ? 206 : 200,
+    contentType: "application/octet-stream",
+    contentLength,
+    contentRange: partial ? `bytes ${start}-${end}/${size}` : undefined,
+    totalSize: size,
+    body: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
+  };
+}
+
+/** `bytes=0-` is the whole object. Any other single range is forwarded. */
+function previewByteRange(rangeHeader: string | null | undefined): string | null {
+  const header = singleByteRangeHeader(rangeHeader);
+  if (!header || header === "bytes=0-") return null;
+  return header;
+}
+
+function totalSizeFromContentRange(contentRange: string | undefined): number | undefined {
+  const match = contentRange?.match(/\/(\d+)\s*$/);
+  if (!match?.[1]) return undefined;
+  const total = Number.parseInt(match[1], 10);
+  return Number.isFinite(total) ? total : undefined;
 }
 
 /** Ten-minute signed GET when R2 is configured. Null in local dev. */

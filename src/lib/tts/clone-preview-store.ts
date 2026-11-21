@@ -33,6 +33,7 @@
 
 import { createHash } from "crypto";
 import { downloadFile, readObjectStat, uploadFile } from "@/lib/storage";
+import { clonePreviewMediaUrl } from "@/lib/tts/clone-preview-media";
 import { isEmptyOrSilentAudio, MIN_AUDIBLE_BYTES } from "@/lib/tts/audio-guard";
 import {
   cloneRowIdFromCatalogId,
@@ -179,12 +180,19 @@ export function clonePreviewVersionToken(storagePath: string): string {
     .slice(0, 16);
 }
 
-/** Same-origin URL the picker can play and the browser can cache. */
+/**
+ * Cookie-free URL for a clip the caller has already authorized.
+ *
+ * The catalog id is not in the path: possession of the signature is the
+ * grant, and the edge can cache it without `Vary: Cookie`. An empty string
+ * means the key is not a preview object.
+ */
 export function clonePreviewPublicUrl(
   catalogVoiceId: string,
   storagePath: string
 ): string {
-  return `/api/tts/clones/${encodeURIComponent(catalogVoiceId)}/preview?v=${clonePreviewVersionToken(storagePath)}`;
+  void catalogVoiceId;
+  return clonePreviewMediaUrl(storagePath);
 }
 
 /** The stored preview, or null when there is none yet (or it is unusable). */

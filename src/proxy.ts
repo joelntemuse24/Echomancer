@@ -18,6 +18,13 @@ import {
  * identity of its own.
  */
 export async function proxy(request: NextRequest) {
+  // Signed clone-preview bytes are cached at the edge. A session cookie on
+  // this response would make that cache refuse the entry, and minting one
+  // for a cookieless fetch would do the same.
+  if (request.nextUrl.pathname.startsWith("/api/tts/clone-preview/")) {
+    return NextResponse.next();
+  }
+
   if (!isSessionConfigured()) return NextResponse.next();
 
   const existing = await readSession(request);
