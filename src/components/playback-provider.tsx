@@ -17,6 +17,13 @@ import { Pause, Play, X } from "lucide-react";
 import { playerIdFromPathname } from "@/lib/nav/player-path";
 import { formatPlayClock, SKIP_SECONDS } from "@/lib/player/seek";
 import { assignPlaybackRate } from "@/lib/player/playback-speed";
+import { browserPrefStore } from "@/lib/player/player-prefs";
+import { saveShellResume } from "@/lib/player/shell-resume";
+import {
+  placeOnTimeline,
+  readStoredResume,
+  type SectionSpan,
+} from "@/lib/player/playback-position";
 import { resumeAudioGraphs } from "@/lib/player/audio-graph";
 import {
   installMediaSessionActions,
@@ -33,6 +40,13 @@ export const PLAYBACK_ARTWORK = "/icon-512.png";
 
 /** Same level the audio helper applies; kept here for the one element. */
 const ELEMENT_VOLUME = 0.75;
+
+/**
+ * How often the shell stores the playhead while the player page is unmounted.
+ * The page's own clock is 5s (`RESUME_SAVE_INTERVAL_MS`); this matches it so a
+ * tab closed from the mini player loses no more than a page close would.
+ */
+const SHELL_RESUME_INTERVAL_MS = 5000;
 
 /**
  * What the player page reports each render.
@@ -58,6 +72,13 @@ export type PlaybackReport = {
    * the part spans, so a drag on the scrubber cannot move it.
    */
   elementOffset: number;
+  /**
+   * Every part of this book, on the book clock. A book made of parts has one
+   * source per part, so the shell needs the spans to move between them once
+   * the player page is gone — otherwise the mini player's scrubber can only
+   * land inside the part the element happens to hold.
+   */
+  parts: readonly SectionSpan[];
   playing: boolean;
   seekable: boolean;
   play: (() => void) | null;
@@ -65,6 +86,8 @@ export type PlaybackReport = {
   seek: ((bookSeconds: number) => void) | null;
   skip: ((deltaSeconds: number) => void) | null;
   chapter: ((direction: "previous" | "next") => void) | null;
+  /** The book's assembled file, when it has one, for a part-boundary handoff. */
+  fullUrl?: string | null;
 };
 
 type PlaybackShell = {
@@ -148,6 +171,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const metadataKeyRef = useRef("");
   const stateKeyRef = useRef("");
   const positionKeyRef = useRef("");
+  /** The book's part list as the page last reported it. Empty for a single file. */
+  const partsRef = useRef<readonly SectionSpan[]>([]);
+  /** Guards the one part hop a shell makes when a part ends. */
+  const handingOffRef = useRef(false);
+  /** The rate the platform should report. Kept in a ref for the once-only listeners. */
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
 
   const [identity, setIdentity] = useState<NowPlaying>(EMPTY_NOW_PLAYING);
   const [dismissed, setDismissed] = useState(false);
@@ -173,8 +203,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
    */
   const reacquire = useCallback(async () => {
     const audio = audioRef.current;
-    const src = srcRef.current;
+    // Whatever the element was last pointed at is the URL that worked; a
+    // cache-busting `?r=n` added after a media error is part of that.
+    const src = audio?.getAttribute("src") || srcRef.current;
     if (!audio || !src) return;
+    const element = audio;
     const needs = shouldReacquireSource({
       hasSource: true,
       srcAttribute: audio.getAttribute("src") ?? "",
@@ -183,22 +216,33 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       errorCode: audio.error?.code ?? null,
     });
     if (!needs) return;
-    const at = lastPositionRef.current;
+    // The live playhead is the truth if this element still holds one; the
+    // stored copy is only the fallback for an element that was actually
+    // cleared (which is exactly the case `shouldReacquireSource` matched).
+    // Both sides are on the book clock; the offset is applied once, below.
+    const stored = jobIdRef.current
+      ? readStoredResume(browserPrefStore(), jobIdRef.current)
+      : null;
+    const at = Math.max(
+      lastPositionRef.current,
+      stored?.positionSeconds ?? 0
+    );
+    const offset = bookOffsetRef.current;
 
     const waitFor = (event: "loadedmetadata" | "seeked", timeoutMs: number) =>
       new Promise<void>((resolve) => {
         let settled = false;
-        const done = () => {
+        const timer = window.setTimeout(done, timeoutMs);
+        function done() {
           if (settled) return;
           settled = true;
-          audio.removeEventListener(event, done);
-          audio.removeEventListener("error", done);
+          window.clearTimeout(timer);
+          element.removeEventListener(event, done);
+          element.removeEventListener("error", done);
           resolve();
-        };
-        audio.addEventListener(event, done);
-        audio.addEventListener("error", done);
-        // A wake that never lands must not hold the lock-screen button.
-        window.setTimeout(done, timeoutMs);
+        }
+        element.addEventListener(event, done);
+        element.addEventListener("error", done);
       });
 
     const loaded = waitFor("loadedmetadata", 10_000);
@@ -208,9 +252,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     audio.load();
     await loaded;
 
-    if (at > 0.5) {
+    // The stored value is a book clock; the element wants its own clock.
+    const elementTarget = at - offset;
+    if (elementTarget > 0.5) {
       const seekable = Number.isFinite(audio.duration) ? audio.duration : 0;
-      const target = Math.max(0, Math.min(at - bookOffsetRef.current, Math.max(0, seekable - 0.05)));
+      const target = Math.max(0, Math.min(elementTarget, Math.max(0, seekable - 0.05)));
       if (target > 0.05) {
         const sought = waitFor("seeked", 5_000);
         try {
@@ -253,22 +299,83 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     audioRef.current?.pause();
   }, []);
 
-  const seekBookSeconds = useCallback((seconds: number) => {
-    if (!Number.isFinite(seconds)) return;
-    const report = reportRef.current;
-    if (report?.active && report.seek) {
-      report.seek(seconds);
-      return;
-    }
+  /**
+   * Move the element to a book-clock target with no page mounted.
+   *
+   * A book made of parts is one source per part, so a target outside the
+   * element's own part needs a new `src`. The part list the page last
+   * reported is what makes that possible; without it the old code clamped the
+   * target into the current part, and dragging the mini player's scrubber
+   * backwards silently jumped to 0:00 of the part that happened to be loaded
+   * instead of the earlier one.
+   *
+   * Only the source changes; the element, the session, and the metadata stay,
+   * so the platform notification survives the part change exactly as it
+   * survives a pause.
+   */
+  const moveElementToBookSeconds = useCallback((seconds: number, autoplay: boolean) => {
     const audio = audioRef.current;
     if (!audio) return;
-    const element = Math.max(0, seconds - bookOffsetRef.current);
-    const max =
-      Number.isFinite(audio.duration) && audio.duration > 0
-        ? Math.max(0, audio.duration - 0.05)
-        : element;
-    audio.currentTime = Math.min(element, max);
+    const target = Math.max(0, seconds);
+    const parts = partsRef.current;
+    const placed = parts.length > 0 ? placeOnTimeline({ bookSeconds: target, spans: parts }) : null;
+
+    // Same part, or a book with no part list: the element can seek itself.
+    const currentPart = parts.find(
+      (span) => Math.abs(span.startSeconds - bookOffsetRef.current) < 0.25
+    )?.index;
+    if (!placed || placed.sectionIndex === currentPart) {
+      const element = Math.max(0, target - bookOffsetRef.current);
+      const max =
+        Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.max(0, audio.duration - 0.05)
+          : element;
+      if (element > max + 0.25) return;
+      audio.currentTime = Math.min(element, max);
+      return;
+    }
+
+    const part = parts.find((span) => span.index === placed.sectionIndex);
+    if (!part?.url) return;
+    // The element's clock restarts with the new file; the book offset moves
+    // with the part it now holds.
+    bookOffsetRef.current = part.startSeconds;
+    lastPositionRef.current = target;
+    audio.src = part.url;
+    audio.load();
+    const applySeek = () => {
+      try {
+        audio.currentTime = placed.localSeconds;
+      } catch {
+        // Not seekable yet; the element starts where it was told.
+      }
+    };
+    // Metadata may already be known (a cached object, or an element that
+    // never left HAVE_METADATA), in which case this event never fires.
+    if (audio.readyState >= 1) applySeek();
+    else audio.addEventListener("loadedmetadata", applySeek, { once: true });
+    if (autoplay) {
+      void audio.play().catch(() => {
+        // A lock-screen tap is a user gesture; a refusal here is final.
+      });
+    }
   }, []);
+
+  const seekBookSeconds = useCallback(
+    (seconds: number) => {
+      if (!Number.isFinite(seconds)) return;
+      const report = reportRef.current;
+      if (report?.active && report.seek) {
+        report.seek(seconds);
+        return;
+      }
+      // A scrub or a lock-screen seek is a move inside a book that was
+      // playing; changing parts must not quietly stop it.
+      const playing = Boolean(audioRef.current && !audioRef.current.paused);
+      moveElementToBookSeconds(seconds, playing);
+    },
+    [moveElementToBookSeconds]
+  );
 
   const skipBy = useCallback(
     (delta: number) => {
@@ -319,7 +426,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [chapter, pauseFromShell, playFromShell, seekBookSeconds, skipBy]
   );
 
-  /** Publish playbackState and the scrubber position. No React state. */
+  /**
+   * Publish playbackState and the scrubber position. No React state.
+   *
+   * The rate comes from a ref, not the closure: the element listeners are
+   * attached once (a re-attach drops a `timeupdate`), so a captured `speed`
+   * would pin the platform's scrubber to the rate the page first rendered
+   * with — the notification then reported 1× while the book played at 1.45×.
+   */
   const publishSession = useCallback(
     (position: number, duration: number, playing: boolean) => {
       const media = mediaSession();
@@ -332,7 +446,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const state = mediaSessionPositionState({
         duration,
         position,
-        playbackRate: speed,
+        playbackRate: speedRef.current,
       });
       if (!state) return;
       const key = `${state.duration}|${state.position}|${state.playbackRate}`;
@@ -344,7 +458,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         // A browser that rejects this state can take the next one.
       }
     },
-    [mediaSession, speed]
+    [mediaSession]
   );
 
   /**
@@ -394,9 +508,43 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       /* read-only on some platforms */
     }
 
+    /**
+     * Keep the stored position moving while the player page is gone.
+     *
+     * The page owns the paced save while it is mounted: it writes the local row
+     * *and* the server row, and it knows which part the element is on. Once the
+     * listener walks to Library, only this clock is left, and without it the
+     * stored position froze at the moment of navigation — closing the browser
+     * from the mini player reopened the book at that stale spot.
+     *
+     * This writes only the local row, and only while the element is actually
+     * playing, so a paused tab does not creep forward. `updatedAt` moves with
+     * it, which is what makes `preferResume` pick it over an older server copy.
+     */
+    let lastSavedAt = 0;
+    const saveResume = () => {
+      if (reportRef.current) return; // the page owns the save while mounted
+      const jobId = jobIdRef.current;
+      if (!jobId || audio.paused || audio.ended) return;
+      const now = Date.now();
+      if (now - lastSavedAt < SHELL_RESUME_INTERVAL_MS) return;
+      const saved = saveShellResume(browserPrefStore(), {
+        jobId,
+        elementSeconds: audio.currentTime,
+        elementOffset: bookOffsetRef.current,
+        readyState: audio.readyState,
+        nowSeconds: now / 1000,
+      });
+      if (saved) lastSavedAt = now;
+    };
+
     // With the page mounted, `reportSession` owns the position (book clock).
     // Without it, this is the only place left that can move the scrubber.
     const publish = () => {
+      // A released element has no book. Publishing its `pause` would put the
+      // platform session back to `paused` after Close set it to `none`, which
+      // is a notification that keeps a Play button and its slot.
+      if (!jobIdRef.current || !srcRef.current) return;
       const element = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
       const elementDuration =
         Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
@@ -408,6 +556,27 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const playing = !audio.paused && !audio.ended;
       if (position > 0.5) lastPositionRef.current = position;
       publishSession(position, duration, playing);
+      saveResume();
+      // The end of a part with the page gone: keep the book going on the one
+      // element. `publish` runs on `ended`, where the report is null, so this
+      // is the shell's own continuation.
+      if (
+        audio.ended &&
+        !report &&
+        partsRef.current.length > 0 &&
+        !handingOffRef.current
+      ) {
+        const next = partsRef.current.find(
+          (part) => part.startSeconds > bookOffsetRef.current + 0.5
+        );
+        if (next?.url) {
+          handingOffRef.current = true;
+          moveElementToBookSeconds(next.startSeconds + 0.01, true);
+          window.setTimeout(() => {
+            handingOffRef.current = false;
+          }, 1000);
+        }
+      }
       setIdentity((prev) => {
         // A book the listener has not started has no strip to come back to,
         // so opening a player and walking away leaves the page as it was.
@@ -423,6 +592,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       });
     };
 
+    // A tab closed from the mini player never fires a final `timeupdate`, and
+    // the page that would have written on `pagehide` is already gone.
+    const saveNow = () => {
+      if (reportRef.current) return;
+      const jobId = jobIdRef.current;
+      if (!jobId || audio.readyState === 0) return;
+      saveShellResume(browserPrefStore(), {
+        jobId,
+        elementSeconds: audio.currentTime,
+        elementOffset: bookOffsetRef.current,
+        readyState: audio.readyState,
+        nowSeconds: Date.now() / 1000,
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") saveNow();
+    };
+
     audio.addEventListener("play", publish);
     audio.addEventListener("playing", publish);
     audio.addEventListener("pause", publish);
@@ -430,6 +617,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("durationchange", publish);
     audio.addEventListener("loadedmetadata", publish);
     audio.addEventListener("ended", publish);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", saveNow);
     return () => {
       audio.removeEventListener("play", publish);
       audio.removeEventListener("playing", publish);
@@ -438,6 +627,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("durationchange", publish);
       audio.removeEventListener("loadedmetadata", publish);
       audio.removeEventListener("ended", publish);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", saveNow);
     };
     // `publishSession` already reads the current rate through its own deps;
     // re-attaching on every rate change would drop a `timeupdate`.
@@ -448,6 +639,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const audio = audioRef.current;
     if (!audio) return;
     assignPlaybackRate(audio, speed);
+    // A rate change is not a `timeupdate`: publish it now so the platform's
+    // scrubber does not report the old rate until the next playhead move.
+    // The page's report wins while it is mounted — it knows whether the book
+    // is playable, while the element is only "not paused" for a moment.
+    const element = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const elementDuration =
+      Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+    const report = reportRef.current;
+    if (report?.active) {
+      publishSession(report.position, report.duration, report.playing);
+      return;
+    }
+    publishSession(
+      element + bookOffsetRef.current,
+      elementDuration + bookOffsetRef.current,
+      !audio.paused && !audio.ended
+    );
+    // `publishSession` reads everything else through refs on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speed]);
 
   const setSource = useCallback((src: string, jobId: string) => {
@@ -468,6 +678,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const release = useCallback(() => {
     const audio = audioRef.current;
+    // Pause first: the `pause` listener publishes `playbackState`, and it must
+    // not overwrite the `none` below with a leftover `paused` (an Android
+    // notification that reports paused keeps its Play button and its slot).
+    if (audio) {
+      // The one place a source is released on purpose: an explicit close or
+      // a book that may not play. Never on pause or a hidden tab.
+      audio.pause();
+    }
     srcRef.current = null;
     jobIdRef.current = null;
     reportRef.current = null;
@@ -482,9 +700,6 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       media.playbackState = "none";
     }
     if (audio) {
-      // The one place a source is released on purpose: an explicit close or
-      // a book that may not play. Never on pause or a hidden tab.
-      audio.pause();
       audio.removeAttribute("src");
       audio.load();
     }
@@ -505,6 +720,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (!report.active || !report.jobId) return;
 
       bookOffsetRef.current = Math.max(0, report.elementOffset);
+      // Remember the part list so the shell can change parts after this page
+      // unmounts. It is the page that knows each part's URL.
+      partsRef.current = report.parts ?? [];
       if (report.position > 0.5) lastPositionRef.current = report.position;
 
       const media = mediaSession();
@@ -572,6 +790,34 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   // The mobile tab bar belongs to the dashboard chrome only. Everywhere else
   // the strip sits on the bottom edge, so it does not float above a gap.
   const aboveTabBar = pathname?.startsWith("/dashboard") ?? false;
+  /**
+   * The tab bar's real height, measured. A fixed `bottom-*` value drifted from
+   * the bar it was clearing (the bar is 4.5rem, the strip sat at 4.25rem, so
+   * the two overlapped by a few pixels on every phone).
+   */
+  const [tabBarHeight, setTabBarHeight] = useState(0);
+  useEffect(() => {
+    if (!aboveTabBar || typeof window === "undefined") {
+      setTabBarHeight(0);
+      return;
+    }
+    const read = () => {
+      const bar = document.querySelector<HTMLElement>("[data-tab-bar]");
+      setTabBarHeight(bar ? Math.round(bar.getBoundingClientRect().height) : 0);
+    };
+    read();
+    let observer: ResizeObserver | null = null;
+    const bar = document.querySelector<HTMLElement>("[data-tab-bar]");
+    if (bar && typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(read);
+      observer.observe(bar);
+    }
+    window.addEventListener("resize", read);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", read);
+    };
+  }, [aboveTabBar, pathname]);
   const showMini =
     !dismissed &&
     identity.started &&
@@ -592,7 +838,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           voice={identity.voice}
           playing={identity.playing}
           canSeek={identity.canSeek}
-          aboveTabBar={aboveTabBar}
+          tabBarHeight={aboveTabBar ? tabBarHeight : 0}
           bookOffset={readBookOffset}
           onToggle={() => {
             if (identity.playing) pauseFromShell();
@@ -623,7 +869,7 @@ function MiniPlayer({
   voice,
   playing,
   canSeek,
-  aboveTabBar,
+  tabBarHeight,
   bookOffset,
   onToggle,
   onSeek,
@@ -635,8 +881,12 @@ function MiniPlayer({
   voice: string | null;
   playing: boolean;
   canSeek: boolean;
-  /** Mobile only: clear the dashboard tab bar instead of the bottom edge. */
-  aboveTabBar: boolean;
+  /**
+   * Pixels of mobile tab bar to clear. 0 outside the dashboard, or on a wide
+   * screen where the bar is not rendered. Measured, not assumed, so the strip
+   * cannot overlap the bar it is meant to sit above.
+   */
+  tabBarHeight: number;
   bookOffset: () => number;
   onToggle: () => void;
   onSeek: (seconds: number) => void;
@@ -672,14 +922,38 @@ function MiniPlayer({
   const max = Math.max(1, Math.floor(clock.duration));
   const value = Math.min(Math.max(0, Math.floor(clock.position)), max);
 
+  /**
+   * The strip's real height, so the spacer below a page is exactly as tall as
+   * what covers it. A hard-coded height drifted from the rendered strip and
+   * left the last line of the page under it.
+   */
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const [stripHeight, setStripHeight] = useState(0);
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const read = () => setStripHeight(Math.round(el.getBoundingClientRect().height));
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <>
-      <div aria-hidden="true" className="h-20 md:h-16" />
+      {/* The strip's own height, plus the tab bar on mobile, so the last line
+          of a page is never hidden under either. */}
+      <div
+        aria-hidden="true"
+        style={{ height: `${stripHeight + tabBarHeight}px` }}
+      />
       <section
+        ref={sectionRef}
         aria-label="Now playing"
         data-testid="mini-player"
+        style={tabBarHeight ? { bottom: `${tabBarHeight}px` } : undefined}
         className={`fixed inset-x-0 z-40 border-t border-border/60 bg-background/95 backdrop-blur md:bottom-0 ${
-          aboveTabBar ? "bottom-[4.25rem]" : "bottom-0"
+          tabBarHeight ? "" : "bottom-0"
         }`}
       >
         <div className="container mx-auto flex items-center gap-3 px-4 py-2 md:py-2.5">

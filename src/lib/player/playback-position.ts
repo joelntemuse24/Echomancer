@@ -35,6 +35,12 @@ export type SectionSpan = {
   index: number;
   startSeconds: number;
   durationSeconds: number;
+  /**
+   * The part's playback URL, when the caller has it. The root-layout shell
+   * needs this to change parts on its own after the player page unmounts;
+   * the timing maths above ignores it.
+   */
+  url?: string;
 };
 
 export type StoredResume = {

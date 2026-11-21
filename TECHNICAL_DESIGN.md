@@ -2589,7 +2589,11 @@ Whole-book audio is `job.audio_url` → `/api/storage/audiobooks/<jobId>/full.mp
 which 302s to a presigned R2 URL (§11), so playback bytes come from R2. The
 `<audio>` element lives in the **root-layout playback shell**
 (`src/components/playback-provider.tsx`), not on this page: a route change
-must not unmount it. It sets no `crossOrigin` and is not routed through Web
+must not unmount it. That shell also keeps the stored playhead moving while
+no player page is mounted (`src/lib/player/shell-resume.ts`, every 5s and on
+`pagehide`), because otherwise the position froze at the moment of
+navigation and closing a tab from the mini player reopened the book there.
+It sets no `crossOrigin` and is not routed through Web
 Audio (a cross-origin source would make Web Audio output silence; R2 CORS is
 not required for element playback). Any AudioContext the app does open is
 tracked by `src/lib/player/audio-graph.ts` and resumed before a shell Play,
@@ -2626,8 +2630,12 @@ A queued take-home whose upload is not ready yet shows **Reading your book**
 (`Preparing audio…` / `Generating`), play with thin pause bars, ±10s skip
 icons, a thin-line seek
 scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
-**1×**: tap the compact label to cycle, or a small chevron to pick any
-rate from **0.8×** to **1.5×** in **0.05** steps. One `max-w-2xl` column: transport spacing and play size
+the **remembered rate** (1× until the listener picks one): tap the compact
+label to cycle, or a small chevron to pick any rate from **0.8×** to
+**1.5×** in **0.05** steps. That rate is one `localStorage` key
+(`ec-player-speed`) for every book and survives a reload and the next book;
+a stored value that is not a preset snaps to the nearest one. One
+`max-w-2xl` column: transport spacing and play size
 step up at `md`, and the cluster is vertically centered on desktop so it
 does not read as a stretched phone. The speed list opens up on mobile
 (above the tab bar) and down on desktop. Mobile uses a solid overlay so

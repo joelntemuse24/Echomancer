@@ -1318,18 +1318,30 @@ different book's source, and a book that may no longer play. Never on
   `icon-512.png` artwork), `play`/`pause`/`seekbackward`/`seekforward`/
   `seekto`/`previoustrack`/`nexttrack`, plus `playbackState` and
   `setPositionState`. Installed once in the shell
-  (`src/lib/player/media-session.ts`), so it outlives the page.
+  (`src/lib/player/media-session.ts`), so it outlives the page. The published
+  `playbackRate` comes from a ref, because the element listeners attach once.
 - A lock-screen Play after the platform freed the buffer re-assigns the same
   `src` to the same element, waits for metadata, seeks to the saved
   position, then plays (`shouldReacquireSource` / `reacquire`). Same
-  element, so the session survives.
+  element, so the session survives. It re-assigns the URL the element
+  actually holds, so a `?r=n` cache-bust is kept.
+- The playhead keeps saving after the player page unmounts:
+  `src/lib/player/shell-resume.ts` writes the same `ec-resume:<jobId>` row on
+  the book clock every 5s while the element plays, and on `pagehide` /
+  a hidden tab. Exactly one writer at a time — the shell stands down while a
+  page report is mounted. Without it, closing the tab from the mini player
+  reopened the book at the moment of navigation.
 - The element is not routed through Web Audio. Any AudioContext the app
   opens is tracked by `src/lib/player/audio-graph.ts` and resumed before a
   shell Play. Do not add an EQ or gain graph on the media element.
 - The mini player appears only after playback has actually started
   (`started`) and the route no longer matches the book. It is a labelled
-  `<section>` with its own height as a spacer, above the mobile tab bar. It
+  `<section>` with its own measured height as a spacer, above the mobile tab
+  bar (whose `[data-tab-bar]` height is also measured, not assumed). It
   reads the playhead from the element, not from a 4 Hz provider state.
+- Close pauses first, then drops `src` and sets `playbackState = "none"`, so
+  the platform drops the notification instead of leaving a paused session.
+  The publishers ignore events once the source is released.
 - Listen-time speed is one `localStorage` key (`SPEED_PREF_KEY`,
   `ec-player-speed`) for every book: `src/hooks/use-playback-speed.ts` via
   `readSpeedPref`. A reload no longer resets to 1× — that behaviour was
@@ -1525,6 +1537,7 @@ src/lib/player/player-prefs.ts # The one localStorage preference store (read-alo
 src/lib/player/media-session.ts # Media Session metadata, action install, position state, source re-acquire rule
 src/lib/player/audio-graph.ts # Tracked AudioContexts, resumed before a shell Play
 src/components/playback-provider.tsx # Root-layout: the one <audio>, Media Session, mini player
+src/lib/player/shell-resume.ts # The shell's own 5s playhead save while no player page is mounted
 src/lib/player/seek.ts # ±10s skip (main player and focus) + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list

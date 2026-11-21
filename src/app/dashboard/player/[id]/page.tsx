@@ -503,7 +503,11 @@ function PlayerPageInner({ id }: { id: string }) {
       const at = Number.isFinite(live.currentTime) ? live.currentTime : 0;
       clearPendingSeekRef.current();
       setSegmentIndex(seeded.segmentIndex ?? 0);
-      setAudioUrl(seeded.url);
+      // Adopt the URL the element actually holds, not the seeded one: after a
+      // media-error recovery it carries `?r=n`, and handing the shell the
+      // un-busted URL would look like a new source, which restarts the file
+      // and drops the playhead the listener is on.
+      setAudioUrl(elementSrc);
       setCurrentTime(at);
       setDuration(live.duration);
       setIsPlaying(!live.paused && !live.ended);
@@ -1793,6 +1797,18 @@ function PlayerPageInner({ id }: { id: string }) {
   const sessionActive = mediaSessionActive(job?.status, Boolean(audioUrl));
   const sessionPosition = bookClock ? shownTime : currentTime;
   const sessionDuration = bookClock ? bookDuration : playDuration;
+  /**
+   * The parts with their playback URLs, so the shell can change parts after
+   * this page unmounts (a mini-player seek across a boundary, or the end of a
+   * part with no page to run the handoff).
+   */
+  const sessionParts = useMemo(() => {
+    const ready = readyByIndex(job?.segments);
+    return spans.map((span) => {
+      const segment = ready.get(span.index);
+      return segment ? { ...span, url: `/api/storage/${segment.path}` } : span;
+    });
+  }, [spans, job?.segments]);
   useEffect(() => {
     reportSession({
       active: sessionActive,
@@ -1803,6 +1819,7 @@ function PlayerPageInner({ id }: { id: string }) {
       duration: sessionDuration,
       position: sessionPosition,
       elementOffset: bookClock ? elementClockOffset(spans, segmentIndex) : 0,
+      parts: sessionParts,
       playing: isPlaying,
       seekable: sessionActive && !isStreamMode,
       play: () => {
@@ -1832,6 +1849,7 @@ function PlayerPageInner({ id }: { id: string }) {
     currentTime,
     segmentIndex,
     spans,
+    sessionParts,
     chapterNav,
     view.previous,
     view.next,

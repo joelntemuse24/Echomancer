@@ -120,8 +120,11 @@ export function DashboardChrome({
         </div>
       </footer>
 
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t bg-background">
-        <div className="flex justify-around py-2">
+      <nav
+        data-tab-bar=""
+        className="md:hidden fixed bottom-0 left-0 right-0 z-50 h-[4.5rem] border-t bg-background"
+      >
+        <div className="flex h-full items-center justify-around">
           {navItems.map((item) => {
             const isActive =
               pathname.startsWith(item.href) ||

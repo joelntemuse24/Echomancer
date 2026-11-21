@@ -29,6 +29,16 @@ The Media Session is installed in the same shell:
 released by exactly three things: the mini player's Close button, a
 different book's source, and a book that may no longer play.
 
+The listening position keeps moving after the player page unmounts. The page
+owns the paced save while it is mounted (local row plus server row, in
+`usePlaybackResume`). Once the listener walks to Library, the shell's own
+5-second clock (`saveShellResume` in `src/lib/player/shell-resume.ts`) writes
+the same `ec-resume:<jobId>` row, on the book clock, and stamps a fresh
+`updatedAt` so `preferResume` prefers it. Without that clock the stored
+position froze at the moment of navigation and closing the tab from the mini
+player reopened the book at that stale spot. Exactly one writer is active at a
+time: the shell stands down whenever a page report is mounted.
+
 If the platform frees the buffer of a paused tab — Chrome does this, and the
 element then reports `NETWORK_NO_SOURCE` with an empty `currentSrc` — a
 Play from the lock screen re-assigns the same `src` to the same element,
