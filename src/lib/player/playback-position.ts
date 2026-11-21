@@ -81,6 +81,20 @@ export function contiguousSpans(rows: readonly SpanSource[]): SectionSpan[] {
   return spans;
 }
 
+/**
+ * Where an element's clock 0 sits on the book clock. A part file starts at
+ * its part's offset; a finished book is 0. The shell uses it so a lock-screen
+ * scrubber lands on the right minute of a book made of parts.
+ */
+export function elementClockOffset(
+  spans: readonly SectionSpan[],
+  sectionIndex: number | null
+): number {
+  if (sectionIndex == null) return 0;
+  const span = spans.find((item) => item.index === sectionIndex);
+  return span ? span.startSeconds : 0;
+}
+
 /** Seconds of audio a listener can reach right now. */
 export function availableBookSeconds(
   spans: readonly SectionSpan[],

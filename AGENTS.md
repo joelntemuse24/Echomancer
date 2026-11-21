@@ -1303,6 +1303,41 @@ take-home spawn. All voices use the same stock pipeline.
    the book stays ready and the warning is "The full download is still being
    prepared."
 
+## Player shell, speed, and mobile background playback
+
+One `<audio>` element lives in the root layout
+(`src/components/playback-provider.tsx`), not on the player page. A route
+change must not unmount it. The page calls `setSource(src, jobId)` and
+`reportSession({...})`, and on unmount only `detachSession()`: the element,
+its `src`, the Media Session metadata, and the action handlers all stay.
+`src` is released by exactly three things — the mini player's Close, a
+different book's source, and a book that may no longer play. Never on
+`pause`, `visibilitychange`, or `pagehide`.
+
+- Media Session: `MediaMetadata` (title, chapter as artist, voice as album,
+  `icon-512.png` artwork), `play`/`pause`/`seekbackward`/`seekforward`/
+  `seekto`/`previoustrack`/`nexttrack`, plus `playbackState` and
+  `setPositionState`. Installed once in the shell
+  (`src/lib/player/media-session.ts`), so it outlives the page.
+- A lock-screen Play after the platform freed the buffer re-assigns the same
+  `src` to the same element, waits for metadata, seeks to the saved
+  position, then plays (`shouldReacquireSource` / `reacquire`). Same
+  element, so the session survives.
+- The element is not routed through Web Audio. Any AudioContext the app
+  opens is tracked by `src/lib/player/audio-graph.ts` and resumed before a
+  shell Play. Do not add an EQ or gain graph on the media element.
+- The mini player appears only after playback has actually started
+  (`started`) and the route no longer matches the book. It is a labelled
+  `<section>` with its own height as a spacer, above the mobile tab bar. It
+  reads the playhead from the element, not from a 4 Hz provider state.
+- Listen-time speed is one `localStorage` key (`SPEED_PREF_KEY`,
+  `ec-player-speed`) for every book: `src/hooks/use-playback-speed.ts` via
+  `readSpeedPref`. A reload no longer resets to 1× — that behaviour was
+  deliberately reversed. A stored value that is not a 0.8–1.5 preset is
+  snapped to the nearest one by `normalizePlaybackSpeed`.
+- What each browser allows, and the limits that cannot be fixed in a mobile
+  browser, are in `docs/mobile-background-playback.md`.
+
 ## Job flow (stream)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "stream", catalogVoiceId, ... }`
@@ -1485,7 +1520,11 @@ src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
 src/lib/paragraph-spans.ts # Blank-line paragraph offsets, one copy
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
-src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 in 0.05 steps, default 1× (not Fish speed)
+src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 in 0.05 steps, remembered per browser (not Fish speed)
+src/lib/player/player-prefs.ts # The one localStorage preference store (read-along, precise seek, speed)
+src/lib/player/media-session.ts # Media Session metadata, action install, position state, source re-acquire rule
+src/lib/player/audio-graph.ts # Tracked AudioContexts, resumed before a shell Play
+src/components/playback-provider.tsx # Root-layout: the one <audio>, Media Session, mini player
 src/lib/player/seek.ts # ±10s skip (main player and focus) + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list

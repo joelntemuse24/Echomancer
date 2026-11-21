@@ -3,6 +3,7 @@ import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { AUTH_HINT_BOOT } from "@/lib/auth/auth-hint";
 import { NavigationWarmup } from "@/components/navigation-warmup";
+import { PlaybackProvider } from "@/components/playback-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
@@ -45,7 +46,7 @@ export default function RootLayout({
           disableTransitionOnChange={false}
         >
           <NavigationWarmup />
-          {children}
+          <PlaybackProvider>{children}</PlaybackProvider>
           <Toaster position="bottom-right" />
         </ThemeProvider>
       </body>

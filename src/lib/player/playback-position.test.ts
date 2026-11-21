@@ -8,6 +8,7 @@ import {
   bookmarkOnAbsoluteClock,
   contiguousSpans,
   decideResume,
+  elementClockOffset,
   libraryResumeLabel,
   placeOnTimeline,
   positionToPersist,
@@ -479,5 +480,25 @@ describe("bookmark clock", () => {
   it("keeps a legacy part mark when its duration is still unknown", () => {
     expect(absoluteBookmarkSeconds({ positionSeconds: 12, sectionIndex: 4 }, [])).toBeNull();
     expect(bookmarkClockLabel({ positionSeconds: 12, sectionIndex: 4 }, [])).toBe("Part 5 · 0:12");
+  });
+});
+
+describe("elementClockOffset", () => {
+  const spans = [
+    { index: 0, startSeconds: 0, durationSeconds: 100 },
+    { index: 1, startSeconds: 100, durationSeconds: 120 },
+    { index: 2, startSeconds: 220, durationSeconds: 80 },
+  ];
+
+  it("is the part's start on the book clock", () => {
+    expect(elementClockOffset(spans, 0)).toBe(0);
+    expect(elementClockOffset(spans, 1)).toBe(100);
+    expect(elementClockOffset(spans, 2)).toBe(220);
+  });
+
+  it("is zero for a finished book and for a part outside the known spans", () => {
+    expect(elementClockOffset(spans, null)).toBe(0);
+    expect(elementClockOffset(spans, 7)).toBe(0);
+    expect(elementClockOffset([], 1)).toBe(0);
   });
 });

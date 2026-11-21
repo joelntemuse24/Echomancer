@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forgetJob, rememberJobDetail } from "@/lib/nav/screen-cache";
 import { resetClientSearchForTests } from "@/lib/nav/client-search";
+import { PlaybackProvider } from "@/components/playback-provider";
 import PlayerPage from "./page";
 
 const JOB = "resume-book";
@@ -230,6 +231,15 @@ function baseJob(overrides: JobBody = {}): JobBody {
   };
 }
 
+/** The player page reads the one media element from the root-layout shell. */
+function Player() {
+  return (
+    <PlaybackProvider>
+      <PlayerPage />
+    </PlaybackProvider>
+  );
+}
+
 function audio(): HTMLAudioElement {
   const element = document.querySelector("audio");
   if (!element) throw new Error("player audio is not mounted");
@@ -251,7 +261,7 @@ async function settle() {
 }
 
 async function openPlayer() {
-  render(<PlayerPage />);
+  render(<Player />);
   await settle();
   if (releaseJob) {
     releaseJob();
@@ -421,7 +431,7 @@ describe("player resume", () => {
       releaseJob = resolve;
     });
     rememberJobDetail(JOB, { job: jobBody });
-    render(<PlayerPage />);
+    render(<Player />);
     await settle();
     const element = audio();
     await emit(element, "loadedmetadata");
@@ -448,7 +458,7 @@ describe("player resume", () => {
       releaseJob = resolve;
     });
     rememberJobDetail(JOB, { job: jobBody });
-    render(<PlayerPage />);
+    render(<Player />);
     await settle();
     const element = audio();
     await act(async () => {
@@ -737,7 +747,7 @@ describe("player resume", () => {
       releaseJob = resolve;
     });
     rememberJobDetail(JOB, { job: jobBody });
-    render(<PlayerPage />);
+    render(<Player />);
     await settle();
     const element = audio();
     mediaOf(element).duration = 4000;

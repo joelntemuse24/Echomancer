@@ -13,6 +13,7 @@ import {
   DASHBOARD_NAV,
   LIBRARY_HREF,
   PREFETCH_SCREEN,
+  showHeaderNewBook,
   VOICES_HREF,
 } from "@/lib/nav/routes";
 import { warmJobs, warmVoices } from "@/lib/nav/screen-cache";
@@ -38,6 +39,7 @@ export function DashboardChrome({
 }) {
   const pathname = usePathname();
   const identity = useViewerIdentity();
+  const showNewBook = showHeaderNewBook(pathname);
 
   useEffect(() => {
     warmJobs();
@@ -81,17 +83,18 @@ export function DashboardChrome({
                   );
                 })}
               </nav>
-              <Link
-                href={CREATE_HREF}
-                prefetch={PREFETCH_SCREEN}
-                aria-label={NAV.newBook}
-                title={NAV.newBook}
-                onClick={() => prepareNewAudiobook()}
-                className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 px-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
-                <span className="hidden sm:inline">{NAV.newBook}</span>
-              </Link>
+              {showNewBook ? (
+                <Link
+                  href={CREATE_HREF}
+                  prefetch={PREFETCH_SCREEN}
+                  aria-label={NAV.newBook}
+                  title={NAV.newBook}
+                  onClick={() => prepareNewAudiobook()}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-sm text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+                </Link>
+              ) : null}
               <AuthControls
                 identity={identity}
                 callbackUrl={pathname || "/dashboard/queue"}

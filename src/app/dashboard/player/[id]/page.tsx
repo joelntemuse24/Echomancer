@@ -17,7 +17,7 @@ import {
   rememberJobDetail,
 } from "@/lib/nav/screen-cache";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
-import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
+import { usePlayback } from "@/components/playback-provider";
 import { customerBookStatus, userFriendlyError } from "@/lib/errors-ui";
 import {
   mediaSessionActive,
@@ -26,8 +26,7 @@ import {
   playbackAllowed,
   playbackUrlForStatus,
   playerShowsPlay,
-} from "@/lib/library/card-play";
-import { EditableBookTitle } from "@/components/editable-book-title";
+} from "@/lib/library/card-play";import { EditableBookTitle } from "@/components/editable-book-title";
 import { playerStatusLine, UX } from "@/lib/ux-copy";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
@@ -83,6 +82,7 @@ import {
   absoluteBookmarkSeconds,
   availableBookSeconds,
   bookTimeFromElement,
+  elementClockOffset,
   bookmarkClockLabel,
   bookmarkOnAbsoluteClock,
   contiguousSpans,
@@ -237,7 +237,7 @@ function PlayerPageInner({ id }: { id: string }) {
   const searchParams = useClientSearchParams();
   const forceStream = searchParams.get("mode") === "stream";
   const forceSegments = searchParams.get("mode") === "segments";
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const { audioRef, setSource, releaseForJob, reportSession, detachSession } = usePlayback();
   const processorInitialized = useRef(false);
 
   const [job, setJob] = useState<Job | null>(() => peekJob<Job>(id));
@@ -492,6 +492,25 @@ function PlayerPageInner({ id }: { id: string }) {
       audioRef.current?.pause();
       return;
     }
+    // Returning to a book the shell still holds: the element is the truth.
+    // The stored row is up to one save interval behind, so seeking to it
+    // would rewind a listen that never stopped. A cache-busting `?r=` on the
+    // element is still the same file, so the comparison ignores the query.
+    const live = audioRef.current;
+    const elementSrc = live?.getAttribute("src") ?? "";
+    const sameFile = elementSrc !== "" && elementSrc.split("?")[0] === seeded.url.split("?")[0];
+    if (live && sameFile && live.readyState >= 1) {
+      const at = Number.isFinite(live.currentTime) ? live.currentTime : 0;
+      clearPendingSeekRef.current();
+      setSegmentIndex(seeded.segmentIndex ?? 0);
+      setAudioUrl(seeded.url);
+      setCurrentTime(at);
+      setDuration(live.duration);
+      setIsPlaying(!live.paused && !live.ended);
+      confirmedPlayheadRef.current = at;
+      if (at > 0.5) restoreLandedRef.current = true;
+      return;
+    }
     armPlayback(seeded, cached?.status);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, forceStream, forceSegments]);
@@ -743,7 +762,7 @@ function PlayerPageInner({ id }: { id: string }) {
       window.removeEventListener("pagehide", hide);
       window.removeEventListener("beforeunload", hide);
     };
-  }, [resumeEnabled, id, audioUrl]);
+  }, [resumeEnabled, id, audioUrl, audioRef]);
   useEffect(() => { segmentIndexRef.current = segmentIndex; }, [segmentIndex]);
 
   const jobStatus = job?.status;
@@ -1012,13 +1031,39 @@ function PlayerPageInner({ id }: { id: string }) {
     }
   };
 
-  // Initialize audio processor when audio element is ready
+  // Initialize audio processor when audio element is ready. The element
+  // belongs to the root-layout shell and outlives this page.
   useEffect(() => {
     if (audioRef.current && audioUrl && !processorInitialized.current) {
       initialize(audioRef.current);
       processorInitialized.current = true;
     }
-  }, [audioUrl, initialize]);
+  }, [audioUrl, initialize, audioRef]);
+
+  /**
+   * Point the shell's one element at this book's source. Assigning the same
+   * URL again is a no-op, so a re-render never restarts the audio. The
+   * shell releases it only for an explicit close or a book that may not play.
+   */
+  useEffect(() => {
+    if (!audioUrl) return;
+    setSource(audioUrl, id);
+  }, [audioUrl, id, setSource]);
+
+  /**
+   * A book that lost the right to play (failed or cancelled) gives up the
+   * source. A pause is not a reason: the platform notification outlives one.
+   */
+  useEffect(() => {
+    if (!job) return;
+    if (playbackAllowed(job.status)) return;
+    releaseForJob(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status, id, releaseForJob]);
+
+  // Leaving a book that is still playing keeps the source in the shell; the
+  // mini player is what the listener sees. Leaving while paused also keeps
+  // it, so a long lock-screen resume still has a source to re-acquire.
 
   useEffect(() => {
     storageReloadRef.current = 0;
@@ -1037,18 +1082,19 @@ function PlayerPageInner({ id }: { id: string }) {
         pendingSeekTimerRef.current = null;
       }
     }
-  }, [audioUrl, resetAudioStart]);
+  }, [audioUrl, resetAudioStart, audioRef]);
 
-  // HTML audio starts at 1×. Re-apply the visit's rate (1× until the
-  // listener picks another) whenever the element or the choice changes.
-  // Pitch correction is asked for explicitly: browsers default it on today,
-  // but the narration voice is the product, and a rate that shifts pitch
-  // would change the narrator rather than the tempo.
+  // Re-apply the remembered rate whenever the element or the choice
+  // changes. The rate comes from the shared preference store, so it survives
+  // a reload and is the same in the mini player. Pitch correction is asked
+  // for explicitly: browsers default it on today, but the narration voice is
+  // the product, and a rate that shifts pitch would change the narrator
+  // rather than the tempo.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     assignPlaybackRate(audio, speed);
-  }, [speed, audioUrl]);
+  }, [speed, audioUrl, audioRef]);
 
   // Audio event listeners
   useEffect(() => {
@@ -1275,7 +1321,7 @@ function PlayerPageInner({ id }: { id: string }) {
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("error", onError);
     };
-  }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl, settleAudioStart, startAudio]);
+  }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl, settleAudioStart, startAudio, audioRef]);
 
   const togglePlayback = async () => {
     const audio = audioRef.current;
@@ -1620,7 +1666,7 @@ function PlayerPageInner({ id }: { id: string }) {
       if (!audio) return;
       assignPlaybackRate(audio, next);
     },
-    [setSpeed]
+    [setSpeed, audioRef]
   );
 
   const handleDownload = () => {
@@ -1697,14 +1743,6 @@ function PlayerPageInner({ id }: { id: string }) {
   const view = preparedChapters(currentTime);
   const [chaptersOpen, toggleChapters] = useChapterListOpen(id);
   const chapterNav = view.enabled;
-  const sessionActions = useRef<SessionActions>({
-    play: () => {},
-    pause: () => {},
-    seekBy: () => {},
-    seekTo: () => {},
-    previous: () => {},
-    next: () => {},
-  });
   const chapterKeys = useRef({
     enabled: false,
     previous: () => {},
@@ -1712,18 +1750,6 @@ function PlayerPageInner({ id }: { id: string }) {
   });
   const skipTo = (target: { startFraction: number; startSeconds?: number } | null) => {
     if (target) openChapter(target);
-  };
-  sessionActions.current = {
-    play: () => {
-      if (audioRef.current?.paused) void togglePlayback();
-    },
-    pause: () => {
-      audioRef.current?.pause();
-    },
-    seekBy: handleSkip,
-    seekTo: bookClock ? seekAbsolute : handleScrubCommit,
-    previous: () => skipTo(view.previous),
-    next: () => skipTo(view.next),
   };
   chapterKeys.current = {
     enabled: chapterNav,
@@ -1758,19 +1784,64 @@ function PlayerPageInner({ id }: { id: string }) {
     chapterLabel: chapterNav ? view.dragLabel : null,
     voiceName: job?.voice_name,
   });
-  useAudiobookSession({
-    active: mediaSessionActive(job?.status, Boolean(audioUrl)),
-    title: sessionMeta.title,
-    artist: sessionMeta.artist,
-    album: sessionMeta.album,
-    duration: bookClock ? bookDuration : playDuration,
-    position: bookClock ? shownTime : currentTime,
-    playbackRate: speed,
-    playing: isPlaying,
-    seekable: mediaSessionActive(job?.status, Boolean(audioUrl)) && !isStreamMode,
-    chapterSkip: chapterNav,
-    actions: sessionActions,
-  });
+  /**
+   * Hand the shell what the platform needs: metadata, the book clock, and
+   * the page's own transport. The shell keeps the metadata, handlers, and
+   * the one media element after this page unmounts, which is what keeps the
+   * Android notification alive while the listener is in another app.
+   */
+  const sessionActive = mediaSessionActive(job?.status, Boolean(audioUrl));
+  const sessionPosition = bookClock ? shownTime : currentTime;
+  const sessionDuration = bookClock ? bookDuration : playDuration;
+  useEffect(() => {
+    reportSession({
+      active: sessionActive,
+      jobId: sessionActive ? id : null,
+      title: sessionMeta.title,
+      artist: sessionMeta.artist ?? null,
+      album: sessionMeta.album ?? null,
+      duration: sessionDuration,
+      position: sessionPosition,
+      elementOffset: bookClock ? elementClockOffset(spans, segmentIndex) : 0,
+      playing: isPlaying,
+      seekable: sessionActive && !isStreamMode,
+      play: () => {
+        if (audioRef.current?.paused) void togglePlayback();
+      },
+      pause: () => {
+        audioRef.current?.pause();
+      },
+      seek: bookClock ? seekAbsolute : handleScrubCommit,
+      skip: handleSkip,
+      chapter: chapterNav ? (direction) => skipTo(direction === "previous" ? view.previous : view.next) : null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    reportSession,
+    detachSession,
+    id,
+    sessionActive,
+    sessionMeta.title,
+    sessionMeta.artist,
+    sessionMeta.album,
+    sessionDuration,
+    sessionPosition,
+    isPlaying,
+    isStreamMode,
+    bookClock,
+    currentTime,
+    segmentIndex,
+    spans,
+    chapterNav,
+    view.previous,
+    view.next,
+  ]);
+
+  // Leaving this page stops the shell calling back into a page that is gone.
+  // It does not stop the audio: the element, the metadata, and the handlers
+  // stay in the root-layout shell, which is what keeps the Android
+  // notification alive while the listener is in another app.
+  useEffect(() => detachSession, [detachSession]);
 
   const smoothedEtaLabel = useSmoothedEtaLabel(
     job ?? { id: "", eta_seconds: null, eta_label: null, eta_state: null }
@@ -1905,14 +1976,6 @@ function PlayerPageInner({ id }: { id: string }) {
 
   return (
     <div className="mx-auto w-full max-w-3xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
-      {audioUrl && playbackAllowed(job.status) ? (
-        <audio
-          ref={audioRef}
-          src={audioUrl}
-          preload="auto"
-        />
-      ) : null}
-
       {/* Back button */}
       <Link
         href={LIBRARY_HREF}
