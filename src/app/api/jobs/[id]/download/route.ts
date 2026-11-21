@@ -121,7 +121,8 @@ export async function GET(
         .then(async (path) => {
           if (!path) return;
           await execute(
-            `UPDATE jobs SET audio_storage_path = ?, updated_at = unixepoch() WHERE id = ?`,
+            `UPDATE jobs SET audio_storage_path = ?, updated_at = unixepoch()
+             WHERE id = ? AND deleted_at IS NULL AND status = 'ready'`,
             [path, id]
           );
         })

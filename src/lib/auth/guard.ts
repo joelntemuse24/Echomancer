@@ -68,6 +68,25 @@ export async function requireOwnedJob(
 }
 
 /**
+ * Load a job this session owns, including one already soft-deleted.
+ * A second DELETE uses this so storage cleanup can be finished. Every other
+ * route keeps the 404 from {@link requireOwnedJob}. Another session's row,
+ * deleted or not, is still 404.
+ */
+export async function requireOwnedJobIncludingDeleted(
+  request: NextRequest,
+  jobId: string
+): Promise<{ session: Session; job: OwnedJobRow }> {
+  const session = await requireSession(request);
+  const job = await queryOne<OwnedJobRow>(
+    `SELECT * FROM jobs WHERE id = ?`,
+    [jobId]
+  );
+  if (!job || job.user_id !== session.userId) throw new NotFoundError();
+  return { session, job };
+}
+
+/**
  * Storage objects are namespaced by their owner's resource:
  *   `pdfs/<uploadId>/…`      → the upload record
  *   `audiobooks/<jobId>/…`   → the job record
@@ -81,9 +100,11 @@ export async function ownsStoragePath(
   const [prefix, resourceId] = storagePath.split("/");
   if (!prefix || !resourceId) return false;
 
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(resourceId)) return false;
+
   if (prefix === "audiobooks") {
     const row = await queryOne<{ user_id: string }>(
-      `SELECT user_id FROM jobs WHERE id = ? LIMIT 1`,
+      `SELECT user_id FROM jobs WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
       [resourceId]
     );
     return row?.user_id === userId;
@@ -94,12 +115,32 @@ export async function ownsStoragePath(
       `SELECT user_id FROM uploads WHERE id = ? LIMIT 1`,
       [resourceId]
     );
-    if (row) return row.user_id === userId;
+    const folder = `pdfs/${resourceId}/`;
+    if (row) {
+      if (row.user_id !== userId) return false;
+      // The uploads row outlives the soft-delete until the purge. A folder
+      // whose jobs are all deleted is not playable. A folder with no job
+      // yet, or with a live sibling, still is.
+      const refs = await queryOne<{ live: number | bigint; total: number | bigint }>(
+        `SELECT
+           SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END) as live,
+           COUNT(*) as total
+         FROM jobs
+         WHERE substr(pdf_storage_path, 1, ?) = ?`,
+        [folder.length, folder]
+      );
+      const total = Number(refs?.total ?? 0);
+      const live = Number(refs?.live ?? 0);
+      if (total > 0 && live === 0) return false;
+      return true;
+    }
     // Uploads created before ownership tracking existed have no row; fall back
-    // to any job that references the path so old libraries keep playing.
+    // to a live job that references this folder so old libraries keep playing.
     const viaJob = await queryOne<{ user_id: string }>(
-      `SELECT user_id FROM jobs WHERE pdf_storage_path LIKE ? LIMIT 1`,
-      [`pdfs/${resourceId}/%`]
+      `SELECT user_id FROM jobs
+       WHERE deleted_at IS NULL AND substr(pdf_storage_path, 1, ?) = ?
+       LIMIT 1`,
+      [folder.length, folder]
     );
     return viaJob?.user_id === userId;
   }

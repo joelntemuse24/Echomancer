@@ -39,7 +39,7 @@ import {
   redactModalAccount,
 } from "@/lib/modal/workspace-disabled";
 import { runInsideCpuTask, tryCpuSlot, type LocalCpuKind } from "@/lib/cpu/task-slot";
-import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
+import { deleteFile, downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { queryOne } from "@/lib/turso";
 import { masterSectionBuffer } from "@/lib/tts/section-master";
 import { checkTranscriptAlignment, transcribeLocally } from "@/lib/tts/transcript-qa";
@@ -112,6 +112,10 @@ async function executeMaster(row: CpuTaskRow): Promise<void> {
   if (await jobStopped(row.job_id)) throw new Error("job cancelled before publish");
   const key = splitKey(row.output_path);
   await uploadFile(key.directory, key.filename, mastered, "audio/mpeg");
+  if (await jobStopped(row.job_id)) {
+    await deleteFile(row.output_path).catch(() => undefined);
+    throw new Error("job cancelled before publish");
+  }
 }
 
 function currentOwner(row: CpuTaskRow): string {
@@ -141,6 +145,7 @@ async function executeWhisper(row: CpuTaskRow): Promise<void> {
   if (!(await heartbeatCpuTask(row.id, currentOwner(row)))) {
     throw new Error("cpu lease lost before publish");
   }
+  if (await jobStopped(row.job_id)) throw new Error("job cancelled before publish");
   const key = splitKey(row.output_path);
   await uploadFile(
     key.directory,
@@ -148,6 +153,10 @@ async function executeWhisper(row: CpuTaskRow): Promise<void> {
     Buffer.from(JSON.stringify(verdict)),
     "application/json"
   );
+  if (await jobStopped(row.job_id)) {
+    await deleteFile(row.output_path).catch(() => undefined);
+    throw new Error("job cancelled before publish");
+  }
 }
 
 async function executeConcat(row: CpuTaskRow): Promise<void> {
@@ -176,6 +185,10 @@ async function executeConcat(row: CpuTaskRow): Promise<void> {
     allowHoles: false,
   });
   if (!produced) throw new Error("concat produced no file");
+  if (await jobStopped(row.job_id)) {
+    await deleteFile(produced).catch(() => undefined);
+    throw new Error("job cancelled before concat");
+  }
 }
 
 async function executeExtract(row: CpuTaskRow): Promise<void> {

@@ -7,6 +7,7 @@
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
+import { jobAudiobookClosed } from "@/lib/jobs/job-audiobook-closed";
 import { padSectionIndex, sectionObjectName, upsertSegment } from "@/lib/tts/section-index";
 import { shouldSectionMaster } from "@/lib/tts/section-master";
 import type { JobSegment } from "@/lib/tts/types";
@@ -36,6 +37,14 @@ export async function commitSectionAudio(input: {
   qaDeferred: boolean;
   sourceText?: string;
 }): Promise<SectionCommit> {
+  if (await jobAudiobookClosed(input.jobId)) {
+    return {
+      ready: false,
+      path: "",
+      contentType: input.contentType,
+      mastered: false,
+    };
+  }
   const masterOn = shouldSectionMaster();
   if (!masterOn && !input.qaDeferred) {
     const uploaded = await uploadFile(

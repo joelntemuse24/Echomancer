@@ -9,6 +9,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   ListObjectsV2Command,
   CreateMultipartUploadCommand,
   UploadPartCommand,
@@ -669,6 +670,56 @@ export async function deleteFile(key: string): Promise<void> {
   );
 }
 
+/** S3 DeleteObjects accepts at most this many keys per request. R2 uses the same cap. */
+export const R2_DELETE_OBJECTS_LIMIT = 1000;
+
+/**
+ * Delete many keys in batches of {@link R2_DELETE_OBJECTS_LIMIT}.
+ * A missing key is a success. Every batch is sent. A reported error throws
+ * once at the end, without the object key, so the caller can list what remains.
+ */
+export async function deleteFiles(keys: readonly string[]): Promise<void> {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
+  }
+  if (unique.length === 0) return;
+
+  const client = getR2Client();
+  let failed = 0;
+  let code = "Error";
+  for (let offset = 0; offset < unique.length; offset += R2_DELETE_OBJECTS_LIMIT) {
+    const batch = unique.slice(offset, offset + R2_DELETE_OBJECTS_LIMIT);
+    try {
+      const response = await client.send(
+        new DeleteObjectsCommand({
+          Bucket: R2_BUCKET_NAME,
+          Delete: {
+            Objects: batch.map((Key) => ({ Key })),
+            Quiet: true,
+          },
+        })
+      );
+      const errors = (response.Errors ?? []).filter((row) => row && row.Code);
+      if (errors.length > 0) {
+        failed += errors.length;
+        code = errors[0]?.Code || code;
+      }
+    } catch {
+      // A transport error must not skip the batches after this one.
+      // The message is not forwarded: it can echo object keys.
+      failed += batch.length;
+      code = "request";
+    }
+  }
+  if (failed > 0) {
+    throw new Error(`R2 batched delete failed for ${failed} object(s) (${code})`);
+  }
+}
+
 /**
  * List files in a prefix
  */
@@ -676,7 +727,14 @@ export async function listFiles(prefix?: string): Promise<string[]> {
   const client = getR2Client();
   const keys: string[] = [];
   let continuationToken: string | undefined;
-  do {
+  const seenTokens = new Set<string>();
+  // ListObjectsV2 pages at 1,000 keys. A repeated token is a stuck page,
+  // not another thousand objects.
+  for (let page = 0; page < 40; page++) {
+    if (continuationToken) {
+      if (seenTokens.has(continuationToken)) break;
+      seenTokens.add(continuationToken);
+    }
     const response = await client.send(
       new ListObjectsV2Command({
         Bucket: R2_BUCKET_NAME,
@@ -686,7 +744,8 @@ export async function listFiles(prefix?: string): Promise<string[]> {
     );
     keys.push(...(response.Contents || []).map((obj) => obj.Key!).filter(Boolean));
     continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-  } while (continuationToken);
+    if (!continuationToken) break;
+  }
   return keys;
 }
 

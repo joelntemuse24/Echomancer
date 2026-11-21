@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { deleteJob } from "@/lib/turso/jobs";
-import { releaseTakehomeCreateForJob } from "@/lib/jobs/takehome-identity";
-import { execute, query } from "@/lib/turso";
+import { execute } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
-import { requireOwnedJob } from "@/lib/auth/guard";
+import {
+  requireOwnedJob,
+  requireOwnedJobIncludingDeleted,
+} from "@/lib/auth/guard";
+import {
+  scheduleDeletedJobPurge,
+  softDeleteJob,
+} from "@/lib/jobs/delete-owned-job";
 import { forgetModalCloneJob } from "@/lib/tts/providers/modal-clone";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
@@ -17,13 +22,12 @@ import {
   sanitizePlaybackChapters,
   type PlayerChapter,
 } from "@/lib/player/chapter-nav";
-import { deleteFile, downloadFile, listFiles } from "@/lib/storage";
+import { downloadFile } from "@/lib/storage";
 import {
   playbackChaptersPath,
   sectionStartsPath,
   loadFrozenSectionOutline,
 } from "@/lib/tts/frozen-script";
-import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
 import { enqueueTakehomeAdvance } from "@/lib/jobs/takehome-dispatch";
 import { advanceStuckExtract } from "@/lib/jobs/dispatch-extract";
@@ -189,86 +193,23 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const { job } = await requireOwnedJob(request, id);
+    const { job } = await requireOwnedJobIncludingDeleted(request, id);
 
+    // The row leaves the library before any object is removed. Storage for a
+    // long book can outlast this function; a retry of an already-deleted row
+    // still reaches this point and purges again.
+    await softDeleteJob(job.id, job.user_id);
+    forgetModalCloneJob(job.id);
     // Stop a finalize that is already in flight before its files go away. A
     // worker holds the lease and would otherwise publish (`ready`) a row the
     // user just deleted, or upload a full file long after the delete.
-    forgetModalCloneJob(id);
     const { stopBookRemotely } = await import("@/lib/remote/stop");
-    await stopBookRemotely(id, "deleted");
-    await execute(
-      `UPDATE jobs SET status = 'cancelled', error_message = 'Deleted by user',
-       processing_lease_token = NULL, lease_expires_at = NULL,
-       processing_started_at = NULL, updated_at = unixepoch()
-       WHERE id = ? AND status NOT IN ('ready', 'failed', 'cancelled')`,
-      [id]
-    );
-
-    const pathsToDelete = new Set<string>();
-
-    // Everything under `audiobooks/<jobId>/` belongs to this job alone, so it
-    // can always go: sections, the assembled full file, and any stale leftovers.
-    if (typeof job.audio_storage_path === "string" && job.audio_storage_path) {
-      pathsToDelete.add(job.audio_storage_path);
-    }
-    if (typeof job.segments_json === "string" && job.segments_json) {
-      try {
-        for (const seg of JSON.parse(job.segments_json) as JobSegment[]) {
-          if (seg.path) pathsToDelete.add(seg.path);
-        }
-      } catch {
-        /* a malformed segment list still lets the prefix listing below clean up */
-      }
-    }
-    try {
-      for (const file of await listFiles(`audiobooks/${id}`)) {
-        pathsToDelete.add(file);
-      }
-    } catch {
-      /* listing failures must not block the row delete */
-    }
-
-    // The uploaded document is shared: Live Stream and whole-book jobs
-    // are separate jobs over the same `pdfs/<uploadId>/` folder. Deleting it
-    // while a sibling still exists would break that sibling's playback and any
-    // future retry, so only the last job to reference it may remove it.
-    const uploadFolder = uploadFolderFor(job.pdf_storage_path);
-    if (uploadFolder) {
-      const siblings = await query<{ count: number }>(
-        `SELECT COUNT(*) as count FROM jobs
-         WHERE pdf_storage_path = ? AND id != ? AND deleted_at IS NULL`,
-        [job.pdf_storage_path, id]
-      );
-      const siblingCount = siblings[0]?.count ?? 0;
-      if (siblingCount === 0) {
-        try {
-          for (const file of await listFiles(uploadFolder)) {
-            pathsToDelete.add(file);
-          }
-        } catch {
-          /* ignore */
-        }
-        await execute(`DELETE FROM uploads WHERE storage_path = ?`, [
-          job.pdf_storage_path,
-        ]).catch(() => {});
-      } else {
-        console.log(
-          `[Job ${id}] keeping ${uploadFolder} — ${siblingCount} sibling job(s) still use it`
-        );
-      }
-    }
-
-    for (const filePath of pathsToDelete) {
-      try {
-        await deleteFile(filePath);
-      } catch (err) {
-        console.warn(`[Job ${id}] failed to delete ${filePath}:`, err);
-      }
-    }
-
-    await deleteJob(id);
-    await releaseTakehomeCreateForJob(id);
+    await stopBookRemotely(job.id, "deleted");
+    await scheduleDeletedJobPurge({
+      jobId: job.id,
+      userId: job.user_id,
+      pdfStoragePath: job.pdf_storage_path,
+    });
     return NextResponse.json({ success: true, message: "Job deleted" });
   } catch (error) {
     return handleApiError(error);
@@ -292,10 +233,14 @@ export async function PATCH(
         );
       }
       await requireOwnedJob(request, id);
-      await execute(
-        `UPDATE jobs SET book_title = ?, updated_at = unixepoch() WHERE id = ?`,
+      const renamed = await execute(
+        `UPDATE jobs SET book_title = ?, updated_at = unixepoch()
+         WHERE id = ? AND deleted_at IS NULL`,
         [parsed.data.bookTitle, id]
       );
+      if (renamed.rowsAffected === 0) {
+        return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      }
       return NextResponse.json({ success: true, bookTitle: parsed.data.bookTitle });
     }
 
@@ -351,7 +296,7 @@ export async function PATCH(
     // Resume from the lowest unready index. Ready section files stay put.
     // Timings restart with the attempt: ETA measures throughput from the first
     // section of this run, not from one finished days ago.
-    await execute(
+    const requeued = await execute(
       `UPDATE jobs SET status = 'queued', progress = ?, current_section = ?,
        next_section_index = ?, error_message = NULL,
        processing_started_at = NULL, processing_lease_token = NULL,
@@ -359,7 +304,7 @@ export async function PATCH(
        generation_started_at = NULL, first_section_at = NULL,
        last_section_at = NULL,
        updated_at = unixepoch()
-       WHERE id = ?`,
+       WHERE id = ? AND deleted_at IS NULL AND status = 'failed'`,
       [
         narrationProgressPercent(done, total),
         done,
@@ -367,6 +312,9 @@ export async function PATCH(
         id,
       ]
     );
+    if (requeued.rowsAffected === 0) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
 
     if (job.job_kind === "takehome" || job.job_kind == null) {
       await enqueueTakehomeAdvance(id);
@@ -434,12 +382,4 @@ async function chaptersForReadyJob(job: Record<string, unknown>) {
     typeof job.segments_json === "string" ? job.segments_json : null
   );
   return playbackChaptersFromSections(sections, segments);
-}
-
-/** `pdfs/<uploadId>/content.txt` → `pdfs/<uploadId>` */
-function uploadFolderFor(pdfStoragePath: unknown): string | null {
-  if (typeof pdfStoragePath !== "string") return null;
-  const parts = pdfStoragePath.split("/");
-  if (parts.length < 2 || parts[0] !== "pdfs") return null;
-  return parts.slice(0, 2).join("/");
 }

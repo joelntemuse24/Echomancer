@@ -26,6 +26,7 @@ import {
   rememberJobsList,
 } from "@/lib/nav/screen-cache";
 import { libraryCardCanOpen, libraryCardCanPlay } from "@/lib/library/card-play";
+import { omitRemovedJobs } from "@/lib/library/omit-removed-jobs";
 import { libraryResumeLabel } from "@/lib/player/playback-position";
 import { generationStatus } from "@/lib/player/generation-status";
 import { libraryStatus, UX, voiceEngineStarting, WAIT } from "@/lib/ux-copy";
@@ -121,6 +122,8 @@ export default function QueuePage() {
       else delete next[jobId];
       return next;
     });
+  /** Books this page already deleted. A poll that started earlier cannot put them back. */
+  const removedJobIdsRef = useRef<Set<string>>(new Set());
 
   // First paint uses the cache. A miss shows the heading and a quiet mark.
   const fetchJobs = useCallback(async () => {
@@ -128,7 +131,7 @@ export default function QueuePage() {
     setFetchError(null);
     try {
       const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
-      const next = data.jobs || [];
+      const next = omitRemovedJobs(data.jobs || [], removedJobIdsRef.current);
       setJobs(next);
       setFetchError(null);
     } catch (error) {
@@ -147,7 +150,7 @@ export default function QueuePage() {
   const refreshJobs = useCallback(async (): Promise<boolean> => {
     try {
       const data = await loadScreen<{ jobs?: Job[] }>(SCREEN_JOBS, "/api/jobs");
-      const next: Job[] = data.jobs || [];
+      const next = omitRemovedJobs(data.jobs || [], removedJobIdsRef.current);
       setJobs(next);
       const signature = progressSignature(next);
       const changed = signature !== lastProgressRef.current;
@@ -339,12 +342,16 @@ export default function QueuePage() {
     await runLibraryAction(jobId, "delete", "Couldn't delete. Try again.", async () => {
       const response = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Couldn't delete. Try again.");
+        const data = (await response.json().catch(() => null)) as {
+          error?: unknown;
+        } | null;
+        const message = typeof data?.error === "string" ? data.error : "";
+        throw new Error(message || "Couldn't delete. Try again.");
       }
+      removedJobIdsRef.current.add(jobId);
       forgetJob(jobId);
       invalidateScreen(SCREEN_JOBS);
-      setJobs(prev => prev.filter(job => job.id !== jobId));
+      setJobs((prev) => omitRemovedJobs(prev, removedJobIdsRef.current));
       setNotice(jobId, null);
     });
   };

@@ -1530,10 +1530,30 @@ invented.
 
 ## Deleting a job
 
-The `pdfs/<uploadId>/` folder is **shared** — a chapter preview and a full book
-are separate jobs over one upload. `DELETE /api/jobs/[id]` removes
-`audiobooks/<jobId>/` eagerly but only removes the upload folder when no
-non-deleted sibling job still references it.
+`DELETE /api/jobs/[id]` soft-deletes first (`deleted_at`, lease cleared,
+take-home create key released, queued CPU tasks cancelled) so the book
+leaves the library even when storage cleanup is still running or fails. A
+running book is set to `cancelled`. A second DELETE from the owner returns
+success and purges again. Another session, including on an already-deleted
+row, is 404. `GET` and `PATCH` (retry, rename) stay on the non-deleted
+lookup, and the retry update itself requires `deleted_at IS NULL`. Storage
+cleanup re-reads the row and deletes nothing unless that user still has
+`deleted_at` set. It lists `audiobooks/<jobId>/` — the id is a token and the
+prefix ends in `/` — and removes those keys with batched R2 `DeleteObjects`
+(up to 1,000 keys per call, every batch sent, partial errors thrown once
+without the key) after the response, inside the route's 60s `maxDuration`.
+A list page is 1,000 keys; a repeated continuation token stops the list.
+It does not walk `segments_json`. A key outside that prefix is not deleted.
+The `pdfs/<uploadId>/` folder is **shared** — a chapter preview and a full
+book are separate jobs over one upload. It is removed only when no
+non-deleted job still uses that folder, and only when the uploads row is
+this user's or empty. The uploads row goes with it. Playback of a
+soft-deleted book is 404, including `/api/storage`. A worker does not claim,
+heartbeat, or requeue a deleted row, and a tick that finds `deleted_at` set
+removes `audiobooks/<jobId>/` again so an upload already in flight does not
+survive the purge. That check is in the worker process: a Vercel deploy
+updates the route, and the VM worker has to be restarted before the
+in-process stop applies. The Modal CPU image is not part of that deploy.
 
 ## Key paths
 

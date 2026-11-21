@@ -1863,9 +1863,30 @@ name shows the same pencil. The download filename follows the new title.
 
 ### `DELETE /api/jobs/[id]`
 
-Owned; `stopBookRemotely(id, "deleted")`; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
-`pdfs/<uploadId>/…` **only if no sibling job** shares `pdf_storage_path`; soft
-delete job; best-effort file deletes.
+Owned, including a row this user already soft-deleted (a retry returns 200 and
+purges again; another session is 404). `GET` / `PATCH` still use the
+non-deleted lookup. `softDeleteJob` sets `deleted_at`, clears the lease,
+cancels a still-running book, cancels that job's queued CPU tasks, and
+releases the take-home create key. `stopBookRemotely(id, "deleted")` runs
+before any object is removed. `scheduleDeletedJobPurge`
+(`src/lib/jobs/delete-owned-job.ts`) re-reads the row and, only when that
+`user_id` still has `deleted_at` set, lists `audiobooks/<jobId>/` (token id,
+trailing slash) and deletes those keys with R2 `DeleteObjects` in batches of
+1,000. Every batch is sent; a partial error throws once without the key, and
+the same `after()` pass lists again (up to four passes). `after()` keeps the
+JSON inside the route's 60s `maxDuration`. A list is paginated; a repeated
+continuation token stops it. Keys outside the prefix are dropped.
+`pdfs/<uploadId>/` (trailing slash) and the uploads row go only when no
+live job uses that folder and the uploads row is this user's or has no
+owner. Paths remembered in `segments_json` are not deleted on their own.
+`ownsStoragePath` treats a soft-deleted book as not owned, so playback is
+404 while the objects still exist. Lease writes, heartbeats, and
+`releaseLease` require `deleted_at IS NULL`, so a tick cannot put the row
+back in the queue. `commitSectionAudio` and concat skip the upload when the
+book is already closed, and delete an object that landed after the close.
+The worker tick purges `audiobooks/<jobId>/` again when it sees `deleted_at`.
+That last part runs on the VM worker, which has to be restarted; the Modal
+CPU image is a separate deploy and is not the default.
 
 ### `GET /api/jobs/[id]/markup`
 
