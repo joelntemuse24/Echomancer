@@ -189,7 +189,16 @@ function PageBody({
   useEffect(() => {
     if (!report.jobId) return;
     setSource("/api/storage/book.mp3", report.jobId);
-    if (audioRef.current) onAudio(audioRef.current);
+    if (!audioRef.current) return;
+    const audio = audioRef.current;
+    onAudio(audio);
+    // A book only gets a strip after the listener has heard it, and the shell
+    // reads that from the element. The page no longer reports "playing", so
+    // the harness starts the element the way a real tap would. The provider
+    // attaches its listeners in a parent effect, which runs after this one, so
+    // the start is queued behind it.
+    rowOf(audio).paused = false;
+    queueMicrotask(() => audio.dispatchEvent(new Event("play")));
   }, [report.jobId, setSource, onAudio, audioRef]);
   useEffect(() => {
     reportSession(report);
@@ -209,7 +218,6 @@ function report(overrides: Partial<PlaybackReport> = {}): PlaybackReport {
     position: 120,
     elementOffset: 0,
     parts: [],
-    playing: true,
     seekable: true,
     play: vi.fn(),
     pause: vi.fn(),
@@ -285,7 +293,7 @@ describe("playback provider", () => {
     const session = installMediaSession();
     render(
       <PlaybackProvider>
-        <Harness report={report({ position: 640, playing: true })} onAudio={() => {}} />
+        <Harness report={report({ position: 640 })} onAudio={() => {}} />
       </PlaybackProvider>
     );
     await act(async () => {});
@@ -353,7 +361,7 @@ describe("playback provider", () => {
     view.rerender(
       <PlaybackProvider>
         <Harness
-          report={report({ active: false, jobId: null, playing: false })}
+          report={report({ active: false, jobId: null })}
           onAudio={() => {}}
         />
       </PlaybackProvider>
@@ -436,7 +444,7 @@ describe("playback provider", () => {
     const session = installMediaSession();
     const view = render(
       <PlaybackProvider>
-        <Harness report={report({ playing: false })} onAudio={() => {}} />
+        <Harness report={report()} onAudio={() => {}} />
       </PlaybackProvider>
     );
     await act(async () => {});

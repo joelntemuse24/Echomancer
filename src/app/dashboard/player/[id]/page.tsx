@@ -57,6 +57,11 @@ import {
 import { clampSeekSeconds, seekableDuration } from "@/lib/player/seek";
 import { useAudioStart } from "@/hooks/use-audio-start";
 import {
+  elementIsPlaying,
+  partIndexForSrc,
+  samePlaybackSource,
+} from "@/lib/player/element-playback";
+import {
   prepareChapterView,
   mediaSessionFields,
   type PlayerChapter,
@@ -237,13 +242,29 @@ function PlayerPageInner({ id }: { id: string }) {
   const searchParams = useClientSearchParams();
   const forceStream = searchParams.get("mode") === "stream";
   const forceSegments = searchParams.get("mode") === "segments";
-  const { audioRef, setSource, releaseForJob, reportSession, detachSession } = usePlayback();
+  /**
+   * `playing` is the shared element's own state, and the page's only source for
+   * the transport icon.
+   *
+   * This page unmounts on navigation while the root-layout element keeps
+   * playing, and a book that never stopped fires no `play` event. A local
+   * `useState(false)` therefore came back showing Play over playing audio, and
+   * its tap called `play()` on an already-playing element, which resolves
+   * without doing anything — the button looked dead.
+   */
+  const {
+    audioRef,
+    playing: isPlaying,
+    setSource,
+    releaseForJob,
+    reportSession,
+    detachSession,
+  } = usePlayback();
   const processorInitialized = useRef(false);
 
   const [job, setJob] = useState<Job | null>(() => peekJob<Job>(id));
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -356,8 +377,6 @@ function PlayerPageInner({ id }: { id: string }) {
     waitingForNextRef.current = false;
     setStreamConn(null);
     setHeldStreamChar(null);
-    setIsPlaying(false);
-    setDuration(0);
     setError(null);
     processorInitialized.current = false;
   }, [id]);
@@ -489,28 +508,45 @@ function PlayerPageInner({ id }: { id: string }) {
       setCurrentTime(0);
       setSegmentIndex(0);
       setAudioUrl(null);
-      audioRef.current?.pause();
+      // This page does not pause the shared element. A book whose status
+      // forbids playback releases it (the effect below), and a book that is
+      // merely not seeded yet has nothing of its own to stop.
       return;
     }
     // Returning to a book the shell still holds: the element is the truth.
-    // The stored row is up to one save interval behind, so seeking to it
-    // would rewind a listen that never stopped. A cache-busting `?r=` on the
-    // element is still the same file, so the comparison ignores the query.
+    // The stored row is up to one save interval behind, and the page has just
+    // remounted with nothing of its own, so seeking to that row would rewind a
+    // listen that never stopped. A cache-busting `?r=n` on the element is
+    // still the same file, so the comparison ignores the query.
     const live = audioRef.current;
     const elementSrc = live?.getAttribute("src") ?? "";
-    const sameFile = elementSrc !== "" && elementSrc.split("?")[0] === seeded.url.split("?")[0];
-    if (live && sameFile && live.readyState >= 1) {
+    // Which part is the element holding? A part book's resume seed always
+    // names part 0, but the shell may have advanced to a later part while no
+    // page was mounted. Comparing only against the seed would call that a
+    // different book and re-point the element at part 0, restarting the file.
+    const heldPart = partIndexForSrc(
+      (cached?.segments ?? []).map((segment) => ({
+        index: segment.index,
+        url: `/api/storage/${segment.path}`,
+      })),
+      elementSrc
+    );
+    const sameFile = samePlaybackSource(elementSrc, seeded.url) || heldPart != null;
+    if (live && sameFile) {
       const at = Number.isFinite(live.currentTime) ? live.currentTime : 0;
       clearPendingSeekRef.current();
-      setSegmentIndex(seeded.segmentIndex ?? 0);
+      // Reading the part from the URL keeps the book clock (and therefore the
+      // chapter line and the scrubber) right on re-entry instead of resetting
+      // to the first part.
+      setSegmentIndex(heldPart ?? seeded.segmentIndex ?? 0);
       // Adopt the URL the element actually holds, not the seeded one: after a
       // media-error recovery it carries `?r=n`, and handing the shell the
       // un-busted URL would look like a new source, which restarts the file
       // and drops the playhead the listener is on.
+      seenAudioUrlRef.current = elementSrc;
       setAudioUrl(elementSrc);
       setCurrentTime(at);
       setDuration(live.duration);
-      setIsPlaying(!live.paused && !live.ended);
       confirmedPlayheadRef.current = at;
       if (at > 0.5) restoreLandedRef.current = true;
       return;
@@ -1179,7 +1215,6 @@ function PlayerPageInner({ id }: { id: string }) {
       }
     };
     const onEnded = () => {
-      setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
         const j = jobRef.current;
@@ -1229,7 +1264,6 @@ function PlayerPageInner({ id }: { id: string }) {
     };
     const onPlay = () => {
       heardPlayingRef.current = true;
-      setIsPlaying(true);
       markMovedRef.current();
     };
     /**
@@ -1242,7 +1276,6 @@ function PlayerPageInner({ id }: { id: string }) {
       setNotice(null);
     };
     const onPause = () => {
-      setIsPlaying(false);
       if (!audio.error) heardPlayingRef.current = false;
       // `ended` also pauses. That handler owns the position at a boundary.
       if (!audio.ended) captureRef.current("pause");
@@ -1280,7 +1313,6 @@ function PlayerPageInner({ id }: { id: string }) {
         });
         playAfterLoadRef.current =
           heardPlayingRef.current || at > 0.05;
-        setIsPlaying(false);
         // A new query misses a cached 206 or 302. load() on the same URL
         // would play that entry again.
         setNotice(null);
@@ -1288,7 +1320,6 @@ function PlayerPageInner({ id }: { id: string }) {
         return;
       }
       clearPendingSeekRef.current();
-      setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
         setStreamEnded(true);
@@ -1327,11 +1358,20 @@ function PlayerPageInner({ id }: { id: string }) {
     };
   }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl, settleAudioStart, startAudio, audioRef]);
 
+  /**
+   * One tap, one decision, taken from the shared element at tap time.
+   *
+   * `isPlaying` is a render-time reading; reading the element again here means
+   * a pause that landed between the last render and the tap can never send a
+   * `play()` to an element that is already playing (which resolves without
+   * doing anything, so the button would look dead), and a resume can never be
+   * swallowed by a stale "playing" reading.
+   */
   const togglePlayback = async () => {
     const audio = audioRef.current;
     if (!audio || !audioUrl) return;
 
-    if (isPlaying) {
+    if (elementIsPlaying(audio)) {
       stopAudio();
       return;
     }
@@ -1820,7 +1860,6 @@ function PlayerPageInner({ id }: { id: string }) {
       position: sessionPosition,
       elementOffset: bookClock ? elementClockOffset(spans, segmentIndex) : 0,
       parts: sessionParts,
-      playing: isPlaying,
       seekable: sessionActive && !isStreamMode,
       play: () => {
         if (audioRef.current?.paused) void togglePlayback();
@@ -1843,7 +1882,6 @@ function PlayerPageInner({ id }: { id: string }) {
     sessionMeta.album,
     sessionDuration,
     sessionPosition,
-    isPlaying,
     isStreamMode,
     bookClock,
     currentTime,

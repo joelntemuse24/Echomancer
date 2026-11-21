@@ -1334,6 +1334,15 @@ different book's source, and a book that may no longer play. Never on
 - The element is not routed through Web Audio. Any AudioContext the app
   opens is tracked by `src/lib/player/audio-graph.ts` and resumed before a
   shell Play. Do not add an EQ or gain graph on the media element.
+- **Play/pause comes from the shared element, never page state.** The page
+  renders `usePlayback().playing`, which the shell derives from the element's
+  own events (`elementIsPlaying`). A page-local `useState(false)` came back
+  showing Play over audio that never stopped, and its tap was a no-op because
+  `play()` on an already-playing element resolves without doing anything. The
+  page report carries the book clock and the transport but **not** `playing`.
+  The tap handler re-reads the element at tap time. Re-entry adopts the live
+  element (same file ignoring `?r=`, its part via `partIndexForSrc`, playhead,
+  duration) and must never re-point `src`, reload, or seek.
 - The mini player appears only after playback has actually started
   (`started`) and the route no longer matches the book. It is a labelled
   `<section>` with its own measured height as a spacer, above the mobile tab
