@@ -24,25 +24,44 @@ export interface ElementPlaybackFacts {
 /**
  * The element is playing audio right now.
  *
- * `paused` alone is not enough: `ended` also leaves an element unpaused on some
- * engines, and a released element (`readyState` 0 with no source) must never
- * read as playing just because a stale `paused` flag says so.
+ * `paused` alone is not enough. Reaching the end leaves `paused` false on some
+ * engines, and a decode error can too; both are "not playing", so a tap starts
+ * the element instead of calling `play()` on one that will ignore it.
+ *
+ * `readyState` is intentionally not consulted. `play()` flips `paused` before
+ * the first byte arrives (`HAVE_NOTHING`), and that start is still playing.
+ * A released element is paused by the load algorithm, so `paused` covers it.
  */
 export function elementIsPlaying(audio: ElementPlaybackFacts | null | undefined): boolean {
   if (!audio) return false;
-  if (audio.ended) return false;
+  if (audio.ended || audio.error) return false;
   return !audio.paused;
+}
+
+/** Path only: query, hash, and an absolute origin are not a different file. */
+function playbackPath(value: string): string {
+  const noHash = value.split("#")[0] ?? "";
+  const path = noHash.split("?")[0] ?? "";
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    try {
+      return new URL(path).pathname;
+    } catch {
+      return path;
+    }
+  }
+  return path;
 }
 
 /**
  * Two playback URLs point at the same file. A cache-busting `?r=n` added after
- * a media error, and the presigned query on a versioned URL, are not a
- * different book.
+ * a media error, the presigned query on a versioned URL, and a browser that
+ * stores the attribute as an absolute URL are not a different book.
  */
 export function samePlaybackSource(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
-  const strip = (value: string) => value.split("?")[0] ?? "";
-  return strip(a) !== "" && strip(a) === strip(b);
+  const left = playbackPath(a);
+  const right = playbackPath(b);
+  return left !== "" && left === right;
 }
 
 /**

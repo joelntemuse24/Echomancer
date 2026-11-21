@@ -2988,14 +2988,20 @@ directions: navigating away unmounts the page while the element keeps
 playing, and a book that never stopped fires no `play` event, so re-entry
 showed Play over playing audio and its tap called `play()` on an
 already-playing element — which resolves without doing anything. The tap
-handler reads the element again at tap time for the same reason. The page
-report carries the book clock and the transport (`reportSession`) but not
-`playing`; only the element can say that.
+handler reads the element again at tap time for the same reason, and so do
+seek and skip: a handler closed over an older render must not start a book
+the listener has paused. `ended`, and a decode `error`, are not playing
+(`play()` on either does nothing useful). The page report carries the book
+clock and the transport (`reportSession`) but not `playing`; only the element
+can say that.
 
 Re-entry adopts the live element rather than the stored row: the same file
-(ignoring a cache-busting `?r=`), its part from `partIndexForSrc`, its
-playhead and duration. It never re-points `src`, reloads, or seeks, so a
-book that was playing keeps playing from where it was.
+(ignoring a cache-busting `?r=` and an absolute origin), its part from
+`partIndexForSrc`, its playhead and a finite duration. A playhead that is
+already playing, past the start, or on a later part is not moved to a stored
+or server row, and the page does not re-point `src` or reload. Paused at the
+start of that same file still takes the stored resume, on the URL the element
+already holds.
 
 ### Shell
 

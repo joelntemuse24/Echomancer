@@ -1340,9 +1340,14 @@ different book's source, and a book that may no longer play. Never on
   showing Play over audio that never stopped, and its tap was a no-op because
   `play()` on an already-playing element resolves without doing anything. The
   page report carries the book clock and the transport but **not** `playing`.
-  The tap handler re-reads the element at tap time. Re-entry adopts the live
-  element (same file ignoring `?r=`, its part via `partIndexForSrc`, playhead,
-  duration) and must never re-point `src`, reload, or seek.
+  The tap, and every seek or skip, re-reads the element at call time, so a
+  handler installed while the book was playing does not start it again after
+  a pause. `ended` or a decode `error` is not playing. Re-entry adopts the
+  live element (same file ignoring `?r=` and an absolute origin, its part via
+  `partIndexForSrc`, playhead, duration). A playhead that is playing, past the
+  start, or on a later part is not moved to a stored or server row, and the
+  page must never re-point `src` or reload. Paused at the start of that same
+  file still takes the stored resume, on the element's own URL.
 - The mini player appears only after playback has actually started
   (`started`) and the route no longer matches the book. It is a labelled
   `<section>` with its own measured height as a spacer, above the mobile tab

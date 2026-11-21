@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlaybackProvider } from "@/components/playback-provider";
 import { forgetJob, rememberJobDetail } from "@/lib/nav/screen-cache";
 import { resetClientSearchForTests } from "@/lib/nav/client-search";
+import { SPEED_PREF_KEY, setNumberPref } from "@/lib/player/player-prefs";
 import PlayerPage from "./page";
 
 const JOB = "reentry-book";
@@ -46,6 +47,21 @@ let originalSetAttribute: typeof Element.prototype.setAttribute | null = null;
 let srcWrites: string[] = [];
 /** Every `load()` call, so a re-entry cannot reload. */
 let loadCalls = 0;
+
+/**
+ * Point the element at another URL without the stub's restart. A media-error
+ * recovery writes `?r=n` onto the live element; re-entry has to keep that
+ * exact attribute.
+ */
+function retargetWithoutReload(element: HTMLAudioElement, url: string) {
+  rowOf(element).src = url;
+  applyingSrc = true;
+  try {
+    originalSetAttribute!.call(element, "src", url);
+  } finally {
+    applyingSrc = false;
+  }
+}
 
 function applyMediaSrc(element: HTMLMediaElement, value: string) {
   const row = rowOf(element);
@@ -212,6 +228,7 @@ let jobBody: JobBody;
 let session: {
   playbackState: string;
   handlers: Map<string, ((details: Record<string, unknown>) => void) | null>;
+  positions: { playbackRate?: number; position?: number; duration?: number }[];
 };
 
 function json(body: unknown, status = 200) {
@@ -319,7 +336,7 @@ beforeEach(() => {
   });
 
   const handlers = new Map<string, ((details: Record<string, unknown>) => void) | null>();
-  session = { playbackState: "none", handlers };
+  session = { playbackState: "none", handlers, positions: [] };
   Object.defineProperty(navigator, "mediaSession", {
     configurable: true,
     value: {
@@ -333,7 +350,9 @@ beforeEach(() => {
       setActionHandler(action: string, handler: ((details: Record<string, unknown>) => void) | null) {
         handlers.set(action, handler);
       },
-      setPositionState() {},
+      setPositionState(state: { playbackRate?: number; position?: number; duration?: number }) {
+        session.positions.push(state);
+      },
     },
   });
   vi.stubGlobal(
@@ -623,5 +642,214 @@ describe("re-entering a book from the mini player", () => {
     expect(loadCalls).toBe(loadsBefore);
     expect(rowOf(element).time).toBe(88);
     expect(session.playbackState).toBe("playing");
+  });
+
+  it("does not resume when a lock-screen skip arrives after a pause", async () => {
+    // The skip handler is installed while the book is playing and is not
+    // replaced on pause (the clock did not move). It has to read the element
+    // at call time, or the skip starts the book the listener just stopped.
+    rememberJobDetail(JOB, { job: jobBody });
+    await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+    rowOf(element).time = 40;
+    await act(async () => {
+      element.dispatchEvent(new Event("timeupdate"));
+    });
+    await settle();
+    await act(async () => {
+      session.handlers.get("pause")?.({ action: "pause" });
+    });
+    await settle();
+    expect(rowOf(element).paused).toBe(true);
+
+    const loadsBefore = loadCalls;
+    const writesBefore = srcWrites.length;
+    await act(async () => {
+      session.handlers.get("seekforward")?.({ seekOffset: 10 });
+    });
+    await settle();
+
+    expect(rowOf(element).paused).toBe(true);
+    expect(rowOf(element).time).toBe(50);
+    expect(loadCalls).toBe(loadsBefore);
+    expect(srcWrites.length).toBe(writesBefore);
+    expect(screen.getByRole("button", { name: "Play" })).toBeTruthy();
+    expect(session.playbackState).toBe("paused");
+  });
+
+  it("starts from the lock screen when the element ended but stayed unpaused", async () => {
+    rememberJobDetail(JOB, { job: jobBody });
+    await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+    // Some engines leave `paused` false after `ended`. A paused-only Play
+    // handler then does nothing.
+    await act(async () => {
+      rowOf(element).ended = true;
+      rowOf(element).paused = false;
+      rowOf(element).time = 4000;
+      element.dispatchEvent(new Event("ended"));
+    });
+    await settle();
+    expect(screen.getByRole("button", { name: "Play" })).toBeTruthy();
+
+    await act(async () => {
+      session.handlers.get("play")?.({ action: "play" });
+    });
+    await settle();
+    expect(rowOf(element).paused).toBe(false);
+    expect(rowOf(element).ended).toBe(false);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
+  });
+
+  it("keeps a cache-busted source and does not reload on re-entry", async () => {
+    rememberJobDetail(JOB, { job: jobBody });
+    const view = await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+    const busted = `${element.getAttribute("src")}&r=2`;
+    retargetWithoutReload(element, busted);
+    rowOf(element).time = 64;
+    rowOf(element).ready = 4;
+
+    leaveToLibrary(view);
+    await settle();
+    const writesBefore = srcWrites.length;
+    const loadsBefore = loadCalls;
+    returnToBook(view);
+    await settle();
+
+    expect(element.getAttribute("src")).toBe(busted);
+    expect(srcWrites.length).toBe(writesBefore);
+    expect(loadCalls).toBe(loadsBefore);
+    expect(rowOf(element).time).toBe(64);
+    expect(rowOf(element).paused).toBe(false);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
+  });
+
+  it("does not move a live playhead to a newer server row", async () => {
+    rememberJobDetail(JOB, { job: jobBody });
+    const view = await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+    rowOf(element).time = 137;
+
+    leaveToLibrary(view);
+    await settle();
+    // A second device saved a later place while this one kept playing.
+    jobBody = baseJob({
+      resume_position_seconds: 500,
+      resume_section_index: null,
+      resume_updated_at: 9000,
+    });
+    localStorage.setItem(
+      `ec-resume:${JOB}`,
+      JSON.stringify({ positionSeconds: 30, sectionIndex: null, updatedAt: 1 })
+    );
+    const srcBefore = element.getAttribute("src");
+    const writesBefore = srcWrites.length;
+    const loadsBefore = loadCalls;
+
+    returnToBook(view);
+    await settle();
+
+    expect(rowOf(element).time).toBe(137);
+    expect(rowOf(element).paused).toBe(false);
+    expect(element.getAttribute("src")).toBe(srcBefore);
+    expect(srcWrites.length).toBe(writesBefore);
+    expect(loadCalls).toBe(loadsBefore);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
+    expect(session.playbackState).toBe("playing");
+  });
+
+  it("keeps the listen rate and publishes it after re-entry", async () => {
+    setNumberPref(SPEED_PREF_KEY, 1.45);
+    rememberJobDetail(JOB, { job: jobBody });
+    const view = await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    rowOf(element).duration = 4000;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+    expect(element.playbackRate).toBe(1.45);
+    expect(element.defaultPlaybackRate).toBe(1.45);
+
+    leaveToLibrary(view);
+    await settle();
+    returnToBook(view);
+    await settle();
+
+    expect(element.playbackRate).toBe(1.45);
+    expect(element.defaultPlaybackRate).toBe(1.45);
+    expect(rowOf(element).paused).toBe(false);
+    const published = session.positions.at(-1);
+    expect(published?.playbackRate).toBe(1.45);
+    expect(session.playbackState).toBe("playing");
+  });
+
+  it("keeps writing the shell resume while the page is gone", async () => {
+    rememberJobDetail(JOB, { job: jobBody });
+    const view = await enterPlayer();
+    const element = audio();
+    rowOf(element).ready = 4;
+    await act(async () => {
+      element.dispatchEvent(new Event("loadedmetadata"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    });
+    await settle();
+
+    leaveToLibrary(view);
+    await settle();
+    rowOf(element).time = 200;
+    rowOf(element).ready = 4;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      element.dispatchEvent(new Event("timeupdate"));
+    });
+    await settle();
+
+    const raw = localStorage.getItem(`ec-resume:${JOB}`);
+    expect(raw).toBeTruthy();
+    const stored = JSON.parse(raw!) as { positionSeconds: number; sectionIndex: number | null };
+    expect(stored.positionSeconds).toBe(200);
+    expect(stored.sectionIndex).toBeNull();
+    expect(rowOf(element).paused).toBe(false);
+    expect(loadCalls).toBe(0);
   });
 });

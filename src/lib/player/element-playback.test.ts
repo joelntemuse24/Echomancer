@@ -13,13 +13,22 @@ describe("elementIsPlaying", () => {
     ).toBe(true);
   });
 
-  it("is false while paused, at the end, or with no element", () => {
+  it("is false while paused, at the end, in error, or with no element", () => {
     expect(
       elementIsPlaying({ paused: true, ended: false, readyState: 4, error: null })
     ).toBe(false);
     expect(
       elementIsPlaying({ paused: false, ended: true, readyState: 4, error: null })
     ).toBe(false);
+    // Some engines leave `paused` false after a decode error. That is not
+    // playing: the tap has to start the element, not call play() on a dead one.
+    expect(
+      elementIsPlaying({ paused: false, ended: false, readyState: 0, error: { code: 4 } })
+    ).toBe(false);
+    // play() flips paused before any bytes arrive. That start is still playing.
+    expect(
+      elementIsPlaying({ paused: false, ended: false, readyState: 0, error: null })
+    ).toBe(true);
     expect(elementIsPlaying(null)).toBe(false);
     expect(elementIsPlaying(undefined)).toBe(false);
   });
@@ -37,6 +46,13 @@ describe("samePlaybackSource", () => {
       samePlaybackSource(
         "/api/storage/audiobooks/x/full.mp3?v=2026&pb=2",
         "/api/storage/audiobooks/x/full.mp3"
+      )
+    ).toBe(true);
+    // Setting `.src` can store an absolute attribute. It is the same file.
+    expect(
+      samePlaybackSource(
+        "https://echomancer.xyz/api/storage/audiobooks/x/full.mp3?r=2",
+        "/api/storage/audiobooks/x/full.mp3?v=2026&pb=2"
       )
     ).toBe(true);
   });
@@ -60,6 +76,9 @@ describe("partIndexForSrc", () => {
   it("finds the part the element holds, ignoring a cache-busting query", () => {
     expect(partIndexForSrc(parts, "/api/storage/part-1.mp3?r=1")).toBe(1);
     expect(partIndexForSrc(parts, "/api/storage/part-0.mp3")).toBe(0);
+    expect(
+      partIndexForSrc(parts, "https://echomancer.xyz/api/storage/part-1.mp3?r=2")
+    ).toBe(1);
   });
 
   it("is null for a single-file book or a part the page has no URL for", () => {

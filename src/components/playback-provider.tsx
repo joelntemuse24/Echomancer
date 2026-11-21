@@ -628,6 +628,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("durationchange", publish);
     audio.addEventListener("loadedmetadata", publish);
     audio.addEventListener("ended", publish);
+    // A source clear can land here without a pause the listener already saw.
+    audio.addEventListener("emptied", publish);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", saveNow);
     return () => {
@@ -638,6 +640,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("durationchange", publish);
       audio.removeEventListener("loadedmetadata", publish);
       audio.removeEventListener("ended", publish);
+      audio.removeEventListener("emptied", publish);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", saveNow);
     };

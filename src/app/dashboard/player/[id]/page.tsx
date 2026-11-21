@@ -365,6 +365,12 @@ function PlayerPageInner({ id }: { id: string }) {
   const waitingForNextRef = useRef(false);
   const storageReloadRef = useRef(0);
   const heardPlayingRef = useRef(false);
+  /**
+   * This visit found the shell already on this book with a real playhead
+   * (playing, past the start, or on a later part). The detail response must
+   * not move that element: the stored row is behind a listen that never stopped.
+   */
+  const adoptedLiveRef = useRef(false);
 
   // Reset the page chrome when the book id changes. The playhead itself is
   // restored by the layout effect, which runs before this and before paint.
@@ -498,6 +504,7 @@ function PlayerPageInner({ id }: { id: string }) {
   // listener has already moved.
   useLayoutEffect(() => {
     restoreLandedRef.current = false;
+    adoptedLiveRef.current = false;
     const cached = peekJob<Job>(id);
     const seeded = playbackForResume(cached, playbackResume.savedRef.current, {
       forceStream,
@@ -516,8 +523,9 @@ function PlayerPageInner({ id }: { id: string }) {
     // Returning to a book the shell still holds: the element is the truth.
     // The stored row is up to one save interval behind, and the page has just
     // remounted with nothing of its own, so seeking to that row would rewind a
-    // listen that never stopped. A cache-busting `?r=n` on the element is
-    // still the same file, so the comparison ignores the query.
+    // listen that never stopped. A cache-busting `?r=n` on the element, and an
+    // absolute attribute the browser stored for the same path, are still the
+    // same file.
     const live = audioRef.current;
     const elementSrc = live?.getAttribute("src") ?? "";
     // Which part is the element holding? A part book's resume seed always
@@ -534,21 +542,50 @@ function PlayerPageInner({ id }: { id: string }) {
     const sameFile = samePlaybackSource(elementSrc, seeded.url) || heldPart != null;
     if (live && sameFile) {
       const at = Number.isFinite(live.currentTime) ? live.currentTime : 0;
-      clearPendingSeekRef.current();
-      // Reading the part from the URL keeps the book clock (and therefore the
-      // chapter line and the scrubber) right on re-entry instead of resetting
-      // to the first part.
+      // A later part is a move the seed did not see, even when its clock is
+      // still 0 because the shell just handed the file off.
+      const differentPart = heldPart != null && heldPart !== seeded.segmentIndex;
+      // Playing, or already past the start: do not apply the stored row.
+      // Paused on this same file at the start still takes the resume seek,
+      // and it keeps the element's own URL so a `?r=` is not stripped.
+      const trustLive = elementIsPlaying(live) || at > 0.5 || differentPart;
       setSegmentIndex(heldPart ?? seeded.segmentIndex ?? 0);
-      // Adopt the URL the element actually holds, not the seeded one: after a
-      // media-error recovery it carries `?r=n`, and handing the shell the
-      // un-busted URL would look like a new source, which restarts the file
-      // and drops the playhead the listener is on.
       seenAudioUrlRef.current = elementSrc;
       setAudioUrl(elementSrc);
-      setCurrentTime(at);
-      setDuration(live.duration);
-      confirmedPlayheadRef.current = at;
-      if (at > 0.5) restoreLandedRef.current = true;
+      if (Number.isFinite(live.duration) && live.duration > 0) setDuration(live.duration);
+      if (trustLive) {
+        adoptedLiveRef.current = true;
+        clearPendingSeekRef.current();
+        setCurrentTime(at);
+        confirmedPlayheadRef.current = at;
+        if (at > 0.5) restoreLandedRef.current = true;
+        return;
+      }
+      if (seeded.restart) {
+        playbackResume.remember({ positionSeconds: 0, sectionIndex: null }, "seek");
+      }
+      if (seeded.localSeconds > 0.05) {
+        const onSection = seeded.segmentIndex != null;
+        const mapped = onSection
+          ? bookTimeFromElement({
+              mode: "section",
+              elementSeconds: seeded.localSeconds,
+              sectionIndex: seeded.segmentIndex,
+              spans: spansRef.current,
+            })
+          : { seconds: seeded.localSeconds, absolute: true as const };
+        armPendingSeekRef.current({
+          seconds: seeded.localSeconds,
+          fraction: 0,
+          bookSeconds: mapped.absolute ? mapped.seconds : null,
+          sectionIndex: seeded.segmentIndex,
+        });
+        playAfterLoadRef.current = false;
+        setCurrentTime(seeded.localSeconds);
+      } else {
+        clearPendingSeekRef.current();
+        setCurrentTime(at);
+      }
       return;
     }
     armPlayback(seeded, cached?.status);
@@ -608,6 +645,9 @@ function PlayerPageInner({ id }: { id: string }) {
         try {
         const next = playbackForResume(j, chosen, { forceStream, forceSegments });
         if (!next) return;
+        // The shell was already on this book. A newer server row must not
+        // rewind or re-point an element the listener is hearing.
+        if (adoptedLiveRef.current) return;
         if (!audioUrlRef.current) {
           armPlayback(next, j.status);
           return;
@@ -1458,10 +1498,14 @@ function PlayerPageInner({ id }: { id: string }) {
     if (!seg) return;
     const nextUrl = playbackUrlForStatus(job?.status, `/api/storage/${seg.path}`);
     if (!nextUrl) return;
+    // Read before the seek. The handler installed on the shell closes over
+    // an older render, and a seek can pause the element; the flag from that
+    // render would start a book the listener had just paused.
+    const wasPlaying = elementIsPlaying(audioRef.current);
     rememberBookRef.current(place.bookSeconds, "seek", null);
     const same =
       audioUrl != null &&
-      audioUrl.split("?")[0] === nextUrl.split("?")[0] &&
+      samePlaybackSource(audioUrl, nextUrl) &&
       segmentIndex === place.sectionIndex;
     const audio = audioRef.current;
     if (!same || !audio || audio.readyState < 1) {
@@ -1471,7 +1515,7 @@ function PlayerPageInner({ id }: { id: string }) {
         bookSeconds: place.bookSeconds,
         sectionIndex: place.sectionIndex,
       });
-      playAfterLoadRef.current = Boolean(isPlaying);
+      playAfterLoadRef.current = wasPlaying;
       setSegmentIndex(place.sectionIndex);
       setCurrentTime(place.localSeconds);
       if (!same) setAudioUrl(nextUrl);
@@ -1481,7 +1525,7 @@ function PlayerPageInner({ id }: { id: string }) {
     lastRequestedSeekRef.current = place.localSeconds;
     audio.currentTime = place.localSeconds;
     setCurrentTime(place.localSeconds);
-    if (isPlaying) audio.play().catch(() => {});
+    if (wasPlaying) audio.play().catch(() => {});
   };
 
   const handleScrub = (seconds: number) => {
@@ -1499,6 +1543,7 @@ function PlayerPageInner({ id }: { id: string }) {
     }
     const audio = audioRef.current;
     if (!audio) return;
+    const wasPlaying = elementIsPlaying(audio);
     rememberBookRef.current(seconds, "seek", onSectionFile ? segmentIndex : null);
     // Before metadata the element has no seekable range. Hold the seek and
     // let loadedmetadata apply it against the real file.
@@ -1515,13 +1560,14 @@ function PlayerPageInner({ id }: { id: string }) {
         bookSeconds: mapped.absolute ? mapped.seconds : null,
         sectionIndex: onSectionFile ? segmentIndex : null,
       });
+      playAfterLoadRef.current = wasPlaying;
       setCurrentTime(seconds);
       return;
     }
     clearPendingSeekRef.current();
     lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
-    if (isPlaying) {
+    if (wasPlaying) {
       audio.play().catch(() => {});
     }
   };
@@ -1680,6 +1726,7 @@ function PlayerPageInner({ id }: { id: string }) {
       seekAbsolute(clampSeekSeconds(bookNow, delta, bookDuration));
       return;
     }
+    const wasPlaying = elementIsPlaying(audioRef.current);
     const next = clampSeekSeconds(
       audioRef.current.currentTime,
       delta,
@@ -1698,7 +1745,7 @@ function PlayerPageInner({ id }: { id: string }) {
       "seek",
       placed.absolute ? null : onSectionFile ? segmentIndex : null
     );
-    if (isPlaying) {
+    if (wasPlaying) {
       audioRef.current.play().catch(() => {});
     }
   };
@@ -1862,10 +1909,16 @@ function PlayerPageInner({ id }: { id: string }) {
       parts: sessionParts,
       seekable: sessionActive && !isStreamMode,
       play: () => {
-        if (audioRef.current?.paused) void togglePlayback();
+        // `ended` leaves `paused` false on some engines. A paused-only check
+        // then ignores the lock-screen Play, which is the dead button again.
+        const audio = audioRef.current;
+        if (!audio || elementIsPlaying(audio)) return;
+        void togglePlayback();
       },
       pause: () => {
-        audioRef.current?.pause();
+        // stop clears the start watchdog. A raw pause leaves that timer armed,
+        // and it reloads the file after the listener has already stopped.
+        stopAudio();
       },
       seek: bookClock ? seekAbsolute : handleScrubCommit,
       skip: handleSkip,
