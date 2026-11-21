@@ -1,20 +1,34 @@
 # Echomancer v2 — Technical Design (Code Walkthrough)
 
 **Audience:** someone who will open the repo and follow along. This document is
-organized as a **map of the code**, not a product brief. Every important module
-is named; every major export is explained; end-to-end flows are traced through
-concrete files and functions.
+organized as a **map of the code**. Every important module is named, major
+exports are explained, and end-to-end flows are traced through concrete files
+and functions.
 
-**Live app:** [echomancer.xyz](https://echomancer.xyz) (Vercel project
-`echomancer-v2`). **Audited against `main` at
-`a975b427156d56ead20d2666264f251fb8d3803b` (#248) on 2026-11-07.**
+**Live app:** [echomancer.xyz](https://echomancer.xyz) (operator-reported;
+the package name and the README host are `echomancer-v2`). **Audited against `main` at
+`e4b6ef2684ce6892395f0d34bef5027131a8cda4` (#316) on 2026-11-21.** The
+previous audit was `a975b42` (#248) on 2026-11-07. Between the two, the repo
+gained the Kokoro CPU voices (Drew, Walter, George, Esther), the Modal CPU
+task queue, the remote-call layer with budgets and Stop, resume and
+bookmarks, Fish-baked clone previews, the root playback shell with a mini
+player, speed persistence, the Echomancer Andrew retirement (#314), and the
+Ava/Libby retirement once Esther is configured (#315).
 
 **Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `WORKER.md`
-(VPS + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
-`README.md`, [`docs/s2-gpu-staging-runbook.md`](docs/s2-gpu-staging-runbook.md)
-(GPU procedure, not a second design). Playback/clip recovery is in
-[`docs/playback-clipping-reliability.md`](docs/playback-clipping-reliability.md).
-Lane arithmetic is in [`docs/s2-lane-budget.md`](docs/s2-lane-budget.md).
+(VM + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`, `README.md`.
+Procedures live in the runbooks, which this file does not duplicate:
+[`docs/s2-gpu-staging-runbook.md`](docs/s2-gpu-staging-runbook.md) (clone GPU),
+[`docs/cpu-modal-runbook.md`](docs/cpu-modal-runbook.md) (Modal CPU tasks),
+[`docs/sowell-voice-runbook.md`](docs/sowell-voice-runbook.md),
+[`docs/drew-walter-voice-runbook.md`](docs/drew-walter-voice-runbook.md),
+[`docs/george-voice-runbook.md`](docs/george-voice-runbook.md),
+[`docs/heart-voice-runbook.md`](docs/heart-voice-runbook.md) (Kokoro voices).
+Playback/clip recovery is in
+[`docs/playback-clipping-reliability.md`](docs/playback-clipping-reliability.md),
+background playback in
+[`docs/mobile-background-playback.md`](docs/mobile-background-playback.md), and
+lane arithmetic in [`docs/s2-lane-budget.md`](docs/s2-lane-budget.md).
 
 ## How to read claims
 
@@ -28,92 +42,82 @@ here is not a live-host probe. Read each claim as one of these:
 | **Deploy override** | A live setting that is not the code default. `/ready` and `status()` do not show a Modal autoscaler override. |
 | **Measured** | A number from a named job, a fixture, or an offline calculation. Not a promise for the next book. |
 | **Goal** | A product target the code does not enforce. About €4.50 for a typical take-home book is a goal. |
+| **Operator-reported** | Stated by the operator or written only in an env example or runbook. This checkout cannot confirm it. |
 | **Not verified** | This repository does not prove it. Do not treat a blank runbook checklist as a completed proof. |
 
-**Not verified by this audit, and not proven by the checks that already exist:**
+**Not verified by this audit:**
 
-- No authenticated end-to-end book was rendered for this documentation change.
-  None is recorded in the repo after the allowance removal (#248). The offline
-  acceptance test (`src/test/acceptance/book-path.acceptance.test.ts`) drives
-  orchestration with a fake provider. The operator reported 137 targeted
-  offline tests passing on the #248 roll; this change did not re-run them.
-- A direct endpoint smoke is not the book path and is not a listening check.
-  #246's smoke was that kind of check.
-- `modal run …::cover` calls that land on an already-warm container id do not
-  prove that every GPU type has a snapshot of this recipe. The runbook's own
-  rule is 2–3 snapshots per GPU type, judged by wall-clock restore
-  (`placement_kind`), not by `boot=restored`. Compilation stays off the book
-  path (`MODAL_S2_COLD_WAIT_MS`, hard ceiling 180 s). There are no always-on
-  GPUs: `min_containers` is 0.
-- Job `75944dc9` was not regenerated. Its stored audio and the existing
-  section cache were left in place. The code changes stop a *new* book from
-  being assembled that way. They do not repair that file.
-- This audit did not call Modal, Vercel, or the VM, and it did not read
-  production secrets.
+- No book was rendered, no test suite or lint was run, and no Modal, Vercel,
+  Turso, R2, or VM endpoint was called for this documentation change. Claims
+  come from reading source at the SHA above.
+- Which Modal image versions are deployed, whether the live S2 image already
+  carries `@modal.concurrent(max_inputs=2)`, and which `*_ENABLED` voice
+  flags are set on Vercel and the VM. Source defaults are stated; live
+  values are not.
+- Snapshot coverage per GPU type. The runbook's rule is 2–3 snapshots per GPU
+  type, judged by wall-clock restore (`placement_kind`), not by
+  `boot=restored`.
+- Job `75944dc9` (2026-11-06) was not regenerated. The code stops a *new*
+  book from being assembled that way; it does not repair that file.
 
-**Operator-reported deploy state (2026-11-07, Dublin), cross-checked only
-where the repo can check it:**
+**Operator-reported state (carried from the 2026-11-07 audit; not re-checked):**
 
-- #248 is reported deployed and healthy on the Contabo take-home VM and on
-  Vercel production (`READY`). The worker code does not name a cloud vendor
-  (`src/worker/takehome-server.ts`). "Contabo" is that report, not a string
-  the process checks.
-- Modal app name in source is `echomancer-s2-clone`
-  (`modal/s2_clone_service.py`, overridable with `S2C_APP_NAME`). Code default
-  `S2C_VERSION` is `"9"`. The fingerprint of the current source defaults
-  (`snapshot_fingerprint` in `modal/s2_contract.py`: version 9, `H100!`, batch
-  32, unit ceiling 560, merge 260, history anchor first, pauses 0.22/0.4/0.96,
-  `S2_SPECTRAL_CHAIN`, sampling `0.9,0.9`) is `aa02126d8267`. That calculation
-  used the source constants only. It is the same id operators reported for the
-  image that has not been redeployed since #246. It is not a live `/ready`
-  reading. A Modal deployment counter such as "v6" is not a constant in this
-  repo.
+- The take-home worker runs on an always-on VM reported as Contabo. The
+  worker code does not name a cloud vendor (`src/worker/takehome-server.ts`);
+  "Contabo" is that report, not a string the process checks.
+- `MODAL_S2_TTS_URL`, `MODAL_S2_READY_URL`, and `MODAL_S2_SYNTHESIZE_URL` were
+  reported set on Vercel. The repo does not store those hostnames. A ready
+  URL is never derived from the batch URL.
 - Live autoscaler for production `echomancer-s2-clone`: `min_containers=0`,
   `max_containers=1`. Any change needs explicit owner approval. Do not run
   `scripts/s2/set-live-autoscaler.py` or runbook step 8c to raise it.
-  The apply path refuses `max_containers` above 1 on that app unless
-  `S2_ALLOW_PROD_CAP_ABOVE_1=1`, and it exits before importing Modal.
-  `scripts/s2/drain-stuck-calls.py` refuses `--restore-max` above that
-  clamp before it brakes, so a refused restore cannot leave the cap at 0.
-  A restore that fails after a brake prints the command that puts
-  `max_containers` back to 1. Brake 0 stays allowed. Parsers in
-  `scripts/s2` set `allow_abbrev=False`
-  (`--scaledown` is not `--scaledown-window`). Pytest strips
-  `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and `MODAL_PROFILE`, points
-  `MODAL_CONFIG_PATH` at an empty file, refuses DNS and
-  `create_connection` for `*.modal.com` / `*.modal.run`, and makes
-  `Client.from_env` raise, including in a subprocess via `sitecustomize`.
-  `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count, not the
-  container cap. Code defaults
-  are `S2C_MAX_CONTAINERS=1` and `S2C_SCALEDOWN=300` (`container_limits`
-  in `modal/s2_contract.py`; the high clamp is 64). `/ready` keeps reporting
-  the deploy-time env. A plain `modal deploy` resets an override back to
-  that baked cap.
-  `@modal.concurrent(max_inputs=2)` on `S2CloneWorker` lets one
-  `render_batch` and one light input share the GPU. A second render waits
-  on the GPU thread and does not open another container. Web handlers
-  still 429 immediately. The live image stays at `max_inputs=1` until an
-  owner deploy. The worker fix does not need that deploy: with
-  `MODAL_S2_CONTROL_URL` set it never POSTs the GPU web endpoints. A 429
-  is only the busy-not-cold backstop. Agents do not deploy.
-- `MODAL_S2_READY_URL` and `MODAL_S2_SYNTHESIZE_URL` were reported set on
-  Vercel. The repo does not store those hostnames. A ready URL is never
-  derived from the batch URL.
+
+**GPU guard rails that are Implemented in source:**
+
+- Modal app name in source is `echomancer-s2-clone`
+  (`modal/s2_clone_service.py`, resolved by `s2_contract.resolve_app_name`;
+  a bare deploy targets staging unless `S2C_ALLOW_PRODUCTION=1`, see §14).
+  Code default `S2C_VERSION` is `"10"` (the snapshot/object-shape version).
+  Code default `S2C_ENGINE` is `v9` (`modal/s2_batch.py`), so a plain deploy
+  keeps the v9 decode loop. GPU defaults to `H100!` and batch width to 32
+  (`S2B_GPU`, `S2B_BATCH` in `modal/s2_batch.py`). This audit did not compute
+  a `snapshot_fingerprint`; the id quoted in the previous audit was for
+  version 9 and is stale.
+- `container_limits` in `modal/s2_contract.py`: `min_containers` is always 0,
+  `S2C_MAX_CONTAINERS` defaults to 1 (clamp 1–64), `S2C_SCALEDOWN` 300 s,
+  `S2C_BUFFER_CONTAINERS` 0. `/ready` keeps reporting the deploy-time env,
+  and a plain `modal deploy` resets an autoscaler override back to the baked
+  cap.
+- The apply path refuses `max_containers` above 1 on the production app
+  unless `S2_ALLOW_PROD_CAP_ABOVE_1=1`, and it exits before importing Modal.
+  `scripts/s2/drain-stuck-calls.py` refuses `--restore-max` above that clamp
+  before it brakes. Parsers in `scripts/s2` set `allow_abbrev=False`.
+- Pytest under `modal/` strips `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, and
+  `MODAL_PROFILE`, points `MODAL_CONFIG_PATH` at an empty file, refuses DNS
+  and connections to `*.modal.com` / `*.modal.run`, and makes
+  `Client.from_env` raise (`modal/no_live_modal.py`, `modal/conftest.py`).
+- `@modal.concurrent(max_inputs=2)` on `S2CloneWorker` lets one
+  `render_batch` and one light input share the GPU, so a status probe cannot
+  push `render_batch` onto a second H100 (book `db7d3d90`, 2026-11-19, is the
+  incident the source comment names). With `MODAL_S2_CONTROL_URL` set the
+  worker submits through the CPU-only `s2_control` function and does not
+  POST the GPU web endpoints. A 429 is the busy-not-cold backstop.
+- `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count
+  (`modal_gpu_leases`), not the container cap.
 
 There is no per-account or global character allowance on clone generation.
-The old caps (500,000 per account per day, 2,000,000 global) are gone, not
-raised. `MODAL_S2_USER_DAILY_CHARS` and `MODAL_S2_GLOBAL_DAILY_CHARS` are
-inert. Usage is still written to `usage_logs` (`action: "modal_s2_clone"`)
-and a failed insert does not stop the book
-(`recordModalCloneUsage` in `src/lib/tts/providers/modal-clone-guard.ts`).
-A real provider auth, quota, or billing error is still an error and keeps
-the provider's message.
+`MODAL_S2_USER_DAILY_CHARS` and `MODAL_S2_GLOBAL_DAILY_CHARS` are inert.
+Usage is still written to `usage_logs` (`action: "modal_s2_clone"`), and a
+failed insert does not stop the book (`recordModalCloneUsage` in
+`src/lib/tts/providers/modal-clone-guard.ts`). Spend is bounded by the
+remote-call budgets instead (§28). A real provider auth, quota, or billing
+error is still an error and keeps the provider's message.
 
 ---
 
 ## Table of Contents
 
-1. [What the product is (one page)](#1-what-the-product-is-one-page)
+1. [What the product is, and the architecture](#1-what-the-product-is-and-the-architecture)
 2. [Repository map](#2-repository-map)
 3. [Request lifecycle](#3-request-lifecycle)
 4. [Identity & sessions](#4-identity--sessions)
@@ -140,81 +144,146 @@ the provider's message.
 25. [Environment & deployment knobs](#25-environment--deployment-knobs)
 26. [Invariants checklist](#26-invariants-checklist)
 27. [Glossary](#27-glossary)
+28. [Cost, budgets, scaling & prewarm](#28-cost-budgets-scaling--prewarm)
+29. [Known limitations](#29-known-limitations)
+- [Remote calls](#remote-calls)
 
 ---
 
-## 1. What the product is (one page)
+## 1. What the product is, and the architecture
 
-Echomancer turns an uploaded document into listen-able audio. The slim catalog
-(`SLIM_STOCK_VOICE_IDS` in `src/lib/tts/standard-voice.ts`) is **Drew**
-(catalog id `drew`, fine-tuned Kokoro-82M, the default), **Esther** (Kokoro
-`af_heart`, catalog id `heart`, customer name `HEART_DISPLAY_NAME`), and
-**George** (Kokoro `bm_george`, listed only when that endpoint is set).
-Until Esther's endpoint is set, Ava and Libby stay listed and a new request
-that names either stays on Edge.
-**Walter** (catalog id `sowell`) is listed after those when its endpoint is
-set. **Echomancer Andrew** (`echomancer-andrew`, self-hosted Paradee,
-`src/lib/tts/providers/paradee.ts`) is unlisted. A book already stored with
-that id still resolves and keeps its audio; a new request or saved pick that
-names it uses Drew. The Paradee adapter stays for those stored rows. Edge
-Andrew (`standard`) is unlisted the same way, and a new request that names
-him uses Drew. Ryan is unlisted and a new request that names him uses George.
-Clara and Michelle stay resolvable for books already made with them and are
-not listed. Until Esther is configured, a new request that names Clara uses
-Libby and one that names Michelle stays on Edge. After that, a new request
-that names Clara or Michelle uses Esther. Ava and Libby stay listed until
-that same endpoint is set: a stored book stays on Edge, and a new request
-that names either uses Esther only once she is configured. Randolph is not
-synthesized. A stored Randolph book still plays and downloads; a new request
-that names Randolph or Google uses Drew. Optional **Fish voice cloning** trains on the direct Fish
-API (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container
-when `MODAL_S2_TTS_URL` is set (`modal/s2_clone_service.py`) and otherwise
-direct Fish — the same voice, because Fish trained the reference. Drama 3 is
-gone: it re-cloned the raw sample through a hosted model, so its take was a
-neighbour of the customer's voice. `CLONE_TTS_PROVIDER=fish` skips the
-container. With no URL, clones never call Modal. There is no customer control
-for clone emotion, for Fish generation speed (`prosody.speed` is chosen in
-`src/lib/tts/narration-pace.ts`), or for narration pauses, joins, and titles.
-`src/app/dashboard/narration-delivery-controls.tsx` only reads a leftover
-`localStorage` pref; no screen renders those controls. The Seminar / Plain
-toggle is gone. The player does have a listen-time `playbackRate` (0.8–1.5,
-default 1×, `src/components/player-speed-control.tsx`). That control does
-not re-synthesize.
-
-A take-home book pins its engine once (`jobs.provider_pin`) and keeps it for the
-whole book; a cold GPU pool parks the book (`MODAL_S2_DEFER_MS`, default 25 min)
-instead of switching narrator, and only a spent budget switches it, with a
-warning on the job. A book stored under the old `drama3` pin is re-pinned to
-`modal` or `fish` on its next tick. The Whole-book
-VM orchestrates those APIs; it does not run Fish on the VM itself.
-
-Two customer paths:
+Echomancer turns an uploaded document (or pasted text, or a public URL) into
+listen-able audio. Two customer paths share one upload:
 
 | Customer language | `job_kind` | What the code does | Host |
 |-------------------|------------|--------------------|------|
 | Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio | Vercel |
-| Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Always-on VPS worker |
+| Get the whole book | `takehome` | Freeze speakable sections → synthesize → master → R2 → join | Always-on VM worker, with Modal for GPU/CPU work |
 
-`generation_mode` is always `"stock"` in v2. The Voice tab opens on the
-slim pile (Drew, Esther, George, and Walter when that endpoint is set; Ava and Libby stay until Esther is configured). Clone is the other path.
+`generation_mode` is always `"stock"` in v2. The Voice tab opens on the slim
+stock list (§1.3); cloning is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
-(`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
-a goal, not a hard ceiling.
+(`src/lib/tts/pricing.ts`). About **€4.50** for a typical novel is a **Goal**,
+not a ceiling the code enforces.
 
-### Production topology
+### 1.1 Production topology
 
-Implemented hosts, plus the deploy report from the claim-class section above.
-
-| Piece | Where it runs |
+| Piece | Where it runs (Implemented unless marked) |
 |-------|----------------|
-| App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`). Live Listen and Live Stream stay here. |
-| Database / objects | Turso + Cloudflare R2 |
-| Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. Voice pick stays unblocked while extract runs. |
-| Whole-book orchestration | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Code default `WORKER_CONCURRENCY=1`. Reported host on 2026-11-07: Contabo. The process does not check the vendor. |
-| Clone synthesis | Modal app `echomancer-s2-clone` when `MODAL_S2_TTS_URL` is set. One GPU per container, `min_containers=0`. The VM does not run the GPU. Direct Fish is the other engine for the same reference. |
-| Stock synthesis | Drew, Heart, George, and Walter on the Kokoro CPU app. Edge Read Aloud for a book already stored as Ava, Libby, Andrew, Ryan, or Michelle. Paradee for a book already stored as Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
-| TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
+| App + API | Next.js App Router on Vercel (`echomancer.xyz`; package name and README host `echomancer-v2`). Upload presign, job create/list, storage proxy, Live Listen, Live Stream, auth. `vercel.json` is the empty schema: no Vercel cron. |
+| Database | Turso (libSQL). It is also the queue: jobs, leases, CPU tasks, provider slots, remote-call ledger (§7, §19, §28). |
+| Objects | Cloudflare R2 (`src/lib/r2-storage.ts`), local disk when R2 is unset. |
+| Whole-book orchestration | Always-on VM. Node + pm2 process `echomancer-takehome` (`src/worker/takehome-server.ts`), bound to **`127.0.0.1:8788`**. Caddy on the VM terminates HTTPS for `WORKER_URL`. Host vendor is **Operator-reported** (Contabo); the code does not check it. Runbook: `WORKER.md`. |
+| Document extract | Warm child process of the worker (`POST /extract`, `src/worker/extract-child.ts`); Cloudflare `workers/extract` when that POST fails; Vercel as the last resort (§9). |
+| Clone GPU | Modal app `echomancer-s2-clone` (`modal/s2_clone_service.py`): Fish S2-Pro on an H100, GPU memory snapshots, `min_containers=0`, code-default `max_containers=1`. Used only when `MODAL_S2_TTS_URL` is set. Submit/poll/cancel goes through the CPU-only `s2_control` function at `MODAL_S2_CONTROL_URL`. |
+| Kokoro voices | Modal app `echomancer-sowell` (`modal/sowell_worker.py`, image `workers/sowell/Dockerfile`): CPU Kokoro-82M serving Drew (fine-tuned weights on the `andrew-distill` volume), Esther (`af_heart`), George (`bm_george`), and Walter (`sowell`). `cpu=2`, `memory=6144`, `min_containers=0`, `max_containers` from `SOWELL_MAX_CONTAINERS` (default 16, clamp 1–16), `scaledown_window` default 5 s. |
+| CPU tasks | Modal app `echomancer-cpu` (`modal/cpu_worker.py`, image `workers/cpu/Dockerfile`): `master`, `whisper`, `concat`, and `extract` tasks when `CPU_RUNNER=modal`. `min_containers=0`, `CPU_MAX_CONTAINERS` default 4, `CPU_FUNCTION_CPU` 2, `CPU_FUNCTION_MEMORY_MB` 4096, `CPU_SCALEDOWN_SECONDS` 300. With `CPU_RUNNER` unset (the code default) the same tasks run on the VM (§19). Whether production has `CPU_RUNNER=modal` is not verified here; `env.worker.example` shows it commented out. |
+| Fish API | Direct Fish (`FISH_API_KEY`, `src/lib/tts/providers/fish.ts`): clone training (`POST /model`), clone synthesis when the book is pinned to `fish`, clone preview bakes, stored Clara books, Live Listen for clones. Native model id `s2.1-pro-free` (`FISH_NATIVE_FREE_MODEL`). |
+| Edge TTS (legacy) | Microsoft Edge Read Aloud websocket (`src/lib/tts/edge-tts.ts`): stored Andrew/Ava/Libby/Ryan/Michelle books, and new Ava/Libby/Michelle requests until Esther is configured. |
+| Paradee (legacy) | `src/lib/tts/providers/paradee.ts`: only a book already stored as Echomancer Andrew (`echomancer-andrew`). A new request that names that id is coerced to Drew. |
+| Not called | Google Cloud TTS (stored Randolph audio still plays). Drama 3 / OpenRouter for clones. |
+
+### 1.2 Book lifecycle (one paragraph per step, details in the linked sections)
+
+1. **Upload or paste.** `POST /api/pdf/upload` presigns; the browser PUTs to
+   R2; `POST /api/pdf/upload/[id]` dispatches extract. Paste and URLs go
+   through `POST /api/text/upload` and are `ready` at once (§9).
+2. **Extract and clean.** `runUploadExtract` writes `pdfs/<uploadId>/content.txt`
+   and `chapters.json`; listen-prep writes `listen-cleaned.txt` and
+   `narrator.json` in the background (§9, §15 `listen-prep.ts`).
+3. **Create.** `POST /api/jobs` only inserts (`queued`, or `waiting` while the
+   file is still being read), reserves `takehome_create_keys`, and wakes the
+   VM with `POST $WORKER_URL/jobs` (§16, §19).
+4. **Queue, leases, admission.** The VM drain claims a lease
+   (`claimTakehomeLease`), respecting per-user and global caps,
+   `takehome_fairness`, provider slots, and for clones one `modal_gpu_leases`
+   row per book. Every remote call is admitted by the remote-call layer,
+   which can refuse on budget (§19, §28, "Remote calls").
+5. **Freeze and section.** The first claim writes `speakable.txt`,
+   `sections.json`, and `playback-chapters.json` once; later ticks never
+   re-split (§19 "Index invariant").
+6. **Render.** Each section index is bound to one synthesis call: Kokoro CPU,
+   Edge, Paradee, Fish, or the S2 GPU batch (§12, §14).
+7. **Master.** Each take is stored raw, then mastered to
+   `sections/NNNN.mp3` with the voice EQ stage (`voiceEqStageAf`, the shared
+   warm curve) and loudnorm (−16 LUFS stock/Fish, −19 LUFS for the S2 chain).
+   A section is `ready` only once mastered (§19 "Queue hardening", §20).
+8. **Join and ready.** When every index is ready the job is `ready`; the join
+   packet-copies mastered sections into `full.mp3` with crossfades and ID3
+   chapters. A book with holes is `failed` with its audio kept (§19, §20).
+9. **Listen.** The root playback shell plays sections while the join runs,
+   then `full.mp3`; resume and bookmarks are per listener (§22).
+
+### 1.3 Voices (current `main`)
+
+Catalog ids and the code that decides them: `src/lib/tts/standard-voice.ts`,
+`src/lib/tts/kokoro-voice-ids.ts`, `src/lib/tts/catalog/index.ts`
+(`listedStockIds`, `listSlimDefaultCatalogVoices`).
+
+| Name | Catalog id | Engine | Listed when |
+|------|-----------|--------|-------------|
+| **Drew** (default) | `drew` | Fine-tuned Kokoro-82M on `echomancer-sowell` | `drewReady()` (`DREW_ENABLED=1`, `DREW_URL`, `DREW_TOKEN`) |
+| **Esther** | `heart` | Stock Kokoro `af_heart` (`HEART_DISPLAY_NAME = "Esther"`, `src/lib/tts/heart-voice.ts`) | `heartReady()`: `HEART_ENABLED=1`, `HEART_URL` (host, no path), `HEART_TOKEN` |
+| **Ava** | `ava` | Edge `en-US-AvaNeural` | Only while Esther is **not** ready |
+| **Libby** | `libby` | Edge `en-GB-LibbyNeural` | Only while Esther is **not** ready |
+| **George** | `george` | Stock Kokoro `bm_george` | `georgeReady()` |
+| **Walter** | `sowell` | Kokoro (Walter pack) | `sowellReady()`; appended last |
+| Your clones | `clone:<uuid>` | S2 GPU or direct Fish | Owner's session |
+
+List order: Esther not ready → Drew, Ava, Libby, George (+ Walter). Esther
+ready → Drew, Esther, George (+ Walter). A voice whose endpoint is not ready
+is dropped from the list. A request with no voice uses Drew and is 503
+`DREW_NOT_CONFIGURED` when Drew is not ready.
+
+**Coercions** (`coercePlainCatalogVoiceId`, run on a new request in
+`POST /api/jobs` and on a saved pick, never on a stored row; `{ heart }` is
+`heartReady()`):
+
+| Requested | Esther not ready | Esther ready |
+|-----------|------------------|--------------|
+| `andrew`, `standard`, `echomancer-andrew`, `randolph`, bare `expressive` | Drew | Drew |
+| `ryan` | George | George |
+| `ava` / `libby` | stays Ava / Libby (Edge) | Esther |
+| `clara` | Libby | Esther |
+| `michelle` | stays Michelle (Edge) | Esther |
+| `heart`, `af_heart` | Esther (`heart`) | Esther (`heart`) |
+| `walter` | `sowell` | `sowell` |
+| `… (expressive)` suffix | stripped, then the rules above | same |
+
+A **stored** book keeps its row: Andrew, Ava, Libby, Ryan, and Michelle books
+still synthesize on Edge, Echomancer Andrew on Paradee, Clara on Fish with its
+curated `reference_id`, and Randolph is played from its saved file and is
+never synthesized (`isRetiredGoogleSynthesis`).
+
+**Stock previews** are committed files (`public/voice-previews/<id>.mp3`:
+`drew`, `heart`, `ava`, `libby`, `george`, `sowell`, plus unlisted
+`standard`, `ryan`, `echomancer-andrew`). `POST /api/tts/preview` returns
+those bytes; nothing is synthesized for a listed stock preview (§14
+`browser-speech.ts`).
+
+**Clone previews** are stored MP3s. `GET /api/tts/clones/[id]/preview` only
+reads storage (fish v2 key, then the legacy engine-free key, then an older
+s2-pro key); a miss enqueues one **Fish** bake on the worker
+(`POST /clone-preview`) and answers `202 PREVIEW_PREPARING`. A failed bake
+answers `409 PREVIEW_BAKE_FAILED` until the Retry button, which is
+`POST … { retry: true }` and still replays a stored take if one exists. Both
+methods need Fish configured. A stored preview
+is served `private, max-age=31536000, immutable`. The preview path does not
+call the S2 pool, so it never starts a GPU. Selecting a clone row on the
+Voices page is separate: it posts `/api/capacity/warm` with `reason: "voice"`,
+which can start one S2 restore-only prewarm (§28).
+
+There is no customer control for clone emotion, Fish generation speed
+(`prosody.speed` is chosen in `src/lib/tts/narration-pace.ts`), or narration
+pauses, joins, and titles. The player's listen-time `playbackRate`
+(0.8–1.5×) does not re-synthesize.
+
+A take-home clone book pins its engine once (`jobs.provider_pin`, `modal` or
+`fish`) and keeps it; a cold GPU pool parks the book (`MODAL_S2_DEFER_MS`,
+default 25 min) instead of switching narrator, and only a spent park budget
+switches it to direct Fish (the same trained reference), with a warning. A
+legacy `drama3` pin is re-pinned on its next tick.
 
 ---
 
@@ -222,70 +291,80 @@ Implemented hosts, plus the deploy report from the claim-class section above.
 
 ```
 src/
-  proxy.ts                     # Next.js middleware (anonymous session mint)
+  proxy.ts                     # Next.js middleware (anonymous session mint, ec_signed_in hint)
   app/
-    page.tsx                   # Landing upload
-    layout.tsx                 # Fonts, theme, toaster
+    page.tsx                   # Landing upload / paste
+    layout.tsx                 # Fonts, theme, PlaybackProvider (root <audio>)
+    privacy/page.tsx           # Privacy statement
+    sign-in/                   # Google + email sign-in, /sign-in/confirm
     dashboard/
       layout.tsx               # Nav shell
-      voice/page.tsx           # Narrator picker + job create
+      voice/page.tsx           # Narrator picker + clone + job create
       queue/page.tsx           # Library + polling
-      player/[id]/page.tsx     # Playback + optional transcript
+      player/[id]/page.tsx     # Player, chapters, transcript, bookmarks
+      player/[id]/markup/      # Operator-only Fish markup
+      account/                 # Settings
     api/
-      pdf/upload/              # JSON presign (tiny). Browser PUTs to R2.
+      pdf/upload/              # JSON presign. Browser PUTs to R2.
       pdf/upload/[id]/         # complete + poll extraction
       pdf/upload/[id]/object/  # local PUT when R2 is unset
+      pdf/upload/[id]/narrator/# cached narrator suggestion
+      text/upload/             # Paste or public URL
       jobs/                    # Create / list
-      jobs/[id]/               # Detail / delete / retry
-      jobs/[id]/stream/        # Live listen
-      jobs/[id]/takehome/      # Promote stream → full book
-      jobs/[id]/process/       # Internal worker (one job)
-      jobs/[id]/download/      # Assembled file
-      jobs/[id]/cancel/
-      cron/process-jobs/       # Queue drain
+      jobs/[id]/               # Detail / rename / retry / delete
+      jobs/[id]/{cancel,download,stream,takehome,process,transcript,markup}/  # cancel is the Stop button
+      jobs/[id]/position/      # Resume position (GET/PUT)
+      jobs/[id]/bookmarks/[bookmarkId]/
+      cron/process-jobs/       # Operator fallback drain (no Vercel cron configured)
       storage/[[...path]]/     # Ownership-gated file proxy
+      capacity/warm/           # Shared CPU / Kokoro / S2 warm (cookie required)
       tts/voices/              # Slim catalog + session clones
-      tts/preview/             # Short stock preview
-      tts/live/                # Fish chunked preview / listen
-      tts/clones/              # Train a clone from a stored sample
-      tts/clones/[id]/preview/ # Replay a stored clone MP3; POST renders once
-      auth/[...nextauth]/      # Auth.js Google OAuth + CSRF
-      auth/email/              # Email sign-in link (Resend)
-      auth/logout/             # Sign out → fresh anon cookie
-      text/upload/             # Paste or public URL, same content.txt shape
-      clips/                   # Server YouTube clip queue (allowlisted email)
-      me/                      # Signed-in profile for chrome
-      log/                     # Client-side pick/upload failure reports
+      tts/preview/             # Committed stock preview bytes
+      tts/live/                # Fish chunked live listen
+      tts/clones/, tts/clones/upload/, tts/clones/[id]/, tts/clones/[id]/preview/
+      tts/youtube/search/      # Signed-in YouTube search for clone clips
+      clips/, clips/[id]/      # Server YouTube clip queue (allowlisted email)
+      auth/[...nextauth]/, auth/email/, auth/email/verify/, auth/logout/
+      viewer/                  # Header identity payload
+      log/                     # Client failure reports
       health/
   lib/
-    auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
+    auth/                      # session, guard, google, authjs, email-login, …
     rate-limit.ts
-    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,worker-secrets}.ts
-    turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
-    storage/index.ts + r2-storage.ts
-    uploads/{extract,http,rate-limit}.ts
-    text-extraction.ts + document-formats.ts + clone-sample-formats.ts + upload-client.ts
-    file-pick.ts                # Pick-time read + sniff + visible errors (phones / Drive)
-    tts/…                      # Entire synthesis stack
-                               # speakable-text.ts (TTS script sanitizer)
-                               # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
-                               # clone-sample-quality.ts (pass/warn/fail gate, no SNR)
-                               # mastering.ts + mastering-worker.ts (podcast delivery chain + 44.1/192; DFN opt-in)
-    validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
-  worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
-  hooks/useAudioProcessor.ts
-  test/{harness,setup-env}.ts
-modal/                         # S2-Pro clone service, contract, warm/cover
-scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
-scripts/s2/                    # Staging smoke, A/B bench, quality compare,
-                               # and staging-env.sh (S2C_ENGINE=v10 on a
-                               # separate app)
-workers/extract/               # Cloudflare Worker: document parse next to R2
-workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
+    jobs/                      # serialize, worker-auth, takehome-dispatch, takehome-identity, direct-download, …
+    turso.ts + turso/          # jobs, uploads, cloned-voices, clone-uploads
+    storage/ + r2-storage.ts
+    uploads/, text-extraction.ts, document-formats.ts, source-text.ts, blocks.ts, …
+    remote/                    # layer (flights, budgets), store, reconcile, drain-book, stop, prewarm
+    cpu/                       # cpu_tasks queue, runner (local | modal), task-slot
+    capacity/                  # shared warm holds (warm.ts, client.ts)
+    player/                    # playback-speed, player-prefs, media-session, shell-resume, audio-start, …
+    nav/, library/, operator/, youtube/, modal/
+    tts/                       # whole synthesis stack (catalog, providers, process-job, mastering, …)
+  components/                  # playback-provider (shell + MiniPlayer), player-*, auth-controls, …
+  hooks/                       # use-audio-start, use-playback-speed, use-playback-resume, useAudioProcessor
+  worker/                      # takehome-server, takehome-loop, takehome-http, extract-child, auth
+  test/                        # harness, setup-env, acceptance/
+modal/
+  s2_clone_service.py          # echomancer-s2-clone (H100, snapshots, s2_control, ready)
+  s2_contract.py, s2_batch.py, s2_endpoints.py, s2_clone_warm.py, s2_compile_cache.py, …
+  sowell_worker.py             # echomancer-sowell (Kokoro CPU voices)
+  cpu_worker.py                # echomancer-cpu (master / whisper / concat / extract)
+  test_*.py, conftest.py, no_live_modal.py
+workers/
+  extract/                     # Cloudflare Worker: document parse fallback
+  cpu/Dockerfile               # Modal CPU image (pinned static ffmpeg)
+  sowell/Dockerfile            # Kokoro image
+  takehome/Dockerfile          # Optional Whole-book image
+scripts/
+  oracle/                      # VM bootstrap (pm2 / Caddy / smoke)
+  s2/                          # Staging smoke, A/B bench, autoscaler, drain, cover
+  cpu/                         # Modal CPU smoke
+  sowell/, previews/, paradee/ # Kokoro style tools, preview recording, legacy Paradee
+  rechapter-takehome.ts, refinalize-takehome.ts, repair-raw-masters.ts, whisper-qa.py
 docker-compose.yml             # Optional Docker path (pm2 is primary)
-WORKER.md                      # VPS + pm2 + Caddy runbook
 migrate-turso.sql              # Additive SQL mirror of runtime migrator
-vercel.json                    # Empty schema on Hobby (no native cron)
+vercel.json                    # Empty schema (no crons)
 ```
 
 ---
@@ -356,7 +435,7 @@ would make every serverless isolate a different “you” and empty the library.
 | Auth.js v5 Google provider | CSRF + OAuth callback at `/api/auth/*` |
 | `users` table | `id` (`user_*`), `google_sub` (unique), email, name, image, created_at |
 | `completeGoogleSignIn()` | Upsert by `google_sub`, merge this browser's `anon_*` rows, mint `user_*` cookie |
-| `mergeAnonymousOwnership()` | `UPDATE` jobs / uploads / cloned_voices **only** where `user_id = anon_*` |
+| `mergeAnonymousOwnership()` | Only for an `anon_*` → `user_*` pair: `UPDATE` jobs, uploads, cloned_voices, clone_uploads, bookmarks; copy `playback_positions` keeping the later `updated_at` per book, then delete the anon rows |
 | `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
 | Chrome | Header “Sign in” (no provider name). Signed-in name opens a menu (Settings / Library / Dark mode / Sign out). Sign out is not a standalone top-right control. |
 
@@ -449,7 +528,21 @@ do not share RAM.
 - Costly routes (create, upload, stream, preview, catalog): `onError: "closed"` → deny if DB fails.
 - Storage proxy: fail **open** so a Turso blip does not brick playback.
 
-Typical caps (see each route): upload 10/min, jobs 5/min, preview 15/min, storage 600/min.
+Limiters in source (Implemented; name, cap, window, fail mode):
+
+| Name | Cap | Fail | Name | Cap | Fail |
+|------|-----|------|------|-----|------|
+| `uploads` | 10/1m | closed | `text-upload` | 15/1m | closed |
+| `jobs-create` | 5/1m | closed | `jobs-takehome` | 5/1m | closed |
+| `jobs-stream` | 20/1m | closed | `tts-live` | 20/1m | closed |
+| `tts-preview` | 15/1m | closed | `tts-voices` | 60/1m | closed |
+| `tts-clones` | 5/1h | closed | `clone-preview-cache` | 120/1m | **open** |
+| `clone-preview-render` | 6/1m | closed | `youtube-search` | 8/10m | closed |
+| `auth-email-address` | 3/10m | closed | `auth-email-ip` | 20/1h | closed |
+| `storage-read` | 600/1m | **open** | `client-log` (`/api/log`) | 20/10m | **open** |
+
+`clone-preview-cache` guards reads of an already-baked preview; `clone-preview-render`
+guards a new Fish bake (`src/app/api/tts/clones/[id]/preview/route.ts`).
 
 ---
 
@@ -797,7 +890,7 @@ for outline alignment, and paragraph breaks remain intact.
 No literary restyling. No Bloom / Caesar / title-specific word lists.
 
 Wired from: `extractUploadedDocument`, `POST /api/text/upload`,
-`loadBookText` (take-home), `createStreamAudioIterator` (Live Stream), and
+`src/lib/uploads/run-extract.ts` and `src/lib/tts/frozen-script.ts` (take-home), `src/lib/tts/stream-timeline.ts` (Live Stream), and
 optional Live Listen sample text on `/api/tts/live`.
 
 ### Narration script — `src/lib/tts/narration-script.ts`
@@ -905,13 +998,14 @@ recalibrate after measured sections.
 Player speed cycle (`src/lib/player/playback-speed.ts`) is listen-time
 `playbackRate` (not Fish generation speed): **0.8–1.5** in **0.05** steps,
 including **0.95×** and **1.35×**. A fresh player starts at **1×**
-(`DEFAULT_PLAYBACK_SPEED`). The choice is not stored, so a reload does not
-restore the old 1.15× start; a rate picked in the visit, including 1.15×,
-stays on the element until then. One quiet tap control, not a pill row.
+(`DEFAULT_PLAYBACK_SPEED`). The listener's choice is stored in
+`localStorage` under `ec-player-speed` (`SPEED_PREF_KEY`,
+`src/hooks/use-playback-speed.ts`), so it survives a reload and carries to
+the next book. One quiet tap control (`src/components/player/speed-control.tsx`).
 
 ### Document upload — presign + R2 PUT + near-request extract
 
-Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
+Vercel never buffers the document; a Vercel function body above ~4.5MB fails with `FUNCTION_PAYLOAD_TOO_LARGE`.
 
 Extract runs on the always-on VPS. Parsing (unpdf / mammoth / JSZip) runs on
 the always-on VPS, in a warm child process so it does not take a Whole-book
@@ -1650,7 +1744,7 @@ rescue baked-in echo — the UI tells people to re-record.
 | `CLONE_SAMPLE_QUALITY_THRESHOLDS` | 10–180s; `clip_frac > 0.001`; `speech_frac < 0.25`; speech level outside −45…−8 dB; `rt60 > 0.95` fail / `> 0.75` warn; `reverb_proxy > 0.40` and RT60 unknown or `> 0.75` → `echo_in_speech` |
 | `measureCloneSamplePcm` | Frame RMS, clip fraction, decay-fit RT60, late/early reverb proxy |
 | `analyzeCloneSampleBuffer` | `clone-sample-quality-analyze.ts` — 16-bit WAV only (server). Compressed → `null` (browser Web Audio checks those) |
-| `analyzeCloneSampleFile` | Client `AudioContext.decodeAudioData` → same decision module |
+| `prepareCloneSampleFile` | `clone-sample-quality-browser.ts` — client `AudioContext.decodeAudioData` → same decision module |
 
 JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “Too much echo to clone.” Primary action: record again; cleaning won’t help. Warn still creates the clone. The browser “Muffled or noisy” warning (`energy_hz_95` / speech-background gap) is gone: it fired on clean clips and did not predict a worse clone.
 
@@ -1749,7 +1843,9 @@ URL only for `job_kind === "stream"`. **Hides** `pdf_storage_path`,
 
 ### `POST /api/jobs/[id]/cancel`
 
-Owned; rejects if already `ready`/`failed`; sets `cancelled`, clears lease
+The Stop button. Owned; 400 if already `ready`/`failed`; calls
+`stopBookRemotely(id, "cancelled")` first (refuse new remote calls, ask the
+worker to drain held ones, §28), then sets `cancelled` and clears lease
 fields so a mid-wave worker cannot keep writing.
 
 ### `PATCH /api/jobs/[id]` `{ action: "retry" }`
@@ -1767,7 +1863,7 @@ name shows the same pencil. The download filename follows the new title.
 
 ### `DELETE /api/jobs/[id]`
 
-Owned; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
+Owned; `stopBookRemotely(id, "deleted")`; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
 `pdfs/<uploadId>/…` **only if no sibling job** shares `pdf_storage_path`; soft
 delete job; best-effort file deletes.
 
@@ -1834,11 +1930,12 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 |--|--|
 | Process | Node + pm2 `echomancer-takehome` (`src/worker/takehome-server.ts`) |
 | Bind | **`127.0.0.1:8788` only** (pm2 sets `WORKER_HOST`). Never publish 8788. |
-| TLS | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz` → loopback 8788 |
+| TLS | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz` → loopback 8788 (hostname and DNS rows as documented in `WORKER.md`; operator-reported) |
 | DNS | A record on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). Not a Cloudflare zone. |
 | Vercel | `WORKER_URL=https://worker.echomancer.xyz` + `WORKER_SECRET` (HTTPS only) |
-| Concurrency | `WORKER_CONCURRENCY=1` |
-| TTS | Orchestrates Edge, Paradee, Fish, and (when pinned) Modal. Does **not** run a GPU and does **not** call Google Cloud TTS. |
+| Concurrency | `effectiveOrchestratorConcurrency` (`src/worker/concurrency.ts`): local CPU (default) runs one book unless `WORKER_LOCAL_MULTIBOOK=1`; with `CPU_RUNNER=modal` it is `ORCH_CONCURRENCY` (default 8, max 64) unless `WORKER_CONCURRENCY` is set |
+| TTS | Orchestrates Kokoro (`echomancer-sowell`), the S2 clone pool, Fish, and legacy Edge/Paradee rows; CPU tasks run locally or on `echomancer-cpu` (`CPU_RUNNER`). Does **not** run a GPU and does **not** call Google Cloud TTS. |
+| Routes | `src/worker/takehome-http.ts`: open `GET /health` (and `/`), `GET /ready`; secret-gated (`authorizeWorkerRequest`: `WORKER_SECRET`, Bearer or `x-worker-secret`) `POST /jobs`, `/extract`, `/listen-prep`, `/clone-prewarm`, `/drain`, `/clone-preview`, `/capacity-warm`, `/reference-quality`. `src/worker/takehome-server.ts` also proxies `POST /paradee/synthesize` for stored Echomancer Andrew books. |
 
 The Next.js app on Vercel only enqueues. Live Listen / Live Stream stay on
 Vercel. Document extract runs here in a child process (`POST /extract`);
@@ -1908,7 +2005,7 @@ Edge, Fish, Paradee, and clone jobs freeze the cleaned speakable, then
 lines are layout, not speech boundaries). Later ticks load that pack and
 never re-split, except one clone case: an outline whose longest section is
 wider than one GPU call, and which has no ready section yet, is re-packed
-once (`frozenTooWide` in `process-job.ts`). A stored Google / Randolph job
+once (`cloneOutlineRepackKind` in `process-job.ts`). A stored Google / Randolph job
 never reaches the packer. `parkStoredGoogleJob` marks a finished file
 `ready` and stops an unfinished one. The SSML byte packer
 (`googleSynthesisSsmlUtf8Bytes`, hard max 4900 bytes under Cloud TTS's
@@ -2021,10 +2118,10 @@ reason once (`qa skipped: whisper sidecar missing` or
 `qa skipped: deepgram needs OPENROUTER_API_KEY`) and finishes the book. The
 old line `qa skipped: no provider` is not what the current selector logs.
 Section 0 of a Modal clone is published before this check; later sections are
-checked. The section 0 take is not replaced afterwards. An earlier
+checked. The section 0 take is not replaced afterwards. An earlier (now removed)
 `prioritizeZero` path claimed only `[0,1]` so the player could start after
 one Fish round-trip; that starved parallel workers and is no longer the
-default. `/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight),
+default. `/health` `concurrency` is the orchestrator slot count (books in flight, `effectiveOrchestratorConcurrency`),
 not this section fan-out.
 
 ### Parallel Fish
@@ -2518,7 +2615,7 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voices tab opens on Drew, Ava, and Libby until Esther is configured, and on Drew, Esther, and George after that, plus Walter when that endpoint is set. The heading is
+- The Voices tab lists Drew, Ava, Libby, and George until Esther is configured, and Drew, Esther, and George after that, plus Walter when that endpoint is set; a voice whose endpoint is not ready is dropped. The heading is
   **Voice**. Each row’s preview plays with one tap, with or without an upload.
   A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`,
   including a `clone:` id. After upload or paste that id stays selected when
@@ -2969,6 +3066,16 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `clone-sample-quality.test.ts` | Injected metrics: phone fail, Wolfe/studio2 pass; threshold edges |
 | `clone-sample-quality-metrics.test.ts` | Synthetic dry/wet PCM: RT60 + reverb proxy; WAV analyze vs mp3 null |
 | Unit suites | pricing, audio-guard, catalog, session, rate-limit, … |
+| `remote/remote-budget.test.ts` / `remote-invariants.test.ts` / `remote-book-path.test.ts` | Daily budget counts only trailing-day overlap; Fish and previews are not charged; in-flight estimates block slipping under the cap; one in-flight call per section; a cancelled book makes zero new calls; drain restores with min 0 |
+| `capacity/warm.test.ts` / `api/capacity/warm/route.test.ts` | Pool mapping and holds; the route rejects a request with no session, does nothing on a proxy-header-only session, and accepts a guest cookie without synthesizing |
+
+**Commands and scope (Implemented in `package.json`):** `npm test` / `npm run
+test:run` (Vitest; this checkout tracks 268 `*.test.ts` files),
+`npm run typecheck`, `npm run lint`, `npm run test:clip-slider` (Playwright,
+`e2e/`), plus `pytest` under `modal/` (23 `test_*.py` files, offline by
+`modal/no_live_modal.py`). Suites named after Google SSML cover stored-row and
+budget logic; Google Cloud TTS is never called. This audit did not run any of
+them.
 
 ---
 
@@ -3008,9 +3115,11 @@ EXTRACT_NODE_CONCURRENCY=1 # Warm VM extract children. Not a TTS slot. Default 1
 # MODAL_S2_TTS_URL          # batch endpoint, required for the S2 pool. No path.
 # MODAL_S2_SYNTHESIZE_URL   # optional single-section host. Not derived.
 # MODAL_S2_READY_URL        # optional probe. Never derived from the batch URL.
-# Reported set on Vercel as of 2026-11-07. Hostnames are not in this repo.
-# S2C_MAX_CONTAINERS=1      # code default. Production cap of 4 is update_autoscaler, not this env.
-# S2C_SCALEDOWN=300         # code default. Reported runtime scaledown_window is 180.
+# Operator-reported as set on Vercel (2026-11-07 notes). Hostnames are not in this repo.
+# MODAL_S2_CONTROL_URL      # s2_control submit/poll/cancel endpoint used by the remote-call layer (§28, Remote calls).
+# S2C_MAX_CONTAINERS=1      # code default (clamp 1–64). A production cap above 1 needs S2_ALLOW_PROD_CAP_ABOVE_1.
+# S2C_SCALEDOWN=300         # code default. The live scaledown window is not verified by this audit.
+# min_containers is 0 in modal/s2_contract.py (container_limits); there is no env to raise it.
 # TTS_QA_PROVIDER=local     # default. deepgram is opt-in. off skips QA.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
@@ -3042,9 +3151,32 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 - `.gitignore` must **not** use a bare `auth` pattern — that hid `src/lib/auth/`
   and broke Vercel builds (`Module not found`). Use `/auth` for root SQLite only.
-- Hobby: no `crons` in `vercel.json`. Whole book is the VPS worker
-  behind Caddy (`WORKER_URL=https://worker.echomancer.xyz` →
-  `src/worker/takehome-server.ts` on `127.0.0.1:8788`). Polls are read-only.
+- `vercel.json` is the bare schema with no `crons`. Whole book is the VM worker
+  behind Caddy (`WORKER_URL` → `src/worker/takehome-server.ts` on
+  `127.0.0.1:8788`; the hostname in `AGENTS.md` is the operator's). Polls are read-only.
+- Procedures live in `DEPLOYMENT.md` (Vercel + Turso + R2), `WORKER.md` (pm2
+  worker, deploy and rollback), and `docs/*-runbook.md` (`cpu-modal`,
+  `drew-walter-voice`, `george-voice`, `heart-voice`, `s2-gpu-staging`,
+  `sowell-voice`). This doc does not duplicate them.
+
+### Observability (Implemented)
+
+There is no third-party telemetry dependency in `package.json` (no Sentry or
+OpenTelemetry). What exists:
+
+- `GET /api/health` (`src/app/api/health/route.ts`): `healthy` (200) when
+  Turso answers `SELECT 1` and R2 is configured, else `degraded` (503). It
+  returns no per-service detail.
+- Worker `GET /health` (inflight, concurrency, uptime, extract inflight) and
+  `GET /ready` (200/503) on the take-home worker.
+- `POST /api/log`: browser error reports, rate-limited and fail-open.
+- `remote_calls` rows: every remote flight and its outcome is persisted by
+  the event sink in `src/lib/remote/reconcile.ts` → `persistRemoteEvent`
+  (`src/lib/remote/store.ts`); open calls are re-hydrated on worker start.
+- `usage_logs`: best-effort accounting (for example `modal_s2_clone`).
+- Server logs are `console.*` lines with `[takehome-worker]`, `[remote]`,
+  `[section-master]`-style prefixes, read through pm2 logs on the VM and
+  Vercel function logs.
 - Generate secrets with any CSPRNG (`openssl rand -hex 32` or PowerShell
   equivalent); they are not vendor API keys.
 
@@ -3088,6 +3220,110 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 | Fan-out | Parallel section calls. Direct Fish is capped at 4 or 5. A Modal clone's lanes default to 4; one call still carries a batch of rows. |
 | Stream budget | Char/time cap for live listen |
 | HD gate | Soft block for MiniMax-class voices |
+
+---
+
+## 28. Cost, budgets, scaling & prewarm
+
+Nothing in code keeps a container running. Every Modal app is declared with
+`min_containers: 0` (`modalAppRegistry`; `modal/s2_contract.py`
+`container_limits`, `modal/sowell_worker.py`, `modal/cpu_worker.py`). A warm
+container exists only while a request, a book, or a short warm hold is using
+it, and then scales to zero after its scaledown window.
+
+### Fleet caps (Code default)
+
+| App | Min | Max | Scaledown | Notes |
+|-----|-----|-----|-----------|-------|
+| `echomancer-s2-clone` (H100 GPU) | 0 | `S2C_MAX_CONTAINERS`, default **1** (clamp 1–64) | `S2C_SCALEDOWN`, default 300 s | A production cap above 1 needs `S2_ALLOW_PROD_CAP_ABOVE_1`. The drain may brake the live max and restore the value it read; any other change is an operator running `scripts/s2/set-live-autoscaler.py`. Live value is operator-reported as max 1. |
+| `echomancer-sowell` (CPU Kokoro) | 0 | `SOWELL_MAX_CONTAINERS`, default 16 (clamp 1–16) | default 5 s (clamp 2–1200) | Drew, Walter, George, Esther. |
+| `echomancer-cpu` (CPU) | 0 | `CPU_MAX_CONTAINERS`, default 4 | 300 s | Mastering, Whisper, join, extract when `CPU_RUNNER=modal`. A fleet size, not a spend cap. |
+
+`MODAL_S2_MAX_GPUS` (default 20) is a count of `modal_gpu_leases` rows the app
+will hand out (`src/lib/tts/providers/modal-gpu-lease.ts`). It does not start
+or reserve GPUs; the Modal max above is the real ceiling.
+
+### Remote-call budgets — `src/lib/remote/layer.ts` (Implemented)
+
+Calls to the paid remotes go through the remote-call layer, which tracks each
+flight and its spend (`remote_calls`). `countsTowardGpuBudget` counts the
+providers `s2-clone`, `kokoro`, `modal-cpu`, and `prewarm` on every path,
+including `preview`; Fish calls are never counted, and other providers are
+not counted on the preview path. Admission checks four budgets before a
+counted call is made:
+
+| Env | Default |
+|-----|---------|
+| `REMOTE_BOOK_BUDGET_USD` | 20 per book |
+| `REMOTE_DAILY_BUDGET_USD` | 80 per day |
+| `REMOTE_BOOK_BUDGET_MS` | 6 h of remote time per book |
+| `REMOTE_DAILY_BUDGET_MS` | 12 h of remote time per day |
+
+Budgets are enforced unless `REMOTE_ENFORCE_BUDGETS=0`; under Vitest they are
+off unless it is `1`. On a breach the book fails with "This book is over its
+remote-call budget." Remote time is the merged busy interval of a book's
+calls (`mergedIntervalMs`). The Stop button (`POST /api/jobs/[id]/cancel`) and
+`DELETE /api/jobs/[id]` call `stopBookRemotely` (`src/lib/remote/stop.ts`),
+which refuses new remote calls for that book in this process and asks the
+worker to drain the calls it holds (`requestBookDrain`).
+
+### Prewarm and capacity warm (Implemented)
+
+- **Capacity warm** — `POST /api/capacity/warm` (`src/app/api/capacity/warm/route.ts`,
+  client `src/lib/capacity/client.ts`, policy `src/lib/capacity/warm.ts`).
+  Requires an existing `ec_session` cookie. `poolsForWarm` maps the reason:
+  a voice page with a `clone:` voice → `s2`; a Kokoro voice → `kokoro`; book
+  create → `cpu` (plus `kokoro` for a Kokoro voice). Holds are short:
+  `cpu` 300 s, `kokoro` 25 s, `s2` 90 s, and `KOKORO_WARM_CONTAINERS` is 1.
+  The worker's `/capacity-warm` route sends a warm request for cpu/kokoro and
+  calls `prewarmS2Clone` for s2. A hold does not change `min_containers`.
+- **S2 prewarm** — `prewarmS2Clone` (`src/lib/remote/prewarm.ts`) is itself a
+  remote call (provider `prewarm`, est. 90 s, est. $0.10), so it is admitted
+  against the budgets above. It runs `modal run modal/s2_clone_warm.py::prewarm`
+  and reports `unconfigured` without `MODAL_TOKEN_ID` or `MODAL_S2_WARM_CMD`.
+- **Clone pool prewarm on catalog** — `/api/tts/voices` schedules
+  `requestClonePoolPrewarm(userId)` with `after()` for a signed-in user who has
+  a trained clone, only when the Modal clone path is in use.
+- `prewarmModalCloneSnapshot` (`src/lib/tts/providers/modal-clone-warm.ts`)
+  returns false and spawns nothing. `kickModalCloneSnapshotWarm` runs the
+  snapshot cover only after a placement misses its restore budget, with a
+  20-minute cooldown, and is off when `MODAL_S2_WARM_HOOK=0`.
+
+A clone preview plays a stored Fish-baked file once it exists; it does not
+start the GPU (§1.3).
+
+### Not verified
+
+Real per-call prices, live scaledown windows, and current monthly spend are not
+in this repo. The `estCostUsd` values are admission estimates, not invoices.
+
+---
+
+## 29. Known limitations
+
+- **One take-home worker.** Whole-book generation, extract, listen prep and
+  drain all run in one pm2 process (`src/worker/takehome-server.ts`). If it is
+  down, books queue and no generation runs. Restart and rollback are in `WORKER.md`.
+- **Clone books share one GPU.** With the S2 cap at 1, concurrent clone books
+  wait on `modal_gpu_leases`; a cold container pays snapshot restore or
+  compile time. Snapshot coverage of the live image was not verified.
+- **Edge TTS is unofficial.** Stored Andrew/Ava/Libby/Ryan/Michelle books use
+  the Edge Read Aloud websocket (`src/lib/tts/edge-tts.ts`), which has no SLA
+  and can break when Microsoft changes the handshake.
+- **Paradee is kept for one stored id.** Only a stored `echomancer-andrew`
+  book reaches `src/lib/tts/providers/paradee.ts`.
+- **Vercel body size.** Uploads go straight to R2 by presigned PUT, so the
+  ~4.5MB function body limit applies only to JSON routes.
+- **Fixed-window rate limits.** `rate_limits` counters allow a burst at a
+  window edge; `storage-read` and `client-log` fail open when Turso fails.
+- **Budgets are partial.** Dollar budgets use admission estimates
+  (`estCostUsd`), and Fish hosted-API calls sit outside them.
+- **Guest library is cookie-bound.** An `anon_*` library lives only in this
+  browser's `ec_session` cookie (1 year). Signing in merges it into the
+  account (`mergeAnonymousOwnership`); clearing cookies or signing out before
+  that loses access to it.
+- **Incomplete books fail.** A book with any missing section is published
+  `failed` with its sections kept; job `75944dc9` was not regenerated.
 
 ---
 
@@ -3187,24 +3423,28 @@ Vitest budgets are off unless `REMOTE_ENFORCE_BUDGETS=1`.
 The same registry (`modalAppRegistry`) describes the S2, Kokoro, and Modal
 CPU apps. Each has `min_containers: 0`. Startup and the hourly pass load
 the newest row per `flight_key`. A health check with no restore sample skips. The clone
-prewarm is one restore-only RPC that cancels itself on timeout. The
-post-deploy cover reads the live max, forces the `ntemusejoel` profile,
-and restores that max with `--scaledown-window`.
+prewarm is one restore-only RPC that cancels itself on timeout. Apart from
+the drain's brake-and-restore above (which only restores the max it read),
+the live autoscaler is set by an operator with
+`scripts/s2/set-live-autoscaler.py` (`--max-containers`, `--scaledown-window`,
+`--brake`); see `docs/s2-gpu-staging-runbook.md`.
 
 ## Related reading order (first week in the codebase)
 
 1. `src/proxy.ts` → `lib/auth/session.ts` → `lib/auth/guard.ts`
 2. `app/api/pdf/upload/route.ts` → `lib/jobs/dispatch-extract.ts` → `workers/extract`
 3. `app/api/jobs/route.ts` → `lib/jobs/takehome-dispatch.ts` → `lib/jobs/serialize.ts`
-4. `lib/tts/catalog/*` → `lib/tts/providers/{edge,fish,paradee,modal-clone}.ts` (`google.ts` is gone)
+4. `lib/tts/catalog/*` → `lib/tts/providers/{sowell,drew,george,heart,fish,modal-clone,edge,paradee}.ts` (Edge and Paradee are legacy)
 5. `lib/tts/stream-session.ts` + `app/api/jobs/[id]/stream/route.ts`
 6. `src/worker/takehome-server.ts` + `WORKER.md` + `lib/tts/process-job.ts` (claim → frozen-script → synthesizeSection → remux)
 7. `modal/s2_contract.py` + `docs/s2-gpu-staging-runbook.md` for the clone pool. The runbook is the procedure. A blank checklist is not evidence the step was done.
 8. `app/dashboard/{voice,queue,player}` with `lib/ux-copy.ts` open beside them
 9. `src/test/harness.ts` + `src/test/acceptance/book-path.acceptance.test.ts`
 
-*Document tracks Echomancer v2 source as of 2026-11-07 (`a975b42`, #248):
-Next.js on Vercel (`echomancer.xyz`), Turso + R2, VM extract with a Cloudflare
-fallback, VPS + pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`,
-Modal S2-Pro for clones when `MODAL_S2_TTS_URL` is set. Live deploy overrides and unverified gaps are in "How to read
-claims" at the top. Job `75944dc9` was not repaired.*
+*Document tracks Echomancer v2 source as of 2026-11-21 (`e4b6ef2`, #316):
+Next.js on Vercel, Turso + R2, the pm2 take-home worker behind Caddy, Modal
+apps `echomancer-s2-clone` (GPU, min 0 / max 1 by default), `echomancer-sowell`
+and `echomancer-cpu` (CPU, min 0), and Fish for clone previews and stored Clara
+books. Edge serves stored legacy books (and Ava/Libby until Esther is
+configured); Paradee serves stored Echomancer Andrew books only. Live deploy overrides and unverified gaps are in
+"How to read claims" at the top. Job `75944dc9` was not regenerated.*
