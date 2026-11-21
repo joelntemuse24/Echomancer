@@ -4,7 +4,7 @@ import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
-import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, uploadFileWithPrefix as r2UploadFileWithPrefix, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, uploadFileWithPrefix as r2UploadFileWithPrefix, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, deleteFiles as r2DeleteFiles, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
 import {
   parseByteRange,
   RangeNotSatisfiableError,
@@ -166,6 +166,41 @@ export async function deleteFile(storagePath: string): Promise<void> {
   }
   const filePath = path.join(STORAGE_ROOT, storagePath);
   await fs.unlink(filePath);
+}
+
+const LOCAL_UNLINK_WIDTH = 32;
+
+/**
+ * Delete many objects. On R2 this is DeleteObjects, 1,000 keys per call.
+ * A missing object is success. Duplicate keys are sent once.
+ */
+export async function deleteFiles(storagePaths: readonly string[]): Promise<void> {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const key of storagePaths) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  if (keys.length === 0) return;
+
+  if (isR2Configured()) {
+    await r2DeleteFiles(keys);
+    return;
+  }
+
+  for (let offset = 0; offset < keys.length; offset += LOCAL_UNLINK_WIDTH) {
+    const batch = keys.slice(offset, offset + LOCAL_UNLINK_WIDTH);
+    await Promise.all(
+      batch.map(async (storagePath) => {
+        try {
+          await fs.unlink(path.join(STORAGE_ROOT, storagePath));
+        } catch (err) {
+          if (!missingObject(err)) throw err;
+        }
+      })
+    );
+  }
 }
 
 async function listLocalFiles(

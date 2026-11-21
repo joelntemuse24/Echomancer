@@ -68,6 +68,25 @@ export async function requireOwnedJob(
 }
 
 /**
+ * Load a job this session owns, including one already soft-deleted.
+ * A second DELETE uses this so storage cleanup can be finished. Every other
+ * route keeps the 404 from {@link requireOwnedJob}. Another session's row,
+ * deleted or not, is still 404.
+ */
+export async function requireOwnedJobIncludingDeleted(
+  request: NextRequest,
+  jobId: string
+): Promise<{ session: Session; job: OwnedJobRow }> {
+  const session = await requireSession(request);
+  const job = await queryOne<OwnedJobRow>(
+    `SELECT * FROM jobs WHERE id = ?`,
+    [jobId]
+  );
+  if (!job || job.user_id !== session.userId) throw new NotFoundError();
+  return { session, job };
+}
+
+/**
  * Storage objects are namespaced by their owner's resource:
  *   `pdfs/<uploadId>/…`      → the upload record
  *   `audiobooks/<jobId>/…`   → the job record

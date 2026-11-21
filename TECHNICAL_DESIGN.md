@@ -1863,9 +1863,16 @@ name shows the same pencil. The download filename follows the new title.
 
 ### `DELETE /api/jobs/[id]`
 
-Owned; `stopBookRemotely(id, "deleted")`; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
-`pdfs/<uploadId>/…` **only if no sibling job** shares `pdf_storage_path`; soft
-delete job; best-effort file deletes.
+Owned, including a row this user already soft-deleted (a retry returns 200 and
+purges again; another session is 404). `softDeleteJob` sets `deleted_at`,
+clears the lease, cancels a still-running book, and releases the take-home
+create key. `stopBookRemotely(id, "deleted")` runs before any object is
+removed. `scheduleDeletedJobPurge` (`src/lib/jobs/delete-owned-job.ts`) then
+lists `audiobooks/<jobId>/` and deletes those keys with R2 `DeleteObjects` in
+batches of 1,000, via `after()` so the JSON is not held for the purge.
+`pdfs/<uploadId>/…` and the uploads row go **only if no sibling job** shares
+`pdf_storage_path`. Paths remembered in `segments_json` are not deleted on
+their own.
 
 ### `GET /api/jobs/[id]/markup`
 

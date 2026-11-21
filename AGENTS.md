@@ -1530,10 +1530,16 @@ invented.
 
 ## Deleting a job
 
-The `pdfs/<uploadId>/` folder is **shared** — a chapter preview and a full book
-are separate jobs over one upload. `DELETE /api/jobs/[id]` removes
-`audiobooks/<jobId>/` eagerly but only removes the upload folder when no
-non-deleted sibling job still references it.
+`DELETE /api/jobs/[id]` soft-deletes first (`deleted_at`, lease cleared,
+take-home create key released) so the book leaves the library even when
+storage cleanup is still running or fails. A second DELETE from the owner
+returns success and purges again. Another session, including on an
+already-deleted row, is 404. Storage cleanup lists `audiobooks/<jobId>/` and
+removes those objects with batched R2 `DeleteObjects` (up to 1,000 keys per
+call) after the response. It does not walk `segments_json`. The
+`pdfs/<uploadId>/` folder is **shared** — a chapter preview and a full book
+are separate jobs over one upload. It is removed only when no non-deleted
+sibling job still references it, and the uploads row goes with it.
 
 ## Key paths
 

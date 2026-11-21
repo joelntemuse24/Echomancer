@@ -9,6 +9,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   ListObjectsV2Command,
   CreateMultipartUploadCommand,
   UploadPartCommand,
@@ -667,6 +668,46 @@ export async function deleteFile(key: string): Promise<void> {
       Key: key,
     })
   );
+}
+
+/** S3 DeleteObjects accepts at most this many keys per request. R2 uses the same cap. */
+export const R2_DELETE_OBJECTS_LIMIT = 1000;
+
+/**
+ * Delete many keys in batches of {@link R2_DELETE_OBJECTS_LIMIT}.
+ * A missing key is a success. A reported error fails the batch so the caller
+ * can list what remains and try again.
+ */
+export async function deleteFiles(keys: readonly string[]): Promise<void> {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
+  }
+  if (unique.length === 0) return;
+
+  const client = getR2Client();
+  for (let offset = 0; offset < unique.length; offset += R2_DELETE_OBJECTS_LIMIT) {
+    const batch = unique.slice(offset, offset + R2_DELETE_OBJECTS_LIMIT);
+    const response = await client.send(
+      new DeleteObjectsCommand({
+        Bucket: R2_BUCKET_NAME,
+        Delete: {
+          Objects: batch.map((Key) => ({ Key })),
+          Quiet: true,
+        },
+      })
+    );
+    const errors = (response.Errors ?? []).filter((row) => row && row.Code);
+    if (errors.length > 0) {
+      const code = errors[0]?.Code || "Error";
+      throw new Error(
+        `R2 batched delete failed for ${errors.length} object(s) (${code})`
+      );
+    }
+  }
 }
 
 /**
