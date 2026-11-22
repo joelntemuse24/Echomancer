@@ -2,95 +2,61 @@
  * PDF → blocks.
  *
  * `pdf-furniture.ts` groups pdf.js items into visual lines and marks running
- * heads and page numbers. What it does not do is say which lines are headings —
- * that decision was made later, by regexes over the flattened text, which is why
- * an outline destination could land on the contents page and why
- * "4.2 SQuAD v1.1" could be glued to the sentence above it.
+ * heads and page numbers. `pdf-line-unwrap.ts` then decides the paragraphs that
+ * become the narration string.
  *
- * Here each visual line is classified once, from the extractor's own evidence:
+ * This module classifies the *same* decided paragraphs: a paragraph whose lines
+ * all read as headings is a heading block, everything else is a paragraph block.
+ * There is no second text pipeline, so a block's text is a substring of
+ * `content.txt` by construction and its offset is a slice, not a search. An
+ * earlier version re-unwrapped each page independently and dropped furniture on
+ * its own; the two readers then disagreed on almost every block (Pro Git: 9 of
+ * 1260 blocks could be located), which is why an outline destination could land
+ * on the wrong page's text.
  *
- * - the line reads like a heading shape (`isLayoutHeadingLine`,
- *   `isSpeakableHeading`), or
- * - it is taller than the page's body text and reads like a title.
- *
- * The blocks exist so an embedded outline can name a *block* instead of a
- * page offset that has to be re-found in the prose.
- *
- * Lines are then joined into blocks: a heading is its own block, and body lines
- * are unwrapped with the same `unwrapPdfLines` the flat path uses, so the
- * narration string does not change.
+ * The blocks exist so an embedded outline can name a *block* instead of a page
+ * offset that has to be re-found in the prose.
  */
 
 import type { BookBlock } from "@/lib/blocks";
-import type { PdfPage } from "@/lib/pdf-furniture";
-import { unwrapPdfLines } from "@/lib/pdf-line-unwrap";
+import type { PdfParagraph } from "@/lib/pdf-line-unwrap";
 import { isLayoutHeadingLine, isSpeakableHeading } from "@/lib/tts/speakable-text";
 
-/** Lines this much taller than the page's body text read as headings. */
-const HEADING_HEIGHT_RATIO = 1.15;
-
-
 /**
- * A heading, from the extractor's own evidence: a heading shape, or a line set
- * larger than the page's body text.
+ * A heading, from the extractor's own evidence: a heading shape.
  *
  * Deliberately conservative. A PDF has no markup to say which line is a title,
  * so guessing produces table rows and figure labels as chapters — which is
  * exactly what the corpus showed when a bare-title rule was tried here. The
  * embedded outline is the reliable answer for a PDF; this is only its fallback.
  */
-function looksLikeHeading(text: string, tall: boolean): boolean {
+function looksLikeHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (isLayoutHeadingLine(t) || isSpeakableHeading(t)) return true;
-  if (t.length > 120 || t.length > 80) return false;
-  if (!tall) return false;
-  return !/[.!?]$/.test(t) && !/^\p{Ll}/u.test(t);
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 11;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 11;
+  if (t.length > 80) return false;
+  return false;
 }
 
 /**
- * Turn per-page lines into blocks.
+ * Turn decided paragraphs into blocks.
  *
- * Body lines are unwrapped per page with the same helper the flat extractor
- * uses, so a sentence that crosses a page break still joins and a heading keeps
- * its own line. Each block records the PDF page it started on, which is what an
- * outline destination needs.
+ * A paragraph is a heading when its whole text reads as a title. The page it
+ * starts on comes from the same unwrap pass, so an outline destination resolves
+ * to a real block rather than to a line range this module re-derived.
  */
-export function pdfBlocksFromPages(pages: PdfPage[]): BookBlock[] {
+export function pdfBlocksFromParagraphs(paras: PdfParagraph[]): BookBlock[] {
   const blocks: BookBlock[] = [];
-  const bodyHeights = pages.map((page) =>
-    median(page.lines.map((line) => line.h))
-  );
-  for (let p = 0; p < pages.length; p++) {
-    const lines = pages[p]!.lines;
-    if (lines.length === 0) continue;
-    const bodyHeight = bodyHeights[p] || 11;
-    let run: string[] = [];
-    const flushRun = () => {
-      if (run.length === 0) return;
-      for (const para of unwrapPdfLines(run)) {
-        const text = para.replace(/\s+/g, " ").trim();
-        if (text) blocks.push({ kind: "para", text, source: { page: p } });
-      }
-      run = [];
-    };
-    for (const line of lines) {
-      const text = line.text.trim();
-      if (!text) continue;
-      if (looksLikeHeading(text, line.h > bodyHeight * HEADING_HEIGHT_RATIO)) {
-        flushRun();
-        blocks.push({ kind: "heading", level: 1, text, source: { page: p } });
-        continue;
-      }
-      run.push(text);
-    }
-    flushRun();
+  for (const para of paras) {
+    const text = para.text.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const heading = looksLikeHeading(text);
+    blocks.push({
+      kind: heading ? "heading" : "para",
+      ...(heading ? { level: 1 } : {}),
+      text,
+      source: { page: para.page },
+    });
   }
   return blocks;
 }
