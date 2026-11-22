@@ -1803,10 +1803,36 @@ short isolated tone and `section-squeak-guard.ts` notches those milliseconds.
 
 ## 16. Jobs API — create & list
 
+### Book titles — `src/lib/book-title.ts`
+
+A title the person did not type comes from the uploaded file's name, so it
+arrives as a file name (`the_hobbit_-_tolkien.pdf`). One helper cleans it:
+
+- `bookTitleFromFileName(name)` — drops the document extension and any path,
+  turns `_` runs into spaces and repeated dashes into ` - `, splits a slug's
+  glued hyphens when it has no capitals (`the-hobbit` → `The Hobbit`) while
+  keeping a real one (`Spider-Man`, `Catch-22`), and title-cases a name with
+  no capitals at all (`PRIDE_AND_PREJUDICE` → `Pride and Prejudice`, Roman
+  numerals and initialisms kept). Text with no readable words becomes
+  `Untitled`. A typed title only gets trimmed.
+- `normalizeStoredBookTitle` is the read-time rule. A title with no
+  underscore and no extension is a title a person typed and is returned
+  verbatim; anything else is repaired. `serializeJob` applies it, so an older
+  row heals in the library, player, download, and Media Session without a
+  write.
+- `bookTitleHeadingClass(title)` is the player heading's size step: display
+  size for a short title, down to `text-xl` for a 120-character one, so a long
+  title wraps inside a phone screen instead of running off it.
+
+`POST /api/jobs`, the rename `PATCH`, the upload view, and the voice step all
+use the same helper, so the stored `jobs.book_title` and every surface agree.
+
 ### Validation — `src/lib/validation.ts`
 
 - `uploadStoragePathSchema`: exact `pdfs/<uuid>/content.txt`
-- `createJobSchema`: `mode: stock`, `jobKind`, path, optional voice fields, `charCount`, `parentJobId`
+- `createJobSchema`: `mode: stock`, `jobKind`, path, optional voice fields,
+  `charCount`, `parentJobId`; `bookTitle` runs through
+  `bookTitleFromFileName` before the 1–200 character check
 
 ### `POST /api/jobs` — `src/app/api/jobs/route.ts`
 
@@ -1855,8 +1881,10 @@ unready index, clear error/lease → `queued` → `enqueueTakehomeAdvance`.
 
 ### `PATCH /api/jobs/[id]` `{ action: "rename", bookTitle }`
 
-Owned (404 otherwise). Collapses whitespace, trims, requires 1–200 chars,
-and writes `jobs.book_title`. The library lists each book as a row, without
+Owned (404 otherwise). Collapses whitespace, trims, runs
+`normalizeStoredBookTitle` (a rename that arrives as a raw file name is
+cleaned; a typed title keeps its own casing), requires 1–200 chars, and writes
+`jobs.book_title`. The library lists each book as a row, without
 a card. The library and the player keep the pencil hidden until a right-click
 on the title. A cloned voice name selects that voice; a right-click on the
 name shows the same pencil. The download filename follows the new title.

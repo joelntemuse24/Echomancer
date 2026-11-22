@@ -3,6 +3,7 @@ import { openDownloadBody } from "@/lib/storage";
 import { execute } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
+import { titleForDownload } from "@/lib/book-title";
 import type { JobSegment } from "@/lib/tts/types";
 import {
   concatReadySegments,
@@ -31,9 +32,10 @@ export async function GET(
     const { id } = await params;
     const { job } = await requireOwnedJob(request, id);
 
-    const safeTitle = String(job.book_title || "audiobook")
-      .replace(/[^a-z0-9]+/gi, "_")
-      .toLowerCase();
+    const safeTitle =
+      titleForDownload(String(job.book_title || ""))
+        .replace(/[^a-z0-9]+/gi, "_")
+        .toLowerCase() || "audiobook";
     const audioStoragePath =
       typeof job.audio_storage_path === "string" ? job.audio_storage_path : null;
 

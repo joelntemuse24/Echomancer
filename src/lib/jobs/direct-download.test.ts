@@ -56,4 +56,13 @@ describe("helpers", () => {
     expect(downloadFilename(null, "audiobooks/j/full.m4a")).toBe("audiobook.m4a");
     expect(downloadFilename("A History", "audiobooks/j/full")).toBe("a_history.mp3");
   });
+
+  it("does not put a file name's extension or double underscore in the file", () => {
+    expect(downloadFilename("the_hobbit_-_tolkien.pdf", "audiobooks/j/full.mp3")).toBe(
+      "the_hobbit_tolkien.mp3"
+    );
+    expect(downloadFilename("___.pdf", "audiobooks/j/full.mp3")).toBe(
+      "audiobook.mp3"
+    );
+  });
 });

@@ -1,4 +1,5 @@
 import { directObjectUrl } from "@/lib/storage";
+import { titleForDownload } from "@/lib/book-title";
 
 /**
  * Same test as `isSectionStoragePath` in `@/lib/tts/concat-audio`, repeated
@@ -11,11 +12,11 @@ export function isSectionPath(path: string): boolean {
 
 /** `My Book!` → `my_book_.mp3`, matching `/api/jobs/[id]/download`. */
 export function downloadFilename(bookTitle: unknown, storagePath: string): string {
-  const safeTitle = String(bookTitle || "audiobook")
+  const safeTitle = titleForDownload(String(bookTitle || ""))
     .replace(/[^a-z0-9]+/gi, "_")
     .toLowerCase();
   const ext = storagePath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "mp3";
-  return `${safeTitle}.${ext}`;
+  return `${safeTitle || "audiobook"}.${ext}`;
 }
 
 /**

@@ -27,6 +27,8 @@ import {
   playbackUrlForStatus,
   playerShowsPlay,
 } from "@/lib/library/card-play";import { EditableBookTitle } from "@/components/editable-book-title";
+import { bookTitleHeadingClass } from "@/lib/book-title";
+import { cn } from "@/lib/utils";
 import { playerStatusLine, UX } from "@/lib/ux-copy";
 import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
@@ -2104,10 +2106,18 @@ function PlayerPageInner({ id }: { id: string }) {
             onRenamed={(title) =>
               setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
             }
-            inputClassName="text-center font-serif text-4xl tracking-tight md:text-5xl"
+            inputClassName={cn(
+              "text-center font-serif tracking-tight",
+              bookTitleHeadingClass(job.book_title)
+            )}
           >
             <h1
-              className="text-balance font-serif text-4xl tracking-tight text-foreground md:text-5xl"
+              // A long title steps down rather than running off a phone
+              // screen, and always wraps on a space instead of mid-word.
+              className={cn(
+                "min-w-0 max-w-full wrap-break-word font-serif tracking-tight text-balance text-foreground",
+                bookTitleHeadingClass(job.book_title)
+              )}
               style={{ fontWeight: 300 }}
               title={job.book_title}
             >
