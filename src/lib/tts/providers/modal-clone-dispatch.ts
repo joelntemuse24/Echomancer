@@ -1052,7 +1052,27 @@ async function runWave(
     if (err instanceof ModalCloneColdError && err.selfBackoff) {
       selfBackoff = true;
     }
-    if (err instanceof ModalCloneColdError && err.scope === "placement") {
+    if (err instanceof ModalCloneColdError && err.scope === "snapshot-build") {
+      // A book refused to be the thing that builds a snapshot. It is a
+      // placement miss with a named cause: park it and let the defer clock
+      // run, so it reaches the documented Fish fallback rather than paying
+      // for a build.
+      //
+      // The kick is queued for `finishDispatch`, not fired here: this book's
+      // own remote flight is still open at this point, and
+      // `kickModalCloneSnapshotWarm` deliberately refuses to start a cover
+      // beside a live call. By the time the wave returns, that flight is
+      // settled and the off-path warm — which *is* allowed to sit through a
+      // build — can own it.
+      const missed = result.lane.filter((index) => !staged.has(index));
+      placement.push(...missed);
+      compile.push(...missed);
+      poolCold = true;
+      poolReason = "no warm container; a user book does not build a snapshot";
+      log(
+        "[S2 lanes] snapshot build refused for a user book; the off-path warm owns it"
+      );
+    } else if (err instanceof ModalCloneColdError && err.scope === "placement") {
       const missed = result.lane.filter((index) => !staged.has(index));
       if (missed.length === 0) continue;
       // A **multi-section** call that misses its budget is a pack that did not

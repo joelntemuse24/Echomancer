@@ -128,13 +128,32 @@ const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 const COLD_BACKOFF_MS = 30_000;
 
 /**
+ * Whether a *book* may be the call that builds a snapshot.
+ *
+ * Off by default, and the default is the fix: a build is minutes of billed
+ * H100 time that produces no audio for the book paying for it. The off-path
+ * warm (`MODAL_S2_WARM_HOOK`) owns builds; a customer book waits or takes the
+ * documented fallback. Set to `1` only to restore the old behaviour.
+ */
+export function modalCloneAllowSnapshotBuild(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return (env.MODAL_S2_ALLOW_SNAPSHOT_BUILD ?? "").trim() === "1";
+}
+
+/**
  * `pool` — nothing warm is serving, or this process is in the short backoff.
  * Do not open another HTTP call.
  * `placement` — this container did not answer inside the restore budget. Another
  * lane may land on a variant that already has a snapshot. The compile, if that
  * is what this was, is finished by the off-path RPC, not by waiting here.
+ * `snapshot-build` — a container is creating a GPU memory snapshot, which is
+ * minutes of billed H100 time. A customer book never waits through one: the
+ * book parks, and after `MODAL_S2_DEFER_MS` it takes the documented Fish
+ * fallback. `snapshot-build` is a placement miss with a named cause, so the
+ * log and the job row can say "building a snapshot" instead of "cold".
  */
-export type ModalCloneColdScope = "pool" | "placement";
+export type ModalCloneColdScope = "pool" | "placement" | "snapshot-build";
 
 /**
  * The pool had nothing warm, or one placement missed the restore budget.
@@ -1089,16 +1108,30 @@ function requireToken(): string {
 /**
  * Whether a container has finished restoring. A `false` answer is expected
  * after idle and is not an error; see {@link ModalCloneColdError}.
+ *
+ * `provedCold` is the only field that may authorise refusing to place a GPU
+ * for a book. It is true only when a deployed `/ready` answered, and the
+ * answer said nothing is warm. An optimistic or unreadable probe is never
+ * proof: a body that omits `warm_containers`, a 404 from a pre-`/ready`
+ * build, or a missing URL all leave it false, so the old "let the call
+ * decide" path is preserved for builds that cannot answer.
  */
 export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
   ready: boolean;
   warmContainers: number;
   build: string | null;
   audioTransport: ModalCloneAudioTransport;
+  provedCold: boolean;
 }> {
   if (!modalCloneReadyProbeEnabled()) {
     // No probe: assume reachable and let the call's own timeout decide.
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      provedCold: false,
+    };
   }
   let url: string | null;
   try {
@@ -1110,12 +1143,24 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       "[modal-clone] ready probe disabled:",
       err instanceof Error ? err.message : err
     );
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      provedCold: false,
+    };
   }
   if (!url) {
     // Only the batch endpoint is configured. There is nothing to probe, so do
     // not invent `${batch}/ready` — that host has no such route.
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      provedCold: false,
+    };
   }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
@@ -1129,17 +1174,30 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     });
   } catch {
     signal?.throwIfAborted();
-    return { ready: false, warmContainers: 0, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: false,
+      warmContainers: 0,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      provedCold: false,
+    };
   }
   if (response.status === 404) {
     // Ready route not deployed: the deploy predates it. Stay optimistic.
     await response.body?.cancel().catch(() => undefined);
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      provedCold: false,
+    };
   }
   const raw = await response.text().catch(() => "");
   let ready = response.ok;
   let warm = 1;
   let build: string | null = null;
+  let sawWarmCount = false;
   if (raw) {
     try {
       const body = JSON.parse(raw) as {
@@ -1150,7 +1208,10 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
         max_batch_items?: number;
       };
       if (body.ready === false) ready = false;
-      if (typeof body.warm_containers === "number") warm = body.warm_containers;
+      if (typeof body.warm_containers === "number") {
+        warm = body.warm_containers;
+        sawWarmCount = true;
+      }
       if (typeof body.build === "string") build = body.build;
       if (Object.prototype.hasOwnProperty.call(body, "audio_transport")) {
         noteModalCloneAudioTransport(body.audio_transport);
@@ -1165,7 +1226,15 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       ready = response.ok;
     }
   }
-  return { ready, warmContainers: warm, build, audioTransport: modalCloneAudioTransport() };
+  return {
+    ready,
+    warmContainers: warm,
+    build,
+    audioTransport: modalCloneAudioTransport(),
+    // Only a real answer that said nothing is warm proves cold. A body with
+    // no `warm_containers` is not evidence, even when `ready` is false.
+    provedCold: !ready && sawWarmCount && warm <= 0,
+  };
 }
 
 /**
@@ -1567,6 +1636,39 @@ async function assertModalCloneReady(
   }
   const inflight = jobId ? await inflightCloneCallsExcluding(jobId) : 0;
   const state = await modalClonePoolReady(signal);
+  /**
+   * A book must not pay for a snapshot build.
+   *
+   * `modalClonePoolReady` is deliberately optimistic when no probe is
+   * configured (`ready: true, warmContainers: -1`), which is right for
+   * "can't tell, let the call decide". It is wrong when the probe *does*
+   * answer and says nothing is warm: posting then places an H100 that has no
+   * snapshot, and the first thing it does is **build one**.
+   *
+   * That is 2026-11-22, book `f452bc31`: ta-01M80H03GZTB0KX9RYYN37XGSR
+   * started at 02:22:39 "Creating GPU memory snapshot", loaded weights at
+   * 02:23:47, spent ~7.5 further minutes capturing ~72 GB of GPU memory, and
+   * billed 9.70 GPU-minutes for a book it never served. Time to first audio
+   * went from ~124 s to ~9-10 min and the cost landed on the customer.
+   *
+   * This check is deliberately **before** the plain `!state.ready` refusal:
+   * both park the book, but only this one can say "the engine had to build a
+   * snapshot" in the log and on the job, which is the difference between a
+   * capacity queue and a cost incident. A probe that cannot answer is not
+   * proof (`provedCold` is false), so those builds keep the old path and the
+   * watchdog still bounds them.
+   */
+  const provedCold =
+    state.provedCold && state.warmContainers === 0 && !modalCloneAllowSnapshotBuild();
+  if (jobId && provedCold && (raceForFirstAudio || !bookWarm)) {
+    rememberModalCloneCold(jobId);
+    throw new ModalCloneColdError(
+      "Modal clone has no warm snapshot; a user book does not build one",
+      COLD_BACKOFF_MS,
+      "snapshot-build",
+      raceForFirstAudio ? "restore" : "steady"
+    );
+  }
   if (!state.ready) {
     const appWide = state.warmContainers <= 0 && inflight === 0;
     // No job id keeps the process-wide clock, including a probe that
@@ -1855,7 +1957,20 @@ async function postModal(
       containerStarted = true;
       if (!extended) {
         extended = true;
-        const remain = modalCloneProxyCeilingMs() - limit;
+        // A started placement is *usually* a restore, and extending is right
+        // for that: abandoning it would leave the container rendering with
+        // nobody reading. But a started placement can also be **building a
+        // GPU memory snapshot**, which is minutes of billed H100 time and
+        // produces no audio for this book at all.
+        //
+        // That is 2026-11-22, book `f452bc31`: the container began a snapshot
+        // at 02:22:39, loaded weights at 02:23:47, spent ~7.5 more minutes
+        // capturing ~72 GB of GPU memory, and was billed 9.70 GPU-minutes
+        // for a book it never served. The wait extended to the proxy ceiling
+        // and the book paid for the build. So: extend only as far as a
+        // restore can plausibly take, never into a build.
+        const limitMs = modalClonePlacementBudgetMs();
+        const remain = limitMs - limit;
         if (remain > 1_000) {
           armAbort(remain);
           return;

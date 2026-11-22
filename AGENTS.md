@@ -650,25 +650,44 @@ busy-not-cold backstop.
   trained the reference. With neither available the job fails or parks; it is
   never handed to a different voice. `src/lib/tts/providers/openrouter-clone.ts`
   is deleted, and `takehomeCacheVariant` has no `drama-3` branch.
-- **A restored container that never renders is a failure, not a wait.** The
-  first-audio watchdog (`src/lib/tts/providers/modal-clone-watchdog.ts`,
-  `MODAL_S2_FIRST_AUDIO_MS`, default 240 s, floor 90 s) bounds "this book has
-  no audio yet" once a container has **proved** it restored. On expiry the
-  worker cancels the stored Modal call (that is what releases the H100),
-  `haltBook`s the job, and fails it with a line naming the wait and the
-  limit; the row leaves `processing` instead of polling `pending` forever.
-  A pool that never restored does **not** trip it — that is a cold queue,
-  which parks and then takes the documented Fish fallback. `0` disables the
-  trip. The 2026-11-22 book `f452bc31` had a fresh `/ready` heartbeat and
-  `POST /` answering 200 every ~3 s for half an hour: those 200s were the
-  CPU control endpoint's `pending` poll (`FunctionCall.get(timeout=1)`),
-  not a render, and nothing on the book path had an opinion about how long
-  that could go on.
-- **`/ready` and `status()` report `rendering_since`.** The container marks
-  itself before any GPU work in a render body and clears the mark when it
-  returns, so "restored and idle" is distinguishable from "rendering this
-  book". Both also log `render entered` / `render done` with the call's
-  wall time. That line is what the 2026-11-22 logs lacked.
+- **A user book never pays for a snapshot build, and never waits through one.**
+  `assertModalCloneReady` refuses to place a GPU for a book when `/ready`
+  **proved** the pool cold (`ready: false` plus `warm_containers: 0`), and
+  that refusal is a placement miss (`scope: "snapshot-build"`): the book parks,
+  the defer clock starts, and it reaches the documented Fish fallback instead
+  of buying minutes of H100 time. `MODAL_S2_ALLOW_SNAPSHOT_BUILD=1` restores
+  the old behaviour deliberately. A probe that cannot answer (no URL, 404 from
+  a pre-`/ready` build, `warm_containers` absent) is *not* proof, so those
+  builds keep the old "let the call decide" path. The off-path warm
+  (`MODAL_S2_WARM_HOOK`) owns builds, and `first-light` no longer extends its
+  HTTP wait to the proxy ceiling for a started placement: it extends only to
+  `MODAL_S2_PLACEMENT_BUDGET_MS`, so a started build cannot hold a book for the
+  full 542 s.
+  This is the corrected 2026-11-22 cause. `ta-01M80H03GZTB0KX9RYYN37XGSR`
+  started at 02:22:39 with "Creating GPU memory snapshot", loaded weights at
+  02:23:47, then spent ~7.5 min capturing ~72 GB of GPU memory. It **never
+  restored and never served the book**, and billed 9.70 GPU-minutes; a second
+  container restored from that snapshot at 02:31:32 and was cancelled. The
+  containers answering `POST /` every ~3 s were the tiny web-front containers
+  (0.125 CPU / 256 MB) answering worker health probes, not an idle GPU. A
+  restore is ~57 s; a build is 9–10 min to first audio and about $0.70.
+- **A placed container that produces no audio is bounded.** The first-audio
+  watchdog (`src/lib/tts/providers/modal-clone-watchdog.ts`,
+  `MODAL_S2_FIRST_AUDIO_MS`, default 240 s, floor 90 s, `0` disables) trips
+  when the clock is spent **and a GPU container was placed** — restoring *or*
+  building. It must not require "restored": a build publishes no heartbeat, so
+  a restored-only rule would wait forever on exactly the incident above. On a
+  trip the worker cancels the stored Modal call (that releases the H100),
+  `haltBook`s the job, and fails it with a message that says whether the engine
+  was still starting up. A pool with nothing placed does **not** trip: that is
+  a capacity queue, which parks and falls back.
+- **`/ready` reports `starting_containers`.** `_running_count()` minus the warm
+  count, so "nothing placed" is distinguishable from "an H100 is building a
+  snapshot". `status()` also reports `rendering_since`, `snapshot_trim` and the
+  selftest's `vram_reserved_gb`.
+- **The worker's `/health` is front-door only.** It now says so (`scope:
+  "front-door"`, `engine: "see the Modal app's /ready…"`). Treating it as
+  engine health is what made a build look like a healthy idle GPU.
 - **Cold is not failure.** `/ready` reads container heartbeats of the current
   `S2C_BUILD` and reports "a container finished restoring", not "a runner
   exists". A cold pool throws `ModalCloneColdError`; the tick releases the
@@ -1769,10 +1788,16 @@ TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
 TTS_CRON_JOBS_PER_RUN=3 # Fallback cron batch size
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
 # MODAL_S2_FIRST_AUDIO_MS=240000 # No-first-audio watchdog, measured from this tick's first call.
- # Applies only once a container has proved it restored; a cold pool parks instead.
+ # Trips once a GPU container was PLACED (restoring or building a snapshot):
+ # a build publishes no heartbeat, so "restored" cannot be the condition.
  # Floor 90s (above MODAL_S2_FIRST_LIGHT_WAIT_MS), ceiling 1h. 0 disables the trip.
  # On expiry: cancel the stored Modal call (releases the H100), then fail the book
- # with "The voice engine loaded but produced no audio within Ns".
+ # with a message that says whether the engine was still starting up.
+# MODAL_S2_ALLOW_SNAPSHOT_BUILD=0 # Off: a user book is never the call that builds a GPU
+ # snapshot. A provably cold pool parks the book and the off-path warm owns the
+ # build. Set 1 only to restore the old behaviour deliberately.
+# S2B_SNAPSHOT_TRIM=1 # Return allocator-cached blocks to the driver before the
+ # snapshot is captured (inside @modal.enter(snap=True)). 0 is the size A/B.
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000

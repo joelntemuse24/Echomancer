@@ -176,10 +176,34 @@ describe("racing the first call", () => {
     release("late");
   });
 
-  it("does not trip a pool that never restored", async () => {
-    // Modal had no capacity. That is a cold queue, which parks and then takes
-    // the documented fallback. Failing the book here would turn a queue into
-    // a lost book.
+  it("trips a container that is still BUILDING a snapshot", async () => {
+    // The corrected 2026-11-22 diagnosis. The H100 never restored: it spent
+    // ~7.5 minutes capturing a ~72 GB GPU snapshot and billed 9.70
+    // GPU-minutes. It publishes no heartbeat while building, so `ready` is
+    // false for the whole time — only the placement probe can see it.
+    const result = await raceFirstAudio({
+      run: () => new Promise<string>(() => undefined),
+      probe: async () => ({ ready: false, warmContainers: 0 }),
+      placement: async () => "started",
+      startedAt: 0,
+      hasAudio: false,
+      budgetMs: 100_000,
+      pollMs: 1_000,
+      now: () => 100_001,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a trip");
+    expect(result.sawReady).toBe(false);
+    expect(result.sawBuilding).toBe(true);
+    // The message must name the startup, not a book problem.
+    expect(result.message).toContain("still starting up");
+    expect(result.message).toContain("rebuilding its snapshot");
+  });
+
+  it("does not trip a pool with nothing placed", async () => {
+    // Modal had no capacity, so no container exists. That is a cold queue,
+    // which parks and then takes the documented fallback. Failing the book
+    // here would turn a queue into a lost book.
     let release: (value: string) => void = () => {};
     const pending = new Promise<string>((resolve) => {
       release = resolve;
@@ -187,13 +211,13 @@ describe("racing the first call", () => {
     const race = raceFirstAudio({
       run: () => pending,
       probe: async () => ({ ready: false, warmContainers: 0 }),
+      placement: async () => "pending",
       startedAt: 0,
       hasAudio: false,
       budgetMs: 10_000,
       pollMs: 1_000,
       now: () => 60_000,
     });
-    // Give the race a couple of poll ticks.
     await new Promise((resolve) => setTimeout(resolve, 1_300));
     release("eventually");
     await expect(race).resolves.toEqual({ ok: true, value: "eventually" });

@@ -147,9 +147,31 @@ export function firstAudioTimeoutMessage(elapsedMs: number, budgetMs: number): s
   const waited = Math.max(1, Math.round(elapsedMs / 1000));
   const budget = Math.max(1, Math.round(budgetMs / 1000));
   return (
-    `The voice engine loaded but produced no audio within ${waited}s ` +
+    `The voice engine produced no audio within ${waited}s ` +
     `(limit ${budget}s). The GPU was released and this book stopped. ` +
     "Try again, or choose another voice."
+  );
+}
+
+/**
+ * The line when the container was placed but never finished starting up.
+ *
+ * This is the 2026-11-22 shape: an H100 spent minutes building a GPU memory
+ * snapshot and the book was billed for it. A person reading this needs to
+ * know it was the engine's startup, not their book, and that no retry of the
+ * same request is likely to help right now.
+ */
+export function snapshotBuildTimeoutMessage(
+  elapsedMs: number,
+  budgetMs: number
+): string {
+  const waited = Math.max(1, Math.round(elapsedMs / 1000));
+  const budget = Math.max(1, Math.round(budgetMs / 1000));
+  return (
+    `The voice engine was still starting up after ${waited}s ` +
+    `(limit ${budget}s) and produced no audio. The GPU was released and ` +
+    "this book stopped. The engine was rebuilding its snapshot; try again " +
+    "shortly, or choose another voice."
   );
 }
 
@@ -184,22 +206,33 @@ export type FirstAudioRace<T> =
       message: string;
       /** The container had reported itself restored before the clock ran out. */
       sawReady: boolean;
+      /** A container was seen starting up (snapshot build or restore). */
+      sawBuilding: boolean;
     };
 
 /**
  * Run this book's first call under the first-audio clock.
  *
  * The call keeps whatever HTTP wait it was planned with; this race only
- * decides when to stop waiting for *any* audio. It trips on one condition:
+ * decides when to stop waiting for *any* audio. It trips when the clock is
+ * spent and **a GPU container has been placed for this book** — whether that
+ * container is restoring a snapshot or building one.
  *
- *   no first audio **and** a container has reported itself restored.
+ * ## Why a build trips it too
  *
- * That second half matters. A pool with nothing placeable is not a stall,
- * and it already has its own answer (`deferForColdClonePool`, then the
- * documented Fish fallback). Failing a book early because Modal had no
- * capacity would turn a queue into a loss, so an unproven pool never trips
- * this. A restored container that then produces nothing is the
- * 2026-11-22 case, and that is exactly what this catches.
+ * The first version of this only tripped on a *proved restored* container,
+ * on the theory that a cold pool should park rather than fail. The
+ * 2026-11-22 billing showed why that is wrong for the real failure: the H100
+ * was **never restored**. It started building a new GPU memory snapshot and
+ * spent ~7.5 minutes on it, then billed 9.70 GPU-minutes for a book it never
+ * served. That container reported no heartbeat (a heartbeat is published
+ * only after the post-restore hook runs), so a "proved restored" rule would
+ * have waited forever and the book would have kept paying.
+ *
+ * So the proof required here is "a container exists for this placement",
+ * which is exactly what the placement probe already answers. A pool with
+ * nothing placeable still does not trip: that is a capacity queue, and it
+ * has its own parking and documented fallback.
  *
  * On a trip the caller cancels the stored Modal call, which is what actually
  * releases the H100. This function does not abort the fetch: the render is
@@ -208,8 +241,16 @@ export type FirstAudioRace<T> =
  */
 export async function raceFirstAudio<T>(input: {
   run: () => Promise<T>;
-  /** Strict readiness: true only when a container finished restoring. */
+  /**
+   * Strict readiness: a container finished restoring. `ready` alone is not
+   * enough to trip; see `placement`.
+   */
   probe: () => Promise<{ ready: boolean; warmContainers: number }>;
+  /**
+   * A GPU container has been *placed* for this call — restoring or building.
+   * This is what makes a snapshot build countable as "this book is paying".
+   */
+  placement?: () => Promise<"started" | "pending" | "gone" | "unknown">;
   startedAt: number;
   hasAudio: boolean;
   firstAudioAt?: number | null;
@@ -237,6 +278,7 @@ export async function raceFirstAudio<T>(input: {
     pollForTests ?? input.pollMs ?? MODAL_CLONE_WATCHDOG_POLL_MS
   );
   let sawReady = false;
+  let sawBuilding = false;
   let resolveTrip: ((trip: FirstAudioRace<T>) => void) | null = null;
 
   const call = input.run();
@@ -251,10 +293,24 @@ export async function raceFirstAudio<T>(input: {
   const tick = async (): Promise<void> => {
     try {
       const state = await input.probe();
-      if (state.ready && state.warmContainers > 0) sawReady = true;
+      if (state.ready && state.warmContainers > 0) {
+        sawReady = true;
+        sawBuilding = true;
+      }
     } catch {
       // A probe that cannot answer proves nothing. The clock keeps running,
-      // and a later probe can still latch readiness.
+      // and a later probe can still latch what it needs.
+    }
+    if (input.placement) {
+      try {
+        const state = await input.placement();
+        // `started` is the whole point: the GPU was placed and is either
+        // restoring or building a snapshot. Both bill. `pending` means no
+        // container exists yet, so there is nothing to release.
+        if (state === "started") sawBuilding = true;
+      } catch {
+        // As above: an unreadable placement proves nothing either way.
+      }
     }
     const verdict = firstAudioWatchdog({
       firstAudioAt: input.firstAudioAt,
@@ -264,15 +320,19 @@ export async function raceFirstAudio<T>(input: {
       now: clock(),
     });
     if (!verdict.trip) return;
-    // Only a container that proved it restored can be "silent". Until then
-    // this is a cold pool, which parks and eventually falls back.
-    if (!sawReady) return;
+    // Only a placed container can be "silent" or "building for too long".
+    // With nothing placed this is a capacity queue, which parks and then
+    // falls back; failing it here would turn a queue into a lost book.
+    if (!sawReady && !sawBuilding) return;
     resolveTrip?.({
       ok: false,
       elapsedMs: verdict.elapsedMs,
       budgetMs: verdict.budgetMs,
-      message: verdict.message,
+      message: sawReady
+        ? verdict.message
+        : snapshotBuildTimeoutMessage(verdict.elapsedMs, verdict.budgetMs),
       sawReady,
+      sawBuilding,
     });
   };
 

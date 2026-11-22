@@ -110,6 +110,7 @@ import base64
 import hashlib
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -1001,6 +1002,13 @@ class S2CloneWorker:
             # an operator see "restored but never started rendering" instead
             # of inferring it from a missing log line.
             "rendering_since": (getattr(self, "_render_mark", None) or {}).get("at"),
+            # What the snapshot's build actually reserved, and what trimming
+            # before capture gave back. This is the measurement that answers
+            # "can the 72 GB image be smaller?" — do not guess at it.
+            "snapshot_trim": getattr(self, "snapshot_trim", None),
+            "selftest_vram_reserved_gb": (
+                getattr(self.engine, "selftest_stats", None) or {}
+            ).get("vram_reserved_gb"),
         }
 
     def _resolve_reference(
@@ -1756,6 +1764,21 @@ def _running_now() -> tuple[int, str]:
     return len(_live_containers(_BUILD_ENV["S2C_BUILD"])), "heartbeats"
 
 
+def _running_count() -> int:
+    """How many containers of this class exist at all, warm or starting.
+
+    `_running_now` opens a GPU-class handle for Modal stats, which a `GET
+    /ready` should not need to do on every probe. This reads the heartbeat
+    registry and adds the container being counted by the stats call when one
+    is cheap; a registry read alone is enough to answer "is one starting".
+    """
+    try:
+        return int(_running_now()[0])
+    except Exception as err:
+        print(f"[S2C] container count unavailable: {err}", file=sys.stderr)
+        return len(_live_containers(_BUILD_ENV["S2C_BUILD"]))
+
+
 def _fleet(body: dict) -> dict:
     """Read, brake, restore, or count. This process's deployed app only.
 
@@ -1988,6 +2011,15 @@ def ready(request: Request):
     payload = {
         "ready": bool(live),
         "warm_containers": len(live),
+        # A container that exists but has not published a heartbeat is starting
+        # up: either restoring a snapshot or **building a new one**. Neither is
+        # "warm", and a build is minutes of billed H100 time. Reporting the
+        # count is what lets an operator tell "nothing placed" (a capacity
+        # queue) from "an H100 is building a snapshot" (the 2026-11-22 shape,
+        # where /ready said cold while ta-01M80H03GZTB0KX9RYYN37XGSR built for
+        # ~7.5 min and billed 9.70 GPU-minutes for a book it never served).
+        "starting_containers": max(0, _running_count() - len(live)),
+        "snapshot_build_possible": True,
         "max_containers": _max_containers(),
         "lanes": _LIMITS["lanes"],
         "cpu": _BUILD_ENV["S2C_CPU"],

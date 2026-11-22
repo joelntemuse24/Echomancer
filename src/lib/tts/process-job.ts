@@ -49,6 +49,7 @@ import {
   modalCloneLiveLeases,
   renderModalCloneBatch,
   modalClonePoolReady,
+  probeModalClonePlacement,
   probeModalCloneWarm,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
@@ -2794,6 +2795,10 @@ async function runClaimedTick(
                         warmContainers: probe.warm ? probe.warmContainers : 0,
                       };
                     },
+                    // A placed H100 is what the book is paying for, whether
+                    // it is restoring or building a snapshot. A build reports
+                    // no heartbeat, so readiness alone would never see it.
+                    placement: () => probeModalClonePlacement(jobId),
                     startedAt: firstAudioStartedAt,
                     hasAudio: hadAudio,
                     firstAudioAt: job.first_section_at,

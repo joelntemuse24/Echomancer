@@ -196,6 +196,97 @@ describe("modal clone routing", () => {
     expect(synthesizeCalls(fetchMock)).toHaveLength(1);
   });
 
+  it("never lets a user book be the call that builds a snapshot", async () => {
+    /**
+     * 2026-11-22, book f452bc31. The H100 started at 02:22:39 "Creating GPU
+     * memory snapshot", loaded weights at 02:23:47, then spent ~7.5 minutes
+     * capturing ~72 GB of GPU memory: 9.70 billed GPU-minutes and ~9-10 min
+     * to first audio for a book it never served.
+     *
+     * A provably cold pool (warm_containers === 0, not the optimistic -1)
+     * must park the book instead of placing that build. The off-path warm
+     * owns builds; the book waits, then takes the documented Fish fallback.
+     */
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return readyResponse(503, { ready: false, warm_containers: 0 });
+      }
+      return mp3Response();
+    });
+    // The off-path warm only runs with credentials (or a custom command).
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    const kicked: string[][] = [];
+    setModalCloneWarmSpawnerForTests((command, args) => kicked.push([command, ...args]));
+
+    await expect(synthesizeModalClone({ ...input, jobId: "job-book" })).rejects.toThrow(
+      ModalCloneColdError
+    );
+    // The book posted nothing: no H100 was placed for it, so nothing could
+    // start building a snapshot on its behalf.
+    expect(synthesizeCalls(fetchMock)).toHaveLength(0);
+
+    // The operator opt-in still allows the old behaviour, deliberately.
+    resetModalCloneRuntimeForTests();
+    const again = setup();
+    again.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return readyResponse(503, { ready: false, warm_containers: 0 });
+      }
+      return mp3Response();
+    });
+    vi.stubEnv("MODAL_S2_ALLOW_SNAPSHOT_BUILD", "1");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    await synthesizeModalClone({ ...input, jobId: "job-book", text: "A build is allowed." });
+    expect(synthesizeCalls(again)).toHaveLength(1);
+  });
+
+  it("hands the build to the off-path warm once the book's flight settles", async () => {
+    // `kickModalCloneSnapshotWarm` refuses to start a cover beside a live
+    // call, so the refusal is queued for `finishDispatch` by dispatch. The
+    // unit under test here is that the refusal names the cause and that the
+    // warm hook is configured to take it.
+    const { dispatchModalCloneLanes } = await import("./modal-clone-dispatch");
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return readyResponse(503, { ready: false, warm_containers: 0 });
+      }
+      return mp3Response();
+    });
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    const kicked: string[][] = [];
+    setModalCloneWarmSpawnerForTests((command, args) => kicked.push([command, ...args]));
+
+    const result = await dispatchModalCloneLanes({
+      indexes: [0],
+      textAt: () => "A short opening line.",
+      lanes: 1,
+      batch: 1,
+      seedEpoch: 0,
+      bookWave: true,
+      jobId: "job-book",
+      render: async () => {
+        throw new ModalCloneColdError(
+          "Modal clone has no warm container; a user book does not build a snapshot",
+          30_000,
+          "snapshot-build",
+          "restore"
+        );
+      },
+      stage: async () => undefined,
+      log: () => undefined,
+    });
+    expect(result.staged).toBe(0);
+    // The refusal is a placement miss, so the book parks and starts its
+    // defer clock instead of switching narrator on the spot.
+    expect(result.cold).toBe(true);
+    expect(synthesizeCalls(fetchMock)).toHaveLength(0);
+    // With the flight settled, the warm hook owns the build.
+    expect(kicked).toHaveLength(1);
+    expect(kicked[0]).toContain(MODAL_CLONE_COVER_ARGS[1]);
+  });
+
   it("bounds a cold placement by the restore budget and kicks an RPC warm", async () => {
     const fetchMock = setup();
     vi.stubEnv("MODAL_S2_READY", "0");
