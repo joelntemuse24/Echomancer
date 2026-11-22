@@ -13,9 +13,9 @@ import {
   emptyChapters,
   type ChaptersDocument,
 } from "@/lib/book-chapters";
-import { relocatePageStarts } from "@/lib/page-offsets";
 import { OUTLINE_JSON_NAME, OUTLINE_VERSION } from "@/lib/uploads/outline-store";
 import type { ChapterHint } from "@/lib/book-chapters";
+import { structureForText } from "@/lib/uploads/extract-structure";
 import {
   extractDocument,
   MIN_EXTRACTED_CHARS,
@@ -127,18 +127,17 @@ export async function runUploadExtract(
       row.fileName || sourcePath,
       row.contentType || undefined
     );
-    chapterHint = extracted.hint;
     extractedText = toSpeakableText(extracted.text, { normalizeTitles: false });
-    // The hint's page offsets were measured against the extracted text.
-    // Speakable rewriting moves them, so relocate rather than re-search.
-    if (extracted.hint.pageProbes?.length && extracted.hint.pageStarts?.length) {
-      extracted.hint.pageStarts = relocatePageStarts(
-        extractedText,
-        extracted.hint.pageProbes,
-        extracted.hint.pageStarts
-      );
-    }
-    chapters = await resolveChaptersForBook(extractedText, extracted.hint, { host });
+    // One pass, against the string that is about to be stored: page offsets are
+    // re-anchored and block offsets re-located, and the block outline travels
+    // with them. Measuring them for a different string is what left almost every
+    // PDF block offset pointing at another paragraph.
+    chapterHint = structureForText(
+      extracted.hint,
+      extractedText,
+      extracted.blocks
+    );
+    chapters = await resolveChaptersForBook(extractedText, chapterHint, { host });
   } catch (err) {
     const message =
       err instanceof Error
@@ -178,13 +177,18 @@ export async function runUploadExtract(
   }
 
   // Persist the extractor's own outline (page offsets, PDF page indexes,
-  // anchors, printed-TOC lines) so a later re-align does not have to re-parse
-  // the source. Advisory only: a failure here must not fail the upload.
+  // anchors, printed-TOC lines, and the block list a block-indexed outline
+  // points into) so a later re-align does not have to re-parse the source.
+  // Advisory only: a failure here must not fail the upload.
   try {
     await io.writeObject(
       `pdfs/${uploadId}/${OUTLINE_JSON_NAME}`,
       encoder.encode(
-        JSON.stringify({ version: OUTLINE_VERSION, hint: chapterHint })
+        JSON.stringify({
+          version: OUTLINE_VERSION,
+          hint: chapterHint,
+          ...(chapterHint?.blocks?.length ? { blocks: chapterHint.blocks } : {}),
+        })
       ),
       "application/json"
     );
