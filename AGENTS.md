@@ -581,7 +581,13 @@ One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
 generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, so a plain `modal deploy` does
-not open a fleet. Production `echomancer-s2-clone` stays
+not open a fleet. **Production is pinned to one container in code**:
+`container_limits` ignores `S2C_MAX_CONTAINERS` (and forces
+`buffer_containers` 0) when the resolved app is `echomancer-s2-clone`,
+unless `S2_ALLOW_PROD_CAP_ABOVE_1=1`. A staging env file copied onto a
+production deploy therefore cannot open a second H100, which is how the
+2026-11-22 incident got one requested while the first container was still
+compiling. Production `echomancer-s2-clone` stays
 `min_containers` 0 and `max_containers` 1. Raising that cap needs explicit
 owner approval. `scripts/s2/set-live-autoscaler.py` refuses to apply a
 cap unless `--max-containers` is passed (`--brake` sets 0). On production
@@ -644,6 +650,25 @@ busy-not-cold backstop.
   trained the reference. With neither available the job fails or parks; it is
   never handed to a different voice. `src/lib/tts/providers/openrouter-clone.ts`
   is deleted, and `takehomeCacheVariant` has no `drama-3` branch.
+- **A restored container that never renders is a failure, not a wait.** The
+  first-audio watchdog (`src/lib/tts/providers/modal-clone-watchdog.ts`,
+  `MODAL_S2_FIRST_AUDIO_MS`, default 240 s, floor 90 s) bounds "this book has
+  no audio yet" once a container has **proved** it restored. On expiry the
+  worker cancels the stored Modal call (that is what releases the H100),
+  `haltBook`s the job, and fails it with a line naming the wait and the
+  limit; the row leaves `processing` instead of polling `pending` forever.
+  A pool that never restored does **not** trip it — that is a cold queue,
+  which parks and then takes the documented Fish fallback. `0` disables the
+  trip. The 2026-11-22 book `f452bc31` had a fresh `/ready` heartbeat and
+  `POST /` answering 200 every ~3 s for half an hour: those 200s were the
+  CPU control endpoint's `pending` poll (`FunctionCall.get(timeout=1)`),
+  not a render, and nothing on the book path had an opinion about how long
+  that could go on.
+- **`/ready` and `status()` report `rendering_since`.** The container marks
+  itself before any GPU work in a render body and clears the mark when it
+  returns, so "restored and idle" is distinguishable from "rendering this
+  book". Both also log `render entered` / `render done` with the call's
+  wall time. That line is what the 2026-11-22 logs lacked.
 - **Cold is not failure.** `/ready` reads container heartbeats of the current
   `S2C_BUILD` and reports "a container finished restoring", not "a runner
   exists". A cold pool throws `ModalCloneColdError`; the tick releases the
@@ -958,6 +983,14 @@ busy-not-cold backstop.
   reprints that report as `compiled=no compile_s=na` with
   `snapshot_compile_s` holding the build's number, so a healthy container
   is not logged as a fresh compile.
+  **`hit` means the mega-cache was installed, nothing else.** A published
+  run whose loader failed (the 2026-11-22 `TypeError: a bytes-like object
+  is required, not 'str'`, book `f452bc31`) logs `hit=miss
+  fallback=mega-corrupt reuse=yes`: the Inductor/Triton tree beside the bad
+  file is still read, and the line says the load failed. A published tree
+  with no mega-cache file is `fallback=mega-absent`, also `hit=miss`. Do
+  not fold `reuse` back into `hit`; that is what made a failed load look
+  like a warm cache while the container compiled for eight minutes.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   unless that book's flight is still `running` or `still_live`, or any S2
@@ -1735,6 +1768,11 @@ TTS_VM_WAVE_BUDGET_MS=900000 # Always-on VM wave clock
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
 TTS_CRON_JOBS_PER_RUN=3 # Fallback cron batch size
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
+# MODAL_S2_FIRST_AUDIO_MS=240000 # No-first-audio watchdog, measured from this tick's first call.
+ # Applies only once a container has proved it restored; a cold pool parks instead.
+ # Floor 90s (above MODAL_S2_FIRST_LIGHT_WAIT_MS), ceiling 1h. 0 disables the trip.
+ # On expiry: cancel the stored Modal call (releases the H100), then fail the book
+ # with "The voice engine loaded but produced no audio within Ns".
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000

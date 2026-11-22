@@ -219,6 +219,127 @@ describe("clone provider pinning", () => {
   });
 });
 
+describe("a restored container that never renders", () => {
+  /**
+   * The 2026-11-22 incident, end to end.
+   *
+   * The control endpoint accepts and then answers `pending` forever, which
+   * is exactly what `POST / -> 200` every three seconds was. The pool says
+   * it is warm. Before this fix the tick polled until the HTTP budget ran
+   * out, parked, and did it again; the row stayed `processing`.
+   */
+  it("fails the book with a reason instead of polling a silent GPU", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    const { setModalCloneFirstAudioBudgetForTests, setModalCloneWatchdogPollForTests } =
+      await import("@/lib/tts/providers/modal-clone-watchdog");
+    const { setS2StatusBudgetForTests } = await import(
+      "@/lib/tts/providers/modal-clone-call"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    // Control path: every render is a spawned FunctionCall that never lands.
+    process.env.MODAL_S2_CONTROL_URL = CONTROL_HOST;
+    process.env.S2_DRAIN_HTTP_TEST = "1";
+    setS2StatusBudgetForTests(30_000);
+    setModalCloneFirstAudioBudgetForTests(25);
+    setModalCloneWatchdogPollForTests(1);
+
+    let cancelled = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const endpoint = endpointOf(String(url));
+      if (endpoint === "ready") {
+        return new Response(
+          JSON.stringify({ ready: true, warm_containers: 1, build: "abc123" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      if (body.cancel === true) {
+        cancelled += 1;
+        return new Response(JSON.stringify({ call_id: body.call_id, status: "cancelled" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (body.call_id) {
+        // A spawn that never publishes: the container is loaded and silent.
+        return new Response(JSON.stringify({ call_id: body.call_id, status: "pending" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (body.probe === true) {
+        return new Response(
+          JSON.stringify({ protocol: "s2-submit-poll", protocol_version: 1 }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ call_id: "fc-silent", status: "pending" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await seedCloneJob("A sentence. ".repeat(300));
+
+    try {
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+
+      const row = await jobRow(JOB_ID);
+      // No endless `processing`: the book says what happened.
+      expect(row?.status).toBe("failed");
+      expect(String(row?.error_message ?? "")).toContain("produced no audio");
+      expect(row?.processing_lease_token).toBeNull();
+      // The GPU was released: the stored call was cancelled.
+      expect(cancelled).toBeGreaterThan(0);
+      // And no section was invented or stored.
+      const segments = row?.segments_json ? JSON.parse(String(row.segments_json)) : [];
+      expect(segments).toEqual([]);
+    } finally {
+      delete process.env.MODAL_S2_CONTROL_URL;
+      delete process.env.S2_DRAIN_HTTP_TEST;
+      setS2StatusBudgetForTests(null);
+      setModalCloneFirstAudioBudgetForTests(null);
+      setModalCloneWatchdogPollForTests(null);
+    }
+  });
+});
+
+describe("a cold pool is not a stall", () => {
+  it("parks a book whose container never restored, even past the clock", async () => {
+    // The watchdog must never convert "Modal had no capacity" into a failed
+    // book. Only a *proven-restored* container that then goes silent trips.
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    const { setModalCloneFirstAudioBudgetForTests, setModalCloneWatchdogPollForTests } =
+      await import("@/lib/tts/providers/modal-clone-watchdog");
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    setModalCloneFirstAudioBudgetForTests(1);
+    setModalCloneWatchdogPollForTests(1);
+    vi.stubGlobal("fetch", coldPool());
+    await seedCloneJob("A sentence. ".repeat(300));
+    await fakeAdapter();
+
+    try {
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      expect(result.deferred).toBe(true);
+      const row = await jobRow(JOB_ID);
+      expect(row?.status).toBe("queued");
+      expect(row?.error_message ?? null).toBeNull();
+      expect(row?.provider_pin).toBe("modal");
+    } finally {
+      setModalCloneFirstAudioBudgetForTests(null);
+      setModalCloneWatchdogPollForTests(null);
+    }
+  });
+});
+
 describe("cold GPU pool parks the book", () => {
   it("releases the lease and leaves the row queued, with no attempts burned", async () => {
     const { resetModalCloneRuntimeForTests } = await import(

@@ -952,6 +952,12 @@ class S2CloneWorker:
                 "at": int(now),
                 "snapshot_age_s": getattr(self, "snapshot_age_s", None),
                 "calls": self.calls,
+                # Present only while a render is inside the body. `/ready` and
+                # `status()` report it, so "container restored" (restore done,
+                # no render) is not mistaken for "container is rendering this
+                # book". The 2026-11-22 stall had a fresh heartbeat and no
+                # way to tell those apart.
+                "rendering": (getattr(self, "_render_mark", None) or {}).get("at"),
             }
         except Exception as err:  # a heartbeat must never fail a synthesis
             print(f"[S2C] heartbeat write failed: {err}")
@@ -991,6 +997,10 @@ class S2CloneWorker:
             # How many rows one call may carry. The worker reads this to decide
             # whether a 32-row page is safe; a build without the field is 24.
             "max_batch_items": max_batch_items(),
+            # Unix seconds while a render is inside the body, else null. Lets
+            # an operator see "restored but never started rendering" instead
+            # of inferring it from a missing log line.
+            "rendering_since": (getattr(self, "_render_mark", None) or {}).get("at"),
         }
 
     def _resolve_reference(
@@ -1237,6 +1247,26 @@ class S2CloneWorker:
         )
         sampling_text = f"{sampling[0]},{sampling[1]}"
         self.calls += 1
+        # Say when a render actually starts, not only when it finishes.
+        #
+        # On 2026-11-22 book `f452bc31` the container logged "Creating GPU
+        # memory snapshot" and then nothing: `/ready` heartbeat was fresh and
+        # every control poll answered 200, but no `render entered` line
+        # existed to say whether the body had begun. An operator could only
+        # time the 200s. One line per call, before any GPU work, is the
+        # difference between "the model loaded and the render started late"
+        # and "the render never started".
+        self._render_mark = {
+            "at": int(time.time()),
+            "sections": len(slots),
+            "chars": sum(len(u["text"]) for units in slots for u in units),
+        }
+        self._heartbeat(force=True)
+        print(
+            f"[S2C] render entered container={self.container_id} "
+            f"sections={len(slots)} keys={','.join(keys)[:120]} "
+            f"boot={getattr(self, 'boot_kind', BOOT_UNKNOWN)}"
+        )
 
         # ── the pipeline ───────────────────────────────────────────────────
         #
@@ -1456,7 +1486,15 @@ class S2CloneWorker:
             rows.append({"key": item_key, "error": message, "error_code": code})
         rows.sort(key=lambda row: keys.index(row["key"]))
         t_done = time.time()
-        self._heartbeat()
+        mark = getattr(self, "_render_mark", None) or {}
+        entered = int(mark.get("at") or 0)
+        print(
+            f"[S2C] render done container={self.container_id} "
+            f"call_s={t_done - t0:.1f}"
+            + (f" entered_to_done_s={t_done - entered:.1f}" if entered else "")
+        )
+        self._render_mark = None
+        self._heartbeat(force=True)
 
         return {
             "items": rows,
@@ -1977,6 +2015,9 @@ def ready(request: Request):
                 "boot": row.get("boot"),
                 "snapshot_age_s": row.get("snapshot_age_s"),
                 "calls": row.get("calls"),
+                # A restored container with no render is idle, not stuck.
+                # A container rendering for minutes is the book's call.
+                "rendering_since": row.get("rendering"),
             }
             for row in live[:8]
         ],

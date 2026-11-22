@@ -653,6 +653,44 @@ def test_single_section_handler_also_stays_on_the_owner_thread(
         worker.gpu.close()
 
 
+def test_a_render_marks_the_container_busy_and_clears_it(
+    service, stub_master, monkeypatch
+):
+    """`/ready` can say "restored and rendering", not only "restored".
+
+    On 2026-11-22 there was no way to tell a loaded-but-idle container from a
+    container that was rendering the book: every poll was `pending` and the
+    heartbeat was fresh either way. The render body records when it was
+    entered, publishes it in the heartbeat, and clears it when it returns.
+    """
+    import threading
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    worker = _worker_with_recording_engine(service)
+    beats: list[dict] = []
+    worker._heartbeat = lambda force=False: beats.append(
+        {"rendering": (getattr(worker, "_render_mark", None) or {}).get("at")}
+    )
+
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["body"] = service.S2CloneWorker.render_batch(worker, _batch_payload())
+        except Exception as err:  # pragma: no cover - the assertion names it
+            result["err"] = err
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(20)
+    assert not thread.is_alive()
+    assert result.get("err") is None, result.get("err")
+    # The render published its start before any GPU work, then cleared it.
+    marks = [row["rendering"] for row in beats]
+    assert any(isinstance(mark, int) and mark > 0 for mark in marks), marks
+    assert getattr(worker, "_render_mark", "missing") is None
+
+
 def test_render_batch_waits_on_a_busy_gpu_instead_of_opening_another(
     service, stub_master, monkeypatch
 ):

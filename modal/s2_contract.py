@@ -1342,14 +1342,22 @@ def running_container_count(stats):
 def container_limits(env) -> dict:
     """Autoscaler knobs, read once so health output and the decorator agree.
 
-    Target shape: one frozen app, `min_containers=0`, up to
-    `S2C_MAX_CONTAINERS` independent one-GPU containers. The code default
-    stays 1 so a plain deploy cannot open a fleet. Production
-    `echomancer-s2-clone` keeps `max_containers` at 1: a second book
-    queues on that GPU. `MODAL_S2_MAX_GPUS` (default 20) is the worker
-    lease count, not this cap. Raising the live cap needs explicit owner
-    approval. The clamp only stops a typo; 64 is the same ceiling as
-    the worker.
+    Target shape: one frozen app, `min_containers=0`, one H100.
+    `S2C_MAX_CONTAINERS` still exists for staging, but **production is
+    pinned to 1 in code**. A staging env file carries
+    `S2C_MAX_CONTAINERS=4`; copy-pasting it onto a production deploy used to
+    let the app open a fleet, and the 2026-11-22 incident is what an
+    unasked-for second container looks like (a web POST occupied the only
+    input, a second H100 was placed, and the book still got no audio).
+    Raising production needs `S2_ALLOW_PROD_CAP_ABOVE_1=1`, the same
+    opt-in `scripts/s2/post-deploy-cover.sh` and the drain already use.
+
+    `buffer_containers` is forced to 0 on production too: a buffer is an
+    idle GPU kept warm beside the one rendering, which is a second
+    container by another name. On staging the env value still applies.
+
+    `MODAL_S2_MAX_GPUS` (default 20) is the worker lease count, not this
+    cap. The clamp only stops a typo; 64 is the same ceiling as the worker.
     """
     def _int(name: str, default: int, low: int, high: int) -> int:
         try:
@@ -1363,12 +1371,19 @@ def container_limits(env) -> dict:
             return default if value < 1 else low
         return min(high, value)
 
+    production = resolve_app_name(env) == PRODUCTION_APP_NAME
+    owner_raise = str(env.get("S2_ALLOW_PROD_CAP_ABOVE_1", "")).strip() == "1"
+    max_containers = _int("S2C_MAX_CONTAINERS", 1, 1, 64)
+    buffer_containers = _int("S2C_BUFFER_CONTAINERS", 0, 0, 8)
+    if production and not owner_raise:
+        max_containers = 1
+        buffer_containers = 0
     return {
         "min_containers": 0,
-        "max_containers": _int("S2C_MAX_CONTAINERS", 1, 1, 64),
+        "max_containers": max_containers,
         "lanes": _int("S2C_LANES", 4, 1, 8),
         "scaledown_window": _int("S2C_SCALEDOWN", 300, 2, 1200),
-        "buffer_containers": _int("S2C_BUFFER_CONTAINERS", 0, 0, 8),
+        "buffer_containers": buffer_containers,
     }
 
 

@@ -49,6 +49,7 @@ import {
   modalCloneLiveLeases,
   renderModalCloneBatch,
   modalClonePoolReady,
+  probeModalCloneWarm,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
 import {
@@ -82,6 +83,12 @@ import {
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
+import {
+  firstAudioTimeoutLog,
+  raceFirstAudio,
+} from "@/lib/tts/providers/modal-clone-watchdog";
+import { bookCallIds, drainBookCalls } from "@/lib/remote/drain-book";
+import { haltBook } from "@/lib/remote/layer";
 import {
   shouldPrewarmBeforeOutline,
   shouldPrewarmModalNarration,
@@ -2695,58 +2702,127 @@ async function runClaimedTick(
             );
           }
           if (gpuIndexes.length > 0) bookWaveAttempted = true;
+          /**
+           * No section yet + a container that proved it restored = a stall.
+           * The clock is bounded so a book cannot sit on "Starting the clone
+           * voice…" while an H100 is billed (2026-11-22, `f452bc31`).
+           */
+          const firstAudioStartedAt = Date.now();
+          const tripState: {
+            value: { message: string; elapsedMs: number; budgetMs: number } | null;
+          } = { value: null };
+          const dispatchOnce = () =>
+            withCloneBatchSlot(() =>
+              dispatchModalCloneLanes({
+                indexes: gpuIndexes,
+                textAt: (index) => spokenFishSection(index),
+                lanes,
+                batch,
+                maxLaneChars,
+                seedEpoch,
+                firstLight: needsFirstLight && gpuIndexes[0] === 0,
+                bookWave: true,
+                jobId,
+                // A short book sharing a container that is already up
+                // must not arm the restore budget. An idle spare
+                // container is detected inside the dispatch probe.
+                ...(reuseWarmGpu ? { poolWarm: true as const } : {}),
+                bufferedMs: playback.bufferedMs,
+                playbackStarted: playback.started,
+                maxCalls: oneCall ? 1 : undefined,
+                // The overflow chooser already sized this call. A growth
+                // call is wider than the buffer on purpose; planning it
+                // again would shrink it to one row.
+                committedCall: committedShare,
+                yieldToOther: async () => oneCall,
+                entireRemainder:
+                  gpuIndexes.length > 0 &&
+                  gpuIndexes.length ===
+                    pendingAll.filter((index) => !cachedAtStart.has(index)).length,
+                // Publish each call as it returns so the player hears it
+                // while the next call is already on the GPU. The chain
+                // keeps the segment writes in order.
+                publishStaged: (indexes) => enqueuePublish(indexes),
+                render: (items, epoch, renderOpts) =>
+                  renderModalCloneBatch(items, reference, undefined, jobId, {
+                    seedEpoch: epoch,
+                    raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
+                    workMs: renderOpts?.workMs,
+                    warmBatch: renderOpts?.warmBatch === true,
+                  }),
+                stage: stageSection,
+                log: (message) => console.log(`[Job ${jobId}] ${message}`),
+              })
+            );
           const renderPromise =
             gpuIndexes.length === 0
               ? Promise.resolve(null)
-              : withCloneBatchSlot(() =>
-                  dispatchModalCloneLanes({
-                    indexes: gpuIndexes,
-                    textAt: (index) => spokenFishSection(index),
-                    lanes,
-                    batch,
-                    maxLaneChars,
-                    seedEpoch,
-                    firstLight: needsFirstLight && gpuIndexes[0] === 0,
-                    bookWave: true,
-                    jobId,
-                    // A short book sharing a container that is already up
-                    // must not arm the restore budget. An idle spare
-                    // container is detected inside the dispatch probe.
-                    ...(reuseWarmGpu ? { poolWarm: true as const } : {}),
-                    bufferedMs: playback.bufferedMs,
-                    playbackStarted: playback.started,
-                    maxCalls: oneCall ? 1 : undefined,
-                    // The overflow chooser already sized this call. A growth
-                    // call is wider than the buffer on purpose; planning it
-                    // again would shrink it to one row.
-                    committedCall: committedShare,
-                    yieldToOther: async () => oneCall,
-                    entireRemainder:
-                      gpuIndexes.length > 0 &&
-                      gpuIndexes.length ===
-                        pendingAll.filter((index) => !cachedAtStart.has(index)).length,
-                    // Publish each call as it returns so the player hears it
-                    // while the next call is already on the GPU. The chain
-                    // keeps the segment writes in order.
-                    publishStaged: (indexes) => enqueuePublish(indexes),
-                    render: (items, epoch, renderOpts) =>
-                      renderModalCloneBatch(items, reference, undefined, jobId, {
-                        seedEpoch: epoch,
-                        raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
-                        workMs: renderOpts?.workMs,
-                        warmBatch: renderOpts?.warmBatch === true,
-                      }),
-                    stage: stageSection,
-                    log: (message) => console.log(`[Job ${jobId}] ${message}`),
-                  })
-                ).catch((err: unknown) => {
-                  if (err instanceof ModalWorkspaceDisabledError) throw err;
-                  console.warn(
-                    `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
-                    err instanceof Error ? err.message : err
-                  );
-                  return null;
-                });
+              : (() => {
+                  const call = dispatchOnce().catch((err: unknown) => {
+                    if (err instanceof ModalWorkspaceDisabledError) throw err;
+                    console.warn(
+                      `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
+                      err instanceof Error ? err.message : err
+                    );
+                    return null;
+                  });
+                  // A book already waiting out its own backoff posts nothing.
+                  // Wrapping it would probe `/ready` every drain pass for an
+                  // answer that cannot exist, so the clock is not started.
+                  if (modalCloneJobBackoffRemainingMs(jobId) > 0) return call;
+                  const hadAudio =
+                    playback.started ||
+                    segments.some(
+                      (segment) => segment.status === "ready" && Boolean(segment.path)
+                    );
+                  return raceFirstAudio({
+                    run: () => call,
+                    // Strict readiness, never "assume reachable". A container
+                    // this book has already heard from is proof enough even
+                    // when no `/ready` URL is configured. Anything else must
+                    // come from a probe that actually reported a live
+                    // container: treating a missing probe as warm would fail
+                    // books because Modal had no capacity, which is a queue
+                    // problem, not a stall.
+                    probe: async () => {
+                      if (modalCloneBookContainerWarm(jobId)) {
+                        return { ready: true, warmContainers: 1 };
+                      }
+                      const probe = await probeModalCloneWarm();
+                      return {
+                        ready: probe.warm === true,
+                        warmContainers: probe.warm ? probe.warmContainers : 0,
+                      };
+                    },
+                    startedAt: firstAudioStartedAt,
+                    hasAudio: hadAudio,
+                    firstAudioAt: job.first_section_at,
+                  }).then(async (result) => {
+                    if (result.ok) return result.value;
+                    tripState.value = {
+                      message: result.message,
+                      elapsedMs: result.elapsedMs,
+                      budgetMs: result.budgetMs,
+                    };
+                    console.warn(
+                      firstAudioTimeoutLog({
+                        jobId,
+                        elapsedMs: result.elapsedMs,
+                        budgetMs: result.budgetMs,
+                        staged: 0,
+                        callId: bookCallIds(jobId)[0] ?? null,
+                      })
+                    );
+                    // Cancel first: that is what frees the H100. `haltBook`
+                    // makes the provider record still_live for the stored id,
+                    // so a later tick does not POST the same sections again.
+                    haltBook(jobId, "first-audio-timeout");
+                    await drainBookCalls(jobId, "first-audio-timeout").catch(
+                      () => undefined
+                    );
+                    return null;
+                  });
+                })();
 
           // Already-staged takes are mastered while the next batch renders.
           // The GPU call is not awaited until that prefix is published, or
@@ -2769,6 +2845,19 @@ async function runClaimedTick(
             }
           } finally {
             dispatch = await renderPromise;
+          }
+
+          if (tripState.value) {
+            // The engine loaded and then produced nothing for this book. Fail
+            // it with a reason instead of leaving it `processing` for another
+            // restore-and-compile cycle; the H100 was already released above.
+            await publishChain.catch(() => undefined);
+            await failJob(jobId, lease, tripState.value.message);
+            return {
+              done: true,
+              nextIndex: job.next_section_index ?? 0,
+              total: job.total_sections ?? 0,
+            };
           }
 
           if (dispatch) {
