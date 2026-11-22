@@ -1528,6 +1528,26 @@ as ID3v2.3 CHAP frames via ffmetadata (`-c copy`, no extra encode). A book
 with no real chapters keeps the numbered Section list — names are never
 invented.
 
+## Book titles
+
+A title the person did not type is the uploaded file's name, so it arrives
+written for a filesystem: `the_hobbit_-_tolkien.pdf`. `src/lib/book-title.ts`
+is the one place that turns it into `The Hobbit - Tolkien` — no extension, no
+underscores, no lowercase slug, title-cased when the name had no capitals at
+all. A title a person typed (paste, page title, rename) keeps its own casing;
+only a name with an underscore or a document extension is treated as a file
+name. `bookTitleFromFileName` runs at `POST /api/jobs`, the rename `PATCH`,
+the upload view, and the voice step, and `normalizeStoredBookTitle` runs in
+`serializeJob`, so an older row heals on read in the library, player,
+download, and Media Session without a write. Do not re-add a per-screen
+`replace(/[_]/g, " ")`; call the shared helper.
+
+The player's `h1` and the library row must fit a phone. The heading size steps
+down with the title's length (`bookTitleHeadingClass`: `text-4xl` down to
+`text-xl`) and wraps with `wrap-break-word`, and the library row clamps to
+three lines on a phone with `wrap-anywhere`. A fixed `text-4xl md:text-5xl`
+pushed the transport off a 320 px screen for a 150-character title.
+
 ## Deleting a job
 
 `DELETE /api/jobs/[id]` soft-deletes first (`deleted_at`, lease cleared,

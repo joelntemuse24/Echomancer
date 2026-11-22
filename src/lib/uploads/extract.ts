@@ -6,6 +6,7 @@
  */
 
 import type { ChaptersDocument } from "@/lib/book-chapters";
+import { bookTitleFromFileName } from "@/lib/book-title";
 import { AppError } from "@/lib/errors";
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
@@ -49,7 +50,7 @@ export function toUploadPublicView(
     uploadId: row.id,
     status,
     storagePath: row.storage_path,
-    fileName: row.file_name || "Untitled",
+    fileName: bookTitleFromFileName(row.file_name),
     fileSize: Number(row.byte_size || 0),
     format: row.format || "unknown",
     charCount: Number(row.char_count || 0),

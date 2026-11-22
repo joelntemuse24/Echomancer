@@ -19,6 +19,8 @@
  * In-progress books still use `/api/jobs/<id>/download`.
  */
 
+import { titleForDownload } from "@/lib/book-title";
+
 export interface DownloadNavigator {
   userAgent?: string;
   platform?: string;
@@ -26,8 +28,11 @@ export interface DownloadNavigator {
 }
 
 export function audiobookFilename(title: string | null | undefined): string {
-  const base = (title || "audiobook").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-  return `${base || "audiobook"}.mp3`;
+  const base =
+    titleForDownload(title ?? "")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .toLowerCase() || "audiobook";
+  return `${base}.mp3`;
 }
 
 /** iPhone, iPod, and iPadOS (which reports itself as a Mac). */

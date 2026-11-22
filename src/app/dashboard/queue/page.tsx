@@ -39,9 +39,13 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 
-/** Two lines on a phone. One truncated line from the md breakpoint up. */
+/**
+ * Three lines on a phone (a real book title is often longer than two), one
+ * truncated line from the md breakpoint up. `wrap-anywhere` keeps a single
+ * unbroken word from pushing the row wider than the screen.
+ */
 const bookTitleClass =
-  "min-w-0 max-w-full basis-full break-words font-medium text-lg font-serif leading-snug max-md:line-clamp-2 md:basis-auto md:truncate";
+  "min-w-0 max-w-full basis-full wrap-anywhere font-medium text-lg font-serif leading-snug max-md:line-clamp-3 md:basis-auto md:truncate";
 
 const LIBRARY_POLL_MIN_MS = 5_000;
 const LIBRARY_POLL_MAX_MS = 30_000;

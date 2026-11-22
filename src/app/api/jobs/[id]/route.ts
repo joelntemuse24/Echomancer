@@ -40,6 +40,7 @@ import {
 import { narrationProgressPercent } from "@/lib/tts/narration-progress";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { recoveryHoldReason } from "@/lib/modal/workspace-disabled";
+import { looksLikeFileName, normalizeStoredBookTitle } from "@/lib/book-title";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -48,6 +49,13 @@ const renameSchema = z.object({
   bookTitle: z
     .string()
     .transform((title) => title.replace(/\s+/g, " ").trim())
+    // A rename that arrives as a raw file name is still a file name. A title
+    // the person typed keeps its own casing.
+    .transform((title) =>
+      looksLikeFileName(title) || title.includes("_")
+        ? normalizeStoredBookTitle(title)
+        : title
+    )
     .pipe(z.string().min(1).max(200)),
 });
 

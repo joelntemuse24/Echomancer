@@ -16,6 +16,13 @@ describe("audiobook download", () => {
     expect(audiobookFilename("")).toBe("audiobook.mp3");
   });
 
+  it("saves a file-named book without the underscores or the extension", () => {
+    expect(audiobookFilename("the_hobbit_-_tolkien.pdf")).toBe(
+      "the_hobbit_tolkien.mp3"
+    );
+    expect(audiobookFilename("___.pdf")).toBe("audiobook.mp3");
+  });
+
   it("treats iPhone and iPadOS as the open-or-save path", () => {
     expect(
       isIosDownload({

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bookTitleFromFileName } from "@/lib/book-title";
 
 const stockProviderSchema = z.enum([
   "google",
@@ -28,7 +29,16 @@ const stockJobSchema = z.object({
   mode: z.literal("stock").default("stock"),
   jobKind: z.enum(["stream", "takehome"]),
   pdfStoragePath: uploadStoragePathSchema,
-  bookTitle: z.string().min(1).max(200).optional().default("Untitled"),
+  /**
+   * A file name arrives here when the person did not type a title, so the
+   * separators a file name uses are turned into words before the row is
+   * written. Every read surface also normalizes, so an older row heals.
+   */
+  bookTitle: z
+    .string()
+    .optional()
+    .transform((title) => bookTitleFromFileName(title))
+    .pipe(z.string().min(1).max(200)),
   catalogVoiceId: z.string().min(1).max(300).optional(),
   /**
    * Ignored. Older clients sent `expressive`; those requests use the plain

@@ -16,6 +16,7 @@ import {
   type FilePickResult,
 } from "@/lib/file-pick";
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
+import { bookTitleFromFileName } from "@/lib/book-title";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { warmJobs } from "@/lib/nav/screen-cache";
@@ -94,7 +95,7 @@ export function LandingPage() {
     const chars = data.charCount ?? data.chars ?? 0;
     const q = new URLSearchParams({
       pdfPath: data.storagePath || "",
-      pdfName: data.fileName || "Untitled",
+      pdfName: bookTitleFromFileName(data.fileName),
     });
     if (chars) q.set("charCount", String(chars));
     if (data.uploadId) q.set("uploadId", data.uploadId);
@@ -280,7 +281,11 @@ export function LandingPage() {
                     className="w-5 h-5 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
                   />
                   <div className="text-sm" data-testid="book-pick-state">
-                    {bookReading ? "Reading…" : bookFile ? bookFile.name : "Your book"}
+                    {bookReading
+                      ? "Reading…"
+                      : bookFile
+                        ? bookTitleFromFileName(bookFile.name)
+                        : "Your book"}
                   </div>
                 </div>
               </div>

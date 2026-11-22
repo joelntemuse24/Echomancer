@@ -9,6 +9,7 @@
  */
 
 import { parseStreamTimeline, type StreamTimeline } from "@/lib/player/stream-clock";
+import { normalizeStoredBookTitle } from "@/lib/book-title";
 import {
   computeJobEta,
   estimateElapsedSeconds,
@@ -111,7 +112,10 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
 
   return {
     id: String(job.id),
-    book_title: job.book_title,
+    book_title:
+      typeof job.book_title === "string"
+        ? normalizeStoredBookTitle(job.book_title)
+        : job.book_title,
     voice_name: job.voice_name,
     status: job.status,
     progress: job.progress,

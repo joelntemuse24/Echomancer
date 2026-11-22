@@ -21,6 +21,10 @@ import {
   cloneTitleFromDraft,
 } from "@/lib/clone-name";
 import {
+  bookTitleFromFileName,
+  UNTITLED_BOOK_TITLE,
+} from "@/lib/book-title";
+import {
   CloneQualityRiskError,
   completeCloneUpload,
   updateCloneVoice,
@@ -205,14 +209,10 @@ function catalogVoiceFromClone(clone: UploadedCloneVoice): CatalogVoice {
   };
 }
 
-/** A book name that is only rules or an extension reads as a back link, not a line. */
+/** The back-link label. The shared helper already removes a file name's junk. */
 function bookLinkLabel(name: string): string {
-  const stripped = name
-    .replace(/\.[A-Za-z0-9]{2,5}$/, "")
-    .replace(/[_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (stripped.replace(/[^A-Za-z0-9]/g, "").length < 2) return "Book";
+  const stripped = bookTitleFromFileName(name);
+  if (stripped === UNTITLED_BOOK_TITLE) return "Book";
   return stripped;
 }
 
@@ -1149,7 +1149,7 @@ export default function VoiceSelectionPage() {
       // surfaces as a visible error after a bounded timeout.
       const started = await startStockBook({
         pdfStoragePath: pdfPath,
-        bookTitle: pdfName || "Untitled",
+        bookTitle: bookTitleFromFileName(pdfName),
         catalogVoiceId: voice.id,
         voiceName: voiceTitle(voice),
         charCount: extractChars || charCount || undefined,
