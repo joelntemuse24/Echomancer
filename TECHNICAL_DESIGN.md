@@ -347,7 +347,8 @@ src/
   test/                        # harness, setup-env, acceptance/
 modal/
   s2_clone_service.py          # echomancer-s2-clone (H100, snapshots, s2_control, ready)
-  s2_contract.py, s2_batch.py, s2_endpoints.py, s2_clone_warm.py, s2_compile_cache.py, …
+  s2_contract.py, s2_batch.py, s2_endpoints.py, s2_clone_warm.py, s2_compile_cache.py,
+  s2_hostinfo.py, …            # s2_hostinfo = stdlib-only boot host/CPU/GPU/driver report
   sowell_worker.py             # echomancer-sowell (Kokoro CPU voices)
   cpu_worker.py                # echomancer-cpu (master / whisper / concat / extract)
   test_*.py, conftest.py, no_live_modal.py
@@ -1705,6 +1706,43 @@ on round trips.
 Staged A/B procedure, gates and cost: `docs/s2-gpu-staging-runbook.md` §9a. The
 tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
 (gate).
+
+### Where a page's wall time goes (`modal-clone-timing.ts`, `s2_hostinfo.py`)
+
+A 49-minute book measured 397 s of total GPU wall, with one 20-section page
+taking 294 s for 2,581 s of audio — **8.8×** against the ~32× the same page
+reached on staging. The worker's log carried `generate_s` and nothing else, so a
+page that spent 142 s in MP3 encode and 31 s in reference preparation looked
+identical to one that spent 282 s generating. Three things now make that
+answerable without a paid GPU run:
+
+1. **`[S2 page]`, one line per GPU call**, from
+   `src/lib/tts/providers/modal-clone-timing.ts` via
+   `dispatchModalCloneLanes`. It prints the container's own `prepare_s`,
+   `generate_s`, `codec_s`, `encode_s`, `call_s`, `batch_width`,
+   `sections_streamed`, `truncated_units` and `snapshot_age_s`, plus
+   `container_id`, `build`, `boot`, the page/row/section/character counts, and
+   **`wall`** — measured from just before the POST to the takes being staged.
+   `wall` is the number the book pays; the difference from `call_s` is
+   placement, queueing behind another render, and the response body. The whole
+   `performance` object is appended as JSON, so a counter added server-side
+   later is visible without a worker change.
+2. **`[S2 dispatch]`, one line per tick**, pairing `gpu_wall` with
+   `generate` and their ratio, the staged rows, the truncation total and the
+   containers that served it.
+3. **`[S2C] host`** at container start and `performance.host` on every
+   response, from the stdlib-only `modal/s2_hostinfo.py`: CPU model, core
+   count, GPU name, driver version, platform and (only when torch is already
+   imported) torch/CUDA versions. A page that renders at 8.8× on one container
+   and 32× on another is otherwise indistinguishable from a wider page.
+   `ref_encode_s` and `reference_cached` separate the reference encode from
+   `prepare_s`, which also covers base64 decode and text validation.
+
+`MODAL_S2_PAGE_LOG` is read on both sides: unset means on,
+`0`/`off`/`false`/`no` silences it. Nothing here changes a call, a pack, a
+timeout or a sound; the cost is one `JSON.stringify` of a small object per
+page. Both loggers swallow their own failures, because a page that already
+rendered must not be failed by its logger.
 
 ---
 

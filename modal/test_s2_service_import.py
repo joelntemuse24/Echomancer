@@ -628,6 +628,107 @@ def test_batch_handler_runs_every_gpu_call_on_the_owner_thread(
         worker.gpu.close()
 
 
+def test_batch_performance_carries_the_host_report(service, stub_master, monkeypatch):
+    """The page log has to say *which* container, not only how slow it was.
+
+    A page that renders at 8.8x on one container and 32x on another is
+    otherwise indistinguishable from a wider page or a codec that did not
+    overlap. `host` is read from the real `/proc` on the machine doing the
+    work, so this asserts the shape rather than any particular CPU.
+    """
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    worker = _worker_with_recording_engine(service)
+    worker.host = {
+        "cloud": "modal",
+        "cpu_model": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz",
+        "gpu": "NVIDIA H100 80GB HBM3",
+        "driver": "580.95.05",
+        "cpu_count": 8,
+    }
+    try:
+        response = service.S2CloneWorker.synthesize_batch(
+            worker, _batch_payload(), _FakeRequest("test-token")
+        )
+        performance = response.content["performance"]
+        assert performance["host"]["gpu"] == "NVIDIA H100 80GB HBM3"
+        assert performance["host"]["driver"] == "580.95.05"
+        assert performance["page_rows"] == 2
+        assert performance["rows_errored"] == 0
+        assert "call_id" in performance
+        # The split the page log prints. Each of these has to be a real number,
+        # not a placeholder, or a slow page cannot be attributed.
+        for field in (
+            "prepare_s",
+            "generate_s",
+            "codec_s",
+            "encode_s",
+            "call_s",
+            "batch_width",
+            "snapshot_age_s",
+            "truncated_units",
+            "reference_cached",
+        ):
+            assert field in performance, field
+        assert performance["snapshot_age_s"] == 12.5
+        # `prepare_s` must cover the reference encode, and `ref_encode_s` must
+        # be a slice of it rather than a second, overlapping clock.
+        assert 0 <= performance["ref_encode_s"] <= performance["prepare_s"]
+    finally:
+        worker.gpu.close()
+
+
+def test_batch_performance_survives_a_container_with_no_host_report(
+    service, stub_master, monkeypatch
+):
+    """A restored container from a build before this field reports `None`."""
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    worker = _worker_with_recording_engine(service)
+    assert not hasattr(worker, "host")
+    try:
+        response = service.S2CloneWorker.synthesize_batch(
+            worker, _batch_payload(), _FakeRequest("test-token")
+        )
+        assert response.content["performance"]["host"] is None
+    finally:
+        worker.gpu.close()
+
+
+def test_the_boot_hook_records_the_host_and_logs_it(service, monkeypatch, capsys):
+    """The report is captured on the serving host, not the snapshotting one.
+
+    `publish` is the plain `@modal.enter()`, which runs after a restore, so it
+    is where the honest machine description belongs: the snapshot hook
+    describes whichever container built the image. The hook is called on a
+    worker stubbed just far enough to reach the host capture — the graph
+    verification and heartbeat it also does are covered by
+    `test_s2_ready_liveness`.
+    """
+    worker = _worker_with_recording_engine(service)
+    try:
+        monkeypatch.setattr(service, "host_report", lambda: {"gpu": "H100", "driver": "1.2.3"})
+        monkeypatch.setattr(type(worker), "_verify_graphs", lambda self: "ok(1)", raising=False)
+        monkeypatch.setattr(
+            type(worker), "_start_heartbeat_timer", lambda self: None, raising=False
+        )
+        monkeypatch.setattr(
+            type(worker), "_heartbeat", lambda self, force=False: None, raising=False
+        )
+        worker.graph_check = "skipped"
+        worker.engine._notes = getattr(worker.engine, "_notes", None)
+        service.S2CloneWorker.publish(worker)
+        assert worker.host == {"gpu": "H100", "driver": "1.2.3"}
+        line = capsys.readouterr().out
+        assert "[S2C] host " in line
+        assert "driver=1.2.3" in line
+        assert worker.ready_at > 0
+    finally:
+        worker.gpu.close()
+
+
 def test_single_section_handler_also_stays_on_the_owner_thread(
     service, stub_master, monkeypatch
 ):

@@ -2777,7 +2777,8 @@ async function runClaimedTick(
                 `cacheSkip=${skippedCached} ` +
                 `containers=${dispatch.containers.join(",") || "-"} ` +
                 `builds=${dispatch.builds.join(",") || "-"} ` +
-                `boot=${dispatch.boot.join(",") || "-"} gen=${dispatch.generateSeconds}s` +
+                `boot=${dispatch.boot.join(",") || "-"} gen=${dispatch.generateSeconds}s ` +
+                `truncated=${dispatch.truncatedUnits} ` +
                 (dispatch.firstLight
                   ? ` first=${dispatch.firstLight.index}:` +
                     `${dispatch.firstLight.staged ? "staged" : "missed"}` +
