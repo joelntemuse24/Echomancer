@@ -496,6 +496,155 @@ def validate_reference_text(text: str | None) -> str:
     return cleaned
 
 
+#: Longest reference clip the prompt can carry, in seconds.
+#:
+#: Staging showed `truncated_units: 2`, which is the model's *frame* cap cutting
+#: a generated section. The same class of silent cut exists on the **input**
+#: side, and it is worse because nothing reports it. A reference becomes codebook
+#: frames at `44100 / 2048` ~ 21.5 frames/s, and the whole prompt (system text +
+#: reference text + reference frames + the unit's text) has to fit
+#: `MAX_SEQ_LEN` (4096). Past that the prompt is *silently* shortened, so the
+#: model is conditioned on a different clip than the one that was uploaded and
+#: the clone drifts, with no error anywhere.
+#:
+#: 20 s is about 431 frames. A unit's text is at most `UNIT_MAX_CHARS` (560),
+#: a few hundred tokens more, so the two together leave well over half of
+#: `MAX_SEQ_LEN` for the generated frames and the history turn. The YouTube
+#: picker already produces 10-40 s clips, so this is the middle of a range the
+#: product actually creates.
+REFERENCE_MAX_SECONDS = 20.0
+
+#: Frames a call must still be able to generate after the prompt is laid down.
+#:
+#: A unit is at most `UNIT_MAX_CHARS` (560) and runs to at most `MAX_NEW_FRAMES`
+#: (1,024) frames. Reserving that means a reference can never pass this check and
+#: then starve the very generation it was uploaded for; a smaller reserve would
+#: let a long reference through and produce a one-word take, which is the silent
+#: failure this exists to prevent.
+REFERENCE_RESERVE_FRAMES = 1_024
+
+#: Frames the codec emits per second of audio. `44100 / 2048`, the same ratio
+#: `MAX_NEW_FRAMES` is calibrated against.
+REFERENCE_FRAMES_PER_SECOND = 44100 / 2048
+
+
+class ReferenceTooLongError(ReferenceClipError):
+    """The reference would have to be silently shortened to fit the prompt."""
+
+    def __init__(self, seconds: float, cap: float = REFERENCE_MAX_SECONDS) -> None:
+        super().__init__(
+            f"reference clip is {seconds:.1f}s; the prompt's context fits at most "
+            f"{cap:.0f}s. Trim the clip rather than letting the prompt cut it."
+        )
+        self.seconds = seconds
+        self.cap = cap
+
+
+def reference_prompt_frames(seconds: float) -> int:
+    """Codebook frames a clip of this length contributes to the prompt."""
+    if seconds <= 0:
+        return 0
+    return int(math.ceil(seconds * REFERENCE_FRAMES_PER_SECOND))
+
+
+def reference_fits_prompt(
+    seconds: float | None,
+    *,
+    max_seq_len: int = 4096,
+    unit_chars: int = 0,
+    history_frames: int = 0,
+    reserve_frames: int = 0,
+) -> tuple[bool, dict]:
+    """Whether a reference of this length leaves room to actually generate.
+
+    A reference that fits `max_seq_len` on its own can still leave nothing for
+    the output: the prompt is consumed before a single frame is generated, and a
+    generation with no room does not fail loudly — it produces a very short or
+    empty take. So this budgets the *whole* prompt:
+
+        fixed text + reference frames + history turn + unit text
+        + `reserve_frames` for the generation
+
+    The character-to-token divisor (3) is pessimistic on purpose: an over-estimate
+    fails a clip the operator can trim, while an under-estimate truncates silently
+    in the container. Returns `(fits, detail)` so a caller logs numbers rather
+    than a bare boolean.
+    """
+    if seconds is None or seconds <= 0:
+        # No duration cannot be proven to fit. The detail still carries every
+        # key a caller logs, so a caller never has to special-case this.
+        return False, {
+            "seconds": seconds,
+            "ref_frames": 0,
+            "text_tokens": max(0, int(unit_chars)) // 3,
+            "history_frames": int(history_frames),
+            "fixed_tokens": 0,
+            "used": 0,
+            "remaining": -1,
+            "reserve_frames": int(reserve_frames),
+            "max_seq_len": int(max_seq_len),
+            "reason": "no duration",
+        }
+    frame_budget = int(max_seq_len)
+    ref_frames = reference_prompt_frames(float(seconds))
+    # ~3 chars/token is a floor for English prose; the Fish tokenizer does
+    # better, which is the safe direction.
+    text_tokens = max(0, int(unit_chars)) // 3
+    # A fixed allowance for the system message, the reference transcript and the
+    # role markers. Measured shape, rounded up.
+    fixed_tokens = 160
+    used = ref_frames + int(history_frames) + text_tokens + fixed_tokens
+    remaining = frame_budget - used
+    fits = remaining >= max(0, int(reserve_frames))
+    return fits, {
+        "seconds": round(float(seconds), 2),
+        "ref_frames": ref_frames,
+        "text_tokens": text_tokens,
+        "history_frames": int(history_frames),
+        "fixed_tokens": fixed_tokens,
+        "used": used,
+        "remaining": remaining,
+        "reserve_frames": int(reserve_frames),
+        "max_seq_len": frame_budget,
+    }
+
+
+def validate_reference_duration(
+    seconds: float | None,
+    *,
+    cap: float = REFERENCE_MAX_SECONDS,
+    max_seq_len: int = 4096,
+    unit_chars: int = 0,
+    history_frames: int = 0,
+    reserve_frames: int = 0,
+) -> dict:
+    """Raise unless this reference can prompt a clone *and* leave room to speak.
+
+    Two separate failures, both of which used to be silent: a clip longer than
+    {@link REFERENCE_MAX_SECONDS} (a product error the operator fixes by
+    trimming), and a clip that fits the cap yet still leaves no room for the
+    generation (a packing error this catches before any GPU time is spent).
+    """
+    if seconds is not None and seconds > cap:
+        raise ReferenceTooLongError(float(seconds), cap)
+    fits, detail = reference_fits_prompt(
+        seconds,
+        max_seq_len=max_seq_len,
+        unit_chars=unit_chars,
+        history_frames=history_frames,
+        reserve_frames=reserve_frames,
+    )
+    if not fits:
+        raise ReferenceClipError(
+            "reference clip leaves no room to generate: "
+            f"{detail['ref_frames']} reference frames + {detail['text_tokens']} text + "
+            f"{detail['history_frames']} history + {detail['fixed_tokens']} fixed = "
+            f"{detail['used']} of {detail['max_seq_len']}, "
+            f"{detail['remaining']} left for {detail['reserve_frames']} required"
+        )
+    return detail
+
+
 # ── sampling ────────────────────────────────────────────────────────────────
 
 
@@ -1092,6 +1241,60 @@ def units_summary(units: list[dict]) -> dict:
 
 
 # ── snapshot identity ───────────────────────────────────────────────────────
+
+
+def kv_cache_bytes(
+    *,
+    batch: int,
+    layers: int,
+    kv_heads: int,
+    head_dim: int,
+    seq_len: int,
+    dtype_bytes: int = 2,
+) -> int:
+    """Bytes one full KV cache occupies, k and v included.
+
+    The figure published for PR 324 as **0.02 GB** left out `kv_heads *
+    head_dim`. A KV cache is per head: a grouped-query model stores `kv_heads`
+    keys and `kv_heads` values of `head_dim` elements, at every layer and every
+    position, for every row. Leaving the head factor out made the cache look
+    free and sent that size investigation at the weights alone.
+
+    Pure on purpose: the arithmetic is testable, and a future model supplies its
+    own config instead of copying a constant between documents.
+    """
+    for label, value in (
+        ("batch", batch),
+        ("layers", layers),
+        ("kv_heads", kv_heads),
+        ("head_dim", head_dim),
+        ("seq_len", seq_len),
+        ("dtype_bytes", dtype_bytes),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(
+                f"kv_cache_bytes needs a positive int {label}, got {value!r}"
+            )
+    return batch * layers * seq_len * kv_heads * head_dim * 2 * dtype_bytes
+
+
+#: The S2-Pro cache shape this app runs: `BATCH` rows, 36 layers, 8 KV heads of
+#: width 128 (grouped-query), the engine's rounded 4,104-position cache, bf16.
+#: Only used to report the figure; the container allocates from the real config.
+S2_PRO_KV_SHAPE = {
+    "batch": 32,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "seq_len": 4096 + 8,
+    "dtype_bytes": 2,
+}
+
+
+def kv_cache_gb(**shape) -> float:
+    """`s2_contract.kv_cache_bytes` in GiB, for a log line or a comment."""
+    fields = {**S2_PRO_KV_SHAPE, **shape}
+    return round(kv_cache_bytes(**fields) / 1024**3, 2)
 
 
 def snapshot_fingerprint(parts: dict) -> str:

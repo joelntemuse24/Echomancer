@@ -1698,6 +1698,11 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # S2B_CODEC_TUNING= # 0 keeps weight_norm and rebuilds the codec's causal mask
 # S2B_FAST_DECODE= # 0 calls upstream's fast-transformer step and sampler
 # S2B_BATCHED_PREFILL= # 0 prefills one lane at a time
+# S2B_SNAPSHOT_TRIM=0 # A/B control. Unset: `engine.release_scratch()` runs inside the snapshot hook,
+ # returns allocator-cached blocks to the driver before Modal captures the image, and reports
+ # reserved_before_gb / reserved_after_gb via `status().snapshot_trim`. `0` skips the call.
+# `reset_state` clears the KV cache's values but not its pages; the cache is ~18 GiB at this
+# shape (`s2_contract.kv_cache_gb`), not the 0.02 GB an earlier write-up published.
 # S2B_EOS_CHECK_EVERY= # host sync interval; v9 used 8, v10 uses 16
 # S2B_DAC_MICRO_BATCH= # codec micro-batch; v9 used 8, v10 uses 16
 # S2B_KV_BUCKET=128 # v9's graph rounding. v10 uses (512, 1024, 2048, 4096)
