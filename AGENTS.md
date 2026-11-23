@@ -1689,6 +1689,12 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # MODAL_S2_NARROW_FPS=60 # 1-wide codec fps (~2.8×, ~44 chars/s). Wide batches interpolate up to MODAL_S2_WIDE_FPS.
 # MODAL_S2_WIDE_FPS=190 # 4-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×. A 24-row call uses the 528 chars/s smoke, not this fps.
 # MODAL_S2_BATCH_SIZE= # Explicit rows per call, 1–32. Unset: 32 only after /ready reports r2 AND max_batch_items >= 32, else 24.
+# MODAL_S2_SNAPSHOT_BUILD_FALLBACK= # Off. `1` lets a book take the direct-Fish engine when the
+ # pool is idle AND no recorded snapshot proves a restore, instead of waiting for the GPU. Fish is
+ # the same voice but a different engine and costs 3-5x the H100, so this is opt-in and narrow: it
+ # never fires on an answered warm/starting probe, on a recorded snapshot, or on an unanswered one.
+ # The default is to WAIT, because an idle min_containers=0 pool reports warm_containers: 0 in its
+ # normal resting state and that is not evidence that a placement would compile.
 
 # ── Clone engine on the Modal app (deploy-time; baked into S2C_BUILD) ──────
 # S2C_ENGINE=v9 # v9 (default) is the deployed behaviour. v10 is the staged speedup path.

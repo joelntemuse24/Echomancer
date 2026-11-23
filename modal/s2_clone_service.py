@@ -110,6 +110,7 @@ import base64
 import hashlib
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -742,6 +743,26 @@ class S2CloneWorker:
             self.compile_cache_report = cache.report()
         self.ref_cache: dict[str, tuple] = {}
         self.transcripts: dict[str, str] = {}
+        # Record that this build has a captured snapshot. This runs inside
+        # `enter(snap=True)`, after the self-test passed and the cache
+        # committed, so reaching here means the image about to be captured is
+        # one that can restore. A caller can then tell "idle pool, snapshot
+        # exists" (wait for the restore) from "no snapshot, a placement would
+        # compile" (park, and only then consider the flagged fallback).
+        #
+        # Best-effort on purpose: an unwritable marker costs visibility, and
+        # must not fail the build that is otherwise ready to serve.
+        try:
+            heartbeats[f"snapshot:{_BUILD_ENV['S2C_BUILD']}"] = {
+                "build": _BUILD_ENV["S2C_BUILD"],
+                "state": SNAPSHOT_MARK_NAME,
+                "version": S2C_VERSION,
+                "at": int(time.time()),
+                "compile_s": round(self.compiled_at - self._compile_mark, 1),
+                "engine": ENGINE,
+            }
+        except Exception as err:
+            print(f"[S2C] snapshot marker write failed: {err}")
         print(
             f"[S2C] build={_BUILD_ENV['S2C_BUILD']} "
             f"gpu_thread={self.gpu.thread_ident} "
@@ -1917,6 +1938,74 @@ def _live_containers(build: str, *, registry=None) -> list[dict]:
     return sorted(out, key=lambda row: row.get("at") or 0, reverse=True)
 
 
+#: Where a finished snapshot build leaves its mark. Written by `load` (the
+#: `snap=True` hook) after the self-test passes and the compile cache commits,
+#: so it exists only for a build whose GPU object graph was captured: exactly
+#: the condition that makes the next placement a *restore* rather than a
+#: compile. Deliberately inside the Dict this app already owns, so no new
+#: resource is created and staging cannot write production's marker.
+SNAPSHOT_MARK_NAME = "recorded"
+
+
+def _snapshot_mark(build: str, *, registry=None) -> dict | None:
+    """The recorded-snapshot row for this build, or `None` when there is none.
+
+    This is the honest answer to "would a placement now have to compile?".
+    A `warm_containers: 0` on an idle `min_containers=0` pool cannot answer it:
+    an idle pool with a perfectly good snapshot is *also* zero warm, which is
+    the whole reason `/ready` alone must never decide that a book should be
+    refused a GPU.
+    """
+    store = registry if registry is not None else heartbeats
+    key = f"snapshot:{build}"
+    try:
+        row = store[key]
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    if row.get("build") != build:
+        return None
+    if row.get("state") != SNAPSHOT_MARK_NAME:
+        return None
+    return dict(row)
+
+
+def _starting_containers(running: int, warm: int) -> int:
+    """Containers that are placed but have not finished restoring.
+
+    `/ready` used to report only warm ones, so "nothing placed" and "an H100 is
+    building" looked identical to a caller. They are not: the first is a
+    capacity queue that will resolve itself, the second is minutes of billed
+    GPU time, and only the second is a reason to consider a flagged fallback.
+    Never negative, because a replace can briefly show more warm than running.
+    """
+    return max(0, int(running) - int(warm))
+
+
+def _running_count(warm: int) -> tuple[int, str]:
+    """How many containers of this class are placed, and which source said so.
+
+    The container stats are the only source that sees a container still
+    restoring or compiling (it publishes no heartbeat yet), so a heartbeat count
+    alone would report "nothing placed" for an H100 that is busy building. A
+    stats read that fails is a lower bound, not a guess, and the source name
+    travels with it so a caller can tell.
+    """
+    try:
+        worker = S2CloneWorker()
+        for name in ("get_current_stats", "stats"):
+            fn = getattr(worker, name, None)
+            if not callable(fn):
+                continue
+            count = running_container_count(fn())
+            if count is not None:
+                return int(count), name
+    except Exception as err:
+        print(f"[S2C] /ready container stats unavailable: {err}", file=sys.stderr)
+    return int(warm), "heartbeats"
+
+
 @app.function(
     image=ready_image,
     cpu=0.125,
@@ -1947,9 +2036,25 @@ def ready(request: Request):
         raise HTTPException(status_code=401, detail="unauthorized")
     build = _BUILD_ENV["S2C_BUILD"]
     live = _live_containers(build)
+    mark = _snapshot_mark(build)
+    # Containers that are placed but have not finished restoring. The container
+    # stats are the only source that sees a container which is still compiling
+    # (it publishes no heartbeat yet), so a heartbeat count alone would report
+    # "nothing placed" for an H100 that is busy building.
+    running, running_source = _running_count(len(live))
     payload = {
         "ready": bool(live),
         "warm_containers": len(live),
+        # `starting_containers` is what makes "nothing placed" distinguishable
+        # from "an H100 is restoring or building". A book may wait for the
+        # first; only the second is worth considering a flagged fallback for.
+        "starting_containers": _starting_containers(running, len(live)),
+        "running_source": running_source,
+        # Whether this build has a recorded snapshot. `null` means the marker
+        # is absent, which on its own is not proof that a placement would
+        # compile — a build from before this field has no marker either.
+        "snapshot_recorded": bool(mark),
+        "snapshot_recorded_at": (mark or {}).get("at"),
         "max_containers": _max_containers(),
         "lanes": _LIMITS["lanes"],
         "cpu": _BUILD_ENV["S2C_CPU"],

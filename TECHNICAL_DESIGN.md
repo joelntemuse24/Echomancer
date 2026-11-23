@@ -1708,6 +1708,54 @@ tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
 
 ---
 
+### The snapshot gate (`modal-clone-snapshot-gate.ts`) and the KV-cache figure
+
+**An idle pool is not a proved-cold pool.** `/ready` reports `warm_containers`
+as only the containers that have *finished restoring*, so a `min_containers=0`
+app at rest — every container scaled away — answers exactly
+`ready: false, warm_containers: 0`. That is the app's normal state, not evidence
+that the next placement would compile.
+
+A gate built on that answer (`provedCold = !ready && sawWarmCount && warm <= 0`,
+written up for PR 324) therefore refuses the H100 for the first book after any
+idle period and routes it to hosted Fish at **3–5×** the cost, which is what the
+self-hosted path exists to avoid.
+
+The replacement reads the two signals that actually answer the question:
+
+| `/ready` field | What it distinguishes |
+|---|---|
+| `starting_containers` = `running − warm` | "nothing placed" from "an H100 is restoring or building". The expensive work is already underway in the second case, so switching engines would add a second bill, not save the first |
+| `snapshot_recorded` / `snapshot_recorded_at` | whether this build has a captured snapshot, so a placement restores. Written inside `@modal.enter(snap=True)` after the self-test and the compile-cache commit, so it exists only for a build that can restore |
+
+`decideSnapshotGate` then answers `use-gpu` (warm, or starting), `wait`
+(everything else — the default), or `fallback`. Three rules make it safe:
+
+- **Waiting is the default for every uncertain answer.** A book that waits costs
+  wall clock only, and the worker's own `MODAL_S2_DEFER_MS` clock already
+  reaches the documented fallback after 25 minutes of genuinely nothing.
+- **An absent marker is `unknown`, never `no`.** A build from before the field,
+  a failed Dict write, or a deploy that invalidated snapshots without clearing
+  the marker all look the same, and none of them proves a compile.
+- **The fallback is opt-in and narrow.** `MODAL_S2_SNAPSHOT_BUILD_FALLBACK=1`
+  reaches it only for `idle-unknown`; it never fires on a warm or starting
+  probe, on a recorded snapshot, or on a probe that did not answer.
+
+An app-wide cold freeze is also suppressed while a container is starting: a
+restore already underway is not a reason to hold every other book for 30 s.
+
+**The KV cache is ~18 GiB, not 0.02 GB.** The figure published for PR 324
+counted `BATCH × layers × seq_len × 2 (k+v) × 2 B` and stopped, leaving out the
+`kv_heads × head_dim` factor a KV cache is *per head* — a factor of 1,024 at
+this model's shape. `s2_contract.kv_cache_bytes` / `kv_cache_gb` now compute it
+from a shape, so a future model supplies its own config rather than a copied
+constant, and a test pins that the head-less product is exactly the 0.02 GB
+that was wrong. The cache is still not what dominates a ~70 GB snapshot (the
+weights and captured CUDA-graph buffers are), but "the KV cache is free" is not
+a safe assumption to reason from.
+
+---
+
 ## 15. Audio formats & silence guards
 
 ### `src/lib/tts/pcm-wav.ts`

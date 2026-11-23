@@ -99,6 +99,13 @@ GPU = os.environ.get("S2B_GPU", "H100!")
 #: Tensor capacity: KV cache and the decode buffers are allocated for this many
 #: rows. The *active* width of a call is chosen per render (`choose_batch_width`)
 #: and is never larger than this.
+#:
+#: The cache itself is not small, whatever an earlier write-up said: it is
+#: `BATCH x layers x seq_len x kv_heads x head_dim x 2 (k+v) x 2 B`, which at
+#: this model's shape is about 18 GiB (`s2_contract.kv_cache_gb`), not the
+#: 0.02 GB a head-less product gives. It is still not what dominates a 70 GB
+#: snapshot — the weights and the captured CUDA-graph buffers are — but it is
+#: large enough that "the KV cache is free" is not a safe assumption.
 BATCH = int(os.environ.get("S2B_BATCH", "32"))
 MAX_SEQ_LEN = int(os.environ.get("S2B_MAX_SEQ_LEN", "4096"))
 # CUDA graphs remove the per-kernel launch cost that dominates a decode step.
