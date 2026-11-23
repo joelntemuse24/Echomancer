@@ -121,6 +121,10 @@ import {
   S2ControlUnavailable,
   submitThenPoll,
 } from "@/lib/tts/providers/modal-clone-call";
+import {
+  decideSnapshotGate,
+  formatSnapshotGateLog,
+} from "@/lib/tts/providers/modal-clone-snapshot-gate";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -1095,10 +1099,21 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
   warmContainers: number;
   build: string | null;
   audioTransport: ModalCloneAudioTransport;
+  /** Containers placed but not yet restored. `null` when the build does not say. */
+  startingContainers: number | null;
+  /** Whether the build reported a recorded snapshot. `null` when it does not say. */
+  snapshotRecorded: boolean | null;
 }> {
   if (!modalCloneReadyProbeEnabled()) {
     // No probe: assume reachable and let the call's own timeout decide.
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      startingContainers: null,
+      snapshotRecorded: null,
+    };
   }
   let url: string | null;
   try {
@@ -1110,12 +1125,26 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       "[modal-clone] ready probe disabled:",
       err instanceof Error ? err.message : err
     );
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      startingContainers: null,
+      snapshotRecorded: null,
+    };
   }
   if (!url) {
     // Only the batch endpoint is configured. There is nothing to probe, so do
     // not invent `${batch}/ready` — that host has no such route.
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      startingContainers: null,
+      snapshotRecorded: null,
+    };
   }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
@@ -1129,28 +1158,55 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     });
   } catch {
     signal?.throwIfAborted();
-    return { ready: false, warmContainers: 0, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: false,
+      warmContainers: 0,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      startingContainers: null,
+      snapshotRecorded: null,
+    };
   }
   if (response.status === 404) {
     // Ready route not deployed: the deploy predates it. Stay optimistic.
     await response.body?.cancel().catch(() => undefined);
-    return { ready: true, warmContainers: -1, build: null, audioTransport: modalCloneAudioTransport() };
+    return {
+      ready: true,
+      warmContainers: -1,
+      build: null,
+      audioTransport: modalCloneAudioTransport(),
+      startingContainers: null,
+      snapshotRecorded: null,
+    };
   }
   const raw = await response.text().catch(() => "");
   let ready = response.ok;
   let warm = 1;
   let build: string | null = null;
+  let starting: number | null = null;
+  let snapshotRecorded: boolean | null = null;
   if (raw) {
     try {
       const body = JSON.parse(raw) as {
         ready?: boolean;
         warm_containers?: number;
+        starting_containers?: number;
+        snapshot_recorded?: boolean;
         build?: string;
         audio_transport?: string;
         max_batch_items?: number;
       };
       if (body.ready === false) ready = false;
       if (typeof body.warm_containers === "number") warm = body.warm_containers;
+      // Only a real number is a report. A build from before this field says
+      // nothing, and `null` is how the gate tells "not reported" from "zero"
+      // — the difference that made an idle pool look cold.
+      if (typeof body.starting_containers === "number") {
+        starting = Math.max(0, Math.floor(body.starting_containers));
+      }
+      if (typeof body.snapshot_recorded === "boolean") {
+        snapshotRecorded = body.snapshot_recorded;
+      }
       if (typeof body.build === "string") build = body.build;
       if (Object.prototype.hasOwnProperty.call(body, "audio_transport")) {
         noteModalCloneAudioTransport(body.audio_transport);
@@ -1165,7 +1221,14 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
       ready = response.ok;
     }
   }
-  return { ready, warmContainers: warm, build, audioTransport: modalCloneAudioTransport() };
+  return {
+    ready,
+    warmContainers: warm,
+    build,
+    audioTransport: modalCloneAudioTransport(),
+    startingContainers: starting,
+    snapshotRecorded,
+  };
 }
 
 /**
@@ -1567,14 +1630,55 @@ async function assertModalCloneReady(
   }
   const inflight = jobId ? await inflightCloneCallsExcluding(jobId) : 0;
   const state = await modalClonePoolReady(signal);
+  // What this probe actually proves. `warm_containers` counts only containers
+  // that have *finished restoring*, so an idle `min_containers=0` pool reports
+  // zero — the normal resting state, not evidence that a placement would
+  // compile. `decideSnapshotGate` turns the probe into one of: place now (a
+  // container is warm or a restore is already underway), wait (the default, and
+  // what a book should do about an idle pool), or the flagged fallback.
+  //
+  // `warmContainers < 0` is this module's "no probe configured" sentinel, and
+  // it is treated as *not answered* so it cannot become a fallback.
+  const gateProbe = {
+    answered: state.warmContainers >= 0,
+    routePresent: state.warmContainers >= 0,
+    ready: state.ready,
+    warmContainers: state.warmContainers,
+    startingContainers: state.startingContainers,
+    snapshotRecorded: state.snapshotRecorded,
+    build: state.build,
+  };
+  const gate = decideSnapshotGate(gateProbe);
+  if (gate.action !== "use-gpu") {
+    console.log(formatSnapshotGateLog(gateProbe, gate));
+  }
+  if (gate.action === "fallback") {
+    // Explicitly opted in with `MODAL_S2_SNAPSHOT_BUILD_FALLBACK=1`. The same
+    // voice, a different and more expensive engine; never automatic.
+    throw new ModalCloneColdError(
+      "Modal clone pool is idle with no recorded snapshot (flagged fallback)",
+      COLD_BACKOFF_MS,
+      "pool"
+    );
+  }
   if (!state.ready) {
-    const appWide = state.warmContainers <= 0 && inflight === 0;
+    // A book waits. That is the whole point: waiting costs wall clock, while
+    // guessing costs either a compile or a 3-5x fallback.
+    //
+    // The app-wide clock is only for a pool with *nothing* happening. A
+    // container that is starting is a restore already underway, and freezing
+    // every other book for 30 s on that count is the "idle looks cold" mistake
+    // in its milder form.
+    const starting = (state.startingContainers ?? 0) > 0;
+    const appWide = state.warmContainers <= 0 && inflight === 0 && !starting;
     // No job id keeps the process-wide clock, including a probe that
     // omitted `warm_containers` (the parser then reports 1).
     if (!jobId || appWide) rememberModalCloneCold();
     if (jobId) rememberModalCloneCold(jobId);
     throw new ModalCloneColdError(
-      "Modal clone pool has no warm container",
+      starting
+        ? "Modal clone pool is starting a container"
+        : "Modal clone pool has no warm container",
       COLD_BACKOFF_MS,
       "pool"
     );

@@ -1094,6 +1094,60 @@ def units_summary(units: list[dict]) -> dict:
 # ── snapshot identity ───────────────────────────────────────────────────────
 
 
+def kv_cache_bytes(
+    *,
+    batch: int,
+    layers: int,
+    kv_heads: int,
+    head_dim: int,
+    seq_len: int,
+    dtype_bytes: int = 2,
+) -> int:
+    """Bytes one full KV cache occupies, k and v included.
+
+    The figure published for PR 324 as **0.02 GB** left out `kv_heads *
+    head_dim`. A KV cache is per head: a grouped-query model stores `kv_heads`
+    keys and `kv_heads` values of `head_dim` elements, at every layer and every
+    position, for every row. Leaving the head factor out made the cache look
+    free and sent that size investigation at the weights alone.
+
+    Pure on purpose: the arithmetic is testable, and a future model supplies its
+    own config instead of copying a constant between documents.
+    """
+    for label, value in (
+        ("batch", batch),
+        ("layers", layers),
+        ("kv_heads", kv_heads),
+        ("head_dim", head_dim),
+        ("seq_len", seq_len),
+        ("dtype_bytes", dtype_bytes),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(
+                f"kv_cache_bytes needs a positive int {label}, got {value!r}"
+            )
+    return batch * layers * seq_len * kv_heads * head_dim * 2 * dtype_bytes
+
+
+#: The S2-Pro cache shape this app runs: `BATCH` rows, 36 layers, 8 KV heads of
+#: width 128 (grouped-query), the engine's rounded 4,104-position cache, bf16.
+#: Only used to report the figure; the container allocates from the real config.
+S2_PRO_KV_SHAPE = {
+    "batch": 32,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "seq_len": 4096 + 8,
+    "dtype_bytes": 2,
+}
+
+
+def kv_cache_gb(**shape) -> float:
+    """`s2_contract.kv_cache_bytes` in GiB, for a log line or a comment."""
+    fields = {**S2_PRO_KV_SHAPE, **shape}
+    return round(kv_cache_bytes(**fields) / 1024**3, 2)
+
+
 def snapshot_fingerprint(parts: dict) -> str:
     """Stable id for the code/config a memory snapshot was captured against.
 
