@@ -13,6 +13,53 @@ import { shouldSectionMaster } from "@/lib/tts/section-master";
 import type { JobSegment } from "@/lib/tts/types";
 import { cpuTaskId, enqueueCpuTask, getCpuTask } from "@/lib/cpu/tasks";
 import { readWhisperVerdict, runCpuTask } from "@/lib/cpu/runner";
+import {
+  decideMasterOutcome,
+  masterAcceptRetries,
+} from "@/lib/cpu/master-tail";
+
+/**
+ * Run one CPU task, and re-post it while the answer is "a container has the
+ * placement but has not heartbeated yet".
+ *
+ * `runCpuTask` returns `accepted` as soon as the accept window ends, which on a
+ * cold CPU container is the normal first answer: the placement lease is held,
+ * the work is starting, and there is nothing wrong with the section. The old
+ * code treated that as "mastering is backlogged, come back next tick", and with
+ * a 15 s drain interval that is one whole tick per cold start — the tail this
+ * module exists to shorten.
+ *
+ * Re-posting the same task id is safe by construction and cannot duplicate the
+ * work:
+ *
+ *  - `claimCpuTask` only succeeds when the previous lease has expired, so a
+ *    live owner is never displaced;
+ *  - `resultFromRow` returns `accepted` while the lease is still live, so a
+ *    re-post reads the same row instead of starting a second pass;
+ *  - the row is owner-fenced, so a late completion from the first placement
+ *    still publishes exactly once.
+ *
+ * `TTS_MASTER_ACCEPT_RETRIES=0` restores the single-post behaviour.
+ */
+async function runCpuTaskWithAcceptRetry(
+  taskId: string,
+  opts?: { retries?: number; sleep?: (ms: number) => Promise<void> }
+): Promise<{ result: Awaited<ReturnType<typeof runCpuTask>>; retries: number }> {
+  const retries = Math.max(0, opts?.retries ?? masterAcceptRetries());
+  const sleep =
+    opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let result = await runCpuTask(taskId);
+  let used = 0;
+  while (result === "accepted" && used < retries) {
+    // The container has the placement. A short pause keeps this from becoming a
+    // poll loop; the accept window itself is what bounds each attempt.
+    await sleep(1_000);
+    used += 1;
+    result = await runCpuTask(taskId);
+  }
+  return { result, retries: used };
+}
+
 
 export interface SectionCommit {
   ready: boolean;
@@ -88,6 +135,10 @@ export async function commitSectionAudio(input: {
     });
     const ran = await runCpuTask(whisperId);
     if (ran !== "done") {
+      // A transcript check that has not answered is not a rejected take. The
+      // raw object is stored and the row stays `mastering`, so the next tick
+      // (or `promoteFinishedSections`) finishes it. `accepted` is the cold
+      // container holding the placement, which is why it is not a failure.
       return {
         ready: false,
         path: "",
@@ -136,7 +187,10 @@ export async function commitSectionAudio(input: {
     outputPath: output,
     payload: { chain: input.chain, extension: input.extension },
   });
-  const ran = await runCpuTask(masterId);
+  // A cold CPU container answers `accepted` (placement held, not yet
+  // heartbeating) before it answers `done`. Giving up there cost one whole
+  // drain interval per cold start, which is the tail this fixes.
+  const { result: ran } = await runCpuTaskWithAcceptRetry(masterId);
   if (ran === "unavailable") {
     return {
       ready: false,
@@ -147,7 +201,35 @@ export async function commitSectionAudio(input: {
       unavailable: true,
     };
   }
-  if (ran !== "done" || !(await fileExists(output))) {
+  const master = await getCpuTask(masterId);
+  // A `done` row is required: an object at the output key without the row
+  // being done is a half-written upload from a lost lease, and publishing it
+  // would ship a truncated section.
+  const outputExists = (await fileExists(output)) && Boolean(master && master.status === "done");
+  const outcome = decideMasterOutcome({
+    result: ran,
+    attemptsLeft: 0,
+    outputExists,
+    error: master?.error_message ?? null,
+  });
+  if (outcome.kind === "failed") {
+    // A real master failure (ffmpeg exited, or the pass returned nothing).
+    // The caller keeps the raw take and does not publish the section.
+    console.warn(
+      `[cpu] master ${masterId} failed: ${outcome.reason}`
+    );
+    return {
+      ready: false,
+      path: "",
+      rawPath: raw.path,
+      contentType: input.contentType,
+      mastered: false,
+    };
+  }
+  if (outcome.kind === "queued") {
+    // Placed and still running, or the host was saturated before it started.
+    // Either way the raw take is stored and the section is not published as
+    // mastered: `promoteFinishedSections` finishes it on a later tick.
     return {
       ready: false,
       path: "",

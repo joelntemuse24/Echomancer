@@ -1752,6 +1752,16 @@ EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNA
 # EXTRACT_CHILD_RECYCLE_MB=1024 # Replace a warm child after a read that leaves the heap this high
 # EXTRACT_CHILD_TIMEOUT_MS=600000 # Kill a warm child that has not finished one extract. The upload then follows the stall path.
 # TTS_MASTER_SKIP=1 # disable the second-pass remaster (the delivery encode still runs)
+# TTS_MASTER_SETTLE_MS=10000 # How long one clone tick waits, between two promote passes, for a
+ # master it already placed. A master landing inside it is published in that tick, instead
+ # of costing CPU_YIELD_SEC plus the 15 s drain (~17 s measured, once per page boundary).
+ # 0 disables the settle; clamped 0..30000. Another runnable book always wins: the tick
+ # yields instead of settling. This does not wait for a whole master pass and does not
+ # change the loudnorm pass, which is not redundant with the container's spectral chain.
+# TTS_MASTER_ACCEPT_RETRIES=2 # Re-posts a master whose dispatch answered `accepted` (the
+ # container holds the placement but has not heartbeated), up to this many times, before
+ # treating it as backlog. 0 restores the single post. Safe: `claimCpuTask` only takes a
+ # row whose lease expired, so a retry cannot run a second master for the same section.
 # TTS_SECTION_MASTER=0 # finish the book with the full loudnorm encode (rollback)
 # TTS_VOICE_EQ=0 # omit the shared 9-band voice curve from section mastering. Unset: on. TTS_MASTER_SKIP=1 is loudnorm only and also leaves the curve off.
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)

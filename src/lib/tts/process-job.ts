@@ -163,6 +163,11 @@ import {
 import { planKokoroBookLanes, runRollingRenderPool } from "@/lib/tts/kokoro-pool";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
+import {
+  logTailReport,
+  masterSettleMs,
+  shouldSettleMasters,
+} from "@/lib/cpu/master-tail";
 import { holdBookConcat } from "@/lib/cpu/runner";
 import { commitSectionAudio, promoteFinishedSections, recoverOrphanRawSections } from "@/lib/cpu/section-publish";
 import { requeueExpiredCpuTasks } from "@/lib/cpu/tasks";
@@ -1340,14 +1345,73 @@ async function deferForColdClonePool(opts: {
 }
 
 /**
+ * Promote masters this tick already placed, and give them one short settle.
+ *
+ * Yielding is preserved: the caller still throws `CpuBacklogError` when a
+ * master is outstanding, so another book still gets the host. The settle exists
+ * only so a master that lands within {@link masterSettleMs} is published in
+ * **this** tick rather than after `CPU_YIELD_SEC` plus the drain interval —
+ * ~17 s of book wall time that was pure timer, once per page boundary.
+ *
+ * `promoteFinishedSections` reads the rows and publishes whatever is done; it
+ * is a handful of reads plus a `fileExists`, not a second master.
+ */
+async function settleOutstandingMasters(opts: {
+  jobId: string;
+  lease: string;
+  segments: JobSegment[];
+  stopAt?: number;
+}): Promise<{ segments: JobSegment[]; promoted: number }> {
+  let segments = opts.segments;
+  const settleMs = masterSettleMs();
+  const anotherBookWaiting = await hasOtherRunnableTakehome(opts.jobId).catch(() => false);
+  if (
+    !shouldSettleMasters({
+      outstanding: segments.filter((segment) => segment.status === "mastering").length,
+      anotherBookWaiting,
+      stopAt: opts.stopAt ?? null,
+      now: Date.now(),
+      settleMs,
+    })
+  ) {
+    return { segments, promoted: 0 };
+  }
+  const startedAt = Date.now();
+  let promoted = 0;
+  // One settle window, with two promote passes: one now (a master that finished
+  // while the page's last row was being staged) and one after the settle (one
+  // that was seconds away).
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (pass > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, settleMs)));
+    }
+    const next = await promoteFinishedSections(opts.jobId, segments);
+    if (next.unavailable) break;
+    if (next.changed) {
+      segments = next.segments;
+      promoted = segments.filter((segment) => segment.status === "ready").length;
+      await writeWithLease(
+        opts.jobId,
+        opts.lease,
+        `UPDATE jobs SET segments_json = ?, updated_at = unixepoch()
+         WHERE id = ? AND processing_lease_token = ?`,
+        [JSON.stringify(segments), opts.jobId, opts.lease]
+      );
+    }
+    if (!segments.some((segment) => segment.status === "mastering")) break;
+    if (Date.now() - startedAt >= settleMs && pass > 0) break;
+  }
+  return { segments, promoted };
+}
+
+/**
  * Whether direct Fish can serve as the clone engine.
  *
  * It is the one honest fallback: Fish trained the reference, so it speaks the
  * same voice. Without a key there is no second engine, and the book keeps
  * waiting on the pool rather than being handed a different narrator.
  */
-export function fishFallbackAvailable(
-  env: NodeJS.ProcessEnv = process.env
+export function fishFallbackAvailable(  env: NodeJS.ProcessEnv = process.env
 ): boolean {
   return Boolean(
     (env.FISH_API_KEY || env.FISH_AUDIO_API_KEY || "").trim()
@@ -1961,6 +2025,12 @@ async function runClaimedTick(
   }
 
   let segments = parseSegments(job.segments_json);
+  // When this tick's CPU tail began. A tick that renders a page sets this to
+  // the moment the last page's rows were staged; a tick that only promotes
+  // inherited work starts it here. It is what the `[S2 tail]` line measures
+  // against, and what bounds the in-tick wait.
+  let tailStartedAt = Date.now();
+  let gpuStartedAt: number | null = null;
   const recovered = await recoverOrphanRawSections({
     jobId,
     segments,
@@ -2551,6 +2621,11 @@ async function runClaimedTick(
           ): Promise<void> => {
             await writeSectionCache(cacheKeyFor(index), "mp3", audio, "audio/mpeg");
             stagedNow.add(index);
+            // The GPU has handed this row over, so the CPU tail starts now —
+            // not when the whole page's rows are in hand. Mastering is placed
+            // from the publish window below, which runs while the next page is
+            // still rendering.
+            tailStartedAt = Date.now();
             console.log(
               `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
             );
@@ -2679,6 +2754,9 @@ async function runClaimedTick(
           };
 
           let dispatch: Awaited<ReturnType<typeof dispatchModalCloneLanes>> | null = null;
+          // When this tick started talking to the GPU. The `[S2 tail]` line
+          // reports it beside the tail so the next measurement has both halves.
+          gpuStartedAt = gpuIndexes.length > 0 ? Date.now() : null;
           // Cache hits and a tick with nothing left to render must not start
           // a restore. A real miss still starts one before the GPU call.
           if (
@@ -3411,8 +3489,40 @@ async function runClaimedTick(
    * treats as "not the finished book", and `error_message` is where a person
    * looks for why.
    */
+  // The CPU tail. Yielding here is the fairness rule and it stays: another
+  // book's turn is worth more than this tick's last few seconds. What changes
+  // is that the tick does not hand back to *a timer* when the master it placed
+  // is about to land — it promotes once more after a short settle, so a master
+  // finishing inside it is published now instead of after `CPU_YIELD_SEC` plus
+  // a 15 s drain (~17 s measured, once per page boundary).
   if (cpuBacklog || segments.some((segment) => segment.status === "mastering")) {
-    throw new CpuBacklogError();
+    const settled = await settleOutstandingMasters({
+      jobId,
+      lease,
+      segments,
+      stopAt,
+    });
+    segments = settled.segments;
+    if (cpuBacklog || segments.some((segment) => segment.status === "mastering")) {
+      logTailReport({
+        jobId,
+        sections: total,
+        gpuWallMs: gpuStartedAt != null ? Math.max(0, tailStartedAt - gpuStartedAt) : 0,
+        tailMs: Date.now() - tailStartedAt,
+        placed: 0,
+        promoted: settled.promoted,
+        queued: segments.filter((segment) => segment.status === "mastering").length,
+        failed: segments.filter((segment) => segment.status === "failed").length,
+        acceptRetries: 0,
+      });
+      throw new CpuBacklogError();
+    }
+    if (settled.promoted > 0) {
+      console.log(
+        `[Job ${jobId}] cpu tail settled in-tick (${settled.promoted} section(s) promoted, ` +
+          `${Math.round((Date.now() - tailStartedAt) / 1000)}s)`
+      );
+    }
   }
 
   const complete = allIndexesReady(segments, total);
