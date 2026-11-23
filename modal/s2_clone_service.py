@@ -146,6 +146,7 @@ from s2_batch import (
 )
 from s2_contract import (
     BOOT_RESTORED,
+    REFERENCE_RESERVE_FRAMES,
     BOOT_UNKNOWN,
     CLAUSE_PAUSE_S,
     GpuExecutor,
@@ -173,6 +174,7 @@ from s2_contract import (
     split_long_text,
     units_summary,
     validate_reference_audio,
+    validate_reference_duration,
     validate_reference_text,
     warm_reference_wav,
 )
@@ -726,9 +728,17 @@ class S2CloneWorker:
             # filled KV cache is meaningless after restore. Drop both *after*
             # every warm-up call, so the captured image is clean.
             self.engine.reset_state()
+            # `reset_state` clears values; it does not hand the blocks back.
+            # The warm-up's scratch is therefore still reserved, and every
+            # cached block is memory Modal captures. Returns the reserved
+            # before/after pair so the trim is a measurement.
+            held["trim"] = self.engine.release_scratch()
 
         self.boot_started = time.time()
         self.gpu.start(init, timeout=float(os.environ.get("S2C_INIT_TIMEOUT", "1800")))
+        # Captured with the snapshot and reprinted by `status()`, so a restore
+        # can report what the build's allocator looked like.
+        self.snapshot_trim = held.get("trim")
         cache = held.get("cache")
         if cache is not None:
             # Still inside enter(snap=True): Modal snapshots after this hook
@@ -977,6 +987,11 @@ class S2CloneWorker:
             "calls": self.calls,
             "refs_cached": len(self.ref_cache),
             "graphs": getattr(self, "graph_check", None),
+            # What the build's allocator looked like immediately before the
+            # snapshot was captured: reserved before/after the trim, and how
+            # much the trim returned. A restore reprints the frozen pair, so
+            # "is the image still 70 GB" is answerable without a new GPU run.
+            "snapshot_trim": getattr(self, "snapshot_trim", None),
             "compile_cache_hit": (
                 getattr(self, "compile_cache_report", None) or {}
             ).get("hit"),
@@ -1205,7 +1220,24 @@ class S2CloneWorker:
         t0 = time.time()
         try:
             audio = base64.b64decode(ref_b64)
-            validate_reference_audio(audio)
+            # Duration is checked here, before any GPU time, because a reference
+            # past the prompt's context is *silently* shortened inside the
+            # container: the model is then conditioned on a different clip than
+            # the one that was uploaded, and the clone drifts with no error
+            # anywhere. `truncated_units: 2` on staging was the same class of
+            # cut on the output side; this is the input side.
+            ref_stats = validate_reference_audio(audio)
+            validate_reference_duration(
+                ref_stats.get("seconds"),
+                max_seq_len=MAX_SEQ_LEN,
+                unit_chars=UNIT_MAX_CHARS,
+                # One history turn (the row's first take) plus room for the
+                # frames this call has to generate. A reference that fits the
+                # cap but leaves nothing to speak is a packing error, not a
+                # product one, and it fails here rather than producing a
+                # one-word take.
+                reserve_frames=REFERENCE_RESERVE_FRAMES,
+            )
             sampling = parse_sampling(payload.get("sampling"), DEFAULT_SAMPLING)
         except (ReferenceClipError, ReferenceTextError) as err:
             body, status = _error("reference_invalid", str(err), 422)

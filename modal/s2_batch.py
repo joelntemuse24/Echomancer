@@ -2234,6 +2234,12 @@ class _BatchEngine:
         A filled KV cache and the last decoded audio are worth hundreds of MB
         of snapshot pages that mean nothing after a restore, and the cache's
         contents are one customer's speech. Both are cheap to rebuild.
+
+        The KV cache is **~18 GiB** at this shape (`kv_cache_gb`), not the
+        0.02 GB an earlier write-up published: a cache is per head, and
+        leaving `kv_heads x head_dim` out of the product makes it look free.
+        Zeroing it does not return the pages — the tensors are still allocated
+        and still captured — which is why the allocator is drained afterwards.
         """
         self._last_audio = {}
         try:
@@ -2245,6 +2251,60 @@ class _BatchEngine:
                 cache.v_cache.zero_()
         except Exception as err:  # clearing is an optimisation, not a requirement
             print(f"[S2B] cache clear skipped: {err}")
+
+    def release_scratch(self) -> dict:
+        """Return allocator-cached blocks to the driver before the snapshot.
+
+        `reset_state` clears *values*; it does not free the blocks that held
+        them. The warm-up leaves scratch behind (the narrow and wide warm
+        renders, the long render, the codec micro-batches), and every cached
+        block is memory Modal captures into the image. `empty_cache` returns
+        the unoccupied ones, so the snapshot holds the weights and the captured
+        CUDA-graph pools rather than the high-water mark of a warm-up.
+
+        Safe to call on the GPU thread only — it touches the allocator, and the
+        restored context belongs to that thread. Never raises: a container that
+        cannot report its allocator is still a container that can speak, and a
+        failed trim must not fail the build.
+
+        Returns the `reserved_before_gb` / `reserved_after_gb` pair so the trim
+        is a measurement rather than a claim. `S2B_SNAPSHOT_TRIM=0` is the A/B
+        control and skips the call.
+        """
+        out: dict = {"trimmed": False}
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return out
+            if os.environ.get("S2B_SNAPSHOT_TRIM", "1").strip() == "0":
+                out["reason"] = "disabled"
+                return out
+            before = torch.cuda.memory_reserved() / 1024**3
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            # `ipc_collect` reclaims handles held by other processes; on a
+            # single-process container it is a no-op, and a failure there is
+            # not worth surfacing.
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+            after = torch.cuda.memory_reserved() / 1024**3
+            out.update(
+                trimmed=True,
+                reserved_before_gb=round(before, 2),
+                reserved_after_gb=round(after, 2),
+                freed_gb=round(max(0.0, before - after), 2),
+            )
+            print(
+                f"[S2B] snapshot trim: reserved {before:.2f} -> {after:.2f} GiB "
+                f"(freed {out['freed_gb']:.2f})"
+            )
+        except Exception as err:  # a trim is an optimisation, never a requirement
+            out["reason"] = f"{type(err).__name__}: {err}"
+            print(f"[S2B] snapshot trim skipped: {out['reason']}")
+        return out
 
     def selftest(self) -> dict:
         """Exercise the allocator paths a request thread used to fail on.

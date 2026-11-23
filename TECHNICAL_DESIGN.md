@@ -1708,6 +1708,39 @@ tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
 
 ---
 
+### Snapshot rebuild cost and the reference cap
+
+**A deploy of `s2_clone_service.py` rebuilds the GPU snapshot even when the GPU
+code did not change.** `render_batch` lives on `S2CloneWorker`, which has
+`enable_memory_snapshot=True`, and Modal keys a snapshot to the function's code
+and configuration — so editing the CPU-only `s2_control` handler or the `/ready`
+payload invalidates it too. That is why ~92% of GPU spend since 17 November was
+rebuilds. The plan for splitting the two apps, the exact deploy order, and what
+each step needs is `docs/s2-gpu-app-split-runbook.md`; the parts that can be
+validated without a GPU are in this branch.
+
+**`s2_batch.release_scratch()`** runs inside `@modal.enter(snap=True)` after
+`reset_state()` and returns allocator-cached blocks to the driver before Modal
+captures the image. `reset_state` clears the KV cache's *values*; it does not
+free the pages, so the warm-up's scratch would otherwise be captured too. It
+reports `reserved_before_gb` / `reserved_after_gb` through
+`status().snapshot_trim`, so the trim is a measurement rather than a claim.
+`S2B_SNAPSHOT_TRIM=0` is the A/B control. It never raises: a container that
+cannot report its allocator is still a container that can speak.
+
+**A reference clip is capped, loudly, at `REFERENCE_MAX_SECONDS` (20 s).** A
+reference becomes codebook frames at `44100/2048` ≈ 21.5 frames/s and the whole
+prompt must fit `MAX_SEQ_LEN`; past that the prompt is *silently* shortened, so
+the model is conditioned on a different clip than the one that was uploaded and
+the clone drifts with no error anywhere. `validate_reference_duration` also
+requires that `REFERENCE_RESERVE_FRAMES` (1,024) frames remain for the
+generation, so a clip inside the cap cannot still starve the unit it was
+uploaded for. Both checks run beside `validate_reference_audio` in
+`_synthesize_batch_body`, before any GPU work. Staging's `truncated_units: 2`
+was the same class of cut on the *output* side; this is the input side.
+
+---
+
 ## 15. Audio formats & silence guards
 
 ### `src/lib/tts/pcm-wav.ts`
