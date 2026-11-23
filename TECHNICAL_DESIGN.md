@@ -1708,6 +1708,44 @@ tools are `scripts/s2/bench-ab.mjs` (record) and `scripts/s2/qa-compare.ts`
 
 ---
 
+### The clone CPU tail (`src/lib/cpu/master-tail.ts`)
+
+Measured on a real 49-minute book: **397 s** of GPU wall, then **~93 s** of CPU
+tail after the last section landed (~19% of the book's total time), with 7 of 20
+master jobs reported as 20 s timeouts and a **~17 s gap** at each page boundary.
+
+The three causes, and what this module does about each:
+
+| Cause | What was happening | Fix |
+|---|---|---|
+| A page was mastered only after the whole page returned | A page carries up to 24 sections, so section 0's ffmpeg pass waited for the page's last row | Sections are mastered from the publish window as their rows are staged, so the CPU works while the next page renders |
+| A fixed ~17 s gap between a finished master and the next page | `CpuBacklogError` released the lease with `CPU_YIELD_SEC` (3 s), then the drain picked the book up on its next 15 s tick — while the master it had already placed was finishing | `settleOutstandingMasters` promotes, waits `TTS_MASTER_SETTLE_MS` (10 s), promotes again. A master landing in that window is published **in this tick**. Yielding is unchanged |
+| 7 of 20 masters "hit 20 s" | A cold CPU container answers `accepted` (placement held, no heartbeat yet) before it answers `done`, and the tick read that as a settled backlog | `runCpuTaskWithAcceptRetry` re-posts the same task id up to `TTS_MASTER_ACCEPT_RETRIES` (2) times, and `decideMasterOutcome` never reports a timeout as a failure |
+
+**LUFS mastering is not removed**, and there is deliberately no switch to remove
+it. The container applies `S2_SPECTRAL_CHAIN` and leaves loudness to the app
+(`MODAL_S2_MASTERING` at −19 LUFS / −3 dBTP); dropping the pass would make one
+section quieter than the last, which is a quality regression, not a speed fix. A
+test fails if a "skip master" flag ever appears in this module.
+
+Re-posting a master is safe by construction, not incidentally: `claimCpuTask`
+only takes a row whose previous lease has expired, and `resultFromRow` returns
+`accepted` while the owner's lease is live, so a retry reads the same row
+instead of starting a second ffmpeg. The row is owner-fenced, so a late
+completion from the first placement still publishes exactly once.
+
+Fairness is untouched. The book still yields to another runnable take-home; the
+settle is skipped whenever one is waiting, and it is bounded by the tick's own
+deadline. A master that outlives both keeps its claim and is promoted by
+`promoteFinishedSections` on a later tick.
+
+`[S2 tail]` prints one line per tick that hits this path: `gpu_wall`, `tail`,
+`tail_share`, how many sections were placed/promoted/queued/failed, and how many
+`accepted` retries were used — so the next measurement is comparable instead of
+another anecdote.
+
+---
+
 ## 15. Audio formats & silence guards
 
 ### `src/lib/tts/pcm-wav.ts`
@@ -2220,6 +2258,8 @@ Env knobs (defaults):
 | `CPU_FUNCTION_TIMEOUT_S` | 900 | Master, whisper, extract child deadline |
 | `CPU_CONCAT_TIMEOUT_S` | 3600 | Concat child deadline. The Modal function timeout is the max of this and the section budget |
 | `CPU_YIELD_SEC` | 3 | How long a book waiting only on CPU stays off the drain |
+| `TTS_MASTER_SETTLE_MS` | 10000 | How long one clone tick waits, between two promote passes, for a master it already placed. A master landing inside it is published **in that tick**, instead of costing `CPU_YIELD_SEC` plus the 15 s drain (~17 s measured, once per page boundary). `0` disables it; clamped 0–30000. Another runnable book always wins: the tick yields instead of settling. Does not wait for a whole master pass |
+| `TTS_MASTER_ACCEPT_RETRIES` | 2 | Re-posts a master whose dispatch answered `accepted` (a container holds the placement but has not heartbeated) before treating it as backlog. `0` restores the single post. Safe by construction: `claimCpuTask` only takes a row whose lease has expired, so a retry cannot run a second master for the same section |
 
 | Function | Role |
 |----------|------|
@@ -2232,7 +2272,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → hole-retry → assemble only when nothing is still claimable. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
+| `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Before it does, `settleOutstandingMasters` runs one promote pass, waits `TTS_MASTER_SETTLE_MS`, and promotes once more, so a master that lands in that window is published in this tick rather than after the yield delay plus the drain interval. Yielding itself is unchanged: a book still hands the host over. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
