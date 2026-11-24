@@ -33,7 +33,7 @@ import { acceptDocumentExtract, finishDocumentExtract } from "@/lib/cpu/extract-
 import { queueWaitingAfterExtract } from "@/lib/jobs/release-waiting-takehomes";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
-import { isTransientWorkerError } from "@/lib/transient-error";
+import { isWorkerLoopFatal } from "@/lib/transient-error";
 import {
   effectiveOrchestratorConcurrency,
   workerConcurrencyFromEnv,
@@ -41,7 +41,7 @@ import {
 
 const PORT = Number(process.env.WORKER_PORT || "8788");
 const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
-const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "15000");
+const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "60000");
 const CONCURRENCY = effectiveOrchestratorConcurrency(process.env);
 const WAVE_BUDGET_MS = Number(
   process.env.TTS_VM_WAVE_BUDGET_MS || DEFAULT_VM_WAVE_BUDGET_MS
@@ -201,7 +201,7 @@ async function main(): Promise<void> {
       "yt-clip drain",
       import("@/lib/youtube/clip-job").then((mod) => mod.drainProxyClip())
     );
-  }, 5_000);
+  }, 30_000);
   clipTimer.unref?.();
 
   const drainTimer = setInterval(() => {
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
         }
       })
     );
-  }, Number.isFinite(DRAIN_INTERVAL_MS) ? DRAIN_INTERVAL_MS : 15_000);
+  }, Number.isFinite(DRAIN_INTERVAL_MS) && DRAIN_INTERVAL_MS > 0 ? DRAIN_INTERVAL_MS : 60_000);
   drainTimer.unref?.();
 
   const shutdown = async (signal: string) => {
@@ -264,8 +264,8 @@ async function main(): Promise<void> {
  */
 function watchLoop(label: string, work: Promise<unknown>): void {
   void work.catch((err) => {
-    if (isTransientWorkerError(err)) {
-      console.error(`[takehome-worker] ${label} paused after a transient error`, err);
+    if (!isWorkerLoopFatal(err)) {
+      console.error(`[takehome-worker] ${label} paused`, err);
       return;
     }
     console.error(`[takehome-worker] ${label} failed`, err);

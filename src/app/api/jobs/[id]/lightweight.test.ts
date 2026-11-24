@@ -126,6 +126,28 @@ describe("GET /api/jobs/[id] on a poll", () => {
     expect(body.job.resume_updated_at).toBeNull();
   });
 
+  it("does no upload lookup once a processing book has sections", async () => {
+    await seedOwnedJob({ status: "processing", totalSections: 4 });
+    const uploads = await import("@/lib/turso/uploads");
+    const lookup = vi.spyOn(uploads, "getUploadByStoragePath");
+
+    const { body } = await get();
+
+    expect(body.job.status).toBe("processing");
+    expect(body.job.waiting_for_text).toBeUndefined();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("still checks the upload when processing has not produced a section", async () => {
+    await seedOwnedJob({ status: "processing" });
+    const uploads = await import("@/lib/turso/uploads");
+    const lookup = vi.spyOn(uploads, "getUploadByStoragePath");
+
+    await get();
+
+    expect(lookup).toHaveBeenCalled();
+  });
+
   it("does no upload lookup when the job is not waiting for text", async () => {
     await seedOwnedJob({ status: "ready", audioStoragePath: "audiobooks/x/full.mp3" });
     const uploads = await import("@/lib/turso/uploads");

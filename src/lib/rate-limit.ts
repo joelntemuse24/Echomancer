@@ -27,6 +27,9 @@ async function ensureTable(): Promise<boolean> {
         PRIMARY KEY (key, identifier)
       )`
     );
+    await execute(
+      `CREATE INDEX IF NOT EXISTS idx_rate_limits_window ON rate_limits (window_start)`
+    );
     tableEnsured = true;
     return true;
   } catch {

@@ -137,12 +137,27 @@ interface WaitingTextState {
  * started, parked on its upload. Only those rows are worth the upload lookup,
  * so a poll of a generating or finished book skips it entirely.
  */
+function narrationHasStarted(job: Record<string, unknown>): boolean {
+  const sections = Number(job.total_sections ?? 0);
+  const current = Number(job.current_section ?? 0);
+  const first = Number(job.first_section_at ?? 0);
+  return (
+    (Number.isFinite(sections) && sections > 0) ||
+    (Number.isFinite(current) && current > 0) ||
+    (Number.isFinite(first) && first > 0)
+  );
+}
+
 function mayBeWaitingForText(job: Record<string, unknown>): boolean {
   if (job.job_kind !== "takehome") return false;
   const status = typeof job.status === "string" ? job.status : "";
   if (status !== "queued" && status !== "waiting" && status !== "processing") {
     return false;
   }
+  // A processing book that already has sections is being narrated. The
+  // upload row is ready, and looking it up on every 2s player poll does
+  // not change the screen.
+  if (status === "processing" && narrationHasStarted(job)) return false;
   return typeof job.pdf_storage_path === "string" && job.pdf_storage_path !== "";
 }
 

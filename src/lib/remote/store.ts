@@ -8,12 +8,33 @@ import { execute, query } from "@/lib/turso";
 import {
   countsTowardGpuBudget,
   hydrateRemoteFlight,
+  REMOTE_DAY_MS,
   remoteCallCapMs,
   replacePersistedSpend,
   type Flight,
   type RemoteEvent,
   type SpendRow,
 } from "@/lib/remote/layer";
+
+/**
+ * Latest row of each flight that started inside the call cap. Grouping
+ * the whole history made every startup and hourly reconcile read every
+ * `remote_calls` row. The outcome filter stays outside the group so a
+ * newer terminal row still hides an older open row for the same flight.
+ */
+export const OPEN_REMOTE_CALLS_SQL = `SELECT flight_key, idempotency_key, provider, path, job_id, section_key,
+              call_id, call_tag, outcome, started_at, est_cost_usd
+       FROM remote_calls
+       WHERE rowid IN (
+         SELECT MAX(rowid) FROM remote_calls
+         WHERE started_at >= ?
+         GROUP BY flight_key
+       )
+         AND outcome IN ('started', 'still_live', 'submit_unconfirmed')
+         AND (
+           ended_at IS NULL
+           OR outcome IN ('still_live', 'submit_unconfirmed')
+         )`;
 
 function asMs(value: number): number {
   const n = Number(value);
@@ -80,7 +101,7 @@ export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
 
 export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> {
   try {
-    await loadPersistedSpend();
+    await loadPersistedSpend(now);
     // Latest row per flight_key. An older terminal row must not hide a
     // later still_live for the same sections.
     const rows = await query<{
@@ -95,17 +116,7 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
       outcome: string;
       started_at: number;
       est_cost_usd: number | null;
-    }>(
-      `SELECT flight_key, idempotency_key, provider, path, job_id, section_key,
-              call_id, call_tag, outcome, started_at, est_cost_usd
-       FROM remote_calls
-       WHERE rowid IN (SELECT MAX(rowid) FROM remote_calls GROUP BY flight_key)
-         AND outcome IN ('started', 'still_live', 'submit_unconfirmed')
-         AND (
-           ended_at IS NULL
-           OR outcome IN ('still_live', 'submit_unconfirmed')
-         )`
-    );
+    }>(OPEN_REMOTE_CALLS_SQL, [now - remoteCallCapMs() - 60_000]);
     for (const row of rows) {
       const startedAt = asMs(Number(row.started_at)) || now;
       hydrateRemoteFlight({
@@ -144,7 +155,7 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
  * pass that writes a newer `ended_at` cannot stretch the charge. A row the
  * repair marked abandoned is closed. A call that is still open is not.
  */
-export async function loadPersistedSpend(): Promise<void> {
+export async function loadPersistedSpend(now = Date.now()): Promise<void> {
   const rows = await query<{
     flight_key: string;
     job_id: string | null;
@@ -170,7 +181,9 @@ export async function loadPersistedSpend(): Promise<void> {
                 AND e.ended_at > s.started_at
             ) AS any_end
      FROM remote_calls s
-     WHERE s.outcome = 'started'`
+     WHERE s.outcome = 'started'
+       AND s.started_at >= ?`,
+    [now - REMOTE_DAY_MS]
   );
   const loaded: SpendRow[] = rows.map((row) => {
     const start = asMs(Number(row.started_at));
@@ -221,9 +234,10 @@ export async function repairInflatedRemoteCalls(
              ELSE status
            END
        WHERE ended_at IS NOT NULL
+         AND ended_at >= ?
          AND started_at > 0
          AND ended_at > started_at + ?`,
-      [cap, cap]
+      [cap, now - REMOTE_DAY_MS, cap]
     );
     const closed = await execute(
       `UPDATE remote_calls

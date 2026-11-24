@@ -31,7 +31,7 @@
 
 import { deleteFile, downloadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
-import { isTransientWorkerError } from "@/lib/transient-error";
+import { isWorkerLoopFatal } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
@@ -218,10 +218,16 @@ import {
 import {
   markTakehomeServed,
   takehomeAdmissionSql,
-  takehomeClaimSql,
+  takehomeCandidateListSql,
   takehomeGlobalActiveCap,
   takehomeInflightCap,
 } from "@/lib/jobs/takehome-fairness";
+import {
+  kokoroFleetCountArgs,
+  kokoroFleetCountSql,
+  kokoroFleetRankArgs,
+  kokoroFleetRankSql,
+} from "@/lib/tts/kokoro-fleet-sql";
 import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
 import {
   holdEdgeSectionSlot,
@@ -759,14 +765,7 @@ function takehomeMayOverlap(): boolean {
  */
 export async function countOtherKokoroBooks(jobId: string): Promise<number> {
   try {
-    const row = await queryOne<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM jobs
-       WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
-         AND tts_provider IN ('sowell', 'drew', 'george')
-         AND status IN ('queued', 'processing')
-         AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())`,
-      [jobId]
-    );
+    const row = await queryOne<{ n: number }>(kokoroFleetCountSql(), kokoroFleetCountArgs(jobId));
     return Math.max(0, Math.floor(Number(row?.n ?? 0)) || 0);
   } catch {
     return 0;
@@ -787,15 +786,10 @@ export async function kokoroFairnessRank(
   createdAt: number | null | undefined
 ): Promise<number> {
   try {
+    const created = createdAt ?? 0;
     const row = await queryOne<{ n: number | null }>(
-      `SELECT COUNT(*) AS n FROM jobs
-       WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
-         AND tts_provider IN ('sowell', 'drew', 'george')
-         AND status IN ('queued', 'processing')
-         AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())
-         AND (COALESCE(created_at, 0) < ?
-              OR (COALESCE(created_at, 0) = ? AND id < ?))`,
-      [jobId, createdAt ?? 0, createdAt ?? 0, jobId]
+      kokoroFleetRankSql(),
+      kokoroFleetRankArgs(jobId, created)
     );
     return Math.max(0, Math.floor(Number(row?.n ?? 0)) || 0);
   } catch {
@@ -932,7 +926,7 @@ function startLeaseHeartbeat(
         });
       })
       .catch((err) => {
-        if (isTransientWorkerError(err)) {
+        if (!isWorkerLoopFatal(err)) {
           console.warn(
             `[lease] heartbeat skipped for ${jobId}`,
             err instanceof Error ? err.message : err
@@ -4385,31 +4379,38 @@ export async function runTakehomeWave(
  * `listDrainableTakehomeJobs` and `claimTakehomeLease` already include
  * `waiting`, so the next drain picks that book up.
  */
-const OTHER_RUNNABLE_TAKEHOME_SQL = `deleted_at IS NULL
-       AND job_kind = 'takehome'
-       AND id != ?
-       AND (
-         status = 'queued'
-         OR (
-           status = 'processing'
+/**
+ * One branch per status. The old OR used only the `job_kind` prefix of
+ * `idx_jobs_takehome_active` and walked every historical take-home.
+ */
+export const OTHER_RUNNABLE_TAKEHOME_SQL = `SELECT id FROM (
+         SELECT id FROM jobs
+         WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
+           AND status = 'queued'
+         UNION ALL
+         SELECT id FROM jobs
+         WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
+           AND status = 'processing'
            AND lease_expires_at IS NOT NULL
            AND lease_expires_at <= unixepoch()
-         )
-         OR (
-           status = 'waiting'
+         UNION ALL
+         SELECT id FROM jobs
+         WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
+           AND status = 'waiting'
            AND EXISTS (
              SELECT 1 FROM uploads u
              WHERE u.storage_path = jobs.pdf_storage_path
                AND u.status IN ('ready', 'failed')
            )
-         )
-       )`;
+       )
+       LIMIT 1`;
 
 async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
-  const row = await queryOne<{ id: string }>(
-    `SELECT id FROM jobs WHERE ${OTHER_RUNNABLE_TAKEHOME_SQL} LIMIT 1`,
-    [jobId]
-  );
+  const row = await queryOne<{ id: string }>(OTHER_RUNNABLE_TAKEHOME_SQL, [
+    jobId,
+    jobId,
+    jobId,
+  ]);
   return Boolean(row);
 }
 
@@ -4590,15 +4591,8 @@ export async function releaseExpiredTakehomeLeases(): Promise<number> {
 
 /** Take-home jobs waiting for a worker, oldest first. */
 export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
-  const claim = takehomeClaimSql(takehomeInflightCap());
-  const rows = await query<{ id: string }>(
-    `SELECT id FROM jobs
-     WHERE deleted_at IS NULL
-       AND job_kind = 'takehome'
-       AND status IN ('queued', 'waiting')${claim.filter}${claim.order}
-     LIMIT ?`,
-    [...claim.args, limit]
-  );
+  const list = takehomeCandidateListSql({ expiredProcessing: false });
+  const rows = await query<{ id: string }>(list.sql, [...list.args, limit]);
   return rows.map((r) => r.id);
 }
 
@@ -4607,23 +4601,8 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
  * processing rows whose lease expired. Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
-  const claim = takehomeClaimSql(takehomeInflightCap());
-  const rows = await query<{ id: string }>(
-    `SELECT id FROM jobs
-     WHERE deleted_at IS NULL
-       AND job_kind = 'takehome'
-       AND (
-         status = 'queued'
-         OR status = 'waiting'
-         OR (
-           status = 'processing'
-           AND lease_expires_at IS NOT NULL
-           AND lease_expires_at <= unixepoch()
-         )
-       )${claim.filter}${claim.order}
-     LIMIT ?`,
-    [...claim.args, limit]
-  );
+  const list = takehomeCandidateListSql({ expiredProcessing: true });
+  const rows = await query<{ id: string }>(list.sql, [...list.args, limit]);
   return [...new Set(rows.map((r) => r.id))];
 }
 

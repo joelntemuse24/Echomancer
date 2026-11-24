@@ -138,3 +138,43 @@ export function takehomeClaimSql(cap: number): {
     args: admission.args,
   };
 }
+
+/**
+ * Drain and queue lists. One branch per status so `idx_jobs_takehome_active`
+ * can use `job_kind` and `status`. A single OR across queued, waiting, and
+ * expired processing only used the `job_kind` prefix and walked every
+ * historical take-home row, including ready and failed books.
+ */
+export function takehomeCandidateListSql(input: {
+  cap?: number;
+  globalCap?: number;
+  expiredProcessing: boolean;
+}): { sql: string; args: number[] } {
+  const admission = takehomeAdmissionSql(
+    input.cap ?? takehomeInflightCap(),
+    input.globalCap ?? takehomeGlobalActiveCap()
+  );
+  const branches = ["status = 'queued'", "status = 'waiting'"];
+  if (input.expiredProcessing) {
+    branches.push(
+      "status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= unixepoch()"
+    );
+  }
+  const fair = `COALESCE((SELECT last_served_at FROM takehome_fairness AS fair WHERE fair.user_id = jobs.user_id), 0)`;
+  const parts = branches.map(
+    (where) => `SELECT jobs.id AS id, ${fair} AS fair_at, jobs.updated_at AS updated_at
+       FROM jobs
+       WHERE jobs.deleted_at IS NULL
+         AND jobs.job_kind = 'takehome'
+         AND ${where}
+         ${admission.sql}`
+  );
+  return {
+    sql: `SELECT id FROM (
+            ${parts.join("\nUNION ALL\n")}
+          )
+          ORDER BY fair_at ASC, updated_at ASC
+          LIMIT ?`,
+    args: branches.flatMap(() => [...admission.args]),
+  };
+}

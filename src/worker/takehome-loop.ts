@@ -4,10 +4,15 @@
  * Turso is the queue. This loop claims work via existing leases in
  * `process-job` and never runs the same jobId twice at once.
  * A transient database or network error pauses the next poll briefly.
- * Anything else is rethrown so a real bug is not swallowed.
+ * A Turso `BLOCKED` read-quota error pauses it for minutes. The process
+ * stays up. Anything else is rethrown so a real bug is not swallowed.
  */
 
-import { isTransientWorkerError } from "@/lib/transient-error";
+import {
+  isTransientWorkerError,
+  isTursoQuotaError,
+  TURSO_QUOTA_BACKOFF_MS,
+} from "@/lib/transient-error";
 
 export interface TakehomeRunResult {
   status: string;
@@ -29,6 +34,11 @@ export interface TakehomeWorkerLoopOptions {
   drainLimit?: number;
   /** How long to skip the database after a transient error. Default 5s. */
   backoffMs?: number;
+  /**
+   * How long to skip the database after Turso refuses reads (`BLOCKED`).
+   * Default five minutes. A 5s pause would keep querying a blocked database.
+   */
+  quotaBackoffMs?: number;
   /**
    * How long to wait before starting a job whose claim just lost.
    * Default is 400–1199ms from {@link leaseContentionBackoffMs}.
@@ -132,11 +142,16 @@ export class TakehomeWorkerLoop {
       }
       return { started, released };
     } catch (err) {
-      if (!isTransientWorkerError(err)) throw err;
-      const backoff = this.opts.backoffMs ?? 5_000;
+      const quota = isTursoQuotaError(err);
+      if (!quota && !isTransientWorkerError(err)) throw err;
+      const backoff = quota
+        ? (this.opts.quotaBackoffMs ?? TURSO_QUOTA_BACKOFF_MS)
+        : (this.opts.backoffMs ?? 5_000);
       this.nextDrainAt = (this.opts.now?.() ?? Date.now()) + Math.max(0, backoff);
       this.log.error(
-        "[takehome-worker] drain paused after a transient database error",
+        quota
+          ? "[takehome-worker] Turso read quota is blocked; drain paused"
+          : "[takehome-worker] drain paused after a transient database error",
         err
       );
       return { started: [], released: 0 };

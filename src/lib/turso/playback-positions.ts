@@ -46,12 +46,16 @@ export async function listPlaybackPositions(
 ): Promise<Map<string, PlaybackPosition>> {
   const out = new Map<string, PlaybackPosition>();
   if (jobIds.length === 0) return out;
-  const marks = jobIds.map(() => "?").join(", ");
+  // One primary-key lookup per id. `job_id IN (...)` planned as a scan of
+  // playback_positions even though the key is (user_id, job_id).
+  const branches = jobIds.map(
+    () => `SELECT job_id, position_seconds, section_index, updated_at
+           FROM playback_positions
+           WHERE user_id = ? AND job_id = ?`
+  );
   const rows = await query<PositionRow & { job_id: string }>(
-    `SELECT job_id, position_seconds, section_index, updated_at
-     FROM playback_positions
-     WHERE user_id = ? AND job_id IN (${marks})`,
-    [userId, ...jobIds]
+    branches.join(" UNION ALL "),
+    jobIds.flatMap((jobId) => [userId, jobId])
   );
   for (const row of rows) {
     if (row.job_id) out.set(row.job_id, toPosition(row));

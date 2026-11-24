@@ -17,6 +17,7 @@
  */
 
 import { backfillTakehomeCreateKeys } from "@/lib/jobs/takehome-identity";
+import { isTursoQuotaError } from "@/lib/transient-error";
 import { execute, executeBatch, query, queryOne } from "@/lib/turso";
 
 let migrated = false;
@@ -389,8 +390,46 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_due ON jobs (job_kind, status, sched_not_before)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_active ON jobs (job_kind, status, lease_expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_kokoro_active ON jobs (job_kind, status, tts_provider)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_user_live ON jobs (user_id, deleted_at, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job ON bookmarks (user_id, job_id, section_index, position_seconds)`,
+  `CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email), email_verified, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_started ON remote_calls (started_at, flight_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_ended ON remote_calls (ended_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_flight_end ON remote_calls (flight_key, ended_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_open ON remote_calls (outcome, started_at) WHERE ended_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_youtube_clips_created ON youtube_clips (created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_youtube_search_expires ON youtube_search_cache (expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_takehome_create_keys_job ON takehome_create_keys (job_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_provider_slots_owner ON provider_slots (owner_token)`,
+  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_expires ON modal_gpu_leases (expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_owner ON modal_gpu_leases (owner_token)`,
+  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_user ON modal_gpu_leases (user_id, expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_fish_inflight_kind_expires ON fish_inflight (kind, expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_brake_active ON remote_brake (active)`,
 ];
+
+/**
+ * `CREATE INDEX IF NOT EXISTS` on every start, including a database that
+ * `schemaAlreadyCurrent` already accepts. That check does not look at
+ * these indexes, so a production database would otherwise never gain them.
+ * A quota error is rethrown so the caller can wait instead of marking
+ * the schema hot and skipping the next attempt.
+ */
+async function ensureIndexes(): Promise<void> {
+  try {
+    await executeBatch(INDEXES.map((sql) => ({ sql })));
+  } catch (err) {
+    if (isTursoQuotaError(err)) throw err;
+    for (const sql of INDEXES) {
+      try {
+        await execute(sql);
+      } catch (inner) {
+        if (isTursoQuotaError(inner)) throw inner;
+      }
+    }
+  }
+}
 
 /**
  * Last listening position. One row per listener per book. `section_index`
@@ -711,6 +750,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
 
   try {
     if (await schemaAlreadyCurrent()) {
+      await ensureIndexes();
       migrated = true;
       return "hot";
     }
@@ -794,11 +834,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
     }
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
-    await executeBatch(INDEXES.map((sql) => ({ sql }))).catch(async () => {
-      for (const sql of INDEXES) {
-        await execute(sql).catch(() => {});
-      }
-    });
+    await ensureIndexes();
 
     // Oldest live row per book+narrator. Duplicate jobs stay. A second run
     // inserts nothing because the key already exists.
