@@ -154,20 +154,14 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
  * The end is the earliest terminal end for that flight, so a later cleanup
  * pass that writes a newer `ended_at` cannot stretch the charge. A row the
  * repair marked abandoned is closed. A call that is still open is not.
+ *
+ * The two lookups are correlated, but each one is an index range on
+ * `(flight_key, outcome, ended_at)` or `(flight_key, ended_at)`. The outer
+ * row is limited to the trailing day so a startup does not walk every
+ * historical `started` row. Without those indexes each lookup scanned the
+ * whole table once per started row.
  */
-export async function loadPersistedSpend(now = Date.now()): Promise<void> {
-  const rows = await query<{
-    flight_key: string;
-    job_id: string | null;
-    provider: SpendRow["provider"];
-    path: SpendRow["path"];
-    est_cost_usd: number | null;
-    started_at: number;
-    status: string | null;
-    terminal_end: number | null;
-    any_end: number | null;
-  }>(
-    `SELECT s.flight_key, s.job_id, s.provider, s.path, s.est_cost_usd, s.started_at,
+export const PERSISTED_SPEND_SQL = `SELECT s.flight_key, s.job_id, s.provider, s.path, s.est_cost_usd, s.started_at,
             s.status AS status,
             (SELECT MIN(e.ended_at) FROM remote_calls e
               WHERE e.flight_key = s.flight_key
@@ -182,9 +176,36 @@ export async function loadPersistedSpend(now = Date.now()): Promise<void> {
             ) AS any_end
      FROM remote_calls s
      WHERE s.outcome = 'started'
-       AND s.started_at >= ?`,
-    [now - REMOTE_DAY_MS]
-  );
+       AND s.started_at >= ?`;
+
+/**
+ * Clamp only ends written inside the trailing day. `ended_at >= ?` is an
+ * index range on `idx_remote_calls_ended`. The old predicate compared two
+ * columns and scanned every `remote_calls` row.
+ */
+export const REPAIR_INFLATED_REMOTE_CALLS_SQL = `UPDATE remote_calls
+       SET ended_at = started_at + ?,
+           status = CASE
+             WHEN outcome IN ('started', 'still_live', 'submit_unconfirmed') THEN 'abandoned'
+             ELSE status
+           END
+       WHERE ended_at IS NOT NULL
+         AND ended_at >= ?
+         AND started_at > 0
+         AND ended_at > started_at + ?`;
+
+export async function loadPersistedSpend(now = Date.now()): Promise<void> {
+  const rows = await query<{
+    flight_key: string;
+    job_id: string | null;
+    provider: SpendRow["provider"];
+    path: SpendRow["path"];
+    est_cost_usd: number | null;
+    started_at: number;
+    status: string | null;
+    terminal_end: number | null;
+    any_end: number | null;
+  }>(PERSISTED_SPEND_SQL, [now - REMOTE_DAY_MS]);
   const loaded: SpendRow[] = rows.map((row) => {
     const start = asMs(Number(row.started_at));
     const terminal = asMs(Number(row.terminal_end));
@@ -211,32 +232,45 @@ export async function loadPersistedSpend(now = Date.now()): Promise<void> {
   replacePersistedSpend(loaded);
 }
 
+/** One repair per day per process. Reconcile used to run the scan every hour. */
+export const REMOTE_REPAIR_INTERVAL_MS = REMOTE_DAY_MS;
+
+let lastRemoteRepairAt = Number.NEGATIVE_INFINITY;
+let remoteRepairSqlRuns = 0;
+
+/** Test seam: allow the next repair to touch the database. */
+export function resetRemoteRepairCache(): void {
+  lastRemoteRepairAt = Number.NEGATIVE_INFINITY;
+  remoteRepairSqlRuns = 0;
+}
+
+/** Test seam: how many times the repair statements actually ran. */
+export function remoteRepairSqlRunCount(): number {
+  return remoteRepairSqlRuns;
+}
+
 /**
  * Idempotent repair for rows whose end was pushed forward by a later
  * cleanup pass. Both statements are UPDATEs: the first rewrites only spans
- * longer than the per-call cap, the second closes only open rows already
- * older than that cap. A non-terminal row whose end was slid is marked
- * abandoned, so the spend load treats that clamped span as closed instead
- * of extending it to now. A call admitted now matches neither. Nothing is
- * deleted. A second pass writes no rows.
+ * longer than the per-call cap whose end sits in the trailing day, the
+ * second closes only open rows already older than that cap. A non-terminal
+ * row whose end was slid is marked abandoned, so the spend load treats that
+ * clamped span as closed instead of extending it to now. A call admitted
+ * now matches neither. Nothing is deleted. A second pass inside the day
+ * writes no SQL.
  */
 export async function repairInflatedRemoteCalls(
   now = Date.now()
 ): Promise<{ clamped: number; closed: number }> {
+  if (now < lastRemoteRepairAt + REMOTE_REPAIR_INTERVAL_MS) {
+    return { clamped: 0, closed: 0 };
+  }
   const cap = remoteCallCapMs();
   const cutoff = now - cap;
   try {
+    remoteRepairSqlRuns += 1;
     const clamped = await execute(
-      `UPDATE remote_calls
-       SET ended_at = started_at + ?,
-           status = CASE
-             WHEN outcome IN ('started', 'still_live', 'submit_unconfirmed') THEN 'abandoned'
-             ELSE status
-           END
-       WHERE ended_at IS NOT NULL
-         AND ended_at >= ?
-         AND started_at > 0
-         AND ended_at > started_at + ?`,
+      REPAIR_INFLATED_REMOTE_CALLS_SQL,
       [cap, now - REMOTE_DAY_MS, cap]
     );
     const closed = await execute(
@@ -260,6 +294,7 @@ export async function repairInflatedRemoteCalls(
         `[remote] repaired remote calls clamped=${clampedN} closed=${closedN} cap_ms=${cap}`
       );
     }
+    lastRemoteRepairAt = now;
     return { clamped: clampedN, closed: closedN };
   } catch (err) {
     console.warn(

@@ -139,30 +139,7 @@ export async function recoverYoutubeClips(): Promise<void> {
     WHERE status = 'queued' AND attempts >= 2`);
 }
 
-async function clipNeedsAttention(): Promise<boolean> {
-  const queued = await queryOne<{ id: string }>(
-    `SELECT id FROM youtube_clips
-     WHERE status = 'queued' AND attempts < 2
-     LIMIT 1`
-  );
-  if (queued) return true;
-  const expired = await queryOne<{ id: string }>(
-    `SELECT id FROM youtube_clips
-     WHERE status = 'running' AND COALESCE(lease_expires_at, 0) <= unixepoch()
-     LIMIT 1`
-  );
-  if (expired) return true;
-  const stuck = await queryOne<{ id: string }>(
-    `SELECT id FROM youtube_clips
-     WHERE status = 'queued' AND attempts >= 2
-     LIMIT 1`
-  );
-  return Boolean(stuck);
-}
-
 export async function claimYoutubeClip(): Promise<YoutubeClipRow | null> {
-  await ensureTtsJobColumns();
-  if (!(await clipNeedsAttention())) return null;
   await recoverYoutubeClips();
   const rows = await query<YoutubeClipRow>(
     `UPDATE youtube_clips SET status = 'running', attempts = attempts + 1,

@@ -19,6 +19,7 @@ import { resetCpuTaskTableCache } from "@/lib/cpu/tasks";
 import { resetProviderSlotTableCache } from "@/lib/tts/provider-slots";
 import { resetModalGpuLeaseCache } from "@/lib/tts/providers/modal-gpu-lease";
 import { resetRateLimitTableCache } from "@/lib/rate-limit";
+import { resetRemoteRepairCache } from "@/lib/remote/store";
 import { SESSION_COOKIE, signSessionToken } from "@/lib/auth/session";
 import type {
   SynthesizeInput,
@@ -36,6 +37,7 @@ export const USER_B = "anon_" + "b".repeat(32);
 export async function resetDatabase(): Promise<void> {
   await closeTursoClient().catch(() => {});
   resetSchemaMigrationCache();
+  resetRemoteRepairCache();
   resetRateLimitTableCache();
   resetTakehomeIdentityCache();
   resetTakehomeFairnessCache();

@@ -587,7 +587,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent`, `bookmarks`, and `playback_positions`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache`, `bookmarks`, `playback_positions` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`, `preview_storage_path`, `preview_probed_at`); then indexes (`idx_users_google_sub` unique, `idx_bookmarks_user_job`) |
+| `ensureTtsJobColumns()` | Idempotent, once per process. The first call checks whether the live schema is already current (one round-trip, including `cloned_voices.accent`, `bookmarks`, and `playback_positions`) and creates any missing index. Later calls in that process do not repeat `CREATE TABLE IF NOT EXISTS`. A Turso `BLOCKED` error waits 5 minutes before another attempt. Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache`, `bookmarks`, `playback_positions` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`, `preview_storage_path`, `preview_probed_at`); then indexes (`idx_users_google_sub` unique, `idx_bookmarks_user_job`) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -2234,7 +2234,7 @@ Env knobs (defaults):
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
-| `listDrainableTakehomeJobs` | Queued, waiting, and lease-expired processing, one index range per status (ready and failed rows are not read). Deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped. The idle poll is 60s; a new job or a finished extract still drains immediately |
+| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
 | `nudgeStaleTakehomeJobs` / `nudgeStaleTakehomeJobIfNeeded` | Poll paths (lease sweep only when nudge=0) |
 
@@ -3245,6 +3245,11 @@ OpenTelemetry). What exists:
 - `remote_calls` rows: every remote flight and its outcome is persisted by
   the event sink in `src/lib/remote/reconcile.ts` → `persistRemoteEvent`
   (`src/lib/remote/store.ts`); open calls are re-hydrated on worker start.
+  Daily spend reads `started` rows from the trailing day and looks up each
+  flight's end through `idx_remote_calls_flight_end` /
+  `idx_remote_calls_flight_outcome_end`. The inflated-span repair is one
+  index range on `ended_at` per process per day, not a full-table update on
+  every reconcile.
 - `usage_logs`: best-effort accounting (for example `modal_s2_clone`).
 - Server logs are `console.*` lines with `[takehome-worker]`, `[remote]`,
   `[section-master]`-style prefixes, read through pm2 logs on the VM and

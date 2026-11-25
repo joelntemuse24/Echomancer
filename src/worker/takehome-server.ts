@@ -41,7 +41,7 @@ import {
 
 const PORT = Number(process.env.WORKER_PORT || "8788");
 const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
-const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "60000");
+const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "15000");
 const CONCURRENCY = effectiveOrchestratorConcurrency(process.env);
 const WAVE_BUDGET_MS = Number(
   process.env.TTS_VM_WAVE_BUDGET_MS || DEFAULT_VM_WAVE_BUDGET_MS
@@ -201,7 +201,7 @@ async function main(): Promise<void> {
       "yt-clip drain",
       import("@/lib/youtube/clip-job").then((mod) => mod.drainProxyClip())
     );
-  }, 30_000);
+  }, 5_000);
   clipTimer.unref?.();
 
   const drainTimer = setInterval(() => {
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
         }
       })
     );
-  }, Number.isFinite(DRAIN_INTERVAL_MS) && DRAIN_INTERVAL_MS > 0 ? DRAIN_INTERVAL_MS : 60_000);
+  }, Number.isFinite(DRAIN_INTERVAL_MS) ? DRAIN_INTERVAL_MS : 15_000);
   drainTimer.unref?.();
 
   const shutdown = async (signal: string) => {

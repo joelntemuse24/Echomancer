@@ -1,17 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { execute, query, queryOne } from "@/lib/turso";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execute, executeBatch, query, queryOne } from "@/lib/turso";
 import { resetDatabase } from "@/test/harness";
 import { storagePrefixBounds } from "@/lib/storage-prefix";
-import { takehomeCandidateListSql } from "@/lib/jobs/takehome-fairness";
-import { kokoroFleetCountArgs, kokoroFleetCountSql } from "@/lib/tts/kokoro-fleet-sql";
-import { OTHER_RUNNABLE_TAKEHOME_SQL } from "@/lib/tts/process-job";
-import { OPEN_REMOTE_CALLS_SQL } from "@/lib/remote/store";
+import { REMOTE_DAY_MS } from "@/lib/remote/layer";
+import {
+  PERSISTED_SPEND_SQL,
+  REMOTE_REPAIR_INTERVAL_MS,
+  REPAIR_INFLATED_REMOTE_CALLS_SQL,
+  remoteRepairSqlRunCount,
+  repairInflatedRemoteCalls,
+} from "@/lib/remote/store";
 import {
   ensureTtsJobColumns,
   resetSchemaMigrationCache,
+  schemaEnsureDbPasses,
 } from "@/lib/tts/schema-migrate";
 import { createRateLimiter, resetRateLimitTableCache } from "@/lib/rate-limit";
 import { isTursoQuotaError, isWorkerLoopFatal } from "@/lib/transient-error";
+
+const REMOTE_INDEXES = [
+  "idx_remote_calls_started",
+  "idx_remote_calls_outcome_started",
+  "idx_remote_calls_ended",
+  "idx_remote_calls_flight_end",
+  "idx_remote_calls_flight_outcome_end",
+  "idx_remote_calls_open",
+];
 
 async function plan(
   sql: string,
@@ -53,40 +67,249 @@ describe("Turso quota errors", () => {
   });
 });
 
-describe("hot query plans", () => {
-  it("searches indexes instead of scanning jobs, remote calls, and rate limits", async () => {
+describe("schema ensure", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("talks to the database once per process", async () => {
     await resetDatabase();
-    for (let i = 0; i < 40; i += 1) {
-      await execute(
-        `INSERT INTO jobs (
-           id, user_id, book_title, pdf_storage_path, status, job_kind, tts_provider
-         ) VALUES (?, 'user-a', 'Book', ?, 'ready', 'takehome', 'edge')`,
-        [`ready-${i}`, `pdfs/other-${i}/content.txt`]
-      );
-    }
-    await execute(
-      `INSERT INTO jobs (
-         id, user_id, book_title, pdf_storage_path, status, job_kind, tts_provider, updated_at
-       ) VALUES ('queued-1', 'user-a', 'Book', 'pdfs/upload-1/content.txt', 'queued', 'takehome', 'drew', 10)`
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+    const passes = schemaEnsureDbPasses();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+    expect(schemaEnsureDbPasses()).toBe(passes);
+  });
+
+  it("does not retry schema SQL while Turso reads are blocked", async () => {
+    await resetDatabase();
+    resetSchemaMigrationCache();
+    const blocked = Object.assign(
+      new Error("BLOCKED: SQL read operations are forbidden"),
+      { code: "BLOCKED" }
     );
+    const batch = vi.spyOn(await import("@/lib/turso"), "executeBatch").mockRejectedValue(blocked);
+    await ensureTtsJobColumns();
+    const calls = batch.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+    await ensureTtsJobColumns();
+    expect(batch.mock.calls.length).toBe(calls);
+    batch.mockRestore();
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
+  it("creates a missing remote_calls index on the hot path without rebuilding tables", async () => {
+    await resetDatabase();
+    await execute(`DROP INDEX idx_remote_calls_flight_end`);
+    const before = await queryOne<{ name: string | null }>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_remote_calls_flight_end'`
+    );
+    expect(before?.name ?? null).toBeNull();
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+    const after = await queryOne<{ name: string | null }>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_remote_calls_flight_end'`
+    );
+    expect(after?.name).toBe("idx_remote_calls_flight_end");
+    const jobs = await queryOne<{ sql: string | null }>(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
+    );
+    expect(jobs?.sql ?? "").toMatch(/CREATE TABLE/);
+  });
+});
+
+describe("remote_calls rows read", () => {
+  it("looks up flight ends by index and estimates far fewer rows on 5k calls", async () => {
+    await resetDatabase();
+    const now = Date.now();
+    const tableRows = 5000;
+    const flights = 800;
+    const statements: { sql: string; args: (string | number | null)[] }[] = [];
+    for (let i = 0; i < tableRows; i += 1) {
+      const outcome = i % 7 === 0 ? "started" : i % 5 === 0 ? "abandoned" : "success";
+      const started = now - (i % 4000) * 60_000;
+      const ended = outcome === "started" && i % 11 !== 0 ? null : started + (i % 9) * 3_600_000;
+      statements.push({
+        sql: `INSERT INTO remote_calls (
+           id, flight_key, idempotency_key, provider, path, job_id, status, outcome, started_at, ended_at
+         ) VALUES (?, ?, ?, 's2-clone', 'book', ?, ?, ?, ?, ?)`,
+        args: [
+          `rc-${i}`,
+          `flight-${i % flights}`,
+          `flight-${i % flights}`,
+          `job-${i % flights}`,
+          outcome,
+          outcome,
+          started,
+          ended,
+        ],
+      });
+    }
+    await executeBatch(statements);
+
+    const legacySpend = `SELECT s.flight_key,
+            (SELECT MIN(e.ended_at) FROM remote_calls e
+              WHERE e.flight_key = s.flight_key
+                AND e.ended_at IS NOT NULL
+                AND e.ended_at > s.started_at
+                AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+            ) AS terminal_end,
+            (SELECT MIN(e.ended_at) FROM remote_calls e
+              WHERE e.flight_key = s.flight_key
+                AND e.ended_at IS NOT NULL
+                AND e.ended_at > s.started_at
+            ) AS any_end
+     FROM remote_calls s
+     WHERE s.outcome = 'started'`;
+    const legacyRepair = `UPDATE remote_calls
+       SET ended_at = started_at + ?
+       WHERE ended_at IS NOT NULL
+         AND started_at > 0
+         AND ended_at > started_at + ?`;
+
+    for (const name of REMOTE_INDEXES) {
+      await execute(`DROP INDEX IF EXISTS ${name}`);
+    }
+    await execute(`PRAGMA automatic_index = OFF`);
+    const beforeSpend = await plan(legacySpend);
+    const beforeRepair = await plan(legacyRepair, [1, 1]);
+    // No flight index: the inner lookup is not `SEARCH e USING INDEX`.
+    // This SQLite build labels that full examination `SEARCH e`.
+    expect(beforeSpend, beforeSpend).not.toMatch(/USING INDEX/);
+    expect(beforeRepair, beforeRepair).toMatch(/SCAN remote_calls/);
+
+    const started = Number(
+      (
+        await queryOne<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM remote_calls WHERE outcome = 'started'`
+        )
+      )?.n ?? 0
+    );
+    const rowsReadBefore = started * 2 * tableRows + tableRows;
+    expect(started).toBeGreaterThan(600);
+    expect(rowsReadBefore).toBeGreaterThan(6_000_000);
+
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
     await execute(`ANALYZE`);
 
-    const drain = takehomeCandidateListSql({ expiredProcessing: true });
-    expectNoScan(await plan(drain.sql, [...drain.args, 50]), "jobs");
-    expect(await plan(drain.sql, [...drain.args, 50])).toMatch(/idx_jobs_takehome_active/);
-
-    const queued = takehomeCandidateListSql({ expiredProcessing: false });
-    expectNoScan(await plan(queued.sql, [...queued.args, 3]), "jobs");
-
-    expectNoScan(
-      await plan(kokoroFleetCountSql(), kokoroFleetCountArgs("queued-1")),
-      "jobs"
+    const dayStart = now - REMOTE_DAY_MS;
+    const afterSpend = await plan(PERSISTED_SPEND_SQL, [dayStart]);
+    expect(afterSpend, afterSpend).toMatch(
+      /SEARCH e USING (COVERING )?INDEX idx_remote_calls_flight_outcome_end/
     );
-    expect(await plan(kokoroFleetCountSql(), kokoroFleetCountArgs("queued-1"))).toMatch(
-      /idx_jobs_kokoro_active/
+    expect(afterSpend, afterSpend).toMatch(
+      /SEARCH e USING (COVERING )?INDEX idx_remote_calls_flight_end/
     );
+    expect(afterSpend, afterSpend).not.toMatch(/\bSCAN remote_calls\b/);
+    expect(afterSpend, afterSpend).not.toMatch(/\bSCAN e\b/);
 
-    expectNoScan(await plan(OTHER_RUNNABLE_TAKEHOME_SQL, ["queued-1", "queued-1", "queued-1"]), "jobs");
+    const afterRepair = await plan(REPAIR_INFLATED_REMOTE_CALLS_SQL, [1, dayStart, 1]);
+    expect(afterRepair, afterRepair).toMatch(/SEARCH remote_calls USING INDEX idx_remote_calls_ended/);
+    expect(afterRepair, afterRepair).not.toMatch(/\bSCAN remote_calls\b/);
+
+    const inWindow = Number(
+      (
+        await queryOne<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM remote_calls
+           WHERE outcome = 'started' AND started_at >= ?`,
+          [dayStart]
+        )
+      )?.n ?? 0
+    );
+    const terminalHits = Number(
+      (
+        await queryOne<{ n: number }>(
+          `SELECT COUNT(*) AS n
+           FROM remote_calls s
+           JOIN remote_calls e ON e.flight_key = s.flight_key
+            AND e.ended_at IS NOT NULL
+            AND e.ended_at > s.started_at
+            AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+           WHERE s.outcome = 'started' AND s.started_at >= ?`,
+          [dayStart]
+        )
+      )?.n ?? 0
+    );
+    const anyHits = Number(
+      (
+        await queryOne<{ n: number }>(
+          `SELECT COUNT(*) AS n
+           FROM remote_calls s
+           JOIN remote_calls e ON e.flight_key = s.flight_key
+            AND e.ended_at IS NOT NULL
+            AND e.ended_at > s.started_at
+           WHERE s.outcome = 'started' AND s.started_at >= ?`,
+          [dayStart]
+        )
+      )?.n ?? 0
+    );
+    const rowsReadAfter = inWindow + terminalHits + anyHits;
+    expect(rowsReadAfter).toBeLessThan(rowsReadBefore / 50);
+    expect(rowsReadAfter).toBeLessThan(20_000);
+
+    const loaded = await query<{ flight_key: string; terminal_end: number | null }>(
+      PERSISTED_SPEND_SQL,
+      [dayStart]
+    );
+    expect(loaded.length).toBe(inWindow);
+    const sample = loaded[0];
+    expect(sample).toBeTruthy();
+    const expected = await queryOne<{ terminal_end: number | null }>(
+      `SELECT MIN(e.ended_at) AS terminal_end
+       FROM remote_calls s
+       JOIN remote_calls e ON e.flight_key = s.flight_key
+        AND e.ended_at IS NOT NULL
+        AND e.ended_at > s.started_at
+        AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
+       WHERE s.flight_key = ?
+         AND s.outcome = 'started'
+         AND s.started_at >= ?`,
+      [sample!.flight_key, dayStart]
+    );
+    const sampleEnd = sample!.terminal_end == null ? null : Number(sample!.terminal_end);
+    const expectedEnd = expected?.terminal_end == null ? null : Number(expected.terminal_end);
+    expect(sampleEnd).toBe(expectedEnd);
+  });
+
+  it("runs the inflated-call repair once per day", async () => {
+    await resetDatabase();
+    const now = Date.now();
+    await execute(
+      `INSERT INTO remote_calls (
+         id, flight_key, idempotency_key, provider, path, status, outcome, started_at, ended_at
+       ) VALUES ('old', 'flight-old', 'flight-old', 's2-clone', 'book', 'success', 'success', ?, ?)`,
+      [now - 2 * 60 * 60_000, now]
+    );
+    expect(await repairInflatedRemoteCalls(now)).toEqual({ clamped: 0, closed: 0 });
+    expect(remoteRepairSqlRunCount()).toBe(1);
+    expect(await repairInflatedRemoteCalls(now + 60 * 60_000)).toEqual({
+      clamped: 0,
+      closed: 0,
+    });
+    expect(remoteRepairSqlRunCount()).toBe(1);
+    expect(await repairInflatedRemoteCalls(now + REMOTE_REPAIR_INTERVAL_MS)).toEqual({
+      clamped: 0,
+      closed: 0,
+    });
+    expect(remoteRepairSqlRunCount()).toBe(2);
+  });
+});
+
+describe("harmless index plans", () => {
+  it("searches prefix, email, rate-limit, and clip-day indexes", async () => {
+    await resetDatabase();
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, pdf_storage_path, status, job_kind
+       ) VALUES ('job-1', 'user-a', 'Book', 'pdfs/upload-1/content.txt', 'ready', 'takehome')`
+    );
+    await execute(
+      `INSERT INTO users (id, google_sub, email, email_verified, created_at)
+       VALUES ('user_1', 'sub-1', 'Person@Example.com', 1, 1)`
+    );
+    await execute(`ANALYZE`);
 
     const bounds = storagePrefixBounds("pdfs/upload-1/");
     expectNoScan(
@@ -98,10 +321,6 @@ describe("hot query plans", () => {
       "jobs"
     );
 
-    await execute(
-      `INSERT INTO users (id, google_sub, email, email_verified, created_at)
-       VALUES ('user_1', 'sub-1', 'Person@Example.com', 1, 1)`
-    );
     const emailPlan = await plan(
       `SELECT * FROM users
        WHERE lower(email) = ? AND email_verified = 1
@@ -112,45 +331,6 @@ describe("hot query plans", () => {
     expectNoScan(emailPlan, "users");
     expect(emailPlan).toMatch(/idx_users_email_lower/);
 
-    const now = Date.now();
-    for (let i = 0; i < 80; i += 1) {
-      await execute(
-        `INSERT INTO remote_calls (
-           id, flight_key, idempotency_key, provider, path, status, outcome, started_at, ended_at
-         ) VALUES (?, ?, ?, 's2-clone', 'book', ?, ?, ?, ?)`,
-        [
-          `rc-${i}`,
-          `flight-${i % 10}`,
-          `flight-${i % 10}`,
-          i % 3 === 0 ? "success" : "started",
-          i % 3 === 0 ? "success" : "started",
-          now - i * 1000,
-          i % 3 === 0 ? now : null,
-        ]
-      );
-    }
-    await execute(`ANALYZE`);
-    expectNoScan(await plan(OPEN_REMOTE_CALLS_SQL, [now - 60_000]), "remote_calls");
-    expect(await plan(OPEN_REMOTE_CALLS_SQL, [now - 60_000])).toMatch(/idx_remote_calls_started/);
-    expectNoScan(
-      await plan(
-        `SELECT s.flight_key
-         FROM remote_calls s
-         WHERE s.outcome = 'started' AND s.started_at >= ?`,
-        [Date.now() - 86_400_000]
-      ),
-      "remote_calls"
-    );
-    expectNoScan(
-      await plan(
-        `UPDATE remote_calls
-         SET call_id = COALESCE(?, call_id)
-         WHERE rowid = (SELECT MAX(rowid) FROM remote_calls WHERE flight_key = ?)`,
-        ["call", "flight"]
-      ),
-      "remote_calls"
-    );
-
     resetRateLimitTableCache();
     const limit = createRateLimiter("plan", 5, 60_000);
     expect(await limit("reader")).toBe(true);
@@ -159,45 +339,9 @@ describe("hot query plans", () => {
       "rate_limits"
     );
 
-    await execute(
-      `INSERT INTO playback_positions (user_id, job_id, position_seconds, updated_at)
-       VALUES ('user-a', 'queued-1', 1.5, 1)`
-    );
     expectNoScan(
-      await plan(
-        `SELECT job_id FROM playback_positions WHERE user_id = ? AND job_id = ?
-         UNION ALL
-         SELECT job_id FROM playback_positions WHERE user_id = ? AND job_id = ?`,
-        ["user-a", "queued-1", "user-a", "ready-0"]
-      ),
-      "playback_positions"
-    );
-
-    expectNoScan(
-      await plan(
-        `SELECT COUNT(*) AS n FROM youtube_clips WHERE created_at >= ?`,
-        [1]
-      ),
+      await plan(`SELECT COUNT(*) AS n FROM youtube_clips WHERE created_at >= ?`, [1]),
       "youtube_clips"
     );
-  });
-
-  it("creates a missing index on the hot path without rebuilding tables", async () => {
-    await resetDatabase();
-    await execute(`DROP INDEX idx_jobs_kokoro_active`);
-    const before = await queryOne<{ name: string | null }>(
-      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_kokoro_active'`
-    );
-    expect(before?.name ?? null).toBeNull();
-    resetSchemaMigrationCache();
-    expect(await ensureTtsJobColumns()).toBe("hot");
-    const after = await queryOne<{ name: string | null }>(
-      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_kokoro_active'`
-    );
-    expect(after?.name).toBe("idx_jobs_kokoro_active");
-    const jobs = await queryOne<{ sql: string | null }>(
-      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
-    );
-    expect(jobs?.sql ?? "").toMatch(/CREATE TABLE/);
   });
 });

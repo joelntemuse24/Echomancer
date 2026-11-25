@@ -17,10 +17,15 @@
  */
 
 import { backfillTakehomeCreateKeys } from "@/lib/jobs/takehome-identity";
-import { isTursoQuotaError } from "@/lib/transient-error";
+import { isTursoQuotaError, TURSO_QUOTA_BACKOFF_MS } from "@/lib/transient-error";
 import { execute, executeBatch, query, queryOne } from "@/lib/turso";
 
 let migrated = false;
+/** While Turso is BLOCKED, do not issue another schema round trip. */
+let schemaRetryNotBefore = 0;
+let schemaInflight: Promise<"hot" | "migrated"> | null = null;
+/** How many times this process actually talked to the database for schema. */
+let schemaDbPasses = 0;
 
 const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "generation_mode", def: "TEXT DEFAULT 'stock'" },
@@ -390,23 +395,15 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_due ON jobs (job_kind, status, sched_not_before)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_active ON jobs (job_kind, status, lease_expires_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_jobs_kokoro_active ON jobs (job_kind, status, tts_provider)`,
-  `CREATE INDEX IF NOT EXISTS idx_jobs_user_live ON jobs (user_id, deleted_at, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_bookmarks_user_job ON bookmarks (user_id, job_id, section_index, position_seconds)`,
   `CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email), email_verified, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_remote_calls_started ON remote_calls (started_at, flight_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_outcome_started ON remote_calls (outcome, started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_remote_calls_ended ON remote_calls (ended_at)`,
   `CREATE INDEX IF NOT EXISTS idx_remote_calls_flight_end ON remote_calls (flight_key, ended_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_calls_flight_outcome_end ON remote_calls (flight_key, outcome, ended_at)`,
   `CREATE INDEX IF NOT EXISTS idx_remote_calls_open ON remote_calls (outcome, started_at) WHERE ended_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_youtube_clips_created ON youtube_clips (created_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_youtube_search_expires ON youtube_search_cache (expires_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_takehome_create_keys_job ON takehome_create_keys (job_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_provider_slots_owner ON provider_slots (owner_token)`,
-  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_expires ON modal_gpu_leases (expires_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_owner ON modal_gpu_leases (owner_token)`,
-  `CREATE INDEX IF NOT EXISTS idx_modal_gpu_leases_user ON modal_gpu_leases (user_id, expires_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_fish_inflight_kind_expires ON fish_inflight (kind, expires_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_remote_brake_active ON remote_brake (active)`,
 ];
 
 /**
@@ -747,7 +744,22 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
 
 export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
   if (migrated) return "hot";
+  if (Date.now() < schemaRetryNotBefore) return "hot";
+  if (schemaInflight) return schemaInflight;
+  schemaInflight = runSchemaEnsure().finally(() => {
+    schemaInflight = null;
+  });
+  return schemaInflight;
+}
 
+/**
+ * One schema pass per process. A later call in the same process does not
+ * repeat `CREATE TABLE IF NOT EXISTS`. A Turso `BLOCKED` error waits
+ * minutes before the next attempt, so a drain loop cannot hammer a
+ * quota-blocked database.
+ */
+async function runSchemaEnsure(): Promise<"hot" | "migrated"> {
+  schemaDbPasses += 1;
   try {
     if (await schemaAlreadyCurrent()) {
       await ensureIndexes();
@@ -842,18 +854,35 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       console.error("[schema-migrate] take-home key backfill failed:", err);
     });
 
-    if (allOk) migrated = true;
+    // Finished without a quota error. Do not run CREATE again this process,
+    // even when one ALTER failed: the worker calls this on every tick.
+    migrated = true;
     return "migrated";
   } catch (err) {
-    // Leave `migrated` false so the next request retries.
+    if (isTursoQuotaError(err)) {
+      schemaRetryNotBefore = Date.now() + TURSO_QUOTA_BACKOFF_MS;
+      console.error(
+        "[schema-migrate] Turso read quota is blocked; schema ensure paused",
+        err
+      );
+      return "hot";
+    }
     console.error("[schema-migrate] failed:", err);
     return "migrated";
   }
 }
 
+/** Test seam: how many schema passes have touched the database. */
+export function schemaEnsureDbPasses(): number {
+  return schemaDbPasses;
+}
+
 /** Test seam: forget that migration already ran. */
 export function resetSchemaMigrationCache(): void {
   migrated = false;
+  schemaRetryNotBefore = 0;
+  schemaInflight = null;
+  schemaDbPasses = 0;
 }
 
 
