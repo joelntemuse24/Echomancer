@@ -3245,9 +3245,10 @@ OpenTelemetry). What exists:
 - `remote_calls` rows: every remote flight and its outcome is persisted by
   the event sink in `src/lib/remote/reconcile.ts` → `persistRemoteEvent`
   (`src/lib/remote/store.ts`); open calls are re-hydrated on worker start.
-  Daily spend reads `started` rows from the trailing day and looks up each
-  flight's end through `idx_remote_calls_flight_end` /
-  `idx_remote_calls_flight_outcome_end`. The inflated-span repair is one
+  Spend loads every `started` row and looks up each flight's end through
+  `idx_remote_calls_flight_end` / `idx_remote_calls_flight_outcome_end`.
+  Book spend has no time window, and an open call older than a day still
+  counts, so that load is not cut to the trailing day. The inflated-span repair is one
   index range on `ended_at` per process per day, not a full-table update on
   every reconcile.
 - `usage_logs`: best-effort accounting (for example `modal_s2_clone`).

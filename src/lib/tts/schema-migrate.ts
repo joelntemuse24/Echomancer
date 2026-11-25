@@ -411,20 +411,26 @@ const INDEXES = [
  * `schemaAlreadyCurrent` already accepts. That check does not look at
  * these indexes, so a production database would otherwise never gain them.
  * A quota error is rethrown so the caller can wait instead of marking
- * the schema hot and skipping the next attempt.
+ * the schema hot and skipping the next attempt. Any other index failure
+ * returns false so the caller does not mark the schema done and the next
+ * pass retries the index.
  */
-async function ensureIndexes(): Promise<void> {
+async function ensureIndexes(): Promise<boolean> {
   try {
     await executeBatch(INDEXES.map((sql) => ({ sql })));
+    return true;
   } catch (err) {
     if (isTursoQuotaError(err)) throw err;
+    let ok = true;
     for (const sql of INDEXES) {
       try {
         await execute(sql);
       } catch (inner) {
         if (isTursoQuotaError(inner)) throw inner;
+        ok = false;
       }
     }
+    return ok;
   }
 }
 
@@ -762,9 +768,8 @@ async function runSchemaEnsure(): Promise<"hot" | "migrated"> {
   schemaDbPasses += 1;
   try {
     if (await schemaAlreadyCurrent()) {
-      await ensureIndexes();
-      migrated = true;
-      return "hot";
+      if (await ensureIndexes()) migrated = true;
+      return migrated ? "hot" : "migrated";
     }
 
     try {
@@ -846,7 +851,7 @@ async function runSchemaEnsure(): Promise<"hot" | "migrated"> {
     }
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
-    await ensureIndexes();
+    const indexesOk = await ensureIndexes();
 
     // Oldest live row per book+narrator. Duplicate jobs stay. A second run
     // inserts nothing because the key already exists.
@@ -856,7 +861,8 @@ async function runSchemaEnsure(): Promise<"hot" | "migrated"> {
 
     // Finished without a quota error. Do not run CREATE again this process,
     // even when one ALTER failed: the worker calls this on every tick.
-    migrated = true;
+    // A failed index stays unlatched so the next pass retries it.
+    if (indexesOk) migrated = true;
     return "migrated";
   } catch (err) {
     if (isTursoQuotaError(err)) {

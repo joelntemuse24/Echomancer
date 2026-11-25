@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { execute, executeBatch, query, queryOne } from "@/lib/turso";
 import { resetDatabase } from "@/test/harness";
 import { storagePrefixBounds } from "@/lib/storage-prefix";
-import { REMOTE_DAY_MS } from "@/lib/remote/layer";
+import { bookSpend, dailySpend, REMOTE_DAY_MS, remoteCallCapMs, resetRemoteLayerForTests } from "@/lib/remote/layer";
 import {
+  loadPersistedSpend,
   PERSISTED_SPEND_SQL,
   REMOTE_REPAIR_INTERVAL_MS,
   REPAIR_INFLATED_REMOTE_CALLS_SQL,
@@ -95,6 +96,22 @@ describe("schema ensure", () => {
     await ensureTtsJobColumns();
     expect(batch.mock.calls.length).toBe(calls);
     batch.mockRestore();
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
+  it("retries a CREATE INDEX that failed for a reason other than quota", async () => {
+    await resetDatabase();
+    resetSchemaMigrationCache();
+    const turso = await import("@/lib/turso");
+    const batch = vi.spyOn(turso, "executeBatch").mockRejectedValue(new Error("index failed"));
+    const exec = vi.spyOn(turso, "execute").mockRejectedValue(new Error("index failed"));
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const passes = schemaEnsureDbPasses();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    expect(schemaEnsureDbPasses()).toBe(passes + 1);
+    batch.mockRestore();
+    exec.mockRestore();
     resetSchemaMigrationCache();
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
@@ -194,30 +211,23 @@ describe("remote_calls rows read", () => {
     expect(await ensureTtsJobColumns()).toBe("hot");
     await execute(`ANALYZE`);
 
-    const dayStart = now - REMOTE_DAY_MS;
-    const afterSpend = await plan(PERSISTED_SPEND_SQL, [dayStart]);
+    const afterSpend = await plan(PERSISTED_SPEND_SQL);
     expect(afterSpend, afterSpend).toMatch(
       /SEARCH e USING (COVERING )?INDEX idx_remote_calls_flight_outcome_end/
     );
     expect(afterSpend, afterSpend).toMatch(
       /SEARCH e USING (COVERING )?INDEX idx_remote_calls_flight_end/
     );
+    expect(afterSpend, afterSpend).toMatch(/idx_remote_calls_outcome_started/);
     expect(afterSpend, afterSpend).not.toMatch(/\bSCAN remote_calls\b/);
     expect(afterSpend, afterSpend).not.toMatch(/\bSCAN e\b/);
+    expect(afterSpend, afterSpend).not.toMatch(/started_at>/);
 
+    const dayStart = now - REMOTE_DAY_MS;
     const afterRepair = await plan(REPAIR_INFLATED_REMOTE_CALLS_SQL, [1, dayStart, 1]);
     expect(afterRepair, afterRepair).toMatch(/SEARCH remote_calls USING INDEX idx_remote_calls_ended/);
     expect(afterRepair, afterRepair).not.toMatch(/\bSCAN remote_calls\b/);
 
-    const inWindow = Number(
-      (
-        await queryOne<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM remote_calls
-           WHERE outcome = 'started' AND started_at >= ?`,
-          [dayStart]
-        )
-      )?.n ?? 0
-    );
     const terminalHits = Number(
       (
         await queryOne<{ n: number }>(
@@ -227,8 +237,7 @@ describe("remote_calls rows read", () => {
             AND e.ended_at IS NOT NULL
             AND e.ended_at > s.started_at
             AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
-           WHERE s.outcome = 'started' AND s.started_at >= ?`,
-          [dayStart]
+           WHERE s.outcome = 'started'`
         )
       )?.n ?? 0
     );
@@ -240,22 +249,21 @@ describe("remote_calls rows read", () => {
            JOIN remote_calls e ON e.flight_key = s.flight_key
             AND e.ended_at IS NOT NULL
             AND e.ended_at > s.started_at
-           WHERE s.outcome = 'started' AND s.started_at >= ?`,
-          [dayStart]
+           WHERE s.outcome = 'started'`
         )
       )?.n ?? 0
     );
-    const rowsReadAfter = inWindow + terminalHits + anyHits;
+    const rowsReadAfter = started + terminalHits + anyHits;
     expect(rowsReadAfter).toBeLessThan(rowsReadBefore / 50);
-    expect(rowsReadAfter).toBeLessThan(20_000);
 
-    const loaded = await query<{ flight_key: string; terminal_end: number | null }>(
-      PERSISTED_SPEND_SQL,
-      [dayStart]
-    );
-    expect(loaded.length).toBe(inWindow);
-    const sample = loaded[0];
-    expect(sample).toBeTruthy();
+    const loaded = await query<{
+      flight_key: string;
+      started_at: number;
+      terminal_end: number | null;
+    }>(PERSISTED_SPEND_SQL);
+    expect(loaded.length).toBe(started);
+    const sample = loaded.find((row) => Number(row.started_at) < dayStart);
+    expect(sample, "a started row older than a day must still load").toBeTruthy();
     const expected = await queryOne<{ terminal_end: number | null }>(
       `SELECT MIN(e.ended_at) AS terminal_end
        FROM remote_calls s
@@ -265,7 +273,7 @@ describe("remote_calls rows read", () => {
         AND e.outcome IN ('success', 'failure', 'cancelled', 'timeout', 'abandoned')
        WHERE s.flight_key = ?
          AND s.outcome = 'started'
-         AND s.started_at >= ?`,
+         AND s.started_at < ?`,
       [sample!.flight_key, dayStart]
     );
     const sampleEnd = sample!.terminal_end == null ? null : Number(sample!.terminal_end);
@@ -294,6 +302,34 @@ describe("remote_calls rows read", () => {
       closed: 0,
     });
     expect(remoteRepairSqlRunCount()).toBe(2);
+  });
+
+  it("keeps book spend and an open call that started more than a day ago", async () => {
+    await resetDatabase();
+    resetRemoteLayerForTests();
+    const now = Date.now();
+    const cap = remoteCallCapMs();
+    const hour = 60 * 60_000;
+    await execute(
+      `INSERT INTO remote_calls (
+         id, flight_key, idempotency_key, provider, path, job_id, status, outcome,
+         started_at, ended_at, est_cost_usd
+       ) VALUES
+         ('open-start', 's2-clone|book-open|0', 's2-clone|book-open|0', 's2-clone', 'book',
+          'book-open', 'started', 'started', ?, NULL, 4),
+         ('closed-start', 's2-clone|book-old|0', 's2-clone|book-old|0', 's2-clone', 'book',
+          'book-old', 'started', 'started', ?, NULL, 20),
+         ('closed-end', 's2-clone|book-old|0', 's2-clone|book-old|0', 's2-clone', 'book',
+          'book-old', 'success', 'success', ?, ?, 20)`,
+      [now - 30 * hour, now - 40 * hour, now - 40 * hour, now - 30 * hour]
+    );
+
+    await loadPersistedSpend();
+
+    expect(bookSpend("book-old", now)).toEqual({ usd: 20, ms: cap });
+    expect(dailySpend(now).ms).toBe(cap);
+    expect(bookSpend("book-open", now).ms).toBe(cap);
+    expect(bookSpend("book-open", now).usd).toBe(4);
   });
 });
 

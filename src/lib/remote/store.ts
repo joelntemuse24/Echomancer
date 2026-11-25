@@ -101,7 +101,7 @@ export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
 
 export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> {
   try {
-    await loadPersistedSpend(now);
+    await loadPersistedSpend();
     // Latest row per flight_key. An older terminal row must not hide a
     // later still_live for the same sections.
     const rows = await query<{
@@ -157,9 +157,10 @@ export async function hydrateOpenRemoteCalls(now = Date.now()): Promise<number> 
  *
  * The two lookups are correlated, but each one is an index range on
  * `(flight_key, outcome, ended_at)` or `(flight_key, ended_at)`. The outer
- * row is limited to the trailing day so a startup does not walk every
- * historical `started` row. Without those indexes each lookup scanned the
- * whole table once per started row.
+ * predicate is only `outcome = 'started'`, which uses
+ * `idx_remote_calls_outcome_started`. Book spend has no time window, and an
+ * open call older than a day still counts against the daily cap, so a
+ * trailing-day bound on `started_at` would drop both after a restart.
  */
 export const PERSISTED_SPEND_SQL = `SELECT s.flight_key, s.job_id, s.provider, s.path, s.est_cost_usd, s.started_at,
             s.status AS status,
@@ -175,8 +176,7 @@ export const PERSISTED_SPEND_SQL = `SELECT s.flight_key, s.job_id, s.provider, s
                 AND e.ended_at > s.started_at
             ) AS any_end
      FROM remote_calls s
-     WHERE s.outcome = 'started'
-       AND s.started_at >= ?`;
+     WHERE s.outcome = 'started'`;
 
 /**
  * Clamp only ends written inside the trailing day. `ended_at >= ?` is an
@@ -194,7 +194,7 @@ export const REPAIR_INFLATED_REMOTE_CALLS_SQL = `UPDATE remote_calls
          AND started_at > 0
          AND ended_at > started_at + ?`;
 
-export async function loadPersistedSpend(now = Date.now()): Promise<void> {
+export async function loadPersistedSpend(): Promise<void> {
   const rows = await query<{
     flight_key: string;
     job_id: string | null;
@@ -205,7 +205,7 @@ export async function loadPersistedSpend(now = Date.now()): Promise<void> {
     status: string | null;
     terminal_end: number | null;
     any_end: number | null;
-  }>(PERSISTED_SPEND_SQL, [now - REMOTE_DAY_MS]);
+  }>(PERSISTED_SPEND_SQL);
   const loaded: SpendRow[] = rows.map((row) => {
     const start = asMs(Number(row.started_at));
     const terminal = asMs(Number(row.terminal_end));
