@@ -9,6 +9,7 @@
  */
 
 import { after } from "next/server";
+import { storagePrefixBounds } from "@/lib/storage-prefix";
 import { execute, query, queryOne } from "@/lib/turso";
 import { deleteFiles, listFiles } from "@/lib/storage";
 import { releaseTakehomeCreateForJob } from "@/lib/jobs/takehome-identity";
@@ -174,19 +175,21 @@ async function pdfPrefixIfOrphaned(
   const uploadId = prefix.split("/")[1] ?? "";
   if (!OBJECT_ID.test(uploadId)) return null;
 
+  const bounds = storagePrefixBounds(prefix);
   const folderOwner = await queryOne<{ user_id: string | null }>(
     `SELECT user_id FROM uploads
-     WHERE id = ? OR substr(storage_path, 1, ?) = ?
+     WHERE id = ?
+        OR (storage_path >= ? AND storage_path < ?)
      LIMIT 1`,
-    [uploadId, prefix.length, prefix]
+    [uploadId, bounds.start, bounds.end]
   );
   if (folderOwner?.user_id && folderOwner.user_id !== userId) return null;
 
   const siblings = await query<{ count: number | bigint }>(
     `SELECT COUNT(*) as count FROM jobs
      WHERE id != ? AND deleted_at IS NULL
-       AND substr(pdf_storage_path, 1, ?) = ?`,
-    [jobId, prefix.length, prefix]
+       AND pdf_storage_path >= ? AND pdf_storage_path < ?`,
+    [jobId, bounds.start, bounds.end]
   );
   if (Number(siblings[0]?.count ?? 0) > 0) {
     console.log(`[Job ${jobId}] keeping ${prefix} — a live book still uses it`);
@@ -196,11 +199,12 @@ async function pdfPrefixIfOrphaned(
 }
 
 async function dropUploadRow(userId: string, uploadId: string, prefix: string): Promise<void> {
+  const bounds = storagePrefixBounds(prefix);
   await execute(
     `DELETE FROM uploads
      WHERE (user_id = ? OR user_id IS NULL)
-       AND (id = ? OR substr(storage_path, 1, ?) = ?)`,
-    [userId, uploadId, prefix.length, prefix]
+       AND (id = ? OR (storage_path >= ? AND storage_path < ?))`,
+    [userId, uploadId, bounds.start, bounds.end]
   ).catch(() => {});
 }
 

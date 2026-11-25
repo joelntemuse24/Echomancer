@@ -228,6 +228,53 @@ describe("TakehomeWorkerLoop", () => {
     await expect(broken.drain()).rejects.toThrow(TypeError);
   });
 
+  it("waits minutes on Turso BLOCKED instead of throwing", async () => {
+    const blocked = Object.assign(
+      new Error("BLOCKED: SQL read operations are forbidden"),
+      { code: "BLOCKED" }
+    );
+    const wrapped = new Error("query failed");
+    (wrapped as Error & { cause?: unknown }).cause = blocked;
+    const errors: unknown[] = [];
+    let now = 1_000_000;
+    let calls = 0;
+    const runner = {
+      runUntilSettled: vi.fn(async () => ({ status: "ready" })),
+      listDrainable: vi.fn(async () => ["j1"]),
+      releaseExpired: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw wrapped;
+        return 1;
+      }),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      backoffMs: 5_000,
+      quotaBackoffMs: 5 * 60_000,
+      now: () => now,
+      runner,
+      log: { info: () => {}, error: (...args) => errors.push(args[0]) },
+    });
+
+    await expect(loop.drain()).resolves.toEqual({ started: [], released: 0 });
+    expect(errors).toEqual([
+      "[takehome-worker] Turso read quota is blocked; drain paused",
+    ]);
+    expect(runner.runUntilSettled).not.toHaveBeenCalled();
+
+    now += 5_000;
+    await loop.drain();
+    expect(runner.releaseExpired).toHaveBeenCalledTimes(1);
+
+    now += 5 * 60_000;
+    const resumed = await loop.drain();
+    expect(resumed.released).toBe(1);
+    expect(resumed.started).toEqual(["j1"]);
+    loop.stop();
+    await loop.waitIdle(1_000);
+  });
+
   it("waits out a bounded backoff before restarting a lease loser", async () => {
     let now = 1_000;
     let calls = 0;

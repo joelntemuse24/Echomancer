@@ -33,7 +33,7 @@ import { acceptDocumentExtract, finishDocumentExtract } from "@/lib/cpu/extract-
 import { queueWaitingAfterExtract } from "@/lib/jobs/release-waiting-takehomes";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
-import { isTransientWorkerError } from "@/lib/transient-error";
+import { isWorkerLoopFatal } from "@/lib/transient-error";
 import {
   effectiveOrchestratorConcurrency,
   workerConcurrencyFromEnv,
@@ -264,8 +264,8 @@ async function main(): Promise<void> {
  */
 function watchLoop(label: string, work: Promise<unknown>): void {
   void work.catch((err) => {
-    if (isTransientWorkerError(err)) {
-      console.error(`[takehome-worker] ${label} paused after a transient error`, err);
+    if (!isWorkerLoopFatal(err)) {
+      console.error(`[takehome-worker] ${label} paused`, err);
       return;
     }
     console.error(`[takehome-worker] ${label} failed`, err);

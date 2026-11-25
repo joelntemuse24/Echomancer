@@ -235,7 +235,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `PARADEE_SECRET` | unset | Bearer token for the sidecar when it sets the same env. |
 | `TTS_PARADEE_FANOUT` | **3** | Paradee sections in flight for one book. |
 | `AUDIOBOOK_BITRATE` | **128k** | Delivery MP3 bitrate. Unset means 128k; 64k audibly dulls the consonant band. Set `96k` to trade size for quality. |
-| `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
+| `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. A Turso `BLOCKED` read-quota error waits 5 minutes. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `0.0.0.0` in code; pm2 and docker-compose pin `127.0.0.1` | Loopback behind Caddy. Do not expose `0.0.0.0` directly on a public NIC. |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock for one book |

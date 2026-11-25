@@ -14,6 +14,7 @@ import {
   resolveSessionUserId,
   type Session,
 } from "@/lib/auth/session";
+import { storagePrefixBounds } from "@/lib/storage-prefix";
 import { queryOne } from "@/lib/turso";
 
 export class SessionRequiredError extends AppError {
@@ -116,6 +117,7 @@ export async function ownsStoragePath(
       [resourceId]
     );
     const folder = `pdfs/${resourceId}/`;
+    const bounds = storagePrefixBounds(folder);
     if (row) {
       if (row.user_id !== userId) return false;
       // The uploads row outlives the soft-delete until the purge. A folder
@@ -126,8 +128,8 @@ export async function ownsStoragePath(
            SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END) as live,
            COUNT(*) as total
          FROM jobs
-         WHERE substr(pdf_storage_path, 1, ?) = ?`,
-        [folder.length, folder]
+         WHERE pdf_storage_path >= ? AND pdf_storage_path < ?`,
+        [bounds.start, bounds.end]
       );
       const total = Number(refs?.total ?? 0);
       const live = Number(refs?.live ?? 0);
@@ -138,9 +140,10 @@ export async function ownsStoragePath(
     // to a live job that references this folder so old libraries keep playing.
     const viaJob = await queryOne<{ user_id: string }>(
       `SELECT user_id FROM jobs
-       WHERE deleted_at IS NULL AND substr(pdf_storage_path, 1, ?) = ?
+       WHERE deleted_at IS NULL
+         AND pdf_storage_path >= ? AND pdf_storage_path < ?
        LIMIT 1`,
-      [folder.length, folder]
+      [bounds.start, bounds.end]
     );
     return viaJob?.user_id === userId;
   }
