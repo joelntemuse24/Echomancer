@@ -51,6 +51,7 @@ import {
   modalClonePoolReady,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
+import { cloneTakeIsTruncated } from "@/lib/tts/providers/modal-clone-guard";
 import {
   CpuProviderUnavailableError,
   MASTERING_UNFINISHED_MESSAGE,
@@ -237,7 +238,12 @@ import { takehomeLeaseContext } from "@/lib/tts/takehome-lease-context";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import type { FishLatency } from "@/lib/tts/providers/fish";
-import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
+import {
+  qaRegenerationBudgetMs,
+  settleSectionTake,
+  settleTakeWithoutTranscript,
+  type SpeechRate,
+} from "@/lib/tts/transcript-qa";
 import {
   guardSectionSqueaks,
   resolveSqueakGuard,
@@ -746,7 +752,7 @@ function takehomeMayOverlap(): boolean {
 /**
  * How many other take-home books are speaking on the Kokoro CPU fleet now.
  *
- * One fleet serves Drew, Walter, and George. Counting the other books (in
+ * One fleet serves Drew, Heart, Walter, and George. Counting the other books (in
  * this process or another worker) is what lets one book take its fair share of
  * the fleet instead of all of it. A read failure is not a reason
  * to fail a book: it just means this book sees itself alone, and the shared
@@ -762,7 +768,7 @@ export async function countOtherKokoroBooks(jobId: string): Promise<number> {
     const row = await queryOne<{ n: number }>(
       `SELECT COUNT(*) AS n FROM jobs
        WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
-         AND tts_provider IN ('sowell', 'drew', 'george')
+         AND tts_provider IN ('sowell', 'drew', 'george', 'heart')
          AND status IN ('queued', 'processing')
          AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())`,
       [jobId]
@@ -790,7 +796,7 @@ export async function kokoroFairnessRank(
     const row = await queryOne<{ n: number | null }>(
       `SELECT COUNT(*) AS n FROM jobs
        WHERE deleted_at IS NULL AND job_kind = 'takehome' AND id != ?
-         AND tts_provider IN ('sowell', 'drew', 'george')
+         AND tts_provider IN ('sowell', 'drew', 'george', 'heart')
          AND status IN ('queued', 'processing')
          AND (sched_not_before IS NULL OR sched_not_before <= unixepoch())
          AND (COALESCE(created_at, 0) < ?
@@ -2575,10 +2581,8 @@ async function runClaimedTick(
                 workSection(
                   index,
                   () => nextUnclaimed,
-                  // Transcript QA spawns a fresh Whisper process. That load
-                  // sits between the GPU returning and `first_section_at`.
-                  // Section 0 is published without it. Later sections are
-                  // still checked, and the take is not swapped afterwards.
+                  // An S2 book does not transcribe. `skipSectionQa` remains for
+                  // the Edge first-light path; this pin never loads Whisper.
                   skipQaIndex === index ? { skipSectionQa: true } : undefined
                 ),
               indexes.length
@@ -3979,6 +3983,69 @@ async function synthesizeSettled(
 ): Promise<SynthesisFailure | SynthesisSuccess> {
   const first = await synthesizeSection(args);
   if (!first.ok) return first;
+  const voiceId = args.catalog?.id ?? args.voiceId;
+  // Kokoro and an S2 clone do not transcribe. Silence is already retried
+  // inside synthesizeSection. Duration and truncation get one more take.
+  const skipTranscript =
+    isKokoroCpuProvider(args.provider.id) ||
+    args.clonePin === "modal" ||
+    (args.clonePin !== "fish" && usesModalClone(voiceId));
+  if (skipTranscript) {
+    const modalClone = args.clonePin === "modal" || usesModalClone(voiceId);
+    const settled = await settleTakeWithoutTranscript({
+      jobId: args.jobId,
+      index: args.index,
+      sourceText: args.sectionText,
+      first: {
+        audio: first.audio,
+        contentType: first.contentType,
+        ...(first.durationHintSeconds && first.durationHintSeconds > 0
+          ? { durationSec: first.durationHintSeconds }
+          : {}),
+      },
+      rate,
+      why: isKokoroCpuProvider(args.provider.id) ? "kokoro" : "s2",
+      truncated: (durationSec) => {
+        if (!modalClone || durationSec == null || !(durationSec > 0)) return false;
+        return cloneTakeIsTruncated({
+          text: args.sectionText,
+          durationSeconds: durationSec,
+        }).truncated;
+      },
+      synthesize: async () => {
+        const again = await synthesizeSection({
+          ...args,
+          useCache: false,
+          maxAttempts: 1,
+          frozen: undefined,
+        });
+        return again.ok
+          ? {
+              audio: again.audio,
+              contentType: again.contentType,
+              ...(again.durationHintSeconds && again.durationHintSeconds > 0
+                ? { durationSec: again.durationHintSeconds }
+                : {}),
+            }
+          : null;
+      },
+    });
+    if (settled.audio !== first.audio && first.cacheKey) {
+      await writeSectionCache(
+        first.cacheKey,
+        extensionForContentType(settled.contentType),
+        settled.audio,
+        settled.contentType
+      );
+    }
+    return {
+      ...first,
+      audio: settled.audio,
+      contentType: settled.contentType,
+      extension: extensionForContentType(settled.contentType),
+      durationHintSeconds: settled.durationSec ?? first.durationHintSeconds,
+    };
+  }
   if (args.skipSectionQa) {
     console.log(
       `[Job ${args.jobId}] section ${args.index} published before transcript QA`

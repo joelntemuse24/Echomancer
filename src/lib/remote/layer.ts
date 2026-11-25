@@ -1307,7 +1307,9 @@ export function modalAppRegistry(env: NodeJS.ProcessEnv = process.env): ModalApp
       restoreBudgetMs: 60_000,
       healthDailyBudgetMs: 10 * 60_000,
       maxHealthGpus: 1,
-      cover: { containers: 1, rounds: 1, streak: 1, scaledown: 300 },
+      // Matches `CPU_SCALEDOWN_SECONDS` (45). The five-minute New Book warm
+      // is a worker keepalive, not this window.
+      cover: { containers: 1, rounds: 1, streak: 1, scaledown: 45 },
     },
   ];
 }

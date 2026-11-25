@@ -210,12 +210,44 @@ export async function runRollingRenderPool<T>(
  *   2 books → 8 + 8
  *   3 books → 6 + 5 + 5        (the remainder goes to the older books)
  *
- * So the quotas always sum to `fleet` — no container sits idle while a book
- * waits, and no book's plan can over-subscribe the fleet. A book ranked past
- * the fleet still gets one lane; the slot rows then serialise the overflow,
- * so nobody is starved forever. `configured` (`SOWELL_BOOK_LANES`) is a
- * per-book ceiling below the split, and `remainingSections` a floor on waste.
+ * Those fair shares sum to `fleet`. A book then keeps the smallest share
+ * that does not add a wave (`lanesForSameWaves`): 22 sections on a quota of
+ * 16 is two waves either at 16 lanes or at 11, and the five containers that
+ * would have spoken once and idled are not started. A book ranked past the
+ * fleet still gets one lane; the slot rows serialise the overflow.
+ * `configured` (`SOWELL_BOOK_LANES`) is a per-book ceiling below the split.
  */
+export function kokoroFairQuota(input: {
+  configured: number;
+  fleet: number;
+  activeBooks: number;
+  /** Zero-based rank among the active books, oldest first. Defaults to 0. */
+  rank?: number;
+}): number {
+  const configured = Math.max(1, Math.floor(input.configured) || 1);
+  const fleet = Math.max(1, Math.floor(input.fleet) || 1);
+  const books = Math.max(1, Math.floor(input.activeBooks) || 1);
+  const rank = Math.max(0, Math.floor(input.rank ?? 0) || 0);
+  const base = Math.floor(fleet / books);
+  const remainder = fleet % books;
+  const quota = base + (rank < remainder ? 1 : 0);
+  return Math.max(1, Math.min(configured, quota || 1));
+}
+
+/**
+ * Fewest lanes that keep `ceil(sections / lanes) === ceil(sections / quota)`.
+ *
+ * A smaller count boots fewer containers. It does not add a wave, so a book
+ * of equal sections still finishes in the same number of section-times.
+ */
+export function lanesForSameWaves(sections: number, quota: number): number {
+  const count = Math.max(0, Math.floor(sections) || 0);
+  const cap = Math.max(1, Math.min(Math.floor(quota) || 1, count || 1));
+  if (count < 1) return 1;
+  const waves = Math.ceil(count / cap);
+  return Math.max(1, Math.min(cap, Math.ceil(count / waves)));
+}
+
 export function planKokoroBookLanes(input: {
   configured: number;
   fleet: number;
@@ -224,14 +256,7 @@ export function planKokoroBookLanes(input: {
   /** Zero-based rank among the active books, oldest first. Defaults to 0. */
   rank?: number;
 }): number {
-  const configured = Math.max(1, Math.floor(input.configured) || 1);
-  const fleet = Math.max(1, Math.floor(input.fleet) || 1);
-  const books = Math.max(1, Math.floor(input.activeBooks) || 1);
   const sections = Math.max(0, Math.floor(input.remainingSections) || 0);
-  const rank = Math.max(0, Math.floor(input.rank ?? 0) || 0);
   if (sections < 1) return 1;
-  const base = Math.floor(fleet / books);
-  const remainder = fleet % books;
-  const quota = base + (rank < remainder ? 1 : 0);
-  return Math.max(1, Math.min(configured, quota, sections));
+  return lanesForSameWaves(sections, kokoroFairQuota(input));
 }

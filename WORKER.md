@@ -25,7 +25,8 @@ It does **not** self-host Fish.
 Local CPU (`CPU_RUNNER` unset) orchestrates **one book**.
 `WORKER_CONCURRENCY` above 1 is clamped unless `WORKER_LOCAL_MULTIBOOK=1`,
 which stacks ffmpeg on this machine and is not a production setting.
-CPU tasks (extract, section master, local Whisper, concat) then use
+CPU tasks (extract, section master, concat, and Whisper only for engines
+that still transcribe) then use
 `cpu-host:<CPU_HOST_ID>:…` permits so two processes on this machine share
 one cap. A full cap leaves the raw take queued and the section not ready.
 

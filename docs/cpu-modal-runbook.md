@@ -179,7 +179,7 @@ figure for it.
 | `CPU_FUNCTION_TIMEOUT_S` | 900 | Master, whisper, extract. The child is killed at timeout−30s. |
 | `CPU_CONCAT_TIMEOUT_S` | 3600 | Concat only. The function timeout is `max` of this and the section budget. |
 | `CPU_MAX_CONTAINERS` | 4 | How many containers may exist. Not a dollar cap. |
-| `CPU_SCALEDOWN_SECONDS` | 300 | How long an idle container stays up. That idle time is billed. |
+| `CPU_SCALEDOWN_SECONDS` | 45 | How long an idle container stays up. That idle time is billed. Clamped to 2..1200. |
 | `CPU_DISPATCH_ACCEPT_MS` | 20000 | Orchestrator HTTP wait. Set on the VM, not on this image. |
 | `CPU_PLACEMENT_LEASE_S` | 180 | VM lease covering cold start until the child heartbeats. |
 | `min_containers` | 0 | Idle is zero containers. Not an env override. |
@@ -204,7 +204,7 @@ From the repo root, with the Modal CLI logged in and the secret saved:
 CPU_MAX_CONTAINERS=4 \
 CPU_FUNCTION_CPU=2 \
 CPU_FUNCTION_MEMORY_MB=4096 \
-CPU_SCALEDOWN_SECONDS=300 \
+CPU_SCALEDOWN_SECONDS=45 \
 CPU_FUNCTION_TIMEOUT_S=900 \
 CPU_CONCAT_TIMEOUT_S=3600 \
 modal deploy modal/cpu_worker.py
@@ -293,9 +293,14 @@ does not open a Modal URL. Disconnect is `not-applicable` there because
 there is no HTTP caller.
 
 `min_containers=0` scales an idle container down after
-`CPU_SCALEDOWN_SECONDS` (default 300). A create-flow click can POST
+`CPU_SCALEDOWN_SECONDS` (default 45). A create-flow click can POST
 `{"warm": true}` with no task id. That starts one container and returns.
-A busy container answers without a second try. `modal app stop echomancer-cpu` is not required
+Set the same `CPU_SCALEDOWN_SECONDS` on the take-home worker. When it is
+below five minutes, the worker re-posts that warm until the five-minute
+hold ends (`src/lib/capacity/cpu-warm-keepalive.ts`). Unset, the worker
+does not keepalive: a keepalive against a deploy that is still at 300s
+would hold the container past the hold. A busy container answers without
+a second try. `modal app stop echomancer-cpu` is not required
 after a passing smoke. The GPU `/ready` host is a different app and is
 not called.
 

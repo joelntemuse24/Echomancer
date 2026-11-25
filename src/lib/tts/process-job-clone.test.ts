@@ -571,17 +571,18 @@ describe("lane staging", () => {
 
       const qa = await import("@/lib/tts/transcript-qa");
       const qaSpy = vi.spyOn(qa, "settleSectionTake");
+      const cheapSpy = vi.spyOn(qa, "settleTakeWithoutTranscript");
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
       // The first request carries section 0 with nothing batched beside it.
       expect(seen[0]).toEqual([0]);
-      // Section 0 is published before Whisper. The model loads in a fresh
-      // process, and that wait used to sit between the GPU and first audio.
-      // Later sections are still checked.
-      const qaIndexes = qaSpy.mock.calls.map((call) => call[0]?.index);
-      expect(qaIndexes).not.toContain(0);
-      expect(qaIndexes.length).toBeGreaterThan(0);
+      // An S2 book does not transcribe any section. Duration, silence, and
+      // truncation still run, including on section 0.
+      expect(qaSpy).not.toHaveBeenCalled();
+      const cheapIndexes = cheapSpy.mock.calls.map((call) => call[0]?.index);
+      expect(cheapIndexes).toContain(0);
+      expect(cheapIndexes.length).toBeGreaterThan(0);
       // Section 0 is rendered once. Publishing it re-reads the section cache;
       // it must not buy a second GPU call for the same audio.
       expect(seen.flat().filter((index) => index === 0)).toHaveLength(1);

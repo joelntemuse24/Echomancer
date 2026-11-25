@@ -134,8 +134,18 @@ describe("Kokoro rolling pool", () => {
     const total = Number(row?.total_sections ?? 0);
     expect(total).toBeGreaterThanOrEqual(17);
     expect(fake.calls).toHaveLength(total);
-    // The pool filled the fleet: sixteen renders in flight at once.
-    expect(peak).toBe(16);
+    // The pool filled the lanes this book starts. A short book keeps the
+    // wave count and does not boot a lane that would speak once and idle.
+    const { planKokoroBookLanes } = await import("@/lib/tts/kokoro-pool");
+    expect(peak).toBe(
+      planKokoroBookLanes({
+        configured: 16,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: total,
+      })
+    );
+    expect(peak).toBeGreaterThan(1);
     // Section 3 started before the slow section 0 returned. With pair
     // batching it could not have.
     expect(startedAt[3]!).toBeLessThan(endedAt[0]!);

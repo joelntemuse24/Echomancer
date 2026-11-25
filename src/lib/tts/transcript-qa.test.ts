@@ -10,6 +10,7 @@ import {
   localWhisperWaitMs,
   resolveQaProvider,
   settleSectionTake,
+  settleTakeWithoutTranscript,
 } from "@/lib/tts/transcript-qa";
 import {
   localWhisperAvailable,
@@ -508,5 +509,64 @@ describe("local sidecar", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.length).toBeGreaterThan(0);
+  });
+});
+
+describe("settleTakeWithoutTranscript", () => {
+  const text = `${"The harbor was quiet after the rain. ".repeat(12)}They left at dawn.`;
+
+  it("retries once when the take is far shorter than the text", async () => {
+    let calls = 0;
+    const result = await settleTakeWithoutTranscript({
+      jobId: "duration-short",
+      index: 3,
+      sourceText: text,
+      first: { audio: Buffer.alloc(2000, 1), contentType: "audio/wav", durationSec: 1 },
+      rate: { chars: 0, seconds: 0 },
+      why: "kokoro",
+      synthesize: async () => {
+        calls += 1;
+        return { audio: Buffer.alloc(2000, 2), contentType: "audio/wav", durationSec: 30 };
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.durationSec).toBe(30);
+  });
+
+  it("does not synthesize again when the duration matches", async () => {
+    let calls = 0;
+    const result = await settleTakeWithoutTranscript({
+      jobId: "duration-ok",
+      index: 0,
+      sourceText: text,
+      first: { audio: Buffer.alloc(2000, 3), contentType: "audio/wav", durationSec: 30 },
+      rate: { chars: 0, seconds: 0 },
+      why: "s2",
+      synthesize: async () => {
+        calls += 1;
+        return null;
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.durationSec).toBe(30);
+  });
+
+  it("retries a truncated clone take and keeps the first if the second is also short", async () => {
+    let calls = 0;
+    const result = await settleTakeWithoutTranscript({
+      jobId: "truncated",
+      index: 1,
+      sourceText: text,
+      first: { audio: Buffer.alloc(2000, 4), contentType: "audio/mpeg", durationSec: 30 },
+      rate: { chars: 0, seconds: 0 },
+      why: "s2",
+      truncated: () => true,
+      synthesize: async () => {
+        calls += 1;
+        return { audio: Buffer.alloc(2000, 5), contentType: "audio/mpeg", durationSec: 30 };
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.audio[10]).toBe(4);
   });
 });

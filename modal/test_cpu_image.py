@@ -108,6 +108,11 @@ def test_cpu_worker_image_keeps_apt_python_and_installs_fastapi_for_modal():
     finally:
         sys.path.remove(str(ROOT / "modal"))
     assert worker.APP_NAME == "echomancer-cpu"
+    assert worker.SCALEDOWN_DEFAULT == 45
+    assert worker.scaledown_seconds({}) == 45
+    assert worker.scaledown_seconds({"CPU_SCALEDOWN_SECONDS": "60"}) == 60
+    assert worker.scaledown_seconds({"CPU_SCALEDOWN_SECONDS": "1"}) == 2
+    assert worker.scaledown_seconds({"CPU_SCALEDOWN_SECONDS": "nope"}) == 45
     assert worker.image is built
     assert built.from_dockerfile_calls, "from_dockerfile was not called"
     args, kwargs = built.from_dockerfile_calls[0]

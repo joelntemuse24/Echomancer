@@ -11,10 +11,13 @@ directory with the take-home VM.
 
 Scale to zero: `min_containers` is 0. `CPU_MAX_CONTAINERS` (default 4)
 is the fleet cap. `CPU_FUNCTION_CPU` and `CPU_FUNCTION_MEMORY_MB` are the
-per-container billing dimensions. `CPU_SCALEDOWN_SECONDS` (default 300) is
-how long an idle container stays up. Idle cost is zero once the container
-is gone. This file does not record a measured dollar figure. A body of
-`{"warm": true}` starts the container and returns without a task.
+per-container billing dimensions. `CPU_SCALEDOWN_SECONDS` (default 45,
+clamped to Modal's 2..1200) is how long an idle container stays up. Idle
+cost is zero once the container is gone. A create-flow warm that must
+outlive this window is refreshed by the take-home worker
+(`CPU_SCALEDOWN_SECONDS` on that process); this file does not record a
+measured dollar figure. A body of `{"warm": true}` starts the container
+and returns without a task.
 
 The image does not download Whisper weights. The first QA task on a
 deployed container fetches the `base` model into that container. That
@@ -60,7 +63,25 @@ MEMORY_MB = int(os.environ.get("CPU_FUNCTION_MEMORY_MB", "4096"))
 TIMEOUT_S = int(os.environ.get("CPU_FUNCTION_TIMEOUT_S", "900"))
 CONCAT_TIMEOUT_S = int(os.environ.get("CPU_CONCAT_TIMEOUT_S", "3600"))
 MAX_CONTAINERS = int(os.environ.get("CPU_MAX_CONTAINERS", "4"))
-SCALEDOWN_S = int(os.environ.get("CPU_SCALEDOWN_SECONDS", "300"))
+# Modal's allowed scaledown_window, in seconds. 45s is the idle tail after
+# real work. The 5-minute New Book warm is a keepalive on the worker, not a
+# longer window on every extract, master, and concat container.
+SCALEDOWN_MIN = 2
+SCALEDOWN_MAX = 1200
+SCALEDOWN_DEFAULT = 45
+
+
+def scaledown_seconds(env: dict | None = None) -> int:
+    """Deploy-time `scaledown_window`, clamped to Modal's 2..1200. Default 45."""
+    raw = (env or os.environ).get("CPU_SCALEDOWN_SECONDS", "")
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        n = SCALEDOWN_DEFAULT
+    return max(SCALEDOWN_MIN, min(SCALEDOWN_MAX, n))
+
+
+SCALEDOWN_S = scaledown_seconds()
 # The function stays alive for the longest task. Section children are
 # killed at TIMEOUT_S. This number is not a dollar cap.
 FUNCTION_TIMEOUT_S = max(TIMEOUT_S, CONCAT_TIMEOUT_S)
