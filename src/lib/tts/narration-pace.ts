@@ -25,7 +25,7 @@ export const FISH_SPEED_MAX = 1.0;
 
 /**
  * Drew's app-speed range. 1.0 is Drew's own natural pace, which the container
- * renders at Kokoro speed 0.88 — so this is a multiplier on that baseline,
+ * renders at Kokoro speed 1.0 — so this is a multiplier on that baseline,
  * not a second slowdown. Widening it past 1.0 makes Drew speak faster than
  * Andrew did, which the product does not offer.
  */
@@ -123,7 +123,7 @@ export function isDenseAcademicText(text: string): boolean {
  * stored with it. A new request is coerced to Drew before it gets here.
  *
  * Drew stays at 1.0 too, and for a stronger reason. Its container renders 1.0
- * at Kokoro speed 0.88, which already **is** real Andrew's natural pace. This
+ * at Kokoro speed 1.0, which already **is** real Andrew's natural pace. This
  * is the module whose calibration drifted Andrew's later sections down to
  * ~0.85; Drew must not inherit that. 1.0 here means "Drew at his own pace".
  */
@@ -156,7 +156,7 @@ export function keepsOwnPace(catalogVoiceId?: string | null): boolean {
   );
 }
 
-/** Drew's app speed, clamped. 1.0 is his native pace; the worker applies 0.88. */
+/** Drew's app speed, clamped. 1.0 is his native pace; the worker multiplies by 1.0. */
 export function drewSpeedForRequest(speed?: number): number {
   if (typeof speed !== "number" || !Number.isFinite(speed)) {
     return 1;

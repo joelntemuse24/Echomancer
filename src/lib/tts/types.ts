@@ -151,6 +151,11 @@ export interface SynthesizeResult {
   audio: Buffer;
   contentType: string;
   durationHintSeconds?: number;
+  /**
+   * The podcast-chain MP3 of `audio`, mastered where it was synthesized
+   * (Kokoro container, `KOKORO_CONTAINER_MASTER=1`). Absent everywhere else.
+   */
+  mastered?: Buffer;
 }
 
 export interface TtsProviderAdapter {

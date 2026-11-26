@@ -19,7 +19,7 @@
 
 import { execute, queryOne } from "@/lib/turso";
 import { currentTakehomeLease } from "@/lib/tts/takehome-lease-context";
-import { sowellFleetContainers } from "@/lib/tts/sowell-voice";
+import { sowellCallCap } from "@/lib/tts/sowell-voice";
 
 export const PROVIDER_SLOT_PROVIDERS = ["fish", "edge", "modal-clone"] as const;
 export type ProviderSlotName = (typeof PROVIDER_SLOT_PROVIDERS)[number];
@@ -328,7 +328,7 @@ export async function holdListenerSlot(
     providerId === "george" ||
     providerId === "heart"
   ) {
-    return holdNamedProviderSlot("kokoro", sowellFleetContainers());
+    return holdNamedProviderSlot("kokoro", sowellCallCap());
   }
   if (providerId === "edge" || providerId === "google") {
     return holdEdgeSectionSlot(edgeCap);

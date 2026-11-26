@@ -1,8 +1,8 @@
 """Drew's speed mapping and asset paths. No torch, no model load.
 
-`drew_speed` is the one place 0.88 is applied, and it must be applied exactly
-once: the worker sends the app's own speed, and this multiplies it. A double
-multiply would put 1.0 at 0.774 and make Drew sound nothing like Andrew.
+`drew_speed` is the one place the native speed is applied, and it must be
+applied exactly once: the worker sends the app's own speed, and this
+multiplies it. Native is 1.0. A second multiply would slow Drew off Andrew.
 """
 
 from __future__ import annotations
@@ -25,21 +25,19 @@ from drew import (  # noqa: E402
 
 
 class DrewSpeed(unittest.TestCase):
-    def test_native_one_is_eighty_eight(self) -> None:
-        self.assertEqual(DREW_NATIVE_KOKORO_SPEED, 0.88)
-        self.assertEqual(drew_speed(1.0), 0.88)
-        self.assertEqual(drew_speed(None), 0.88)
-        self.assertEqual(drew_speed(""), 0.88)
-        self.assertEqual(drew_speed("junk"), 0.88)
-        self.assertEqual(drew_speed(0), 0.88)
-        self.assertEqual(drew_speed(-2), 0.88)
+    def test_native_one_is_one(self) -> None:
+        self.assertEqual(DREW_NATIVE_KOKORO_SPEED, 1.0)
+        self.assertEqual(drew_speed(1.0), 1.0)
+        self.assertEqual(drew_speed(None), 1.0)
+        self.assertEqual(drew_speed(""), 1.0)
+        self.assertEqual(drew_speed("junk"), 1.0)
+        self.assertEqual(drew_speed(0), 1.0)
+        self.assertEqual(drew_speed(-2), 1.0)
 
     def test_scales_from_native_without_a_second_slowdown(self) -> None:
-        self.assertEqual(drew_speed(0.95), 0.836)
-        self.assertEqual(drew_speed(1.2), 1.056)
-        # The old calibration floor sat near 0.85; Drew's natural pace is
-        # already there, so 1.0 must not land under it.
-        self.assertGreater(drew_speed(1.0), 0.85)
+        self.assertEqual(drew_speed(0.95), 0.95)
+        self.assertEqual(drew_speed(1.2), 1.2)
+        self.assertEqual(drew_speed(1.0), 1.0)
 
     def test_clamps_to_what_the_container_accepts(self) -> None:
         self.assertEqual(drew_speed(0.001), 0.5)

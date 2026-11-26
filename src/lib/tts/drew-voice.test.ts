@@ -12,6 +12,9 @@ import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
   DREW_CACHE_VARIANT,
+  drewCacheIdentity,
+  drewRuntimeLabel,
+  drewTakeMismatch,
   DREW_PROSODY_G_SUFFIX,
   DREW_FIXED_STYLE_INDEX,
   DREW_IN_FLIGHT,
@@ -21,6 +24,7 @@ import {
   DREW_KMODEL_PATH,
   DREW_VOICE_PACK_PATH,
   DREW_VOLUME_NAME,
+  DREW_WEIGHTS_ID,
   DrewNotConfiguredError,
   drewCacheVariant,
   drewEnabled,
@@ -133,8 +137,17 @@ describe("Drew identity", () => {
       })
     ).toBe(DREW_MAX_CHARS);
     expect(DREW_IN_FLIGHT).toBe(2);
-    expect(DREW_CACHE_VARIANT).toContain(`style${DREW_FIXED_STYLE_INDEX}-v2`);
-    expect(DREW_CACHE_VARIANT.endsWith("-v1")).toBe(false);
+    expect(DREW_CACHE_VARIANT).toBe(
+      `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-torch-speed1.000`
+    );
+    expect(drewRuntimeLabel({})).toBe("torch");
+    expect(drewRuntimeLabel({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toBe("onnx");
+    expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toContain(
+      "-onnx-speed1.000"
+    );
+    expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).not.toBe(
+      DREW_CACHE_VARIANT
+    );
     expect(takehomeCacheVariant("sowell", "sowell")).not.toContain("style");
     expect(takehomeCacheVariant("george", "george")).not.toContain("style");
     delete process.env.DREW_PROSODY_RULES;
@@ -173,30 +186,26 @@ describe("Drew identity", () => {
 });
 
 describe("Drew speed mapping", () => {
-  it("treats 0.88 as native 1x", () => {
-    expect(DREW_NATIVE_KOKORO_SPEED).toBe(0.88);
-    expect(drewKokoroSpeed(1)).toBe(0.88);
-    expect(drewKokoroSpeed(undefined)).toBe(0.88);
-    expect(drewKokoroSpeed(null)).toBe(0.88);
+  it("treats 1.0 as native 1x", () => {
+    expect(DREW_NATIVE_KOKORO_SPEED).toBe(1);
+    expect(drewKokoroSpeed(1)).toBe(1);
+    expect(drewKokoroSpeed(undefined)).toBe(1);
+    expect(drewKokoroSpeed(null)).toBe(1);
   });
 
   it("scales from native pace instead of slowing further", () => {
-    // 1.0 is natural. Nothing at or below 1.0 may land under 0.88 except an
-    // explicit slower choice, which is the listener's, not calibration's.
-    expect(drewKokoroSpeed(1)).toBe(0.88);
-    expect(drewKokoroSpeed(0.95)).toBe(0.836);
-    expect(drewKokoroSpeed(1.2)).toBe(1.056);
-    // The retired calibration floor (~0.85) is now slower than native, so it
-    // must not be applied to Drew by default.
-    expect(drewKokoroSpeed(1)).toBeGreaterThan(0.85);
+    // 1.0 is natural. The container multiplies once, so 1.0 stays 1.0.
+    expect(drewKokoroSpeed(1)).toBe(1);
+    expect(drewKokoroSpeed(0.95)).toBe(0.95);
+    expect(drewKokoroSpeed(1.2)).toBe(1.2);
   });
 
   it("clamps to what the container accepts", () => {
-    expect(drewKokoroSpeed(0)).toBe(0.88);
-    expect(drewKokoroSpeed(-3)).toBe(0.88);
+    expect(drewKokoroSpeed(0)).toBe(1);
+    expect(drewKokoroSpeed(-3)).toBe(1);
     expect(drewKokoroSpeed(0.01)).toBe(0.5);
     expect(drewKokoroSpeed(100)).toBe(2);
-    expect(drewKokoroSpeed(Number.NaN)).toBe(0.88);
+    expect(drewKokoroSpeed(Number.NaN)).toBe(1);
   });
 });
 
@@ -235,7 +244,8 @@ describe("Drew provider", () => {
       res.writeHead(200, {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
-        "x-kokoro-speed": "0.88",
+        "x-kokoro-speed": "1.0",
+        "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
     });
@@ -255,7 +265,7 @@ describe("Drew provider", () => {
     expect(audio.contentType).toBe("audio/wav");
     expect(audio.audio.length).toBe(244);
     expect(seen).toHaveLength(1);
-    // The container applies 0.88. The worker sends the app's 1.0 unchanged so
+    // The container multiplies by 1.0. The worker sends the app's 1.0 unchanged so
     // the multiply happens exactly once.
     expect(seen[0]!.speed).toBe(1);
     expect(seen[0]!.voice).toBe("drew");
@@ -294,6 +304,8 @@ describe("Drew provider", () => {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
         "x-kokoro-prosody": "G",
+        "x-kokoro-speed": "1.0",
+        "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
     });
@@ -308,6 +320,34 @@ describe("Drew provider", () => {
       voice: DREW_PROVIDER_VOICE_ID,
     });
     expect(audio.audio.length).toBe(244);
+  });
+
+  it("refuses a take whose Kokoro speed or runtime is not the cache key", async () => {
+    const headers = new Headers({ "x-kokoro-speed": "0.88", "x-kokoro-runtime": "torch" });
+    expect(drewTakeMismatch(headers, 1)).toMatch(/0\.88/);
+    expect(drewTakeMismatch(headers, 1)).toMatch(/not stored/i);
+    const otherGraph = new Headers({ "x-kokoro-speed": "1", "x-kokoro-runtime": "onnx" });
+    expect(drewTakeMismatch(otherGraph, 1)).toMatch(/onnx/);
+    expect(drewTakeMismatch(new Headers({ "x-kokoro-speed": "1" }), 1)).toMatch(/unknown/);
+    const url = await listen((_body, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
+        "x-kokoro-speed": "0.88",
+        "x-kokoro-runtime": "torch",
+      });
+      res.end(wavBody());
+    });
+    process.env.DREW_URL = url;
+    delete process.env.WORKER;
+    delete process.env.KOKORO_RUNTIME;
+    await expect(
+      resolveStockAdapter({ provider: "drew", catalogVoiceId: "drew" }).synthesize({
+        text: "The harbor was quiet.",
+        voice: DREW_PROVIDER_VOICE_ID,
+        speed: 1,
+      })
+    ).rejects.toThrow(/not stored/i);
   });
 
   it("refuses audio that did not confirm the Drew voice", async () => {
@@ -349,9 +389,14 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain('"andrew-distill"');
     expect(worker).toContain("min_containers=0");
     expect(worker).toContain("max_containers=max_containers()");
-    // Two kmodels need more than the Walter/George 4 GB.
-    expect(worker).toContain("memory=6144");
-    expect(worker).toContain("@modal.concurrent(max_inputs=1)");
+    // ONNX memory is measured. Torch stays at 6144, one call per container.
+    expect(worker).toContain("memory=memory_mb()");
+    expect(worker).toContain("TORCH_MEMORY_MB = 6144");
+    expect(worker).toContain("@modal.concurrent(max_inputs=STREAMS)");
+    expect(worker).toContain("load_assets()");
+    expect(worker).toContain("open_sessions()");
+    expect(worker).toContain("ensure_drew()");
+    expect(worker).toContain("ONNX_MEMORY_MB_DEFAULT = 6144");
     expect(worker).toContain("load_drew()");
     expect(worker).toContain("DREW_UNAVAILABLE");
     expect(worker).toContain('raw_prosody == "G"');
@@ -361,7 +406,7 @@ describe("Drew on the Modal CPU app", () => {
       path.join(process.cwd(), "scripts/sowell/drew.py"),
       "utf8"
     );
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
     const index = drew.match(/DREW_FIXED_STYLE_INDEX = (\d+)/);
     expect(index, drew).toBeTruthy();
     expect(DREW_FIXED_STYLE_INDEX).toBe(Number(index![1]));
@@ -394,7 +439,7 @@ describe("Drew on the Modal CPU app", () => {
     expect(engine).toContain("def kpipeline()");
   });
 
-  it("executes the 0.88 multiply through the resident engine", () => {
+  it("executes the 1.0 multiply through the resident engine", () => {
     // The Python suite stubs Kokoro but uses real torch, so this runs the
     // actual `_render_locked` speed path. A double multiply fails here.
     const torch = spawnSync("python3", ["-c", "import torch"], { encoding: "utf8" });

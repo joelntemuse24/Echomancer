@@ -424,7 +424,7 @@ class OneForward(unittest.TestCase):
         original_f0 = model.predictor.F0Ntrain
         original_duration = model.predictor.duration_proj
         sentences = plan_chunks([(text, text)])[0]
-        with prosody_hooks(model, text, 0.88, PROSODY_G, sentences):
+        with prosody_hooks(model, text, 1.0, PROSODY_G, sentences):
             self.assertIsNot(model.predictor.F0Ntrain, original_f0)
             features = self.torch.zeros(1, 48, 1)
             model.predictor.duration_proj(features)
@@ -438,7 +438,7 @@ class OneForward(unittest.TestCase):
 
         model.predictor.F0Ntrain = boom
         with self.assertRaises(RuntimeError):
-            with prosody_hooks(model, text, 0.88, PROSODY_G, sentences):
+            with prosody_hooks(model, text, 1.0, PROSODY_G, sentences):
                 model.predictor.duration_proj(self.torch.zeros(1, 48, 1))
                 model.predictor.F0Ntrain(None, None)
         self.assertIs(model.predictor.F0Ntrain, boom)
@@ -471,7 +471,7 @@ class OneForward(unittest.TestCase):
         linear = model.predictor.duration_proj
         text = "Is the harbor quiet after the long rain this evening?"
         sentences = plan_chunks([(text, text)])[0]
-        with prosody_hooks(model, text, 0.88, PROSODY_G, sentences):
+        with prosody_hooks(model, text, 1.0, PROSODY_G, sentences):
             self.assertIs(model.predictor.duration_proj, linear)
             model.predictor.duration_proj(torch.zeros(1, 8, 4))
             edited, _noise = model.predictor.F0Ntrain(None, None)

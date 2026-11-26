@@ -9,6 +9,12 @@
  * applied by the take-home pool, not here.
  */
 
+import {
+  type KokoroTake,
+  kokoroContainerMasterEnabled,
+  kokoroMasterRecipe,
+  parseKokoroBody,
+} from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
 import type {
   SynthesizeInput,
@@ -90,8 +96,9 @@ export function concatWav(parts: Buffer[]): Buffer {
 async function onePiece(
   input: SynthesizeInput,
   text: string,
-  url: string
-): Promise<Buffer> {
+  url: string,
+  master = false
+): Promise<KokoroTake> {
   const token = process.env.SOWELL_TOKEN?.trim() || "";
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -113,6 +120,8 @@ async function onePiece(
           body: JSON.stringify({
             text,
             speed: 1,
+            // The container masters this take too (one section, one call).
+            ...(master ? { master: kokoroMasterRecipe() } : {}),
             ...(input.jobId ? { jobId: input.jobId } : {}),
             ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
           }),
@@ -140,7 +149,8 @@ async function onePiece(
       last = await res.text().catch(() => "");
       throw new Error(`Sowell TTS ${res.status}: ${last.slice(0, 300)}`);
     }
-    const audio = Buffer.from(await res.arrayBuffer());
+    const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
+    const audio = take.wav;
     const bodyMs = Date.now() - sentAt - headerMs;
     console.info(
       `[sowell] ${formatSowellRequestLog({
@@ -156,7 +166,7 @@ async function onePiece(
       })}`
     );
     if (audio.length < 44) throw new Error("Sowell returned empty audio");
-    return audio;
+    return take;
   }
   throw new Error(`Sowell TTS 429: ${last}`);
 }
@@ -165,10 +175,18 @@ async function synthesizeSowell(input: SynthesizeInput): Promise<SynthesizeResul
   const url = sowellEndpoint();
   const pieces = splitSowellText(input.text);
   if (pieces.length === 0) throw new Error("Sowell received empty text");
-  const buffers = await mapPool(pieces, SOWELL_PIECE_IN_FLIGHT, (piece) =>
-    onePiece(input, piece, url)
+  // A split section is joined here, so only a one-call section can come
+  // back mastered; the rest go through the CPU master task as before.
+  const master = pieces.length === 1 && kokoroContainerMasterEnabled();
+  const takes = await mapPool(pieces, SOWELL_PIECE_IN_FLIGHT, (piece) =>
+    onePiece(input, piece, url, master)
   );
-  return { audio: concatWav(buffers), contentType: "audio/wav" };
+  const mastered = master ? takes[0]?.mastered : undefined;
+  return {
+    audio: concatWav(takes.map((take) => take.wav)),
+    contentType: "audio/wav",
+    ...(mastered ? { mastered } : {}),
+  };
 }
 
 async function* streamSowell(input: SynthesizeInput): AsyncIterable<Uint8Array> {

@@ -27,7 +27,7 @@ Weights are private. Pass paths; the script does not fetch them.
     --kmodel /path/step00900_kmodel.pth \\
     --text-file paragraph.txt \\
     --reference paragraph.wav --reference edge_paragraph.wav \\
-    --speed 0.88 \\
+    --speed 1.0 \\
     --out /tmp/style-out
 """
 

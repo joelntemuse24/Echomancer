@@ -248,6 +248,42 @@ export function lanesForSameWaves(sections: number, quota: number): number {
   return Math.max(1, Math.min(cap, Math.ceil(count / waves)));
 }
 
+/**
+ * Audio one ONNX container is sized for. A 16-minute book is 12 containers
+ * (960 s / 80 s). The old 5-minute size left that book on 4 containers.
+ */
+export const KOKORO_AUDIO_SECONDS_PER_CONTAINER = 80;
+/** Characters of book text per minute of Kokoro audio (Drew ≈ 170-180 wpm). */
+export const KOKORO_CHARS_PER_AUDIO_MINUTE = 1000;
+
+/**
+ * Concurrent calls one Kokoro container serves (`KOKORO_STREAMS` on the
+ * ONNX image: 4 calls x 1 thread on cpu=2). Unset or 0 means "not sized by
+ * audio", the torch-era behaviour. Clamped to 1..8.
+ */
+export function kokoroStreamsPerContainer(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOKORO_STREAMS_PER_CONTAINER?.trim();
+  if (raw && raw !== "0") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1) return Math.min(8, Math.floor(parsed));
+  }
+  // ONNX is 4 streams even when the worker env only sets KOKORO_RUNTIME.
+  // Unset runtime stays the torch plan: no audio cap.
+  if ((env.KOKORO_RUNTIME ?? "").trim().toLowerCase() === "onnx") return 4;
+  return 0;
+}
+
+/**
+ * Calls for `chars` of text: one container per
+ * {@link KOKORO_AUDIO_SECONDS_PER_CONTAINER} of audio, times the calls each
+ * container serves. 16 min of audio → 12 containers → 48 calls at 4 streams.
+ */
+export function kokoroAudioLaneCap(chars: number, streams: number): number {
+  const seconds = (Math.max(0, chars) / KOKORO_CHARS_PER_AUDIO_MINUTE) * 60;
+  const containers = Math.max(1, Math.ceil(seconds / KOKORO_AUDIO_SECONDS_PER_CONTAINER));
+  return containers * Math.max(1, Math.floor(streams));
+}
+
 export function planKokoroBookLanes(input: {
   configured: number;
   fleet: number;
@@ -255,8 +291,17 @@ export function planKokoroBookLanes(input: {
   remainingSections: number;
   /** Zero-based rank among the active books, oldest first. Defaults to 0. */
   rank?: number;
+  /** Characters left to speak. With `streamsPerContainer`, caps lanes by audio. */
+  remainingChars?: number;
+  /** {@link kokoroStreamsPerContainer}. 0 / absent: no audio cap. */
+  streamsPerContainer?: number;
 }): number {
   const sections = Math.max(0, Math.floor(input.remainingSections) || 0);
   if (sections < 1) return 1;
-  return lanesForSameWaves(sections, kokoroFairQuota(input));
+  let quota = kokoroFairQuota(input);
+  const streams = Math.floor(input.streamsPerContainer ?? 0);
+  if (streams > 0 && input.remainingChars != null && Number.isFinite(input.remainingChars)) {
+    quota = Math.max(1, Math.min(quota, kokoroAudioLaneCap(input.remainingChars, streams)));
+  }
+  return lanesForSameWaves(sections, quota);
 }

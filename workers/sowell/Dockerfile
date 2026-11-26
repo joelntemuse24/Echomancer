@@ -1,4 +1,9 @@
-# Kokoro CPU image for Drew, Walter, George, and Heart. Official Python, not Debian
+# Kokoro CPU image for Drew, Walter, George, and Heart. CPU-only: no CUDA
+# torch, ONNX Runtime by default (`KOKORO_RUNTIME=onnx`), torch kept for the
+# fallback runtime (`KOKORO_RUNTIME=torch`) and for the ONNX exporter.
+# Provider-agnostic: nothing here is Modal-specific; `modal/sowell_worker.py`
+# only adds FastAPI on top.
+# Official Python, not Debian
 # apt python, so later `python -m pip` layers are not blocked by PEP 668.
 # Do not apt-install python3. Do not query pip's config. The voice pack is a
 # build input and is not part of the Next.js bundle.
@@ -40,9 +45,21 @@ RUN apt-get update \
 ENV HF_HOME=/opt/hf
 ENV HF_HUB_DISABLE_TELEMETRY=1
 
+# CPU-only torch first, from PyTorch's CPU index, so `kokoro`'s `torch`
+# requirement is already met and pip never pulls the CUDA wheel. The CUDA
+# wheel was ~2.9 GB of RSS per process after `import torch` alone.
+ARG TORCH_VERSION=2.15.0
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}+cpu"
 COPY scripts/sowell/requirements.txt /tmp/sowell-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/sowell-requirements.txt \
-  && python -c "import kokoro, torch; assert torch.__version__"
+  && python -c "import kokoro, torch; assert torch.__version__.endswith('+cpu'), torch.__version__; assert not torch.cuda.is_available()" \
+  && python -c "import onnxruntime as o; assert 'CPUExecutionProvider' in o.get_available_providers()" \
+  && python -c "import importlib.metadata as m; assert not any(d.metadata['Name'].lower().startswith('nvidia-') for d in m.distributions()), 'CUDA wheels in a CPU image'"
+# misaki[en] pulls spacy-curated-transformers, a spaCy plugin that imports
+# torch on spaCy start-up. misaki only uses it for trf=True; Kokoro runs
+# trf=False. Without it the ONNX process never imports torch (onnx_engine.py
+# `block_torch_import`).
+RUN pip uninstall -y spacy-curated-transformers
 
 # spaCy English model, pinned to the wheel for spaCy 3.8. The URL is the
 # GitHub release, not a moving `spacy download` alias. A spaCy that is not
@@ -94,6 +111,8 @@ ENV DREW_VOICE_RELATIVE_PATH=/kokoro/retrain_v3/stageA/step00900_voice.pt
 #   4 threads: 16.5-19.3 s wall, RTF 2.06-2.41
 # Prose and the short opening followed the same shape (prose RTF 1.25-1.57 →
 # 1.80-2.47, opening 1.35-1.58 → 1.84-3.07).
+# These apply to the torch fallback (`KOKORO_RUNTIME=torch`) only. The ONNX
+# runtime sets its own pool per session (`KOKORO_ONNX_THREADS`).
 ENV SOWELL_CPU_THREADS=4
 ENV SOWELL_TORCH_THREADS=4
 ENV SOWELL_TORCH_INTEROP_THREADS=1
@@ -103,6 +122,20 @@ ENV MKL_NUM_THREADS=4
 ENV PYTHONPATH=/opt/sowell/scripts
 
 RUN python /opt/sowell/scripts/pack_main.py
+
+# ONNX graph, baked for the opt-in runtime. Stock Kokoro plus Walter's, George's and
+# Heart's pinned packs, exported at build from the same pinned checkpoint and
+# packs the torch runtime loads. Drew's graph is private: it is exported into
+# his volume (`modal run modal/sowell_worker.py::export_drew_onnx`).
+ENV KOKORO_ONNX_DIR=/opt/sowell/onnx
+RUN python /opt/sowell/scripts/onnx_export.py stock --out /opt/sowell/onnx >/dev/null \
+  && python -c "import sys; sys.path.insert(0,'/opt/sowell/scripts'); from pathlib import Path; from onnx_engine import read_manifest; read_manifest(Path('/opt/sowell/onnx'))"
+# The image default is the torch fallback. A deploy that sets
+# KOKORO_RUNTIME=onnx bakes that choice, and the stream count, over these
+# (modal/sowell_worker.py image.env). One ORT thread when that runtime is on.
+ENV KOKORO_RUNTIME=torch
+ENV KOKORO_ONNX_THREADS=1
+ENV KOKORO_STREAMS=1
 
 WORKDIR /opt/sowell/scripts
 CMD ["python", "synthesize.py", "--help"]

@@ -6,9 +6,9 @@
  * The weights are private and are not in this repository. The Modal CPU app
  * reads them from the `andrew-distill` volume (see `modal/drew_worker.py`).
  *
- * **0.88 is Drew's native 1x.** Real Andrew reads at that pace, so the app's
- * speed setting scales from there: request 1.0 renders at Kokoro speed 0.88,
- * request 1.1 renders at 0.968. Nothing else slows Drew down.
+ * **1.0 is Drew's native 1x.** Joel picked Kokoro speed 1.0 by ear; it is
+ * also the closest match to real Andrew's pace. Request 1.0 renders at
+ * Kokoro speed 1.0. Nothing else slows Drew down. Style row 300 is unchanged.
  */
 
 export const DREW_CATALOG_VOICE_ID = "drew";
@@ -19,7 +19,7 @@ export const DREW_PROVIDER_VOICE_ID = "drew";
  * Kokoro speed that is Drew's natural reading pace. The worker multiplies
  * the requested speed by this value; it is never applied twice.
  */
-export const DREW_NATIVE_KOKORO_SPEED = 0.88;
+export const DREW_NATIVE_KOKORO_SPEED = 1.0;
 /** Same clamp the worker applies after the multiply. */
 export const DREW_KOKORO_SPEED_MIN = 0.5;
 export const DREW_KOKORO_SPEED_MAX = 2.0;
@@ -47,9 +47,32 @@ export const DREW_WEIGHTS_ID = "stageA-step00900";
  * `DREW_FIXED_STYLE_INDEX` in `scripts/sowell/drew.py`. The checkpoint
  * itself did not change; the cache key still moves, because a section
  * recorded under the length-indexed pack is a different take.
+ * The key names the runtime and the Kokoro speed. `v2` stored the app speed
+ * (still 1.0) while the container spoke 0.88, so an early worker deploy
+ * would have cached the old pace under the new name, and an ONNX take
+ * would have replayed on the torch graph. A section is stored only when
+ * the response headers match this key.
  */
 export const DREW_FIXED_STYLE_INDEX = 300;
-export const DREW_CACHE_VARIANT = `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-v2`;
+
+/** Worker env. A custom key is readable; `{}` is the torch default. */
+type KokoroEnv = NodeJS.ProcessEnv | { KOKORO_RUNTIME?: string; DREW_PROSODY_RULES?: string };
+
+/** Worker env `KOKORO_RUNTIME`. Unset is torch, the same default as the image. */
+export function drewRuntimeLabel(env: KokoroEnv = process.env): "onnx" | "torch" {
+  return (env.KOKORO_RUNTIME ?? "").trim().toLowerCase() === "onnx" ? "onnx" : "torch";
+}
+
+/**
+ * Take-home cache identity with the worker's runtime and native speed.
+ * Prosody G, when on, is appended by {@link drewCacheVariant}.
+ */
+export function drewCacheIdentity(env: KokoroEnv = process.env): string {
+  return `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-${drewRuntimeLabel(env)}-speed${DREW_NATIVE_KOKORO_SPEED.toFixed(3)}`;
+}
+
+/** Default key: torch, Kokoro speed 1.000. Tests and docs import this. */
+export const DREW_CACHE_VARIANT = drewCacheIdentity({});
 /**
  * Suffix while variant G is on. Mirrors `PROSODY_G_CACHE_SUFFIX` in
  * `scripts/sowell/prosody_rules.py`. A ruled take must not be replayed as
@@ -58,7 +81,7 @@ export const DREW_CACHE_VARIANT = `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${D
 export const DREW_PROSODY_G_SUFFIX = "-prosodyG";
 
 /** Explicit on-values only. Unset, empty, and `0` leave Drew's forward stock. */
-export function drewProsodyRulesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function drewProsodyRulesEnabled(env: KokoroEnv = process.env): boolean {
   const raw = (env.DREW_PROSODY_RULES ?? "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
 }
@@ -67,13 +90,38 @@ export function drewProsodyRulesEnabled(env: NodeJS.ProcessEnv = process.env): b
  * The take-home cache identity. The suffix is present only while the flag
  * is on, so turning the flag off finds the takes recorded before it.
  */
-export function drewCacheVariant(env: NodeJS.ProcessEnv = process.env): string {
-  if (!drewProsodyRulesEnabled(env)) return DREW_CACHE_VARIANT;
-  return `${DREW_CACHE_VARIANT}${DREW_PROSODY_G_SUFFIX}`;
+export function drewCacheVariant(env: KokoroEnv = process.env): string {
+  const base = drewCacheIdentity(env);
+  if (!drewProsodyRulesEnabled(env)) return base;
+  return `${base}${DREW_PROSODY_G_SUFFIX}`;
+}
+
+/**
+ * Null when this response is the take the cache key names. A string is the
+ * reason it must not be stored: the container's speed or runtime is not
+ * the one this worker will look up later.
+ */
+export function drewTakeMismatch(
+  headers: { get(name: string): string | null },
+  requestedSpeed: number,
+  env: KokoroEnv = process.env
+): string | null {
+  const expectedSpeed = drewKokoroSpeed(requestedSpeed);
+  const speedHeader = headers.get("x-kokoro-speed");
+  const spoken = speedHeader == null ? Number.NaN : Number(speedHeader);
+  if (!Number.isFinite(spoken) || Math.abs(spoken - expectedSpeed) > 0.0005) {
+    return `Drew endpoint spoke at Kokoro speed ${speedHeader ?? "unknown"}, not ${expectedSpeed}. The audio was not stored.`;
+  }
+  const runtime = headers.get("x-kokoro-runtime");
+  const expectedRuntime = drewRuntimeLabel(env);
+  if (runtime !== expectedRuntime) {
+    return `Drew endpoint runtime was ${runtime ?? "unknown"}, not ${expectedRuntime}. The audio was not stored.`;
+  }
+  return null;
 }
 
 /** The request field, or nothing. Omitting it is how the container stays stock. */
-export function drewProsodyField(env: NodeJS.ProcessEnv = process.env): "G" | undefined {
+export function drewProsodyField(env: KokoroEnv = process.env): "G" | undefined {
   return drewProsodyRulesEnabled(env) ? "G" : undefined;
 }
 
@@ -84,8 +132,9 @@ export const DREW_KMODEL_PATH = "/kokoro/retrain_v3/stageA/step00900_kmodel.pth"
 export const DREW_VOICE_PACK_PATH = "/kokoro/retrain_v3/stageA/step00900_voice.pt";
 
 /**
- * Kokoro speed for a requested app speed. 0.88 is 1.0, and the result is
- * clamped to what the container accepts.
+ * Kokoro speed for a requested app speed. 1.0 stays 1.0, and the result is
+ * clamped to what the container accepts. The request path does not call
+ * this; the container multiplies once.
  */
 export function drewKokoroSpeed(requested?: number | null): number {
   const base =

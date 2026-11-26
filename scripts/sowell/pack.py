@@ -11,7 +11,8 @@ import hashlib
 import json
 from pathlib import Path
 
-import torch
+# torch is imported inside the loaders, so the ONNX runtime can import the
+# voice ids and `canonical_kokoro_voice` without it.
 
 PACK_SHAPE = (510, 1, 256)
 PINNED_REPO = "hexgrad/Kokoro-82M"
@@ -64,6 +65,7 @@ def canonical_kokoro_voice(raw: str | None) -> str:
 
 def check_george_voice(path: Path) -> torch.Tensor:
     """The pinned bm_george tensor. weights_only, hash, and shape."""
+    import torch
     if not path.is_file():
         raise PackError(f"George voice missing: {path}")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -81,6 +83,7 @@ def check_george_voice(path: Path) -> torch.Tensor:
 
 def check_heart_voice(path: Path) -> torch.Tensor:
     """The pinned af_heart tensor. weights_only, hash, and shape."""
+    import torch
     if not path.is_file():
         raise PackError(f"Heart voice missing: {path}")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -114,6 +117,7 @@ def load_manifest(path: Path) -> dict:
 
 
 def check_pack(pack_path: Path, manifest: dict) -> torch.Tensor:
+    import torch
     base = manifest.get("base")
     if not isinstance(base, dict):
         raise PackError("manifest has no base")

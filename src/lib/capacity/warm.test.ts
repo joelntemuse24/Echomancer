@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetCpuWarmKeepalive } from "@/lib/capacity/cpu-warm-keepalive";
 import { capacityWarmForVoiceSelect } from "@/lib/capacity/client";
 import { execute, queryOne } from "@/lib/turso";
 import { resetDatabase } from "@/test/harness";
@@ -11,6 +12,7 @@ import {
   warmHoldMs,
   warmSharedCapacity,
   warmTarget,
+  warmCpuForBookJoin,
   WARM_HOLD_MS,
   KOKORO_WARM_CONTAINERS,
   kokoroWarmLimit,
@@ -36,6 +38,7 @@ const ENV_KEYS = [
 describe("shared capacity warm", () => {  const prior = new Map<string, string | undefined>();
 
   afterEach(() => {
+    resetCpuWarmKeepalive();
     vi.unstubAllGlobals();
     for (const key of ENV_KEYS) {
       const value = prior.get(key);
@@ -358,6 +361,21 @@ describe("shared capacity warm", () => {  const prior = new Map<string, string |
     expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 16, sectionCount: 2 })).toBe(2);
     // A book with no outline still warms one.
     expect(kokoroWarmLimit({ fleetContainers: 16, bookLanes: 16, sectionCount: 0 })).toBe(1);
+  });
+
+  it("warms the CPU join once and does not start a second keepalive", async () => {
+    await resetDatabase();
+    const env = {
+      MODAL_CPU_URL: "https://cpu.example.modal.run",
+      MODAL_CPU_TOKEN: "cpu-token",
+      CPU_SCALEDOWN_SECONDS: "10",
+    } as NodeJS.ProcessEnv;
+    const fetchImpl = vi.fn(async () => new Response("ok", { status: 200 }));
+    expect(await warmCpuForBookJoin(env, fetchImpl as typeof fetch, 1_000)).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await warmCpuForBookJoin(env, fetchImpl as typeof fetch, 2_000)).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    resetCpuWarmKeepalive();
   });
 
   it("releases only the hold that failed", async () => {

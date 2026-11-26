@@ -422,16 +422,18 @@ enter after restore. A snapshot's cold-start saving is not measured until
 the app is redeployed. The budget is re-read
 before every claim (`laneBudget`), so a book that starts mid-wave takes lanes
 as another book's sections finish, and a running book shrinks to its new
-share. The `kokoro` provider-slot rows are the hard cross-process cap, so
-total concurrent Kokoro calls never exceed `SOWELL_MAX_CONTAINERS` even if a
-budget read is stale; a 429 from a busy container is retried with backoff,
+share. The `kokoro` provider-slot rows are the hard cross-process cap. On torch
+that cap is `SOWELL_MAX_CONTAINERS` (one call per container). On ONNX
+(`KOKORO_RUNTIME=onnx`) each container serves 4 calls, so the cap is
+containers × 4: 48 at 12 containers and 64 at 16. A 429 from a busy container is retried with backoff,
 never failed. The 16-lane / 5 s-idle default is measured: on a 15.7k-char
 text, 16 lanes x 700-char sections finished in 47 s against 74 s for 6 lanes
 x 1.4k, and the idle tail dominated cost. A Kokoro warm is held for 25 s
 (`KOKORO_WARM_HOLD_MS`), about a 20 s boot plus the 5 s idle.
 
-Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700**, clamped
-300..2000) with a 400-character opening and a 550-character second section;
+Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700** on torch,
+**350** when `KOKORO_RUNTIME=onnx`, clamped 300..2000) with a 400-character
+opening and a 550-character second section, each clamped to the target;
 one section is one container call, so the smaller target shortens the tail.
 The container still refuses over 2,000 characters and splits at 510 phonemes
 internally. Other engines keep their own packing. `scripts/sowell/split_for_loadtest.ts`
@@ -455,15 +457,21 @@ harbor paragraph is 39.7 s of audio and took 25.3-27.1 s at 2 threads
 at the same container cost. `modal/sowell_bench.py` re-measures it on the
 same CPU-only image.
 
-**Drew speed:** Drew renders at Kokoro speed **0.88**, which is real
-Andrew's natural 1x. That 0.88 is applied **once**, in the container
+**Drew speed:** Drew renders at Kokoro speed **1.0**, which is real
+Andrew's natural 1x (Joel picked it by ear; it is also the closest measured
+match). That 1.0 is applied **once**, in the container
 (`scripts/sowell/drew.py` → `drew_speed`), by multiplying the app's own
 speed. The app therefore sends 1.0 for natural pace and never
 calibrates Drew down: `initialNarrationSpeed` returns 1.0 for Drew, and the
 per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
-(the same exemption Paradee has). Do not apply 0.88 in TypeScript as well —
-`drewKokoroSpeed` exists for tests and documentation, not as a second
-multiplier on the request.
+(the same exemption Paradee has). Do not apply the native speed in TypeScript
+as well — `drewKokoroSpeed` exists for tests and documentation, not as a
+second multiplier on the request. The take-home cache key names the
+runtime and the Kokoro speed (`-torch-speed1.000` or `-onnx-speed1.000`).
+The provider stores a take only when `x-kokoro-speed` and
+`x-kokoro-runtime` match that key, so a worker deploy ahead of the image
+cannot file an 0.88 take under the 1.0 name, and a rollback cannot replay
+the other graph. Style row 300 is unchanged.
 
 **Drew prosody G:** sentence-type F0 rules (`scripts/sowell/prosody_rules.py`,
 variant `G_rules_phrase`) are off unless `DREW_PROSODY_RULES` is set on the
@@ -473,7 +481,8 @@ edit the F0 tensor that forward already produced. Constants are hardcoded
 (`ACCENT_K` 0.7, `DECL_ST` 3, short exclamation +4 st, long +1.5 st, yes/no
 rise +7 st). Do not read those from the environment. With the flag off the
 request omits `prosody` and the cache key stays
-`drew-kokoro82m-ft-stageA-step00900-style300-v2`. With it on, the body is
+`drew-kokoro82m-ft-stageA-step00900-style300-` plus the runtime and
+`speed1.000`. With it on, the body is
 `prosody: "G"` and the key gains `-prosodyG`. The container applies G only
 when that field is present; its own env cannot rule a take cached as
 unruled. Deploy the Modal app that honors the field before setting the flag.

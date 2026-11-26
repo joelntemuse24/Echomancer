@@ -107,7 +107,7 @@ class ResidentRuntime(unittest.TestCase):
 
 
 class DrewSpeedMultiply(unittest.TestCase):
-    """0.88 is applied once, in `_render_locked`, and only for Drew."""
+    """1.0 is applied once, in `_render_locked`, and only for Drew."""
 
     def setUp(self) -> None:
         # These stubs have no predictor. A leaked flag would wrap the stock
@@ -159,18 +159,18 @@ class DrewSpeedMultiply(unittest.TestCase):
         engine_module.iter_phoneme_runs = fake_runs
         return eng, seen
 
-    def test_drew_renders_at_point_eight_eight_for_app_speed_one(self) -> None:
+    def test_drew_renders_at_one_for_app_speed_one(self) -> None:
         eng, seen = self.engine()
         _wav, report = eng.speak("Hello.", Path("unused"), voice="drew", speed=1.0)
-        self.assertEqual(seen, [0.88])
+        self.assertEqual(seen, [1.0])
         self.assertEqual(report["voice"], "drew")
-        self.assertEqual(report["speed"], 0.88)
+        self.assertEqual(report["speed"], 1.0)
 
     def test_scales_from_native_and_never_double_applies(self) -> None:
         eng, seen = self.engine()
         eng.speak("Hello.", Path("unused"), voice="drew", speed=0.95)
         eng.speak("Hello.", Path("unused"), voice="drew", speed=0.95)
-        self.assertEqual(seen, [0.836, 0.836])
+        self.assertEqual(seen, [0.95, 0.95])
 
     def test_walter_and_george_stay_at_one(self) -> None:
         eng, seen = self.engine()
@@ -181,6 +181,51 @@ class DrewSpeedMultiply(unittest.TestCase):
         self.assertEqual(george["speed"], 1.0)
         self.assertIsNone(walter["styleIndex"])
         self.assertIsNone(george["styleIndex"])
+
+    def test_a_failed_drew_load_is_retried(self) -> None:
+        eng = SowellEngine()
+        eng._drew_error = "frozen from a snapshot"
+        calls = {"n": 0}
+        saved = {
+            "check_drew_assets": engine_module.check_drew_assets,
+            "load_kmodel": engine_module.load_kmodel,
+            "load_voice_pack": engine_module.load_voice_pack,
+            "pin_style": engine_module.pin_style,
+            "fixed_style_index": engine_module.fixed_style_index,
+            "KPipeline": engine_module.KPipeline,
+        }
+
+        def restore() -> None:
+            for name, value in saved.items():
+                setattr(engine_module, name, value)
+
+        self.addCleanup(restore)
+
+        def miss() -> None:
+            calls["n"] += 1
+            raise engine_module.DrewPackError("no volume")
+
+        engine_module.check_drew_assets = miss
+        self.assertFalse(eng.load_drew())
+        self.assertIsNone(eng._drew_pipes)
+
+        def hit() -> object:
+            calls["n"] += 1
+            return type("Assets", (), {"kmodel": "k", "voice": "v"})()
+
+        class Pipe:
+            def __init__(self, lang_code: str, repo_id: str, model: object) -> None:
+                del lang_code, repo_id, model
+
+        engine_module.check_drew_assets = hit
+        engine_module.load_kmodel = lambda path: object()
+        engine_module.load_voice_pack = lambda path: torch.zeros(1)
+        engine_module.pin_style = lambda pack, index: pack
+        engine_module.fixed_style_index = lambda voice: 300
+        engine_module.KPipeline = Pipe
+        self.assertTrue(eng.load_drew())
+        self.assertIsNotNone(eng._drew_pipes)
+        self.assertEqual(calls["n"], 2)
 
 
 class ThreadBudget(unittest.TestCase):
@@ -306,8 +351,8 @@ class FixedStyle(unittest.TestCase):
         _wav, report = eng.speak(
             "one two three four", Path("unused"), voice="drew", speed=1.0
         )
-        self.assertEqual(seen, [0.88, 0.88, 0.88, 0.88])
-        self.assertEqual(report["speed"], 0.88)
+        self.assertEqual(seen, [1.0, 1.0, 1.0, 1.0])
+        self.assertEqual(report["speed"], 1.0)
         self.assertEqual(report["styleIndex"], 300)
         self.assertEqual(len(received), 4)
         for row in received:

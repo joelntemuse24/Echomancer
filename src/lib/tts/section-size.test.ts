@@ -13,6 +13,7 @@ import {
   KOKORO_CPU_FIRST_SECTION_CHARS,
   KOKORO_CPU_REQUEST_MAX_CHARS,
   KOKORO_CPU_SECTION_CHARS_DEFAULT,
+  KOKORO_CPU_SECTION_CHARS_ONNX_DEFAULT,
   KOKORO_CPU_SECTION_CHARS_MAX,
   KOKORO_CPU_SECTION_CHARS_MIN,
   kokoroCpuSectionChars,
@@ -173,6 +174,20 @@ describe("Kokoro CPU section sizing", () => {
     // Same slack the packer itself uses (target + max(200, 25%)), so the
     // local copy cannot drift from `hardMaxForTarget`.
     expect(plan.hardMaxChars).toBe(Math.min(2000, 700 + Math.max(200, Math.round(700 * 0.25))));
+  });
+
+  it("uses about 350 characters on the ONNX runtime and leaves torch at 700", () => {
+    expect(KOKORO_CPU_SECTION_CHARS_ONNX_DEFAULT).toBe(350);
+    expect(
+      kokoroCpuSectionChars({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)
+    ).toBe(350);
+    expect(kokoroCpuSectionChars({} as NodeJS.ProcessEnv)).toBe(700);
+    expect(
+      kokoroCpuSectionChars({
+        KOKORO_RUNTIME: "onnx",
+        KOKORO_CPU_SECTION_CHARS: "700",
+      } as NodeJS.ProcessEnv)
+    ).toBe(700);
   });
 
   it("honours KOKORO_CPU_SECTION_CHARS and clamps it to 300..2000", () => {

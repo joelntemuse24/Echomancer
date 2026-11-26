@@ -83,6 +83,7 @@ import {
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
+import { warmCpuForBookJoin } from "@/lib/capacity/warm";
 import {
   shouldPrewarmBeforeOutline,
   shouldPrewarmModalNarration,
@@ -159,9 +160,13 @@ import { drewCacheVariant } from "@/lib/tts/drew-voice";
 import {
   SOWELL_CACHE_VARIANT,
   sowellBookLanes,
-  sowellFleetContainers,
+  sowellCallCap,
 } from "@/lib/tts/sowell-voice";
-import { planKokoroBookLanes, runRollingRenderPool } from "@/lib/tts/kokoro-pool";
+import {
+  kokoroStreamsPerContainer,
+  planKokoroBookLanes,
+  runRollingRenderPool,
+} from "@/lib/tts/kokoro-pool";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -1743,6 +1748,16 @@ async function runClaimedTick(
     ? Math.min(maxChars, modalCloneColdSafeRowChars(), MODAL_CLONE_SECTION_CHARS_MAX)
     : maxChars;
   const kokoroBook = isKokoroCpuProvider(providerId);
+  if (kokoroBook) {
+    // The section masters in the Kokoro container. The join still runs on
+    // echomancer-cpu, and a cold container there is 8–12 s at the end.
+    void warmCpuForBookJoin().catch((err) => {
+      console.warn(
+        `[Job ${jobId}] cpu join warm failed`,
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
   /**
    * Kokoro CPU section sizing. Each section is one container call, so the
    * target is deliberately smaller than the 2,000-character request cap: a
@@ -1757,12 +1772,10 @@ async function runClaimedTick(
   /** Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
    * different:
    *
-   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (16). It is the
-   *   hard cross-process cap on concurrent Kokoro calls, applied by the
-   *   `kokoro` provider-slot rows, so several books from different users can
-   *   never open more calls than the fleet can serve.
-   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 16 by
-   *   default, clamped to 16 and to the fleet).
+   * - `kokoroFleetCap` is the call cap: `SOWELL_MAX_CONTAINERS` on torch (16),
+   *   and containers × streams on ONNX (48 at 12 containers, 64 at 16). The
+   *   `kokoro` provider-slot rows use the same number.
+   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`).
    *
    * A book's lanes are then its fair share of the fleet among the Kokoro
    * books running right now, so one long book cannot hold every container for
@@ -1770,7 +1783,7 @@ async function runClaimedTick(
    * re-read before every claim, a book that starts mid-wave takes lanes as
    * another book's sections finish.
    */
-  const kokoroFleetCap = kokoroBook ? sowellFleetContainers() : 0;
+  const kokoroFleetCap = kokoroBook ? sowellCallCap() : 0;
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
     kokoroBook
@@ -1909,6 +1922,7 @@ async function runClaimedTick(
   const kokoroRank = kokoroBook
     ? await kokoroFairnessRank(jobId, job.created_at)
     : 0;
+  const kokoroBookChars = sections.reduce((sum, section) => sum + section.length, 0);
   const kokoroLaneBudget = async (): Promise<number> => {
     const others = await countOtherKokoroBooks(jobId);
     return planKokoroBookLanes({
@@ -1917,6 +1931,10 @@ async function runClaimedTick(
       activeBooks: others + 1,
       remainingSections: total,
       rank: kokoroRank,
+      // One container per ~80 s of audio when the ONNX image serves several
+      // calls per container. A 16-minute book is 12 containers.
+      remainingChars: kokoroBookChars,
+      streamsPerContainer: kokoroStreamsPerContainer(),
     });
   };
   if (kokoroBook) {
@@ -2360,6 +2378,7 @@ async function runClaimedTick(
           chain: usesModalClone(catalog?.id) ? "s2" : "podcast",
           qaDeferred: synthesized.qaDeferred === true,
           sourceText: sections[index],
+          premastered: synthesized.mastered,
         });
         if (!stored.ready) {
           const segment: JobSegment = {
@@ -3845,6 +3864,8 @@ interface SynthesisSuccess {
   cacheKey?: string;
   /** Whisper could not run. The raw take is stored; the section is not ready. */
   qaDeferred?: boolean;
+  /** Podcast-chain MP3 mastered by the provider (Kokoro container). */
+  mastered?: Buffer;
 }
 
 /**
@@ -4168,7 +4189,7 @@ async function synthesizeSection(args: {
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
     // Paradee takes speed in its own 1.0-native units, not Fish prosody.
-    // Drew takes the app speed and multiplies it by 0.88 in the container, so
+    // Drew takes the app speed and multiplies it by 1.0 in the container, so
     // 1.0 here is Drew's natural pace — `drewSpeedForRequest` only clamps it
     // and keeps it out of the unset-Fish-prosody path.
     const speed =
@@ -4290,6 +4311,7 @@ async function synthesizeSection(args: {
           extension,
           durationHintSeconds: result.durationHintSeconds,
           cacheKey,
+          ...(result.mastered ? { mastered: result.mastered } : {}),
         };
       } catch (err) {
         if (err instanceof ProviderSlotBusyError) throw err;

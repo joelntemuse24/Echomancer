@@ -177,7 +177,7 @@ not a ceiling the code enforces.
 | Whole-book orchestration | Always-on VM. Node + pm2 process `echomancer-takehome` (`src/worker/takehome-server.ts`), bound to **`127.0.0.1:8788`**. Caddy on the VM terminates HTTPS for `WORKER_URL`. Host vendor is **Operator-reported** (Contabo); the code does not check it. Runbook: `WORKER.md`. |
 | Document extract | Warm child process of the worker (`POST /extract`, `src/worker/extract-child.ts`); Cloudflare `workers/extract` when that POST fails; Vercel as the last resort (§9). |
 | Clone GPU | Modal app `echomancer-s2-clone` (`modal/s2_clone_service.py`): Fish S2-Pro on an H100, GPU memory snapshots, `min_containers=0`, code-default `max_containers=1`. Used only when `MODAL_S2_TTS_URL` is set. Submit/poll/cancel goes through the CPU-only `s2_control` function at `MODAL_S2_CONTROL_URL`. |
-| Kokoro voices | Modal app `echomancer-sowell` (`modal/sowell_worker.py`, image `workers/sowell/Dockerfile`): CPU Kokoro-82M serving Drew (fine-tuned weights on the `andrew-distill` volume), Esther (`af_heart`), George (`bm_george`), and Walter (`sowell`). `cpu=2`, `memory=6144`, `min_containers=0`, `max_containers` from `SOWELL_MAX_CONTAINERS` (default 16, clamp 1–16), `scaledown_window` default 5 s. |
+| Kokoro voices | Modal app `echomancer-sowell` (`modal/sowell_worker.py`, image `workers/sowell/Dockerfile`): CPU Kokoro-82M serving Drew (fine-tuned weights on the `andrew-distill` volume), Esther (`af_heart`), George (`bm_george`), and Walter (`sowell`). `cpu=2`, `memory=6144` (torch and the measured ONNX default), `min_containers=0`, `max_containers` from `SOWELL_MAX_CONTAINERS` (containers, default 16, clamp 1–16), `scaledown_window` default 5 s. ONNX serves 4 calls per container, so the worker call cap is 48–64. Torch stays one call per container. |
 | CPU tasks | Modal app `echomancer-cpu` (`modal/cpu_worker.py`, image `workers/cpu/Dockerfile`): `master`, `whisper`, `concat`, and `extract` tasks when `CPU_RUNNER=modal`. `min_containers=0`, `CPU_MAX_CONTAINERS` default 4, `CPU_FUNCTION_CPU` 2, `CPU_FUNCTION_MEMORY_MB` 4096, `CPU_SCALEDOWN_SECONDS` 10. The five-minute New Book warm is a worker keepalive when that variable is set on the worker below 300s; it is not a 300s idle window on every task. With `CPU_RUNNER` unset (the code default) the same tasks run on the VM (§19). Whether production has `CPU_RUNNER=modal` is not verified here; `env.worker.example` shows it commented out. |
 | Fish API | Direct Fish (`FISH_API_KEY`, `src/lib/tts/providers/fish.ts`): clone training (`POST /model`), clone synthesis when the book is pinned to `fish`, clone preview bakes, stored Clara books, Live Listen for clones. Native model id `s2.1-pro-free` (`FISH_NATIVE_FREE_MODEL`). |
 | Edge TTS (legacy) | Microsoft Edge Read Aloud websocket (`src/lib/tts/edge-tts.ts`): stored Andrew/Ava/Libby/Ryan/Michelle books, and new Ava/Libby/Michelle requests until Esther is configured. |
@@ -1312,9 +1312,13 @@ for that one recovery.
 
 Drew's Kokoro pack is pinned to tensor index 300 when the voice loads
 (`pin_style` in `scripts/sowell/style.py`). Infer still reads
-`pack[phoneme_count - 1]` and still receives Drew's 0.88 speed, applied
+`pack[phoneme_count - 1]` and still receives Drew's 1.0 speed, applied
 once. The take-home cache variant is
-`drew-kokoro82m-ft-stageA-step00900-style300-v2`. Walter and George stay
+`drew-kokoro82m-ft-stageA-step00900-style300-torch-speed1.000` (or `onnx`
+when `KOKORO_RUNTIME=onnx`). The provider accepts the take only when
+`x-kokoro-speed` and `x-kokoro-runtime` match that key. `v2` was Kokoro
+speed 0.88 with the app speed still stored as 1.0. Deploy steps are
+in `docs/kokoro-onnx-runbook.md`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`
 stays unset and those cache keys do not move. `DREW_PROSODY_RULES` (default

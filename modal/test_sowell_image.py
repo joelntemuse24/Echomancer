@@ -126,7 +126,8 @@ def test_worker_fleet_and_idle_defaults() -> None:
     assert "SCALEDOWN_MAX = 1200" in worker
     # Scale to zero stays the floor: warming is a click, not a standing fleet.
     assert "min_containers=0" in worker
-    assert "memory=6144" in worker
+    assert "memory=memory_mb()" in worker
+    assert "TORCH_MEMORY_MB = 6144" in worker
     assert "cpu=2" in worker
 
 
@@ -151,6 +152,9 @@ def _load_worker_with_fake_modal(monkeypatch):
         def pip_install(self, *a, **k):
             return self
 
+        def env(self, *a, **k):
+            return self
+
     class App:
         def __init__(self, name):
             self.name = name
@@ -161,6 +165,12 @@ def _load_worker_with_fake_modal(monkeypatch):
 
             def decorate(cls):
                 return cls
+
+            return decorate
+
+        def function(self, *args, **kwargs):
+            def decorate(fn):
+                return fn
 
             return decorate
 
@@ -213,10 +223,14 @@ def test_worker_class_resolves_with_the_declared_fleet(monkeypatch) -> None:
 
     assert worker.APP_NAME == "echomancer-sowell"
     kwargs = worker.app.cls_kwargs
+    # Plain deploy is torch: 16 containers, one call each, 6144 MB.
+    # ONNX is opt-in and uses ONNX_MEMORY_MB_DEFAULT until it is measured.
     assert kwargs["max_containers"] == 16
     assert kwargs["scaledown_window"] == 5
     assert kwargs["min_containers"] == 0
-    assert kwargs["memory"] == 6144
+    assert kwargs["memory"] == worker.TORCH_MEMORY_MB
+    assert worker.ONNX_MEMORY_MB_DEFAULT == 6144
+    assert worker.kokoro_runtime() == "torch"
     assert kwargs["cpu"] == 2
     assert kwargs["enable_memory_snapshot"] is True
     assert "gpu" not in kwargs
@@ -224,19 +238,23 @@ def test_worker_class_resolves_with_the_declared_fleet(monkeypatch) -> None:
 
 
 def test_max_containers_env_is_honoured_up_to_sixteen(monkeypatch) -> None:
-    """`SOWELL_MAX_CONTAINERS=16` must reach the class decorator unchanged."""
+    """The ceiling is containers. ONNX 16 is 16 containers, 64 calls."""
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
     monkeypatch.setenv("SOWELL_MAX_CONTAINERS", "16")
     worker = _load_worker_with_fake_modal(monkeypatch)
     assert worker.app.cls_kwargs["max_containers"] == 16
+    assert worker.kokoro_streams() == 4
 
 
 def test_max_containers_env_clamps_above_sixteen(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
     monkeypatch.setenv("SOWELL_MAX_CONTAINERS", "64")
     worker = _load_worker_with_fake_modal(monkeypatch)
     assert worker.app.cls_kwargs["max_containers"] == 16
 
 
 def test_max_containers_env_floors_and_ignores_junk(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
     for value, expected in (("0", 1), ("-3", 1), ("abc", 16), ("", 16)):
         monkeypatch.setenv("SOWELL_MAX_CONTAINERS", value)
         worker = _load_worker_with_fake_modal(monkeypatch)
@@ -244,10 +262,56 @@ def test_max_containers_env_floors_and_ignores_junk(monkeypatch) -> None:
 
 
 def test_max_containers_reads_a_respected_fleet_between_one_and_sixteen(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
     for n in (1, 6, 12, 15, 16):
         monkeypatch.setenv("SOWELL_MAX_CONTAINERS", str(n))
         worker = _load_worker_with_fake_modal(monkeypatch)
         assert worker.app.cls_kwargs["max_containers"] == n
+
+
+def test_onnx_runtime_uses_four_streams_and_6144_mb(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
+    monkeypatch.delenv("ONNX_MEMORY_MB", raising=False)
+    monkeypatch.delenv("SOWELL_MAX_CONTAINERS", raising=False)
+    worker = _load_worker_with_fake_modal(monkeypatch)
+    assert worker.kokoro_streams() == 4
+    assert worker.memory_mb() == 6144
+    assert worker.app.cls_kwargs["max_containers"] == 16
+    assert worker.app.cls_kwargs["memory"] == 6144
+    text = (ROOT / "modal" / "sowell_worker.py").read_text()
+    snap = text.split("def load", 1)[1].split("def open_gate", 1)[0]
+    assert "load_assets()" in snap
+    assert "open_sessions()" not in snap
+    assert "InferenceSession" not in snap
+    gate = text.split("def open_gate", 1)[1].split("def _ensure_drew", 1)[0]
+    assert "open_sessions()" in gate
+    speak = text.split("def speak", 1)[1].split("def export_drew_onnx", 1)[0]
+    master = speak.index("master_wav")
+    assert speak.rindex("self.gate.release()", 0, master) < master
+    engine = (ROOT / "scripts" / "sowell" / "onnx_engine.py").read_text()
+    assert "enable_mem_pattern = False" in engine
+    assert 'add_session_config_entry("session.arena_extend_strategy", "1")' in engine
+    assert worker.process_high_water_mb() > 0
+
+    class _Missing:
+        def __truediv__(self, _other: object) -> "_Missing":
+            return self
+
+        def read_text(self) -> str:
+            raise OSError("absent")
+
+    monkeypatch.setattr(worker, "Path", lambda *_args, **_kwargs: _Missing())
+    assert worker.cgroup_peak_mb() == worker.process_high_water_mb()
+
+
+def test_torch_runtime_keeps_one_call_and_6144_mb(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "torch")
+    monkeypatch.delenv("SOWELL_MAX_CONTAINERS", raising=False)
+    worker = _load_worker_with_fake_modal(monkeypatch)
+    assert worker.kokoro_streams() == 1
+    assert worker.memory_mb() == 6144
+    assert worker.app.cls_kwargs["max_containers"] == 16
+    assert worker.app.cls_kwargs["memory"] == 6144
 
 
 def test_scaledown_env_is_honoured_inside_modal_range(monkeypatch) -> None:
