@@ -20,6 +20,7 @@ import { assembleEpub } from "@/lib/epub-blocks";
 import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
 import { htmlRegionToBlocks } from "@/lib/html-blocks";
 import { relocatePageStarts } from "@/lib/page-offsets";
+import { layoutFromPages } from "@/lib/chapter-layout";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
   isGoogleAppsDocumentEntry,
@@ -196,10 +197,12 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   let pageProbes: string[] | undefined;
   let tocLines: string[] | undefined;
   let blocks: BookBlock[] | undefined;
+  let laidPages: Awaited<ReturnType<typeof extractPdfPages>> | null = null;
   try {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
+    laidPages = laid;
     // The body text and the chapter blocks read the same laid-out pages, so an
     // outline destination resolves to a block instead of a page offset that has
     // to be re-searched in the prose. `blocksForPdfPages` only reads text and
@@ -245,14 +248,19 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     );
   }
   if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
+  if (laidPages) {
+    const layout = layoutFromPages(laidPages);
+    if (layout.lines.length > 0) hint.layout = layout;
+  }
 
-  // A PDF's embedded outline is its own chapter list. Resolve each destination
-  // to the block it starts at, so the outline does not have to be re-found in
-  // the prose — which is how a destination used to land on the contents page.
+  // A PDF's embedded outline is its own chapter list when it validates.
+  // Resolve each destination to the block it starts at, so the outline does
+  // not have to be re-found in the prose — which is how a destination used to
+  // land on the contents page.
   //
-  // No outline: the blocks stay unused and the existing printed-contents and
-  // heading-line paths run. A PDF has no markup saying which line is a title,
-  // so a heading list guessed from layout is not a substitute for the outline.
+  // No outline, or an outline that fails the page check: the line features on
+  // the hint are what chapter detection uses. A heading guessed from a single
+  // regex is not a substitute for those features.
   if (blocks && blocks.length > 0 && outline.length >= 2) {
     const blockStart = locateBlockStarts(text, blocks);
     const resolved: BlockOutlineEntry[] = [];

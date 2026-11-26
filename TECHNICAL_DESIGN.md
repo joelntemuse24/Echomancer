@@ -696,6 +696,8 @@ title.
 | `pdf-blocks.ts` | laid-out PDF lines into heading/paragraph blocks tagged with their page, and an outline destination resolved to the block on its page whose heading matches |
 | `length-parts.ts` | labelled length-based parts for a book with no chapter markers, and `outlineLooksUnmarked` |
 | `chapter-classifier.ts` | the optional local zero-shot model (see `docs/chapter-corpus-results.md`) |
+| `chapter-layout.ts` | line features for a PDF with no trusted outline: contents-page anchors, a layout score, numbered-run gaps. `source: "layout"` |
+| `chapter-llm.ts` | optional `CHAPTER_LLM=1` verifier. Labels ids only. Never supplies a title |
 
 `compactPage` in `pdf-furniture.ts` now keeps the visual line records (minus
 their per-glyph items), so the block pass reads the same lines the furniture
@@ -713,6 +715,23 @@ is used when it names at least as many distinct chapters as the body does, so
 Moby-Dick's 71-row contents page no longer replaces its 135 real chapters. A
 `heading-lines` book with no chapter labels at all *and* only shouted headings
 (Ulysses) gets labelled length-based parts instead (`source: "sections"`).
+
+A PDF outline is kept only when its pages move forward through the book and
+are not all on page 1 (`trustedOutline`). Otherwise `layoutFromPages` stores
+one pass of line features on the hint (body size is the character-weighted
+mode; bold is recorded when the pdf.js font name contains a weight).
+`detectLayoutChapters` uses a contents page when at least 90% of its entries
+match a body line, and the stored title is that body line's text. The other
+path scores size, gaps, numbering, and the existing heading shape, then
+recovers a single missing number in a run. The `charStart` is the offset of
+that line in the speakable text. One unlabelled chapter on a long text
+becomes length parts rather than a chapter named after the line. A run of
+`Chapter` / numbered headings the layout pass missed is left on the
+heading-line path, so a novel does not lose chapters to a short list of
+display lines. `CHAPTER_LLM=1` may relabel mid-score ids through OpenRouter
+(`google/gemini-2.5-flash-lite` unless `CHAPTER_LLM_MODEL` is set) with an
+8 second cap. A reply that drops more than a fifth of the high-confidence
+lines, or that swings the count, is ignored.
 
 The **top level is the chapter list**. `src/lib/chapter-levels.ts` re-levels and
 re-nests the finished tree for every detection path: the source's own nesting

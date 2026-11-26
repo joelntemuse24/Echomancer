@@ -28,6 +28,11 @@ import {
   toTitleCase,
 } from "@/lib/tts/normalize-speakable";
 import { paragraphSpans as splitParagraphSpans } from "@/lib/paragraph-spans";
+import {
+  detectLayoutChapters,
+  trustedOutline,
+  type LayoutFeatures,
+} from "@/lib/chapter-layout";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
@@ -42,6 +47,8 @@ export type ChapterSource =
   /** The page's own `<h1>`–`<h6>`, read as blocks by the HTML extractor. */
   | "html-heading"
   | "heading-lines"
+  /** Line features, for a PDF or page with no trusted outline. */
+  | "layout"
   | "printed-toc"
   | "ai"
   /** Labelled length-based parts, for a book with no headings at all. */
@@ -95,6 +102,12 @@ export interface ChapterHint {
   tocLines?: string[];
   /** First words of each PDF page, used to re-find page offsets after cleanup. */
   pageProbes?: string[];
+  /**
+   * One pass of line features from a laid-out PDF. Present when the extractor
+   * still has the pages. A later resolve uses it instead of guessing from
+   * the plain text.
+   */
+  layout?: LayoutFeatures;
   /**
    * Chapter markers from a structured source, already resolved to block
    * indexes. This is the preferred path: the source named these headings, so
@@ -1148,11 +1161,60 @@ function markedChapterCount(nodes: BookChapter[]): number {
   return seen.size;
 }
 
+function labelledChapterCount(chapters: BookChapter[]): number {
+  let count = 0;
+  const walk = (nodes: BookChapter[]) => {
+    for (const node of nodes) {
+      const title = node.title.trim();
+      if (/^(?:chapter|part|book|volume|article|amendment|section)\s+\S/i.test(title)) {
+        count += 1;
+      } else if (/^(?:\d{1,3}|[A-H])(?:\.\d{1,2}){0,3}\s+\p{L}/u.test(title)) {
+        count += 1;
+      }
+      if (node.children?.length) walk(node.children);
+    }
+  };
+  walk(chapters);
+  return count;
+}
+
+/**
+ * Layout headings, when the page actually looks like a chapter list.
+ * A plain-text book that already has more "Chapter N" labels than the layout
+ * pass found keeps those labels: the layout pass is for pages without them.
+ */
+function chaptersFromLayoutHint(spoken: string, hint: ChapterHint): ChaptersDocument | null {
+  const detected = detectLayoutChapters(spoken, hint.layout, hint.pageStarts);
+  if (!detected || detected.length < 2) return null;
+  let previous = -1;
+  const chapters: BookChapter[] = [];
+  for (let i = 0; i < detected.length; i++) {
+    const row = detected[i]!;
+    const next = detected[i + 1]?.charStart ?? spoken.length;
+    const charStart = row.charStart;
+    const charEnd = Math.max(charStart + 1, Math.min(spoken.length, next));
+    if (charStart <= previous || charStart >= spoken.length || charEnd <= charStart) continue;
+    previous = charStart;
+    chapters.push({
+      index: chapters.length,
+      title: chapterDisplayTitle(row.title),
+      level: row.level,
+      charStart,
+      charEnd,
+      match: row.match,
+    });
+  }
+  if (chapters.length < 2) return null;
+  return { version: CHAPTERS_VERSION, source: "layout", chapters };
+}
+
 function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocument {
+  const structured = trustedOutline(hint, spoken.length);
   // A structured source that named its own chapters wins outright. Its markers
   // are block indexes into its own block list, so there is nothing to guess at
-  // and nothing to re-find in the prose.
-  if (hint.blockStart && hint.blockStart.length > 0) {
+  // and nothing to re-find in the prose. An outline that fails the page check
+  // is not that source.
+  if (structured && hint.blockStart && hint.blockStart.length > 0) {
     const entries = hint.blockOutline?.length
       ? hint.blockOutline
       : // A page or a document with no TOC still has real headings. Those are
@@ -1176,6 +1238,7 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
 
   let aligned = emptyChapters();
   if (
+    structured &&
     (hint.source === "epub-spine" ||
       hint.source === "pdf-outline" ||
       hint.source === "docx-heading") &&
@@ -1195,8 +1258,17 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
       return mergeUnlistedMatter(aligned, fromLines);
     }
   }
-  const printed = chaptersFromPrintedToc(spoken, hint);
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
+  const layoutDoc = chaptersFromLayoutHint(spoken, hint);
+  if (layoutDoc) {
+    const labelled = labelledChapterCount(fromLines.chapters);
+    const laidOut = labelledChapterCount(layoutDoc.chapters);
+    // The text already has a run of Chapter / Part labels the layout pass
+    // missed. Keep the text. Layout still wins when the text has no such run,
+    // which is the bookmark-less PDF the regex path titles "Methods".
+    if (!(labelled >= 3 && labelled > laidOut + 2)) return layoutDoc;
+  }
+  const printed = chaptersFromPrintedToc(spoken, hint);
   if (printed && printed.chapters.length > 0) {
     // A printed contents page may only CONFIRM the headings found in the body.
     //
@@ -1344,7 +1416,23 @@ export function resolveChapters(spoken: string, hint: ChapterHint): ChaptersDocu
   // top level is the chapter list with the source's sub-headings under it.
   const titled = dropFurnitureTitles(doc.chapters);
   const kept = titled.length > 0 ? titled : doc.chapters;
-  return { ...doc, chapters: normaliseChapterLevels(kept) };
+  const normalised = { ...doc, chapters: normaliseChapterLevels(kept) };
+  if (!lowConfidenceOutline(spoken, normalised)) return normalised;
+  return chaptersFromLength(spoken);
+}
+
+/**
+ * One chapter whose title is not a chapter label is a missed outline, not a
+ * one-chapter book. Length parts keep the player from showing that line.
+ */
+function lowConfidenceOutline(spoken: string, doc: ChaptersDocument): boolean {
+  if (doc.source !== "heading-lines" && doc.source !== "layout") return false;
+  if (spoken.length < 8_000) return false;
+  if (doc.chapters.length !== 1) return false;
+  if ((doc.chapters[0]?.children?.length ?? 0) > 0) return false;
+  const title = doc.chapters[0]?.title.trim() ?? "";
+  if (/^(?:chapter|part|book|volume|lecture|class|lesson)\s+\S/i.test(title)) return false;
+  return true;
 }
 
 /**
@@ -1444,6 +1532,7 @@ export function parseChaptersDocument(raw: string): ChaptersDocument | null {
       parsed.source === "html-heading" ||
       parsed.source === "sections" ||
       parsed.source === "heading-lines" ||
+      parsed.source === "layout" ||
       parsed.source === "printed-toc" ||
       parsed.source === "ai" ||
       parsed.source === "none"

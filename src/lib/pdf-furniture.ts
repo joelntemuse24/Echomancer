@@ -20,6 +20,8 @@ export type PdfTextItem = {
   x: number;
   y: number;
   h: number;
+  /** pdf.js font name, when the page exposes one. Subset names often omit the weight. */
+  font?: string;
   /**
    * The glyphs run at an angle to the page. A publisher's DOI banner down the
    * side margin is rotated; body text never is.
@@ -38,6 +40,14 @@ export type PdfLine = {
   gap?: number;
   /** Every glyph on this line is rotated. */
   rotated?: boolean;
+  /** A font name on the line contained a weight word such as Bold. */
+  bold?: boolean;
+  /** The line's midpoint sits near the middle of the page and the line is not full width. */
+  centered?: boolean;
+  /** Points of space above this line, after the line above it. */
+  gapAbove?: number;
+  /** The line is the first text on the page, or sits in the top band. */
+  pageTop?: boolean;
   /**
    * The line is a drawing rule or carries no letters — an underscore rule under
    * a running head, a dot leader, a bare pipe. It is never prose, so it must not
@@ -57,6 +67,8 @@ export type PdfPage = {
   /** y of the first and last line of the modal-spaced body block. */
   bodyTop?: number;
   bodyBot?: number;
+  /** Page width in PDF points. Missing on pages built without a viewport. */
+  width?: number;
 };
 
 export type FurnitureBlock = {
@@ -69,7 +81,7 @@ export type FurnitureBlock = {
 type PdfDoc = {
   numPages: number;
   getPage: (n: number) => Promise<{
-    getViewport: (opts: { scale: number }) => { height: number };
+    getViewport: (opts: { scale: number }) => { height: number; width?: number };
     getTextContent: () => Promise<{ items: unknown[] }>;
     cleanup?: () => void;
   }>;
@@ -238,6 +250,32 @@ export function stampTallHeadings(page: PdfPage): void {
 }
 
 /**
+ * Record bold, centering, and the gap above each line while the glyphs are
+ * still attached. `compactPage` drops the glyphs, and the chapter pass needs
+ * these signals after that.
+ */
+export function stampLineGeometry(page: PdfPage, pageWidth: number): void {
+  if (pageWidth > 0) page.width = pageWidth;
+  for (let i = 0; i < page.lines.length; i++) {
+    const line = page.lines[i]!;
+    const xs = line.items.map((item) => item.x).filter((x) => Number.isFinite(x));
+    if (xs.length > 0 && pageWidth > 0) {
+      const x0 = Math.min(...xs);
+      const x1 = Math.max(...xs);
+      const mid = (x0 + x1) / 2;
+      line.centered =
+        Math.abs(mid - pageWidth / 2) < pageWidth * 0.15 && x1 - x0 < pageWidth * 0.72;
+    }
+    line.bold = line.items.some((item) =>
+      /bold|black|semibold|heavy|demi/i.test(item.font ?? "")
+    );
+    const above = page.lines[i - 1];
+    if (above) line.gapAbove = above.y - line.y - Math.max(line.h, 1);
+    line.pageTop = i === 0 || line.y >= page.height * 0.75;
+  }
+}
+
+/**
  * Drop item payloads. Keep the visual lines plus item-order text.
  *
  * `flow` is the narration order, and every segment points at the line it
@@ -280,6 +318,7 @@ export function compactPage(page: PdfPage): PdfPage {
     spacing: stats.spacing,
     bodyTop: stats.top,
     bodyBot: stats.bot,
+    ...(page.width ? { width: page.width } : {}),
   };
 }
 
@@ -353,10 +392,12 @@ export async function extractPdfPages(pdf: PdfDoc): Promise<PdfPage[]> {
         x: typeof transform[4] === "number" ? transform[4] : 0,
         y: typeof transform[5] === "number" ? transform[5] : 0,
         h: Math.abs(yScale) || height || 10,
+        ...("fontName" in raw && typeof raw.fontName === "string" ? { font: raw.fontName } : {}),
         ...(skew > 0.5 ? { rotated: true } : {}),
       }];
     });
     const laid = pageFromItems(items, viewport.height);
+    stampLineGeometry(laid, typeof viewport.width === "number" ? viewport.width : 0);
     stampTallHeadings(laid);
     pages.push(compactPage(laid));
     page.cleanup?.();
