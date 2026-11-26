@@ -8,6 +8,7 @@ import {
   nextClaimableIndex,
   nextPlayableIndex,
   orderedReadyIndexes,
+  reviveUnspokenFailures,
   runIndexBoundFanout,
   runRollingIndexPool,
   sectionObjectName,
@@ -22,6 +23,19 @@ function ready(index: number): JobSegment {
     status: "ready",
   };
 }
+
+describe("reviveUnspokenFailures", () => {
+  it("drops failed sections with no audio and keeps ready audio", () => {
+    const revived = reviveUnspokenFailures([
+      ready(0),
+      { index: 1, path: "", status: "failed", attempts: 3 },
+      { index: 2, path: "", status: "failed", rawPath: "audiobooks/job/raw/0002.mp3" },
+      { index: 4, path: "audiobooks/job/sections/0004.mp3", status: "ready" },
+    ]);
+    expect(revived.map((segment) => segment.index)).toEqual([0, 2, 4]);
+    expect(lowestUnreadyIndex(revived, 5)).toBe(1);
+  });
+});
 
 describe("claimIndexSet", () => {
   it("first claim takes the full fan-out starting at 0", () => {

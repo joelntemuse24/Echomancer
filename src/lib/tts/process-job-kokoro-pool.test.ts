@@ -577,4 +577,85 @@ describe("Kokoro CPU section sizing", () => {
     // Kokoro book made from the same text.
     expect(sections.length).toBeLessThan(18);
   });
+
+  it("does not let TTS_SECTIONS_PER_TICK cap Kokoro lanes", async () => {
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    await seedKokoroJob();
+    let active = 0;
+    let peak = 0;
+    await installKokoroProvider(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active -= 1;
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 60_000 });
+    const row = await jobRow(JOB_ID);
+    const total = Number(row?.total_sections ?? 0);
+    const { planKokoroBookLanes } = await import("@/lib/tts/kokoro-pool");
+    const planned = planKokoroBookLanes({
+      configured: 16,
+      fleet: 16,
+      activeBooks: 1,
+      remainingSections: total,
+    });
+    expect(planned).toBeGreaterThan(8);
+    expect(peak).toBe(planned);
+  });
+
+  it("parks a budget refusal without failing the sections", async () => {
+    await seedKokoroJob();
+    const { RemoteCallRefused } = await import("@/lib/remote/layer");
+    await installKokoroProvider(async () => {
+      throw new RemoteCallRefused("This book is over its remote-call budget.", "budget");
+    });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, {
+      sectionsPerTick: 2,
+      deadlineMs: Date.now() + 60_000,
+    });
+    const row = await jobRow(JOB_ID);
+    expect(result.done).toBe(true);
+    expect(row?.status).toBe("failed");
+    expect(String(row?.error_message)).toMatch(/remote-call budget/);
+    const segments = segmentsOf(row);
+    expect(segments.some((segment) => segment.status === "failed")).toBe(false);
+  });
+
+  it("parks an in-flight refusal without failing the sections", async () => {
+    await seedKokoroJob();
+    const { RemoteCallRefused } = await import("@/lib/remote/layer");
+    await installKokoroProvider(async () => {
+      throw new RemoteCallRefused("A remote call for this section is already in flight.", "in_flight");
+    });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, {
+      sectionsPerTick: 1,
+      deadlineMs: Date.now() + 60_000,
+    });
+    const row = await jobRow(JOB_ID);
+    expect(result.done).toBe(false);
+    expect(row?.status).not.toBe("failed");
+    expect(segmentsOf(row).some((segment) => segment.status === "failed")).toBe(false);
+  });
+
+  it("stops the book on a workspace refusal and leaves sections claimable", async () => {
+    await seedKokoroJob();
+    const { ModalWorkspaceDisabledError } = await import("@/lib/modal/workspace-disabled");
+    await installKokoroProvider(async () => {
+      throw new ModalWorkspaceDisabledError();
+    });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: Date.now() + 60_000,
+    });
+    const row = await jobRow(JOB_ID);
+    expect(result.done).toBe(true);
+    expect(row?.status).toBe("failed");
+    expect(String(row?.error_message)).toMatch(/workspace is disabled/);
+    expect(segmentsOf(row).some((segment) => segment.status === "failed")).toBe(false);
+  });
 });

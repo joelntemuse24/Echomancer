@@ -182,6 +182,18 @@ function rememberSpend(flight: Flight): void {
   spend.push(row);
 }
 
+function releaseFlightReservation(flight: Flight): void {
+  flight.estCostUsd = 0;
+  flight.estMs = 0;
+  const row = spend.find(
+    (item) => item.key === flight.key && Math.abs(item.start - flight.startedAt) < 1_000
+  );
+  if (row) row.usd = 0;
+  void import("@/lib/remote/store")
+    .then((store) => store.releasePersistedReservation(flight.key, flight.startedAt))
+    .catch(() => undefined);
+}
+
 function closeSpend(flight: Flight): void {
   const row = spend.find(
     (item) => item.key === flight.key && Math.abs(item.start - flight.startedAt) < 1_000
@@ -678,6 +690,13 @@ export function admitRemoteCall(
   return { kind: "start", flight, finish };
 }
 
+export type RemoteSettlement = {
+  outcome: FlightStatus;
+  /** The call never reached a billable container. Drop its reservation. */
+  release?: boolean;
+  error?: Error;
+};
+
 export type RunRemoteInput<T> = AdmitInput & {
   enforceBudget?: boolean;
   caps?: Partial<BudgetCaps>;
@@ -689,6 +708,11 @@ export type RunRemoteInput<T> = AdmitInput & {
    */
   abortSettlesAs?: "still_live" | "failure";
   execute: (ctx: { signal: AbortSignal; setCallId: (id: string) => void }) => Promise<T>;
+  /**
+   * A returned value can still be a platform failure. `success` is only
+   * the default when this returns nothing.
+   */
+  settle?: (value: T) => Promise<RemoteSettlement | null | undefined> | RemoteSettlement | null | undefined;
   classifyError?: (err: unknown) => FlightStatus;
 };
 
@@ -752,7 +776,13 @@ export async function runRemoteCall<T>(input: RunRemoteInput<T>): Promise<T> {
   flight.promise = raced;
   try {
     const value = await raced;
-    finish("success");
+    const settled = (await input.settle?.(value)) ?? null;
+    if (settled?.release) releaseFlightReservation(flight);
+    if (settled?.error) {
+      finish(settled.outcome, settled.error.message);
+      throw settled.error;
+    }
+    finish(settled?.outcome ?? "success");
     return value;
   } catch (err) {
     const classified = input.classifyError?.(err);

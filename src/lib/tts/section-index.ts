@@ -55,6 +55,20 @@ export function readyCount(segments: JobSegment[]): number {
   return readyIndexSet(segments).size;
 }
 
+/**
+ * Failed sections that never stored audio become unattempted (dropped from
+ * the map, attempts 0). Ready audio, and a failed row that still has a
+ * path or a raw take, stay as they are.
+ */
+export function reviveUnspokenFailures(segments: JobSegment[]): JobSegment[] {
+  return segments.filter((segment) => {
+    if (segment.status !== "failed") return true;
+    if (segment.path) return true;
+    if (segment.rawPath) return true;
+    return false;
+  });
+}
+
 /** Lowest index in `0..total-1` that is not yet ready. `total` if none. */
 export function lowestUnreadyIndex(
   segments: JobSegment[],
