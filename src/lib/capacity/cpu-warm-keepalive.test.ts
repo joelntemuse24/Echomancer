@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CPU_WARM_HOLD_MS,
+  __keepaliveTimerCountForTest,
   cpuWarmKeepaliveDelays,
   cpuWarmKeepaliveEnabled,
   resetCpuWarmKeepalive,
@@ -37,5 +38,22 @@ describe("cpu warm keepalive", () => {
     const now = Date.now();
     expect(startCpuWarmKeepalive(async () => undefined, env, now)).toBe(true);
     expect(startCpuWarmKeepalive(async () => undefined, env, now + 10_000)).toBe(false);
+  });
+});
+
+describe("cpu warm keepalive timers", () => {
+  it("drops a timer from the set once it has fired", async () => {
+    const { vi } = await import("vitest");
+    vi.useFakeTimers();
+    try {
+      const env = { CPU_SCALEDOWN_SECONDS: "10" } as NodeJS.ProcessEnv;
+      let posts = 0;
+      startCpuWarmKeepalive(async () => void posts++, env, Date.now());
+      await vi.advanceTimersByTimeAsync(CPU_WARM_HOLD_MS + 1_000);
+      expect(posts).toBeGreaterThan(1);
+      expect(__keepaliveTimerCountForTest()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
