@@ -469,8 +469,11 @@ second multiplier on the request. On the ONNX graph, 0.88 is only about
 5–6% longer than 1.0 (123.1 s versus 116.4 s on a two-minute passage).
 The take-home cache key names the runtime, the Kokoro speed
 (`-torch-speed0.880` or `-onnx-speed0.880`), and the pronunciation id
-(`-g2plex1`). The provider stores a take only when `x-kokoro-speed` and
-`x-kokoro-runtime` match that key. Style row 300 is unchanged. The listen
+(`-g2plex1`). Drew stores a take only when `x-kokoro-speed` and
+`x-kokoro-runtime` match that key. Every Kokoro voice (Drew, Esther,
+George, Walter) also requires `x-kokoro-pronunciation` to equal
+`PRONUNCIATION_ID`. A missing header is an older image, and that audio
+is not stored under the new key. Style row 300 is unchanged. The listen
 speed picker (`ec-player-speed`, 0.8–1.5) is playback rate and is separate
 from this generation speed.
 

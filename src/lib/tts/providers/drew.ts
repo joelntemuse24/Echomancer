@@ -96,8 +96,9 @@ async function onePiece(
         "Drew endpoint did not apply prosody G. The audio was not stored."
       );
     }
-    // The cache key names this worker's runtime and Kokoro speed. A container
-    // that is still on 0.88, or on the other graph, must not be stored under it.
+    // The cache key names this worker's runtime, Kokoro speed, and
+    // pronunciation. A container on another speed, the other graph, or an
+    // older lexicon must not be stored under it.
     const mismatch = drewTakeMismatch(res.headers, speed);
     if (mismatch) throw new Error(mismatch);
     const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);

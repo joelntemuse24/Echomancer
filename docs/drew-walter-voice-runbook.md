@@ -207,8 +207,10 @@ is on every Kokoro cache key, so old previews are not replayed.
 
 Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-` plus the
 worker runtime, `speed0.880`, and `-g2plex1` (`torch` unless `KOKORO_RUNTIME=onnx`).
-The provider refuses a response whose `x-kokoro-speed` or
-`x-kokoro-runtime` is anything else, so the take is not cached. Andrew's
+The provider refuses a response whose `x-kokoro-speed`,
+`x-kokoro-runtime`, or `x-kokoro-pronunciation` is anything else, so the
+take is not cached. Esther, George, and Walter use the same pronunciation
+header: a container that omits it is not stored under `-g2plex1`. Andrew's
 Edge takes stay under the Edge key and are never replayed as Drew. Bump
 `DREW_WEIGHTS_ID` in `src/lib/tts/drew-voice.ts` when the volume gets a
 different checkpoint — that is a different model, so its audio must not be

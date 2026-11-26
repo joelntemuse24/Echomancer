@@ -13,7 +13,10 @@
  * that would apply 0.88 twice. Style row 300 is unchanged.
  */
 
-import { KOKORO_PRONUNCIATION_SUFFIX } from "@/lib/tts/kokoro-pronunciation";
+import {
+  KOKORO_PRONUNCIATION_SUFFIX,
+  kokoroPronunciationMismatch,
+} from "@/lib/tts/kokoro-pronunciation";
 
 export const DREW_CATALOG_VOICE_ID = "drew";
 /** Provider-native id. The worker allowlists this one name only. */
@@ -102,8 +105,8 @@ export function drewCacheVariant(env: KokoroEnv = process.env): string {
 
 /**
  * Null when this response is the take the cache key names. A string is the
- * reason it must not be stored: the container's speed or runtime is not
- * the one this worker will look up later.
+ * reason it must not be stored: the container's speed, runtime, or
+ * pronunciation is not the one this worker will look up later.
  */
 export function drewTakeMismatch(
   headers: { get(name: string): string | null },
@@ -121,7 +124,7 @@ export function drewTakeMismatch(
   if (runtime !== expectedRuntime) {
     return `Drew endpoint runtime was ${runtime ?? "unknown"}, not ${expectedRuntime}. The audio was not stored.`;
   }
-  return null;
+  return kokoroPronunciationMismatch(headers);
 }
 
 /** The request field, or nothing. Omitting it is how the container stays stock. */

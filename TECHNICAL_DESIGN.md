@@ -1318,7 +1318,10 @@ multiplies by 0.88 once. The take-home cache variant is
 when `KOKORO_RUNTIME=onnx`). The provider accepts the take only when
 `x-kokoro-speed` and `x-kokoro-runtime` match that key. The `g2plex1`
 suffix is the shared pronunciation lexicon (`scripts/sowell/pronounce.py`),
-checked before misaki `us_gold` on every Kokoro path. Deploy steps are
+checked before misaki `us_gold` on every Kokoro path. The container
+returns `x-kokoro-pronunciation` with that id. Drew, Esther, George, and
+Walter refuse the body when the header is missing or different, so an
+older image is not cached under the new key. Deploy steps are
 in `docs/kokoro-onnx-runbook.md`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`

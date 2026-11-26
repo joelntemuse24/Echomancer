@@ -246,6 +246,7 @@ describe("Drew provider", () => {
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
         "x-kokoro-speed": "0.88",
         "x-kokoro-runtime": "torch",
+        "x-kokoro-pronunciation": "lex1",
       });
       res.end(wavBody());
     });
@@ -306,6 +307,7 @@ describe("Drew provider", () => {
         "x-kokoro-prosody": "G",
         "x-kokoro-speed": "0.88",
         "x-kokoro-runtime": "torch",
+        "x-kokoro-pronunciation": "lex1",
       });
       res.end(wavBody());
     });
@@ -329,6 +331,22 @@ describe("Drew provider", () => {
     const otherGraph = new Headers({ "x-kokoro-speed": "0.88", "x-kokoro-runtime": "onnx" });
     expect(drewTakeMismatch(otherGraph, 1)).toMatch(/onnx/);
     expect(drewTakeMismatch(new Headers({ "x-kokoro-speed": "0.88" }), 1)).toMatch(/unknown/);
+    const oldLexicon = new Headers({
+      "x-kokoro-speed": "0.88",
+      "x-kokoro-runtime": "torch",
+    });
+    expect(drewTakeMismatch(oldLexicon, 1)).toMatch(/pronunciation/);
+    expect(drewTakeMismatch(oldLexicon, 1)).toMatch(/not stored/i);
+    expect(
+      drewTakeMismatch(
+        new Headers({
+          "x-kokoro-speed": "0.88",
+          "x-kokoro-runtime": "torch",
+          "x-kokoro-pronunciation": "lex1",
+        }),
+        1
+      )
+    ).toBeNull();
     const url = await listen((_body, res) => {
       res.writeHead(200, {
         "content-type": "audio/wav",

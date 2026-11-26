@@ -7,7 +7,9 @@ is about 5–6% longer than 1.0 (123.1 s versus 116.4 s on a two-minute
 passage). Style row **300** stays. The take-home cache
 key is `drew-kokoro82m-ft-stageA-step00900-style300-<runtime>-speed0.880-g2plex1`.
 The worker's `KOKORO_RUNTIME` picks `torch` or `onnx`. The provider stores
-the bytes only when `x-kokoro-speed` and `x-kokoro-runtime` match that key.
+the bytes only when `x-kokoro-speed`, `x-kokoro-runtime`, and
+`x-kokoro-pronunciation` match that key. Esther, George, and Walter
+require the pronunciation header the same way.
 A worker that ships before the image refuses the old 0.88 container instead
 of caching it, and a torch rollback does not replay an ONNX take. Prosody G
 stays off.

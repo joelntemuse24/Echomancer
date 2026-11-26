@@ -12,3 +12,13 @@ coverage
 .env.*
 .cursor
 workers/extract/node_modules
+# The Sowell image copies two files under voices/sowell. The rest of these
+# trees is weights and training data, and must not ride along in a context
+# that starts at the repo root (workers/sowell or workers/cpu).
+models/
+training/
+voices/*
+!voices/sowell
+voices/sowell/*
+!voices/sowell/manifest.json
+!voices/sowell/am_sowell_avg.pt

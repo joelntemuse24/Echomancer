@@ -422,9 +422,15 @@ class Speaker:
                 return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
             from timing import timing_headers
 
+            from pronounce import PRONUNCIATION_ID
+
             headers = timing_headers(report)
             headers["x-kokoro-voice"] = str(report.get("voice") or voice)
             headers["x-kokoro-speed"] = str(report.get("speed") or 1.0)
+            # The cache key ends in this id. An image that omits the header
+            # is the lexicon from before it, and the worker must not store
+            # that audio under the new key.
+            headers["x-kokoro-pronunciation"] = PRONUNCIATION_ID
             if report.get("prosody"):
                 headers["x-kokoro-prosody"] = str(report["prosody"])
             # Id, section, and voice only. The text and the token are not logged.

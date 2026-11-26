@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { getCatalogVoice, listCatalogVoices } from "@/lib/tts/catalog";
 import { GEORGE_CACHE_VARIANT, georgeReady } from "@/lib/tts/george-voice";
+import { KOKORO_PRONUNCIATION_ID } from "@/lib/tts/kokoro-pronunciation";
 import { resolveStockAdapter } from "@/lib/tts/providers";
 import { takehomeCacheVariant } from "@/lib/tts/process-job";
 import { hardMaxCharsForModel } from "@/lib/tts/section-size";
@@ -78,6 +79,7 @@ describe("george voice", () => {
         res.writeHead(200, {
           "content-type": "audio/wav",
           "x-kokoro-voice": "bm_george",
+          "x-kokoro-pronunciation": KOKORO_PRONUNCIATION_ID,
         });
         res.end(Buffer.concat([header, Buffer.alloc(200, 7)]));
       });
@@ -130,6 +132,30 @@ describe("george voice", () => {
     }
   });
 
+  it("refuses a confirmed voice that omitted the pronunciation id", async () => {
+    Object.assign(process.env, readyEnv);
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": "bm_george",
+      });
+      res.end(Buffer.alloc(1200, 1));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.GEORGE_URL = `http://127.0.0.1:${port}`;
+    delete process.env.WORKER;
+    try {
+      const adapter = resolveStockAdapter({ provider: "george", catalogVoiceId: "george" });
+      await expect(
+        adapter.synthesize({ text: "Hello.", voice: "bm_george" })
+      ).rejects.toThrow(/not stored/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("still recognises a stored Ryan row as Edge", () => {
     expect(
       isRyanVoice({
@@ -152,6 +178,8 @@ describe("george voice", () => {
     const worker = readFileSync(path.join(process.cwd(), "modal/sowell_worker.py"), "utf8");
     expect(worker).toContain("canonical_kokoro_voice");
     expect(worker).toContain("x-kokoro-voice");
+    expect(worker).toContain("x-kokoro-pronunciation");
+    expect(worker).toContain("PRONUNCIATION_ID");
     expect(worker).toContain("max_containers=max_containers()");
     expect(worker).toContain("MAX_CONTAINERS_CEILING = 16");
     // The allowlist itself runs in the GPU image, which imports torch. Without

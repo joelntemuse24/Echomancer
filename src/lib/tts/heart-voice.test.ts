@@ -14,6 +14,7 @@ import {
 import { resolveStockAdapter } from "@/lib/tts/providers";
 import { takehomeCacheVariant } from "@/lib/tts/process-job";
 import { hardMaxCharsForModel } from "@/lib/tts/section-size";
+import { KOKORO_PRONUNCIATION_ID } from "@/lib/tts/kokoro-pronunciation";
 import { SOWELL_CACHE_VARIANT } from "@/lib/tts/sowell-voice";
 import { isAvaVoice, isEdgeStockVoice, isLibbyVoice } from "@/lib/tts/standard-voice";
 import { stockPreviewUrl } from "@/lib/tts/stock-preview";
@@ -114,6 +115,7 @@ describe("heart voice", () => {
         res.writeHead(200, {
           "content-type": "audio/wav",
           "x-kokoro-voice": "af_heart",
+          "x-kokoro-pronunciation": KOKORO_PRONUNCIATION_ID,
         });
         res.end(Buffer.concat([header, Buffer.alloc(200, 7)]));
       });
@@ -158,6 +160,30 @@ describe("heart voice", () => {
       );
     } finally {
       await new Promise<void>((resolve) => silent.close(() => resolve()));
+    }
+  });
+
+  it("refuses a confirmed voice that omitted the pronunciation id", async () => {
+    Object.assign(process.env, readyEnv);
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": "af_heart",
+      });
+      res.end(Buffer.alloc(1200, 1));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.HEART_URL = `http://127.0.0.1:${port}`;
+    delete process.env.WORKER;
+    try {
+      const adapter = resolveStockAdapter({ provider: "heart", catalogVoiceId: "heart" });
+      await expect(adapter.synthesize({ text: "Hello.", voice: "af_heart" })).rejects.toThrow(
+        /not stored/i
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
