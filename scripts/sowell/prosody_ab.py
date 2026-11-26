@@ -1,6 +1,6 @@
 """Offline A/B of Drew prosody G on the production render path.
 
-Style row 300, Kokoro speed 0.88, and the production phoneme chunker.
+Style row 300, Kokoro speed 1.0, and the production phoneme chunker.
 No Modal call. The private weights are not in git. Point
 ``DREW_VOLUME_MOUNT`` at the directory that contains
 
@@ -37,7 +37,7 @@ Render on a machine that has the Drew volume and Kokoro 0.9.4:
       scripts/sowell/fixtures/drew_prosody_passage.json \\
       /tmp/drew-prosody-ab
 
-The engine pins style row 300 and multiplies speed 1.0 by 0.88.
+The engine pins style row 300 and multiplies speed 1.0 by 1.0.
 Do not set a row. Do not deploy. Then:
 
   python3 scripts/sowell/prosody_metrics.py \\

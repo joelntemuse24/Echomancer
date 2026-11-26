@@ -9,7 +9,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  kokoroAudioLaneCap,
   kokoroFairQuota,
+  kokoroStreamsPerContainer,
   lanesForSameWaves,
   planKokoroBookLanes,
   runRollingRenderPool,
@@ -532,5 +534,42 @@ describe("kokoro book lanes", () => {
     // A broken counter does not stall the book; the shared permit is still
     // the hard cap.
     expect(renders).toBe(9);
+  });
+});
+
+describe("audio-sized Kokoro lanes", () => {
+  it("leaves the torch fleet alone when streams are unset", () => {
+    expect(kokoroStreamsPerContainer({} as NodeJS.ProcessEnv)).toBe(0);
+    expect(kokoroStreamsPerContainer({ KOKORO_STREAMS_PER_CONTAINER: "0" } as NodeJS.ProcessEnv)).toBe(0);
+    expect(kokoroStreamsPerContainer({ KOKORO_STREAMS_PER_CONTAINER: "4" } as NodeJS.ProcessEnv)).toBe(4);
+    expect(kokoroStreamsPerContainer({ KOKORO_STREAMS_PER_CONTAINER: "99" } as NodeJS.ProcessEnv)).toBe(8);
+  });
+
+  it("sizes a 16-minute book at 4 containers, then drops idle lanes", () => {
+    // 16 minutes of audio at 1000 characters a minute is 16 calls.
+    expect(kokoroAudioLaneCap(16_000, 4)).toBe(16);
+    expect(
+      planKokoroBookLanes({
+        configured: 16,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: 25,
+        remainingChars: 15_700,
+        streamsPerContainer: 4,
+      })
+    ).toBe(13);
+  });
+
+  it("does not cap lanes when the torch path leaves streams unset", () => {
+    expect(
+      planKokoroBookLanes({
+        configured: 16,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: 22,
+        remainingChars: 15_700,
+        streamsPerContainer: 0,
+      })
+    ).toBe(11);
   });
 });

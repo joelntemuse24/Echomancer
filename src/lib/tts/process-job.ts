@@ -4180,7 +4180,7 @@ async function synthesizeSection(args: {
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
     // Paradee takes speed in its own 1.0-native units, not Fish prosody.
-    // Drew takes the app speed and multiplies it by 0.88 in the container, so
+    // Drew takes the app speed and multiplies it by 1.0 in the container, so
     // 1.0 here is Drew's natural pace — `drewSpeedForRequest` only clamps it
     // and keeps it out of the unset-Fish-prosody path.
     const speed =

@@ -156,7 +156,11 @@ def memory_mb(env: dict | None = None) -> int:
     return max(1536, min(TORCH_MEMORY_MB, n))
 
 
-image = image.env({"KOKORO_RUNTIME": RUNTIME, "KOKORO_STREAMS": str(STREAMS)})
+_BAKED_ENV = {"KOKORO_RUNTIME": RUNTIME, "KOKORO_STREAMS": str(STREAMS)}
+# A test deploy points Drew's export at its own volume. Production leaves this unset.
+if os.environ.get("DREW_ONNX_DIR", "").strip():
+    _BAKED_ENV["DREW_ONNX_DIR"] = os.environ["DREW_ONNX_DIR"].strip()
+image = image.env(_BAKED_ENV)
 
 app = modal.App(APP_NAME)
 MAX_CHARS = 2000
@@ -213,6 +217,35 @@ drew_volume = modal.Volume.from_name(DREW_VOLUME_NAME, create_if_missing=True)
 KOKORO_BUNDLE_CONTENT_TYPE = "application/x-echomancer-kokoro-bundle"
 
 
+def process_high_water_mb() -> float:
+    """Peak RSS of this process, in MiB. 0 when /proc is absent."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return 0.0
+    return 0.0
+
+
+def cgroup_peak_mb() -> float | None:
+    """Container cgroup peak, in MiB. None when the file is not a byte count."""
+    for path in (
+        "/sys/fs/cgroup/memory.peak",
+        "/sys/fs/cgroup/memory/memory.max_usage_in_bytes",
+    ):
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if raw.isdigit():
+            return int(raw) / (1024 * 1024)
+    return None
+
+
+SOWELL_SECRET_NAME = os.environ.get("SOWELL_SECRET_NAME", "echomancer-sowell")
+
+
 def _authorized(request: Request) -> bool:
     presented = request.headers.get("authorization", "")
     for name in ("SOWELL_TOKEN", "DREW_TOKEN"):
@@ -234,7 +267,7 @@ def _authorized(request: Request) -> bool:
     # of reading the checkpoint again. The gate lock is created after restore:
     # a lock captured in the snapshot is tied to the process that took it.
     enable_memory_snapshot=True,
-    secrets=[modal.Secret.from_name("echomancer-sowell")],
+    secrets=[modal.Secret.from_name(SOWELL_SECRET_NAME)],
     volumes={DREW_VOLUME_MOUNT: drew_volume},
 )
 @modal.concurrent(max_inputs=STREAMS)
@@ -243,6 +276,7 @@ class Speaker:
     def load(self) -> None:
         sys.path.insert(0, "/opt/sowell/scripts")
         self.runtime = kokoro_runtime()
+        self._snap_mono = time.monotonic()
         if self.runtime == "onnx":
             from onnx_engine import OnnxEngine
 
@@ -274,7 +308,13 @@ class Speaker:
     @modal.enter()
     def open_gate(self) -> None:
         # One permit per stream: 1 on torch, KOKORO_STREAMS on ONNX.
+        # A restored snapshot's monotonic clock is younger than the clock
+        # frozen inside `load`, which is how a container can prove a restore.
+        snap = getattr(self, "_snap_mono", None)
+        now = time.monotonic()
+        self.boot = "restored" if isinstance(snap, float) and now + 0.5 < snap else "unknown"
         self.gate = threading.BoundedSemaphore(kokoro_streams())
+        print(f"[kokoro] boot={self.boot} runtime={self.runtime}", flush=True)
 
     def _drew_ready(self) -> bool:
         if getattr(self, "runtime", "torch") == "onnx":
@@ -375,6 +415,10 @@ class Speaker:
                 flush=True,
             )
             headers["x-kokoro-runtime"] = self.runtime
+            headers["x-kokoro-rss-mb"] = f"{process_high_water_mb():.0f}"
+            peak = cgroup_peak_mb()
+            if peak is not None:
+                headers["x-kokoro-cgroup-mb"] = f"{peak:.0f}"
             if recipe is not None:
                 from master import MasterError, master_wav
 

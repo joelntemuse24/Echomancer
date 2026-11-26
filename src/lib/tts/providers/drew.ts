@@ -5,7 +5,7 @@
  * switching voice.
  *
  * The request carries the app's speed. The container multiplies it by
- * `DREW_NATIVE_KOKORO_SPEED` (0.88), so 1.0 here is Drew's natural pace.
+ * `DREW_NATIVE_KOKORO_SPEED` (1.0), so 1.0 here is Drew's natural pace.
  */
 
 import {
@@ -38,7 +38,7 @@ async function onePiece(
   master = false
 ): Promise<KokoroTake> {
   const token = process.env.DREW_TOKEN?.trim() || "";
-  // App speed. 1 is Drew's native pace (0.88 Kokoro speed).
+  // App speed. 1 is Drew's native pace (Kokoro speed 1.0).
   const speed =
     typeof input.speed === "number" && Number.isFinite(input.speed) && input.speed > 0
       ? input.speed

@@ -10,6 +10,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
 - Lanes sized at about 1 container per 5 minutes of audio.
 - Keep the torch fallback flag. The image is provider-agnostic.
 - Quality gate: WER not worse, no artifacts or clipping, and it must match the ONNX Drew sample Joel approved (`drew_onnx32_4x1_s1`: a single-file export with **no prosody G**). Joel said that sample sounded better than prod. **Do not** do the two-graph split to restore G.
+- Drew's native Kokoro speed is **1.0** (Joel, by ear). Style row 300 stays.
 - Tests and CI must pass. Measure on throwaway Modal apps (budget < $0.75): wall time, billed and modelled cost for the 16-minute book versus today, and peak RAM.
 
 ## Done (in this branch)
@@ -61,7 +62,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
    - Set worker env `KOKORO_STREAMS_PER_CONTAINER=4` and `KOKORO_CONTAINER_MASTER=1`.
    - To roll back: `KOKORO_RUNTIME=torch` redeploy, and unset the two worker env vars.
    - Note that Drew answers 503 on ONNX until the export exists.
-8. Open question: `DREW_NATIVE_KOKORO_SPEED`. See the speed study below; 1.0 matches Andrew better than 0.88. This is not changed in code; Joel needs to confirm by ear.
+8. `DREW_NATIVE_KOKORO_SPEED` is **1.0**. Joel picked it by ear. The cache variant is `v3` so a 0.88 take is not replayed. Style row 300 is unchanged.
 
 ## Test results so far
 - Earlier Modal benchmark (OPTIMISE.md, Nov 25–26): ONNX fp32 with 4 procs × 1 thread gave **1.57×** the audio per core-second of torch's 1 × 4 threads, with identical WER.
@@ -83,7 +84,7 @@ I used 28 real Edge Andrew clips (623 words) from `andrew-distill` `/eval/edge_a
 | Drew 0.95 | 175.5 | 192.7 | 4.94 | 1.05 |
 | Drew 1.0 | 179.1 | 196.0 | 5.02 | 1.02 |
 
-So 1.0 is the closest match; about 1.04 would match exactly. 0.88 is 8–9% slower than Andrew.
+So 1.0 is the closest match; about 1.04 would match exactly. 0.88 is 8–9% slower than Andrew. Joel then picked 1.0 by ear. `DREW_NATIVE_KOKORO_SPEED` is 1.0 on both the torch and ONNX paths. The table is the measurement, not the current default.
 
 ## Samples made (on the box: the operator box (samples dir))
 Same ~35 s passage throughout:
@@ -102,5 +103,7 @@ Earlier ONNX/torch A/B samples are on the operator box. The prod vs new A/B for 
 - `KOKORO_STREAMS_PER_CONTAINER` on the worker must match the deploy (4 on ONNX). With the torch fallback deploy, unset it.
 - Split (multi-call) sections and cached sections still go through the CPU master task. That is correct, but the CPU app hop is not fully gone for those.
 - A blob-download stall from Modal function results (>~10 MB) hit again. Write outputs to a test volume and use `modal volume get`.
-- The throwaway Modal resources are left in place: the secret `echomancer-sowell-onnxtest331` and the volume `echomancer-onnx-test331` (it holds Drew's ONNX export, which is private). The apps are stopped. Delete these once they're no longer needed.
+- The throwaway Modal resources are left in place: the secret `echomancer-sowell-onnxtest331` and the volume `echomancer-onnx-test331` (it holds Drew's ONNX export, which is private). The apps were permanently stopped (`modal app stop`), so they cannot be called again. Delete the secret and volume once they're no longer needed.
+- This checkout does not contain `voices/sowell/am_sowell_avg.pt` (gitignored). A new image build fails at that `COPY`. The stopped test app cannot be used to extract the pack.
+- The test-volume export at `/drew` matches the source checkpoint (26 Nov 2026): kmodel `6ebdc982990b45aacf6113525fc659d2f71fb9cebd11c1f9386876e3b3792371`, voice `e821f9c3553dbcb1e50f1e8c78d4ddad57e66f9f3cbe148b0e48884e5e4f93b0`, style index 300. Do not re-export until those source hashes change. The comparison was a read of `andrew-distill`; nothing was written there.
 - Modal spend so far this phase: Drew export plus 3 render jobs plus 2 short deploys, roughly $0.10–0.15 (estimated, not checked against billing).

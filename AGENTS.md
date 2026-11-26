@@ -455,15 +455,17 @@ harbor paragraph is 39.7 s of audio and took 25.3-27.1 s at 2 threads
 at the same container cost. `modal/sowell_bench.py` re-measures it on the
 same CPU-only image.
 
-**Drew speed:** Drew renders at Kokoro speed **0.88**, which is real
-Andrew's natural 1x. That 0.88 is applied **once**, in the container
+**Drew speed:** Drew renders at Kokoro speed **1.0**, which is real
+Andrew's natural 1x (Joel picked it by ear; it is also the closest measured
+match). That 1.0 is applied **once**, in the container
 (`scripts/sowell/drew.py` → `drew_speed`), by multiplying the app's own
 speed. The app therefore sends 1.0 for natural pace and never
 calibrates Drew down: `initialNarrationSpeed` returns 1.0 for Drew, and the
 per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
-(the same exemption Paradee has). Do not apply 0.88 in TypeScript as well —
-`drewKokoroSpeed` exists for tests and documentation, not as a second
-multiplier on the request.
+(the same exemption Paradee has). Do not apply the native speed in TypeScript
+as well — `drewKokoroSpeed` exists for tests and documentation, not as a
+second multiplier on the request. The take-home cache variant is `v3` so a
+section recorded at the old 0.88 is not replayed. Style row 300 is unchanged.
 
 **Drew prosody G:** sentence-type F0 rules (`scripts/sowell/prosody_rules.py`,
 variant `G_rules_phrase`) are off unless `DREW_PROSODY_RULES` is set on the
@@ -473,7 +475,7 @@ edit the F0 tensor that forward already produced. Constants are hardcoded
 (`ACCENT_K` 0.7, `DECL_ST` 3, short exclamation +4 st, long +1.5 st, yes/no
 rise +7 st). Do not read those from the environment. With the flag off the
 request omits `prosody` and the cache key stays
-`drew-kokoro82m-ft-stageA-step00900-style300-v2`. With it on, the body is
+`drew-kokoro82m-ft-stageA-step00900-style300-v3`. With it on, the body is
 `prosody: "G"` and the key gains `-prosodyG`. The container applies G only
 when that field is present; its own env cannot rule a take cached as
 unruled. Deploy the Modal app that honors the field before setting the flag.

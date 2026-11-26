@@ -33,7 +33,7 @@ def main() -> int:
         "--speed",
         type=float,
         default=1.0,
-        help="App speed. 1.0 is native; Drew multiplies it by 0.88.",
+        help="App speed. 1.0 is native; Drew multiplies it by 1.0.",
     )
     args = parser.parse_args()
     engine = SowellEngine()

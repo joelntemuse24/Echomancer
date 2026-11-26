@@ -40,7 +40,7 @@ describe("initialNarrationSpeed", () => {
   });
 
   it("keeps Drew at 1.0 on academic text — 1.0 is already his natural pace", () => {
-    // The container renders 1.0 at Kokoro speed 0.88, so the academic
+    // The container renders 1.0 at Kokoro speed 1.0, so the academic
     // heuristic here would stack a second slowdown on top of a voice that is
     // already at Andrew's pace. This is the drift that moved later Andrew
     // sections to ~0.85.
@@ -74,8 +74,8 @@ describe("Drew pace", () => {
   });
 
   it("clamps the app speed and leaves 1.0 exactly at 1.0", () => {
-    // The worker multiplies by 0.88; this only clamps, so 1.0 must survive as
-    // 1.0 or the container would apply 0.88 to an already-scaled number.
+    // The worker multiplies by 1.0; this only clamps, so 1.0 must survive as
+    // 1.0 or the container would scale an already-scaled number.
     expect(drewSpeedForRequest(1)).toBe(1);
     expect(drewSpeedForRequest(undefined)).toBe(1);
     expect(drewSpeedForRequest(0.5)).toBe(DREW_APP_SPEED_MIN);

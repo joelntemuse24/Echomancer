@@ -20,9 +20,10 @@ because the checkpoint is private and can be re-exported; the layout, dtype,
 and finiteness are checked instead, and a bad file fails the container load
 rather than producing audio that is not Drew.
 
-**0.88 is Drew's native 1x.** Rendering at Kokoro speed 0.88 reproduces real
-Andrew's natural pace. The app sends its own speed (1.0 = natural) and this
-module multiplies it, once.
+**1.0 is Drew's native 1x.** Joel picked Kokoro speed 1.0 by ear, and it is
+also the closest match to real Andrew's pace. The app sends its own speed
+(1.0 = natural) and this module multiplies it, once. Style row 300 is
+unchanged.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DREW_VOICE_ID = "drew"
-DREW_NATIVE_KOKORO_SPEED = 0.88
+DREW_NATIVE_KOKORO_SPEED = 1.0
 # Tensor index into the (510, 1, 256) pack. Kokoro reads
 # pack[phoneme_count - 1]; a 510-phoneme chunk uses 509, so there is no
 # index 510. Chosen by scripts/sowell/choose_fixed_style.py: mean speaker
@@ -78,7 +79,7 @@ def drew_assets_present(env: dict[str, str] | None = None) -> bool:
 
 
 def drew_speed(requested: object) -> float:
-    """App speed → Kokoro speed. 1.0 (or missing) becomes 0.88, exactly once."""
+    """App speed → Kokoro speed. 1.0 (or missing) stays 1.0, exactly once."""
     try:
         base = float(requested)  # type: ignore[arg-type]
     except (TypeError, ValueError):

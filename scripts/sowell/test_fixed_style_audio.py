@@ -1,7 +1,7 @@
 """Same sentence, pinned style: brightness and level do not follow chunk length.
 
 Skipped unless DREW_STYLE_PACK and DREW_STYLE_KMODEL point at the private
-stageA step00900 files. CI does not have them. The speed argument is 0.88,
+stageA step00900 files. CI does not have them. The speed argument is 1.0,
 the same number an unpinned render of this sentence receives.
 """
 
@@ -67,7 +67,7 @@ class PinnedDrewAudio(unittest.TestCase):
         self.assertEqual(len(runs), 1, runs and [len(r) for r in runs])
         phonemes = runs[0]
         speed = drew_speed(1.0)
-        self.assertEqual(speed, 0.88)
+        self.assertEqual(speed, 1.0)
 
         def render(voice_pack):
             started = time.perf_counter()

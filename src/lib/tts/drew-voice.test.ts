@@ -133,7 +133,7 @@ describe("Drew identity", () => {
       })
     ).toBe(DREW_MAX_CHARS);
     expect(DREW_IN_FLIGHT).toBe(2);
-    expect(DREW_CACHE_VARIANT).toContain(`style${DREW_FIXED_STYLE_INDEX}-v2`);
+    expect(DREW_CACHE_VARIANT).toContain(`style${DREW_FIXED_STYLE_INDEX}-v3`);
     expect(DREW_CACHE_VARIANT.endsWith("-v1")).toBe(false);
     expect(takehomeCacheVariant("sowell", "sowell")).not.toContain("style");
     expect(takehomeCacheVariant("george", "george")).not.toContain("style");
@@ -173,30 +173,26 @@ describe("Drew identity", () => {
 });
 
 describe("Drew speed mapping", () => {
-  it("treats 0.88 as native 1x", () => {
-    expect(DREW_NATIVE_KOKORO_SPEED).toBe(0.88);
-    expect(drewKokoroSpeed(1)).toBe(0.88);
-    expect(drewKokoroSpeed(undefined)).toBe(0.88);
-    expect(drewKokoroSpeed(null)).toBe(0.88);
+  it("treats 1.0 as native 1x", () => {
+    expect(DREW_NATIVE_KOKORO_SPEED).toBe(1);
+    expect(drewKokoroSpeed(1)).toBe(1);
+    expect(drewKokoroSpeed(undefined)).toBe(1);
+    expect(drewKokoroSpeed(null)).toBe(1);
   });
 
   it("scales from native pace instead of slowing further", () => {
-    // 1.0 is natural. Nothing at or below 1.0 may land under 0.88 except an
-    // explicit slower choice, which is the listener's, not calibration's.
-    expect(drewKokoroSpeed(1)).toBe(0.88);
-    expect(drewKokoroSpeed(0.95)).toBe(0.836);
-    expect(drewKokoroSpeed(1.2)).toBe(1.056);
-    // The retired calibration floor (~0.85) is now slower than native, so it
-    // must not be applied to Drew by default.
-    expect(drewKokoroSpeed(1)).toBeGreaterThan(0.85);
+    // 1.0 is natural. The container multiplies once, so 1.0 stays 1.0.
+    expect(drewKokoroSpeed(1)).toBe(1);
+    expect(drewKokoroSpeed(0.95)).toBe(0.95);
+    expect(drewKokoroSpeed(1.2)).toBe(1.2);
   });
 
   it("clamps to what the container accepts", () => {
-    expect(drewKokoroSpeed(0)).toBe(0.88);
-    expect(drewKokoroSpeed(-3)).toBe(0.88);
+    expect(drewKokoroSpeed(0)).toBe(1);
+    expect(drewKokoroSpeed(-3)).toBe(1);
     expect(drewKokoroSpeed(0.01)).toBe(0.5);
     expect(drewKokoroSpeed(100)).toBe(2);
-    expect(drewKokoroSpeed(Number.NaN)).toBe(0.88);
+    expect(drewKokoroSpeed(Number.NaN)).toBe(1);
   });
 });
 
@@ -235,7 +231,7 @@ describe("Drew provider", () => {
       res.writeHead(200, {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
-        "x-kokoro-speed": "0.88",
+        "x-kokoro-speed": "1.0",
       });
       res.end(wavBody());
     });
@@ -255,7 +251,7 @@ describe("Drew provider", () => {
     expect(audio.contentType).toBe("audio/wav");
     expect(audio.audio.length).toBe(244);
     expect(seen).toHaveLength(1);
-    // The container applies 0.88. The worker sends the app's 1.0 unchanged so
+    // The container multiplies by 1.0. The worker sends the app's 1.0 unchanged so
     // the multiply happens exactly once.
     expect(seen[0]!.speed).toBe(1);
     expect(seen[0]!.voice).toBe("drew");
@@ -349,9 +345,10 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain('"andrew-distill"');
     expect(worker).toContain("min_containers=0");
     expect(worker).toContain("max_containers=max_containers()");
-    // Two kmodels need more than the Walter/George 4 GB.
-    expect(worker).toContain("memory=6144");
-    expect(worker).toContain("@modal.concurrent(max_inputs=1)");
+    // ONNX memory is measured. Torch stays at 6144, one call per container.
+    expect(worker).toContain("memory=memory_mb()");
+    expect(worker).toContain("TORCH_MEMORY_MB = 6144");
+    expect(worker).toContain("@modal.concurrent(max_inputs=STREAMS)");
     expect(worker).toContain("load_drew()");
     expect(worker).toContain("DREW_UNAVAILABLE");
     expect(worker).toContain('raw_prosody == "G"');
@@ -361,7 +358,7 @@ describe("Drew on the Modal CPU app", () => {
       path.join(process.cwd(), "scripts/sowell/drew.py"),
       "utf8"
     );
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
     const index = drew.match(/DREW_FIXED_STYLE_INDEX = (\d+)/);
     expect(index, drew).toBeTruthy();
     expect(DREW_FIXED_STYLE_INDEX).toBe(Number(index![1]));
@@ -394,7 +391,7 @@ describe("Drew on the Modal CPU app", () => {
     expect(engine).toContain("def kpipeline()");
   });
 
-  it("executes the 0.88 multiply through the resident engine", () => {
+  it("executes the 1.0 multiply through the resident engine", () => {
     // The Python suite stubs Kokoro but uses real torch, so this runs the
     // actual `_render_locked` speed path. A double multiply fails here.
     const torch = spawnSync("python3", ["-c", "import torch"], { encoding: "utf8" });

@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { resolveStockAdapter } from "@/lib/tts/providers";
 import { splitSowellText } from "@/lib/tts/providers/sowell";
+import { KOKORO_BUNDLE_CONTENT_TYPE } from "@/lib/tts/kokoro-master";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import { voicesForPath } from "@/lib/voice-path";
 import { takehomeCacheVariant } from "@/lib/tts/process-job";
@@ -164,6 +165,64 @@ describe("sowell voice", () => {
     }
   });
 
+  it("keeps a one-call mastered MP3 and ignores a bundle on a split section", async () => {
+    Object.assign(process.env, readyEnv);
+    process.env.KOKORO_CONTAINER_MASTER = "1";
+    process.env.TTS_SECTION_MASTER = "1";
+    process.env.WORKER = "1";
+    const mp3 = Buffer.from("mastered-mp3");
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + 80, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(24000, 24);
+    header.writeUInt32LE(48000, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(80, 40);
+    const wav = Buffer.concat([header, Buffer.alloc(80, 3)]);
+    let sawMaster = false;
+    const server: Server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        const sent = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { master?: unknown };
+        sawMaster = sent.master != null;
+        const body = Buffer.concat([mp3, wav]);
+        res.writeHead(200, {
+          "content-type": KOKORO_BUNDLE_CONTENT_TYPE,
+          "x-kokoro-mp3-bytes": String(mp3.length),
+          "x-kokoro-wav-bytes": String(wav.length),
+        });
+        res.end(body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.SOWELL_URL = `http://127.0.0.1:${port}`;
+    delete process.env.WORKER;
+    process.env.TTS_SECTION_MASTER = "1";
+    try {
+      const audio = await resolveStockAdapter({
+        provider: "sowell",
+        catalogVoiceId: "sowell",
+      }).synthesize({ text: "The harbor was quiet.", voice: "am_sowell_avg" });
+      expect(sawMaster).toBe(true);
+      expect(audio.mastered?.equals(mp3)).toBe(true);
+      expect(audio.audio.equals(wav)).toBe(true);
+    } finally {
+      delete process.env.KOKORO_CONTAINER_MASTER;
+      delete process.env.TTS_SECTION_MASTER;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("runs two pieces at once, keeps order, and drops the take on a later error", async () => {
     Object.assign(process.env, readyEnv);
     const piece = "The harbor was quiet after the rain. ";
@@ -252,12 +311,15 @@ describe("sowell voice", () => {
     expect(source).toContain('TORCH_THREADS = os.environ.get("SOWELL_TORCH_THREADS", "4")');
     expect(source).toContain("apply_torch_threads()");
     expect(source).toContain("cpu=2");
-    // Drew is a second resident kmodel next to stock Kokoro, so the ceiling
-    // moved 4 GB → 6 GB. Two workers and three narrators share one app.
-    expect(source).toContain("memory=6144");
-    expect(source).toContain("max_inputs=1");
+    // ONNX sizes memory to the measured peak. Torch stays at 6144 and one call.
+    expect(source).toContain("memory=memory_mb()");
+    expect(source).toContain("TORCH_MEMORY_MB = 6144");
+    expect(source).toContain("max_inputs=STREAMS");
+    expect(source).toContain("BoundedSemaphore");
     expect(source).toContain("timing_headers");
-    expect(source).not.toContain("subprocess");
+    const speak = source.slice(source.indexOf("def speak"), source.indexOf("def export_drew_onnx"));
+    expect(speak).not.toContain("subprocess.run");
+    expect(source).toContain("subprocess.run");
     expect(source).not.toContain("/tmp/sowell.wav");
     // Drew's private weights come from a Volume, never from the image.
     expect(source).toContain("modal.Volume.from_name");
@@ -267,14 +329,14 @@ describe("sowell voice", () => {
     expect(source).not.toContain("s2_clone");
     expect(source).not.toContain("S2C_");
     const drew = readFileSync(path.join(process.cwd(), "scripts/sowell/drew.py"), "utf8");
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_kmodel.pth");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_voice.pt");
     expect(drew).toContain("PACK_SHAPE = (510, 1, 256)");
     const engine = readFileSync(path.join(process.cwd(), "scripts/sowell/engine.py"), "utf8");
     expect(engine).toContain("init_count += 1");
     expect(engine).toContain("refusing to drop text");
-    // Drew renders at its own native speed, and 1.0 never means 0.88 twice.
+    // Drew renders at its own native speed, and 1.0 is applied once.
     expect(engine).toContain("kokoro_speed = drew_speed(speed)");
   });
 

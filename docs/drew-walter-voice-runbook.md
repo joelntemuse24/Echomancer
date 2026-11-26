@@ -164,13 +164,14 @@ a request that names no voice is still Drew and the job route returns 503
 `DREW_NOT_CONFIGURED`, so nothing is stored pointing at an endpoint that
 cannot speak.
 
-## Speed: 0.88 is Drew's native 1x
+## Speed: 1.0 is Drew's native 1x
 
-Drew at Kokoro speed **0.88** is real Andrew's natural pace. That is applied
+Drew at Kokoro speed **1.0** is real Andrew's natural pace. Joel picked it
+by ear; the pace study also put 1.0 closest to Edge Andrew. That is applied
 **once**, in the container:
 
 ```
-request speed (app units, 1.0 = natural)  ×  0.88  =  Kokoro speed
+request speed (app units, 1.0 = natural)  ×  1.0  =  Kokoro speed
 ```
 
 - `scripts/sowell/drew.py` → `drew_speed()` is that multiply. It clamps to
@@ -183,13 +184,13 @@ request speed (app units, 1.0 = natural)  ×  0.88  =  Kokoro speed
   skipped for `provider: "drew"` exactly as it is for Paradee. That is what
   keeps Drew out of the drift that walked later Andrew sections down to ~0.85.
 
-Do **not** apply 0.88 in TypeScript as well. `drewKokoroSpeed()` in
+Do **not** apply the native speed in TypeScript as well. `drewKokoroSpeed()` in
 `src/lib/tts/drew-voice.ts` exists so the mapping can be tested and documented;
 the request path does not use it.
 
 ## Cache
 
-Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-v2`. Andrew's
+Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-v3`. Andrew's
 Edge takes stay under the Edge key and are never replayed as Drew. Bump
 `DREW_WEIGHTS_ID` in `src/lib/tts/drew-voice.ts` when the volume gets a
 different checkpoint — that is a different model, so its audio must not be
@@ -200,7 +201,7 @@ the variant moves with `DREW_FIXED_STYLE_INDEX`.
 `DREW_PROSODY_RULES` is off unless set. Off, the key above is unchanged and
 the request body has no `prosody` field. On (`1`, `true`, `on`, or `yes`),
 `drewCacheVariant` appends `-prosodyG` and the body is `{ prosody: "G" }`.
-That suffix is the recipe, not a new checkpoint: row 300 and speed 0.88
+That suffix is the recipe, not a new checkpoint: row 300 and speed 1.0
 stay. Bump the suffix in `scripts/sowell/prosody_rules.py`
 (`PROSODY_G_CACHE_SUFFIX`) and `src/lib/tts/drew-voice.ts`
 (`DREW_PROSODY_G_SUFFIX`) together if the G constants change. Do not put
@@ -236,6 +237,8 @@ wh-questions) −4.72 st to −2.23 st. The yes/no questions moved from about
 −5 st to −1 st, and the wh-question stayed at −4.6 st. Peaks were 0.42,
 nothing clipped, and there were no octave jumps. Two unruled renders of the
 same text differ by RMS 0.007; unruled against ruled differs by RMS 0.08.
+Those timings are the 0.88 run. The default is now Kokoro 1.0, so the same
+passage is shorter and this wall time does not describe the current speed.
 Kokoro on this CPU is not bitwise stable even with the flag off, and the
 flag-off path does not install the hook. No Andrew reference wav was in the
 tree, so the correlation was not recomputed. The row-200 A/B's G was spread
@@ -272,13 +275,14 @@ about +2.4 dB bright. `scripts/sowell/choose_fixed_style.py` is the measurement.
 ## Preview
 
 The committed sample is **`public/voice-previews/drew.mp3`**: `PREVIEW_TEXT`
-rendered with Drew at app speed 1.0 (Kokoro 0.88, 24 kHz mono, pinned style
+rendered with Drew at app speed 1.0 (Kokoro 0.88, the speed in force when
+the file was recorded, 24 kHz mono, pinned style
 row 300), then mastered exactly like a book section with
 `scripts/previews/master-preview.ts` (podcast chain, voice curve, loudness to
 the book target, the short-clip gain under 3 s) on ffmpeg n8.1.3. The result is
 the same 44.1 kHz mono 128 kbps MP3 a section is stored as, about −16.6 LUFS;
 do not re-encode it. `"drew"` is in `COMMITTED_PREVIEW_IDS`. Re-record it when
-`PREVIEW_TEXT`, the volume checkpoint, `DREW_FIXED_STYLE_INDEX`, prosody G
+`PREVIEW_TEXT`, the volume checkpoint, `DREW_FIXED_STYLE_INDEX`, `DREW_NATIVE_KOKORO_SPEED`, prosody G
 being turned on, or the section mastering chain changes:
 
 ```bash
@@ -309,7 +313,7 @@ Use a short original note, not a customer book.
 3. Make a one-page audiobook with Drew. Confirm the raw object is WAV from this
    provider and the section cache key contains `drew-kokoro82m-ft-stageA`.
 4. Confirm two paragraphs of a Drew section come back at the pace you expect —
-   not slower than Andrew. A double-applied 0.88 is the failure to listen for.
+   not slower than Andrew. A double-applied native speed is the failure to listen for.
 5. Choose Walter: the card reads "Walter", and a book made with it still
    resolves `catalogVoiceId: "sowell"`.
 6. Open a book already made with Andrew: it plays its stored audio and is not
