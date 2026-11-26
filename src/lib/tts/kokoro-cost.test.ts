@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CPU_SCALEDOWN_DEFAULT_S } from "@/lib/capacity/cpu-warm-keepalive";
 import {
   cpuAppUsdPerSecond,
   kokoroLanePlan,
@@ -45,10 +46,11 @@ describe("kokoro cost model", () => {
   it("prices five CPU idle tails at the audit's scaledown", () => {
     // Extract, a few master containers, and concat. ~$0.05 at 300s.
     const before = modelCpuIdleTails(5, 300);
-    const after = modelCpuIdleTails(5, 45);
+    const after = modelCpuIdleTails(5, CPU_SCALEDOWN_DEFAULT_S);
+    expect(CPU_SCALEDOWN_DEFAULT_S).toBe(10);
     expect(before.usd).toBeGreaterThan(0.045);
     expect(before.usd).toBeLessThan(0.06);
-    expect(after.usd).toBeCloseTo(before.usd * (45 / 300), 6);
+    expect(after.usd).toBeCloseTo(before.usd * (CPU_SCALEDOWN_DEFAULT_S / 300), 6);
     expect(cpuAppUsdPerSecond()).toBeGreaterThan(0);
   });
 });
