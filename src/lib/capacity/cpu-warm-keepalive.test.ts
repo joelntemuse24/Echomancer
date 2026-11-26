@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CPU_WARM_HOLD_MS,
+  __keepaliveTimerCountForTest,
   cpuWarmKeepaliveDelays,
   cpuWarmKeepaliveEnabled,
   resetCpuWarmKeepalive,
@@ -50,7 +51,7 @@ describe("cpu warm keepalive timers", () => {
       startCpuWarmKeepalive(async () => void posts++, env, Date.now());
       await vi.advanceTimersByTimeAsync(CPU_WARM_HOLD_MS + 1_000);
       expect(posts).toBeGreaterThan(1);
-      expect(vi.getTimerCount()).toBe(0);
+      expect(__keepaliveTimerCountForTest()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

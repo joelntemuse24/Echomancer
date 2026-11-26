@@ -101,3 +101,8 @@ export function resetCpuWarmKeepalive(): void {
   for (const timer of timers) clearTimeout(timer);
   timers.clear();
 }
+
+/** How many timers the module set still holds. Tests only. */
+export function __keepaliveTimerCountForTest(): number {
+  return timers.size;
+}
