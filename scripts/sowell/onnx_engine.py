@@ -130,6 +130,11 @@ def _session(path: Path):
     # difference between sizing the container for four peaks or for one.
     # Measured on the 4-section bench: arena ON was faster (46 s vs 62 s) AND lower peak (1.5 vs 2.0 GB, malloc fragmentation without it), so it stays on; KOKORO_ONNX_ARENA=0 turns it off.
     options.enable_cpu_mem_arena = os.environ.get("KOKORO_ONNX_ARENA", "1") != "0"
+    # Measured on Modal with 4 concurrent Drew sections: mem pattern off and
+    # the arena growing by the request (not the next power of two) dropped
+    # the container peak from 5.9 GB to 5.0 GB. 1 is kSameAsRequested.
+    options.enable_mem_pattern = False
+    options.add_session_config_entry("session.arena_extend_strategy", "1")
     return ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
 
 

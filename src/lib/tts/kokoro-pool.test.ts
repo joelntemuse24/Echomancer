@@ -545,19 +545,34 @@ describe("audio-sized Kokoro lanes", () => {
     expect(kokoroStreamsPerContainer({ KOKORO_STREAMS_PER_CONTAINER: "99" } as NodeJS.ProcessEnv)).toBe(8);
   });
 
-  it("sizes a 16-minute book at 4 containers, then drops idle lanes", () => {
-    // 16 minutes of audio at 1000 characters a minute is 16 calls.
-    expect(kokoroAudioLaneCap(16_000, 4)).toBe(16);
+  it("sizes a 16-minute book at 12 containers and 48 calls", () => {
+    // 16 minutes is 960 s. One container per 80 s is 12 containers, 48 calls.
+    expect(kokoroAudioLaneCap(16_000, 4)).toBe(48);
+    expect(kokoroAudioLaneCap(16_000, 1)).toBe(12);
+    expect(kokoroStreamsPerContainer({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toBe(4);
     expect(
       planKokoroBookLanes({
-        configured: 16,
-        fleet: 16,
+        configured: 64,
+        fleet: 64,
         activeBooks: 1,
-        remainingSections: 25,
-        remainingChars: 15_700,
+        remainingSections: 48,
+        remainingChars: 16_000,
         streamsPerContainer: 4,
       })
-    ).toBe(13);
+    ).toBe(48);
+  });
+
+  it("drops idle ONNX lanes when the section count is past the audio cap", () => {
+    expect(
+      planKokoroBookLanes({
+        configured: 64,
+        fleet: 64,
+        activeBooks: 1,
+        remainingSections: 200,
+        remainingChars: 16_000,
+        streamsPerContainer: 4,
+      })
+    ).toBe(40);
   });
 
   it("does not cap lanes when the torch path leaves streams unset", () => {

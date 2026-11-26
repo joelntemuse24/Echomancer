@@ -396,7 +396,7 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain("load_assets()");
     expect(worker).toContain("open_sessions()");
     expect(worker).toContain("ensure_drew()");
-    expect(worker).toContain("ONNX_MEMORY_MB_DEFAULT = 5120");
+    expect(worker).toContain("ONNX_MEMORY_MB_DEFAULT = 6144");
     expect(worker).toContain("load_drew()");
     expect(worker).toContain("DREW_UNAVAILABLE");
     expect(worker).toContain('raw_prosody == "G"');

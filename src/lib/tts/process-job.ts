@@ -83,6 +83,7 @@ import {
   modalCloneWarmWaitMs,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
+import { warmCpuForBookJoin } from "@/lib/capacity/warm";
 import {
   shouldPrewarmBeforeOutline,
   shouldPrewarmModalNarration,
@@ -159,7 +160,7 @@ import { drewCacheVariant } from "@/lib/tts/drew-voice";
 import {
   SOWELL_CACHE_VARIANT,
   sowellBookLanes,
-  sowellFleetContainers,
+  sowellCallCap,
 } from "@/lib/tts/sowell-voice";
 import {
   kokoroStreamsPerContainer,
@@ -1747,6 +1748,16 @@ async function runClaimedTick(
     ? Math.min(maxChars, modalCloneColdSafeRowChars(), MODAL_CLONE_SECTION_CHARS_MAX)
     : maxChars;
   const kokoroBook = isKokoroCpuProvider(providerId);
+  if (kokoroBook) {
+    // The section masters in the Kokoro container. The join still runs on
+    // echomancer-cpu, and a cold container there is 8–12 s at the end.
+    void warmCpuForBookJoin().catch((err) => {
+      console.warn(
+        `[Job ${jobId}] cpu join warm failed`,
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
   /**
    * Kokoro CPU section sizing. Each section is one container call, so the
    * target is deliberately smaller than the 2,000-character request cap: a
@@ -1761,12 +1772,10 @@ async function runClaimedTick(
   /** Kokoro CPU voices share one Modal fleet. Two numbers matter and they are
    * different:
    *
-   * - `kokoroFleetCap` is the deployed `SOWELL_MAX_CONTAINERS` (16). It is the
-   *   hard cross-process cap on concurrent Kokoro calls, applied by the
-   *   `kokoro` provider-slot rows, so several books from different users can
-   *   never open more calls than the fleet can serve.
-   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`, 16 by
-   *   default, clamped to 16 and to the fleet).
+   * - `kokoroFleetCap` is the call cap: `SOWELL_MAX_CONTAINERS` on torch (16),
+   *   and containers × streams on ONNX (48 at 12 containers, 64 at 16). The
+   *   `kokoro` provider-slot rows use the same number.
+   * - `sowellCap` is what **one** book may ask for (`SOWELL_BOOK_LANES`).
    *
    * A book's lanes are then its fair share of the fleet among the Kokoro
    * books running right now, so one long book cannot hold every container for
@@ -1774,7 +1783,7 @@ async function runClaimedTick(
    * re-read before every claim, a book that starts mid-wave takes lanes as
    * another book's sections finish.
    */
-  const kokoroFleetCap = kokoroBook ? sowellFleetContainers() : 0;
+  const kokoroFleetCap = kokoroBook ? sowellCallCap() : 0;
   const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
     kokoroBook
@@ -1922,8 +1931,8 @@ async function runClaimedTick(
       activeBooks: others + 1,
       remainingSections: total,
       rank: kokoroRank,
-      // One container per ~5 min of audio when the ONNX image serves several
-      // calls per container (KOKORO_STREAMS_PER_CONTAINER).
+      // One container per ~80 s of audio when the ONNX image serves several
+      // calls per container. A 16-minute book is 12 containers.
       remainingChars: kokoroBookChars,
       streamsPerContainer: kokoroStreamsPerContainer(),
     });

@@ -48,6 +48,11 @@ export const MIN_SECTION_CHARS = 1500;
  * {@link KOKORO_CPU_SECTION_CHARS_MAX}.
  */
 export const KOKORO_CPU_SECTION_CHARS_DEFAULT = 700;
+/**
+ * ONNX section target. A 16-minute Drew book at about 315–350 characters
+ * fills 12 containers and matches today's torch speech time. Torch keeps 700.
+ */
+export const KOKORO_CPU_SECTION_CHARS_ONNX_DEFAULT = 350;
 export const KOKORO_CPU_SECTION_CHARS_MIN = 300;
 export const KOKORO_CPU_SECTION_CHARS_MAX = 2000;
 /** Absolute per-request ceiling in the Modal container (`MAX_CHARS`). */
@@ -73,10 +78,12 @@ export function kokoroCpuSectionChars(
   env: NodeJS.ProcessEnv = process.env
 ): number {
   const raw = env.KOKORO_CPU_SECTION_CHARS?.trim();
-  const parsed = raw ? Number(raw) : KOKORO_CPU_SECTION_CHARS_DEFAULT;
-  const n = Number.isFinite(parsed)
-    ? Math.floor(parsed)
-    : KOKORO_CPU_SECTION_CHARS_DEFAULT;
+  const fallback =
+    (env.KOKORO_RUNTIME ?? "").trim().toLowerCase() === "onnx"
+      ? KOKORO_CPU_SECTION_CHARS_ONNX_DEFAULT
+      : KOKORO_CPU_SECTION_CHARS_DEFAULT;
+  const parsed = raw ? Number(raw) : fallback;
+  const n = Number.isFinite(parsed) ? Math.floor(parsed) : fallback;
   return Math.min(
     KOKORO_CPU_SECTION_CHARS_MAX,
     Math.max(KOKORO_CPU_SECTION_CHARS_MIN, n)

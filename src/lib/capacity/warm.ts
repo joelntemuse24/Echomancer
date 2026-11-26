@@ -315,3 +315,33 @@ export async function warmSharedCapacity(input: {
   }
   return { pools, posted };
 }
+
+/**
+ * Wake `echomancer-cpu` when a Kokoro book starts, so the final join does
+ * not pay a cold boot. The claim is the same hold as every other CPU warm,
+ * and the follow-up posts are the existing keepalive. A second call inside
+ * the hold does not POST and does not start another timer.
+ */
+export async function warmCpuForBookJoin(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: typeof fetch = fetch,
+  now = Date.now()
+): Promise<boolean> {
+  if (!warmTarget("cpu", env)) return false;
+  let claim: { claimed: boolean; startedAt: number };
+  try {
+    claim = await claimWarmPool("cpu", now);
+  } catch (err) {
+    console.error("[capacity] cpu join warm claim failed", err);
+    return false;
+  }
+  if (!claim.claimed) return false;
+  const result = await postWarm("cpu", env, fetchImpl);
+  if (result !== "ready") {
+    await releaseWarmPool("cpu", claim.startedAt).catch(() => undefined);
+    return false;
+  }
+  const { startCpuWarmKeepalive } = await import("@/lib/capacity/cpu-warm-keepalive");
+  startCpuWarmKeepalive(() => postWarm("cpu", env, fetchImpl), env, now);
+  return true;
+}

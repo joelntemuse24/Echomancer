@@ -7,7 +7,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
 - ONNX fp32, with 4 concurrent calls × 1 thread per container (cpu=2).
 - Memory sized to the measured peak.
 - Mastering inside the Kokoro container, so there is no `echomancer-cpu` hop for Kokoro sections. The book join stays where it is.
-- Lanes sized at about 1 container per 5 minutes of audio.
+- Lanes sized at about 1 container per 80 seconds of audio on ONNX.
 - Keep the torch fallback flag. The image is provider-agnostic.
 - Quality gate: WER not worse, no artifacts or clipping, and it must match the ONNX Drew sample Joel approved (`drew_onnx32_4x1_s1`: a single-file export with **no prosody G**). Joel said that sample sounded better than prod. **Do not** do the two-graph split to restore G.
 - Drew's native Kokoro speed is **1.0** (Joel, by ear). Style row 300 stays.
@@ -29,12 +29,12 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
 - Providers `sowell`, `drew`, `george` and `heart` send `master` only for one-call sections and return `SynthesizeResult.mastered`.
   - `process-job.ts` passes `premastered` to `commitSectionAudio`.
   - `section-publish.ts` publishes it straight to `sections/NNNN.mp3` (the raw WAV is still kept under `raw/`) when the chain is podcast, no QA is deferred, and the audio isn't silent. Otherwise the old CPU task runs.
-- `kokoro-pool.ts`: `kokoroStreamsPerContainer()` (`KOKORO_STREAMS_PER_CONTAINER`, unset = old behaviour) and `kokoroAudioLaneCap()`. Lanes are capped at ceil(chars / 1000 / 5) containers × streams, so the 16-minute book gets 4 containers and 16 calls. `planKokoroBookLanes` takes `remainingChars` and `streamsPerContainer`.
+- `kokoro-pool.ts`: `kokoroStreamsPerContainer()` (`KOKORO_STREAMS_PER_CONTAINER`, unset and not ONNX = old behaviour) and `kokoroAudioLaneCap()`. ONNX lanes are one container per 80 s of audio, so the 16-minute book gets 12 containers and 48 calls. `planKokoroBookLanes` takes `remainingChars` and `streamsPerContainer`.
 - `modal/sowell_worker.py`:
   - `KOKORO_RUNTIME` (deploy-time `torch` default | `onnx` opt-in, baked into the container env).
   - `@modal.concurrent(max_inputs=KOKORO_STREAMS)` with a `BoundedSemaphore` gate.
-  - `memory_mb()` (ONNX default 5120 until measured; torch stays at 6144). A plain deploy is torch.
-  - `max_containers` = ceil(calls / streams).
+  - `memory_mb()` (ONNX default 6144, measured 5.0–5.9 GB; torch stays at 6144). A plain deploy is torch. Modal `memory=` is a request, not an OOM guard.
+  - `max_containers` counts containers (default 16). ONNX is 4 calls each, so 48–64 calls.
   - Prosody G is refused on ONNX with a 400. The prod worker default `DREW_PROSODY_RULES` is off, so prod doesn't send G.
   - Optional `master` gives a bundle response; if mastering fails, it returns a plain WAV with `x-kokoro-master-error`.
   - A new `export_drew_onnx` function (`modal run modal/sowell_worker.py::export_drew_onnx`) writes into the andrew-distill volume. It has **not been run against the prod volume**.
@@ -48,7 +48,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
 
 ## Left to do
 1. Redeploy the throwaway test app and smoke-test Drew + master. The first smoke returned 500 because of `pack.py`'s top-level `import torch`. That is fixed in this branch but not re-verified on Modal. Check Walter, George and Heart as well.
-2. Check that a restore works after the plain enter creates the ORT sessions (they are not inside the memory snapshot), and measure the **container peak RAM** with 4 concurrent Drew calls. Then set `ONNX_MEMORY_MB` (the 5120 default is headroom, not a measurement; see the local numbers below).
+2. Four concurrent Drew sections peaked at 5.9 GB, 5.0 GB with mem-pattern off and arena `kSameAsRequested`. The ONNX default is 6144 MB. Modal `memory=` does not stop an OOM above that.
 3. Run the 16-minute-book measurement with the harness pattern from PR 331's test (25 sections, Christmas Carol stave 1, 15.7k chars, Drew):
    - 13–16 calls against the ONNX test app, with master in the request.
    - The concat still runs on the CPU app.
@@ -72,7 +72,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
   - 4 concurrent requests in one process (shared session): 115.9 s of audio in 19.2 s, maxrss **2.64 GB**. torch was not imported.
   - Adding Drew's graph should add about 0.35 GB, so the estimated 4-stream container peak is about 3–3.5 GB. **Measure it.**
 - Mastering parity: Python and TS produce byte-identical MP3s on both paths.
-- The Modal image build (CPU torch, ORT, stock export) succeeded. The Drew export ran on Modal in a throwaway app. The output went to the **test volume `echomancer-onnx-test331`** (`/drew`), not to andrew-distill.
+- The Modal image build (CPU torch, ORT, stock export) succeeded. The Drew export ran on Modal in a throwaway app. The output went to the **test volume `echomancer-onnx-test331`** at volume path `/drew`. The volume mounts at `/andrew-distill`, so the container path is `/andrew-distill/drew`. It was not written to the production volume.
 
 ## Drew speed study (Joel's question about 0.88)
 I used 28 real Edge Andrew clips (623 words) from `andrew-distill` `/eval/edge_andrew_rate0` and `/dataset_edge`, and rendered Drew (ONNX, fixed row 300) on the same texts.
@@ -96,8 +96,8 @@ Earlier ONNX/torch A/B samples are on the operator box. The prod vs new A/B for 
 
 ## Known problems / risks
 - `pack.py` torch import: fixed, but not re-verified on Modal.
-- Memory snapshot plus ORT sessions created in `@modal.enter(snap=True)` is untested.
-- `ONNX_MEMORY_MB=5120` is the unmeasured safe default, not a Modal peak.
+- ORT sessions are created in the plain enter, after restore. A live restore on Modal is still unmeasured here.
+- `ONNX_MEMORY_MB=6144` is the measured default (peak 5.0–5.9 GB). Modal `memory=` is a request, not an OOM guard.
 - G2P runs under one lock across the 4 streams. That is about 0.2% of section time, so it should be fine.
 - The Drew ONNX export must exist before an ONNX deploy, or Drew (the default narrator) returns 503. There is no automatic fallback to torch inside the ONNX process, because torch is blocked there.
 - `KOKORO_STREAMS_PER_CONTAINER` on the worker must match the deploy (4 on ONNX). With the torch fallback deploy, unset it.
@@ -105,5 +105,5 @@ Earlier ONNX/torch A/B samples are on the operator box. The prod vs new A/B for 
 - A blob-download stall from Modal function results (>~10 MB) hit again. Write outputs to a test volume and use `modal volume get`.
 - The throwaway Modal resources are left in place: the secret `echomancer-sowell-onnxtest331` and the volume `echomancer-onnx-test331` (it holds Drew's ONNX export, which is private). The apps were permanently stopped (`modal app stop`), so they cannot be called again. Delete the secret and volume once they're no longer needed.
 - This checkout does not contain `voices/sowell/am_sowell_avg.pt` (gitignored). A new image build fails at that `COPY`. The stopped test app cannot be used to extract the pack.
-- The test-volume export at `/drew` matches the source checkpoint (26 Nov 2026): kmodel `6ebdc982990b45aacf6113525fc659d2f71fb9cebd11c1f9386876e3b3792371`, voice `e821f9c3553dbcb1e50f1e8c78d4ddad57e66f9f3cbe148b0e48884e5e4f93b0`, style index 300. Do not re-export until those source hashes change. The comparison was a read of `andrew-distill`; nothing was written there.
+- The test-volume export matches the source checkpoint (26 Nov 2026): kmodel `6ebdc982990b45aacf6113525fc659d2f71fb9cebd11c1f9386876e3b3792371`, voice `e821f9c3553dbcb1e50f1e8c78d4ddad57e66f9f3cbe148b0e48884e5e4f93b0`, style index 300. On the volume the directory is `/drew`. In the container, because the volume mounts at `/andrew-distill`, that is `/andrew-distill/drew`. `DREW_ONNX_DIR=/drew` does not see it. Do not re-export until those source hashes change. The comparison was a read of `andrew-distill`; nothing was written there.
 - Modal spend so far this phase: Drew export plus 3 render jobs plus 2 short deploys, roughly $0.10–0.15 (estimated, not checked against billing).

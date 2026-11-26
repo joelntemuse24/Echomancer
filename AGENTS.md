@@ -422,16 +422,18 @@ enter after restore. A snapshot's cold-start saving is not measured until
 the app is redeployed. The budget is re-read
 before every claim (`laneBudget`), so a book that starts mid-wave takes lanes
 as another book's sections finish, and a running book shrinks to its new
-share. The `kokoro` provider-slot rows are the hard cross-process cap, so
-total concurrent Kokoro calls never exceed `SOWELL_MAX_CONTAINERS` even if a
-budget read is stale; a 429 from a busy container is retried with backoff,
+share. The `kokoro` provider-slot rows are the hard cross-process cap. On torch
+that cap is `SOWELL_MAX_CONTAINERS` (one call per container). On ONNX
+(`KOKORO_RUNTIME=onnx`) each container serves 4 calls, so the cap is
+containers × 4: 48 at 12 containers and 64 at 16. A 429 from a busy container is retried with backoff,
 never failed. The 16-lane / 5 s-idle default is measured: on a 15.7k-char
 text, 16 lanes x 700-char sections finished in 47 s against 74 s for 6 lanes
 x 1.4k, and the idle tail dominated cost. A Kokoro warm is held for 25 s
 (`KOKORO_WARM_HOLD_MS`), about a 20 s boot plus the 5 s idle.
 
-Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700**, clamped
-300..2000) with a 400-character opening and a 550-character second section;
+Kokoro-CPU books pack at `KOKORO_CPU_SECTION_CHARS` (default **700** on torch,
+**350** when `KOKORO_RUNTIME=onnx`, clamped 300..2000) with a 400-character
+opening and a 550-character second section, each clamped to the target;
 one section is one container call, so the smaller target shortens the tail.
 The container still refuses over 2,000 characters and splits at 510 phonemes
 internally. Other engines keep their own packing. `scripts/sowell/split_for_loadtest.ts`

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { formatSowellRequestLog, readSowellTimingHeaders } from "./sowell-timing";
 import {
   sowellBookLanes,
+  sowellCallCap,
   sowellFleetContainers,
   SOWELL_FLEET_CONTAINERS_DEFAULT,
   SOWELL_IN_FLIGHT,
   SOWELL_LANE_HARD_CEILING,
+  SOWELL_ONNX_CALL_CEILING,
 } from "./sowell-voice";
 
 describe("sowell lanes", () => {
@@ -63,6 +65,25 @@ describe("sowell lanes", () => {
     expect(
       sowellFleetContainers({ SOWELL_MAX_CONTAINERS: "999" } as NodeJS.ProcessEnv)
     ).toBe(16);
+  });
+
+  it("raises the ONNX call ceiling to containers times four streams", () => {
+    const onnx = { KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv;
+    expect(sowellFleetContainers(onnx)).toBe(16);
+    expect(sowellCallCap(onnx)).toBe(SOWELL_ONNX_CALL_CEILING);
+    expect(sowellBookLanes(onnx)).toBe(64);
+    expect(
+      sowellCallCap({ KOKORO_RUNTIME: "onnx", SOWELL_MAX_CONTAINERS: "12" } as NodeJS.ProcessEnv)
+    ).toBe(48);
+    expect(
+      sowellBookLanes({
+        KOKORO_RUNTIME: "onnx",
+        SOWELL_MAX_CONTAINERS: "12",
+        SOWELL_BOOK_LANES: "100",
+      } as NodeJS.ProcessEnv)
+    ).toBe(48);
+    expect(sowellCallCap({} as NodeJS.ProcessEnv)).toBe(16);
+    expect(sowellCallCap({ KOKORO_RUNTIME: "torch" } as NodeJS.ProcessEnv)).toBe(16);
   });
 });
 

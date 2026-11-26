@@ -248,8 +248,11 @@ export function lanesForSameWaves(sections: number, quota: number): number {
   return Math.max(1, Math.min(cap, Math.ceil(count / waves)));
 }
 
-/** Audio minutes one container is sized for (one ONNX container per 5 min). */
-export const KOKORO_AUDIO_MINUTES_PER_CONTAINER = 5;
+/**
+ * Audio one ONNX container is sized for. A 16-minute book is 12 containers
+ * (960 s / 80 s). The old 5-minute size left that book on 4 containers.
+ */
+export const KOKORO_AUDIO_SECONDS_PER_CONTAINER = 80;
 /** Characters of book text per minute of Kokoro audio (Drew ≈ 170-180 wpm). */
 export const KOKORO_CHARS_PER_AUDIO_MINUTE = 1000;
 
@@ -259,19 +262,25 @@ export const KOKORO_CHARS_PER_AUDIO_MINUTE = 1000;
  * audio", the torch-era behaviour. Clamped to 1..8.
  */
 export function kokoroStreamsPerContainer(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number(env.KOKORO_STREAMS_PER_CONTAINER?.trim() || 0);
-  if (!Number.isFinite(raw) || raw < 1) return 0;
-  return Math.min(8, Math.floor(raw));
+  const raw = env.KOKORO_STREAMS_PER_CONTAINER?.trim();
+  if (raw && raw !== "0") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1) return Math.min(8, Math.floor(parsed));
+  }
+  // ONNX is 4 streams even when the worker env only sets KOKORO_RUNTIME.
+  // Unset runtime stays the torch plan: no audio cap.
+  if ((env.KOKORO_RUNTIME ?? "").trim().toLowerCase() === "onnx") return 4;
+  return 0;
 }
 
 /**
  * Calls for `chars` of text: one container per
- * {@link KOKORO_AUDIO_MINUTES_PER_CONTAINER} minutes of audio, times the
- * calls each container serves. 16 min of audio → 4 containers → 16 calls.
+ * {@link KOKORO_AUDIO_SECONDS_PER_CONTAINER} of audio, times the calls each
+ * container serves. 16 min of audio → 12 containers → 48 calls at 4 streams.
  */
 export function kokoroAudioLaneCap(chars: number, streams: number): number {
-  const minutes = Math.max(0, chars) / KOKORO_CHARS_PER_AUDIO_MINUTE;
-  const containers = Math.max(1, Math.ceil(minutes / KOKORO_AUDIO_MINUTES_PER_CONTAINER));
+  const seconds = (Math.max(0, chars) / KOKORO_CHARS_PER_AUDIO_MINUTE) * 60;
+  const containers = Math.max(1, Math.ceil(seconds / KOKORO_AUDIO_SECONDS_PER_CONTAINER));
   return containers * Math.max(1, Math.floor(streams));
 }
 

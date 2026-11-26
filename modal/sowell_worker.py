@@ -7,8 +7,9 @@ Runtime (Nov 2026). ``KOKORO_RUNTIME`` is read at deploy time:
 * ``onnx``: ONNX Runtime fp32, no torch in the serving process. Set
   ``KOKORO_RUNTIME=onnx`` at deploy. One container serves ``KOKORO_STREAMS``
   (4) calls at once, one ORT thread each, on ``cpu=2`` (4 vCPU) and one
-  shared copy of the weights. Memory defaults to 5120 MB until a measured
-  peak replaces it (``ONNX_MEMORY_MB``). Drew's graph is exported once into
+  shared copy of the weights. Memory defaults to 6144 MB. The measured
+  peak with 4 concurrent Drew sections is 5.0–5.9 GB; Modal ``memory=`` is
+  a request, not an OOM guard (``ONNX_MEMORY_MB``). Drew's graph is exported once into
   his volume: ``modal run modal/sowell_worker.py::export_drew_onnx``.
   Prosody G is a torch hook and is refused here (the worker's default is
   off, ``DREW_PROSODY_RULES``).
@@ -140,10 +141,11 @@ def kokoro_streams(env: dict | None = None) -> int:
 STREAMS = kokoro_streams()
 #: Torch runtime memory: stock + Drew kmodels on the old image.
 TORCH_MEMORY_MB = 6144
-#: ONNX memory until a Modal measurement replaces it. 5120 is the runbook's
-#: measurement size: the local estimate was ~3–3.5 GB, and 3072 was tight
-#: enough to OOM before that measurement. Overridable at deploy.
-ONNX_MEMORY_MB_DEFAULT = 5120
+#: Measured peak with 4 concurrent Drew sections is 5.9 GB, 5.0 GB with
+#: ``enable_mem_pattern=False`` and arena ``kSameAsRequested``. 6144 is that
+#: peak plus headroom. Modal ``memory=`` is a scheduling request, not an OOM
+#: guard. Overridable at deploy with ``ONNX_MEMORY_MB``.
+ONNX_MEMORY_MB_DEFAULT = 6144
 
 
 def memory_mb(env: dict | None = None) -> int:
@@ -189,10 +191,10 @@ SCALEDOWN_DEFAULT = 5
 def max_containers(env: dict | None = None) -> int:
     """Deploy-time `max_containers`. Default 16, clamped to 1..16.
 
-    ``SOWELL_MAX_CONTAINERS`` is the fleet in *calls* (the worker's
-    ``SOWELL_MAX_CONTAINERS`` / provider-slot rows). On ONNX one container
-    serves ``KOKORO_STREAMS`` calls, so 16 calls are ceil(16 / 4) = 4
-    containers.
+    The number is containers, on both runtimes. ONNX serves
+    ``KOKORO_STREAMS`` (4) calls in each one, so 12 containers are 48 calls
+    and 16 containers are 64. Dividing the call cap by the stream count
+    left ONNX at 4 containers, which was slower than today's torch fleet.
     """
     env = env or os.environ
     raw = env.get("SOWELL_MAX_CONTAINERS", "")
@@ -200,8 +202,7 @@ def max_containers(env: dict | None = None) -> int:
         n = int(str(raw).strip())
     except (TypeError, ValueError):
         n = MAX_CONTAINERS_DEFAULT
-    calls = max(1, min(MAX_CONTAINERS_CEILING, n))
-    return -(-calls // kokoro_streams(env))
+    return max(1, min(MAX_CONTAINERS_CEILING, n))
 
 
 def scaledown_seconds(env: dict | None = None) -> int:
@@ -219,18 +220,36 @@ KOKORO_BUNDLE_CONTENT_TYPE = "application/x-echomancer-kokoro-bundle"
 
 
 def process_high_water_mb() -> float:
-    """Peak RSS of this process, in MiB. 0 when /proc is absent."""
+    """Peak RSS of this process, in MiB.
+
+    Modal's sandbox does not publish ``VmHWM`` in ``/proc/self/status``.
+    ``ru_maxrss`` is kilobytes on Linux, which is the image this runs in.
+    """
+    try:
+        import resource
+
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if rss_kb > 0:
+            return rss_kb / 1024
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         for line in Path("/proc/self/status").read_text().splitlines():
             if line.startswith("VmHWM:"):
-                return int(line.split()[1]) / 1024
+                kb = int(line.split()[1])
+                if kb > 0:
+                    return kb / 1024
     except (OSError, ValueError, IndexError):
         return 0.0
     return 0.0
 
 
 def cgroup_peak_mb() -> float | None:
-    """Container cgroup peak, in MiB. None when the file is not a byte count."""
+    """Container cgroup peak, in MiB.
+
+    The header is optional. Modal's sandbox has neither cgroup file, so the
+    fallback is this process's RSS peak. None only when that is also missing.
+    """
     for path in (
         "/sys/fs/cgroup/memory.peak",
         "/sys/fs/cgroup/memory/memory.max_usage_in_bytes",
@@ -239,9 +258,10 @@ def cgroup_peak_mb() -> float | None:
             raw = Path(path).read_text().strip()
         except OSError:
             continue
-        if raw.isdigit():
+        if raw.isdigit() and int(raw) > 0:
             return int(raw) / (1024 * 1024)
-    return None
+    rss = process_high_water_mb()
+    return rss if rss > 0 else None
 
 
 SOWELL_SECRET_NAME = os.environ.get("SOWELL_SECRET_NAME", "echomancer-sowell")

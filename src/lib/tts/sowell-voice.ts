@@ -38,16 +38,24 @@ export const SOWELL_PIECE_IN_FLIGHT = 2;
  * This is the cap on **one** book. The Modal fleet holds 16 containers, and
  * the `kokoro` provider-slot rows are the cross-process share of them, so
  * several books from different users cannot open more than sixteen concurrent
- * Kokoro calls between them. `SOWELL_BOOK_LANES` overrides this per process.
+ * Kokoro calls between them on torch. ONNX multiplies that by the streams
+ * in each container ({@link sowellCallCap}). `SOWELL_BOOK_LANES` overrides
+ * this per process.
  */
 export const SOWELL_IN_FLIGHT = 16;
 /**
- * Most lanes one book may ask for. One lane is one container call, and a
- * book can use the whole fleet when it is alone. The Modal integer `cpu` and
- * the memory ceiling do not change with lanes; this stays below the
- * 8-section claim ceiling the rest of the take-home path uses.
+ * Most calls one book may ask for on the torch fleet. One call is one
+ * container. ONNX serves four calls in each container, so its ceiling is
+ * {@link SOWELL_ONNX_CALL_CEILING}.
  */
 export const SOWELL_LANE_HARD_CEILING = 16;
+/** Calls one ONNX container serves when `KOKORO_STREAMS` is unset. */
+export const SOWELL_ONNX_STREAMS_DEFAULT = 4;
+/**
+ * Concurrent Kokoro calls on a full ONNX fleet: 16 containers × 4 streams.
+ * Twelve containers are 48. Torch stays at one call per container.
+ */
+export const SOWELL_ONNX_CALL_CEILING = 64;
 /**
  * Fleet-wide ceiling on concurrent Kokoro calls, shared by every worker
  * process. It is the deployed `max_containers`, so the fleet is not
@@ -70,20 +78,50 @@ export function sowellFleetContainers(
   return Math.min(SOWELL_FLEET_CONTAINERS_CEILING, Math.max(1, n));
 }
 
+/** True when this worker is pointed at the ONNX image. Unset is torch. */
+export function kokoroRuntimeIsOnnx(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.KOKORO_RUNTIME ?? "").trim().toLowerCase() === "onnx";
+}
+
 /**
- * Configured book lanes, clamped to the hard ceiling and to the fleet. Never
- * above what the Modal app can actually run: asking for a seventeenth lane on
- * a sixteen-container fleet would just take a 429.
+ * Calls one container serves. Torch is 1. ONNX is 4 unless
+ * `KOKORO_STREAMS_PER_CONTAINER` names another count in 1..8.
+ */
+export function sowellStreamsPerContainer(env: NodeJS.ProcessEnv = process.env): number {
+  if (!kokoroRuntimeIsOnnx(env)) return 1;
+  const raw = env.KOKORO_STREAMS_PER_CONTAINER?.trim();
+  const parsed = raw ? Number(raw) : SOWELL_ONNX_STREAMS_DEFAULT;
+  const n = Number.isFinite(parsed) ? Math.floor(parsed) : SOWELL_ONNX_STREAMS_DEFAULT;
+  if (n < 1) return SOWELL_ONNX_STREAMS_DEFAULT;
+  return Math.min(8, n);
+}
+
+/**
+ * Concurrent Kokoro calls the fleet can serve.
+ *
+ * Torch: one call per container, so the cap is the container count (16).
+ * ONNX: containers × streams, 48 at 12 containers and 64 at 16.
+ */
+export function sowellCallCap(env: NodeJS.ProcessEnv = process.env): number {
+  const containers = sowellFleetContainers(env);
+  if (!kokoroRuntimeIsOnnx(env)) return containers;
+  return Math.min(
+    SOWELL_ONNX_CALL_CEILING,
+    containers * sowellStreamsPerContainer(env)
+  );
+}
+
+/**
+ * Configured book lanes, clamped to the call cap. Torch never asks for more
+ * than one call per container. ONNX may ask for every stream in the fleet.
  */
 export function sowellBookLanes(env: NodeJS.ProcessEnv = process.env): number {
+  const cap = sowellCallCap(env);
   const raw = env.SOWELL_BOOK_LANES?.trim();
-  const parsed = raw ? Number(raw) : SOWELL_IN_FLIGHT;
-  const n = Number.isFinite(parsed) ? Math.floor(parsed) : SOWELL_IN_FLIGHT;
-  return Math.min(
-    SOWELL_LANE_HARD_CEILING,
-    sowellFleetContainers(env),
-    Math.max(1, n)
-  );
+  const fallback = kokoroRuntimeIsOnnx(env) ? cap : SOWELL_IN_FLIGHT;
+  const parsed = raw ? Number(raw) : fallback;
+  const n = Number.isFinite(parsed) ? Math.floor(parsed) : fallback;
+  return Math.min(cap, Math.max(1, n));
 }
 
 export function sowellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

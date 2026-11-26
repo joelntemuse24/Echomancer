@@ -314,7 +314,7 @@ describe("sowell voice", () => {
     // ONNX sizes memory to the measured peak. Torch stays at 6144 and one call.
     expect(source).toContain("memory=memory_mb()");
     expect(source).toContain("TORCH_MEMORY_MB = 6144");
-    expect(source).toContain("ONNX_MEMORY_MB_DEFAULT = 5120");
+    expect(source).toContain("ONNX_MEMORY_MB_DEFAULT = 6144");
     expect(source).toContain("max_inputs=STREAMS");
     expect(source).toContain("BoundedSemaphore");
     expect(source).toContain("timing_headers");
