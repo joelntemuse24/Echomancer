@@ -77,7 +77,10 @@ export function startCpuWarmKeepalive(
         const wait = started + delay - Date.now();
         if (wait > 0) {
           await new Promise((resolve) => {
-            const timer = setTimeout(resolve, wait);
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              resolve(undefined);
+            }, wait);
             timers.add(timer);
           });
         }
