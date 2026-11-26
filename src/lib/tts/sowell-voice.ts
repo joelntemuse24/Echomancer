@@ -9,13 +9,14 @@
  * to Walter. The customer-facing error strings say Walter for that reason.
  */
 
+import { KOKORO_PRONUNCIATION_SUFFIX } from "@/lib/tts/kokoro-pronunciation";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 
 export { SOWELL_CATALOG_VOICE_ID };
 export const SOWELL_PACK_SHA256 =
   "a9fa4422864e0048d035ead9ad6a304170f73aec409271903b05c9a789c7510d";
 /** Cache identity. The pack hash is in it so another file cannot replay. */
-export const SOWELL_CACHE_VARIANT = `sowell-kokoro82m-v1_0-${SOWELL_PACK_SHA256.slice(0, 12)}`;
+export const SOWELL_CACHE_VARIANT = `sowell-kokoro82m-v1_0-${SOWELL_PACK_SHA256.slice(0, 12)}${KOKORO_PRONUNCIATION_SUFFIX}`;
 /**
  * One HTTP call. Kokoro aims at 510 phonemes and can still emit 511.
  * That run is split so every phoneme is kept; a piece that would have to

@@ -164,7 +164,7 @@ describe("concatReadySegments soft joins", () => {
       return pcmToWav(pcm, { sampleRate });
     };
     const a = tone(8000);
-    const b = tone(0);
+    const b = tone(4000);
     await uploadFile(`audiobooks/${jobId}/sections`, "0000.wav", a, "audio/wav");
     await uploadFile(`audiobooks/${jobId}/sections`, "0001.wav", b, "audio/wav");
     const segments: JobSegment[] = [

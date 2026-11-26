@@ -164,14 +164,15 @@ a request that names no voice is still Drew and the job route returns 503
 `DREW_NOT_CONFIGURED`, so nothing is stored pointing at an endpoint that
 cannot speak.
 
-## Speed: 1.0 is Drew's native 1x
+## Speed: 0.88 is applied once
 
-Drew at Kokoro speed **1.0** is real Andrew's natural pace. Joel picked it
-by ear; the pace study also put 1.0 closest to Edge Andrew. That is applied
-**once**, in the container:
+Drew's natural pace is Kokoro speed **0.88**. The app sends 1.0. That is
+applied **once**, in the container. `DREW_APP_SPEED_MAX` stays 1.0 so the
+0.88 is not applied a second time. On the ONNX graph a two-minute passage
+is 116.4 s at Kokoro 1.0 and 123.1 s at 0.88, about 5–6% longer.
 
 ```
-request speed (app units, 1.0 = natural)  ×  1.0  =  Kokoro speed
+request speed (app units, 1.0 = natural)  ×  0.88  =  Kokoro speed
 ```
 
 - `scripts/sowell/drew.py` → `drew_speed()` is that multiply. It clamps to
@@ -188,12 +189,28 @@ Do **not** apply the native speed in TypeScript as well. `drewKokoroSpeed()` in
 `src/lib/tts/drew-voice.ts` exists so the mapping can be tested and documented;
 the request path does not use it.
 
+## Pronunciation
+
+`scripts/sowell/pronounce.py` runs on every Kokoro path (Drew, Walter, George,
+Esther; ONNX and torch) before misaki. It folds typographic quotes so a curly
+don't stays one word, splits a glued letter-number token (`CS183` → `CS 183`),
+and reads a roman outline heading at the start of a line (`I.`, `IV.`) as
+`One.`, `Four.`. A pronoun I in a sentence is left alone.
+
+`PRONUNCIATIONS` is written over misaki's `us_gold` after the lexicon loads, so
+those words win. To add a word, put a lowercase key and its IPA in that dict
+and bump `PRONUNCIATION_ID` in the same file together with
+`KOKORO_PRONUNCIATION_ID` in `src/lib/tts/kokoro-pronunciation.ts`. That suffix
+is on every Kokoro cache key, so old previews are not replayed.
+
 ## Cache
 
 Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-` plus the
-worker runtime and `speed1.000` (`torch` unless `KOKORO_RUNTIME=onnx`).
-The provider refuses a response whose `x-kokoro-speed` or
-`x-kokoro-runtime` is anything else, so the take is not cached. Andrew's
+worker runtime, `speed0.880`, and `-g2plex1` (`torch` unless `KOKORO_RUNTIME=onnx`).
+The provider refuses a response whose `x-kokoro-speed`,
+`x-kokoro-runtime`, or `x-kokoro-pronunciation` is anything else, so the
+take is not cached. Esther, George, and Walter use the same pronunciation
+header: a container that omits it is not stored under `-g2plex1`. Andrew's
 Edge takes stay under the Edge key and are never replayed as Drew. Bump
 `DREW_WEIGHTS_ID` in `src/lib/tts/drew-voice.ts` when the volume gets a
 different checkpoint — that is a different model, so its audio must not be
@@ -204,7 +221,7 @@ the variant moves with `DREW_FIXED_STYLE_INDEX`.
 `DREW_PROSODY_RULES` is off unless set. Off, the key above is unchanged and
 the request body has no `prosody` field. On (`1`, `true`, `on`, or `yes`),
 `drewCacheVariant` appends `-prosodyG` and the body is `{ prosody: "G" }`.
-That suffix is the recipe, not a new checkpoint: row 300 and speed 1.0
+That suffix is the recipe, not a new checkpoint: row 300 and Kokoro speed 0.88
 stay. Bump the suffix in `scripts/sowell/prosody_rules.py`
 (`PROSODY_G_CACHE_SUFFIX`) and `src/lib/tts/drew-voice.ts`
 (`DREW_PROSODY_G_SUFFIX`) together if the G constants change. Do not put
@@ -278,8 +295,8 @@ about +2.4 dB bright. `scripts/sowell/choose_fixed_style.py` is the measurement.
 ## Preview
 
 The committed sample is **`public/voice-previews/drew.mp3`**: `PREVIEW_TEXT`
-rendered with Drew at app speed 1.0 (Kokoro 0.88, the speed in force when
-the file was recorded, 24 kHz mono, pinned style
+rendered with Drew at app speed 1.0 (Kokoro 0.88, which is
+`DREW_NATIVE_KOKORO_SPEED`, 24 kHz mono, pinned style
 row 300), then mastered exactly like a book section with
 `scripts/previews/master-preview.ts` (podcast chain, voice curve, loudness to
 the book target, the short-clip gain under 3 s) on ffmpeg n8.1.3. The result is

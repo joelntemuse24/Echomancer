@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import * as sectionMaster from "./section-master";
 import { pcmToWav } from "./pcm-wav";
-import { crossfadePcm16Mono, trimPcm16EdgeSilence } from "./crossfade-audio";
+import {
+  crossfadePcm16Mono,
+  sectionEdgeKeepMs,
+  trimPcm16EdgeSilence,
+} from "./crossfade-audio";
 import { jobScratchDir } from "./job-scratch";
 import {
   MAX_EDGE_READ_SAMPLES,
@@ -28,8 +32,8 @@ const ENV = {
   TTS_MASTER_SKIP: "1",
 } as NodeJS.ProcessEnv;
 
-function tone(value: number, samples: number, leadSilence = 0): Buffer {
-  const pcm = Buffer.alloc((samples + leadSilence) * 2);
+function tone(value: number, samples: number, leadSilence = 0, tailSilence = 0): Buffer {
+  const pcm = Buffer.alloc((samples + leadSilence + tailSilence) * 2);
   for (let i = leadSilence; i < samples + leadSilence; i++) pcm.writeInt16LE(value, i * 2);
   return pcm;
 }
@@ -39,13 +43,17 @@ describe("disk joins stay on the edges", () => {
     const dir = path.join(ENV.ECHOMANCER_SCRATCH_DIR!, "joins");
     await mkdir(dir, { recursive: true });
     const rate = 44_100;
-    const left = trimPcm16EdgeSilence(tone(8000, rate, 2000), rate);
-    const right = trimPcm16EdgeSilence(tone(2000, rate, 1000), rate);
+    const joins = ["paragraph", "paragraph"] as const;
+    const edge = Math.round(rate * 0.4);
+    const leftRaw = tone(8000, rate, edge, edge);
+    const rightRaw = tone(2000, rate, edge, 0);
+    const left = trimPcm16EdgeSilence(leftRaw, rate, sectionEdgeKeepMs(0, 2, [...joins]));
+    const right = trimPcm16EdgeSilence(rightRaw, rate, sectionEdgeKeepMs(1, 2, [...joins]));
     const a = path.join(dir, "a.wav");
     const b = path.join(dir, "b.wav");
-    await writeFile(a, pcmToWav(tone(8000, rate, 2000), { sampleRate: rate }));
-    await writeFile(b, pcmToWav(tone(2000, rate, 1000), { sampleRate: rate }));
-    const planned = await planDiskJoins([a, b], ["paragraph", "paragraph"], 120);
+    await writeFile(a, pcmToWav(leftRaw, { sampleRate: rate }));
+    await writeFile(b, pcmToWav(rightRaw, { sampleRate: rate }));
+    const planned = await planDiskJoins([a, b], [...joins], 120);
     const mix = planned.pieces.find((piece) => piece.kind === "mix");
     expect(mix && mix.kind === "mix").toBe(true);
     if (!mix || mix.kind !== "mix") return;

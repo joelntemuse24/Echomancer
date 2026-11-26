@@ -11,6 +11,7 @@ import {
   parseKokoroBody,
 } from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
+import { kokoroPronunciationMismatch } from "@/lib/tts/kokoro-pronunciation";
 import type {
   SynthesizeInput,
   SynthesizeResult,
@@ -73,6 +74,8 @@ async function onePiece(
         "Heart endpoint did not confirm af_heart. The audio was not stored."
       );
     }
+    const pronunciation = kokoroPronunciationMismatch(res.headers);
+    if (pronunciation) throw new Error(pronunciation);
     const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
     const audio = take.wav;
     if (audio.length < 44) throw new Error("Heart returned empty audio");

@@ -38,12 +38,8 @@ import type { FrozenSection, JobSegment, SectionJoinKind } from "@/lib/tts/types
 import {
   ConcatAssembleError,
   concatPcm16MonoWithCrossfade,
-  clampCrossfadeMs,
-  crossfadePcm16Mono,
   ffmpegConcatAvailable,
   resolveConcatCrossfadeMs,
-  resolveJoinFadeMs,
-  trimPcm16EdgeSilence,
 } from "@/lib/tts/crossfade-audio";
 import {
   createWavHeader,
@@ -302,26 +298,12 @@ export async function remuxCompressedSections(
     pcmParts.push(Buffer.from(stripWavHeader(wav)));
   }
 
-  const defaultFade = clampCrossfadeMs(fadeMs);
-  const trimmed =
-    defaultFade > 0
-      ? pcmParts.map((part) => trimPcm16EdgeSilence(part, OUTPUT_SAMPLE_RATE))
-      : pcmParts;
-  let acc = trimmed[0]!;
-  for (let i = 1; i < trimmed.length; i++) {
-    const fade = resolveJoinFadeMs(joins[i], defaultFade);
-    if (fade.ms <= 0) {
-      acc = Buffer.concat([acc, trimmed[i]!]);
-    } else {
-      acc = crossfadePcm16Mono(
-        acc,
-        trimmed[i]!,
-        OUTPUT_SAMPLE_RATE,
-        fade.ms,
-        { clamp: fade.clamp }
-      );
-    }
-  }
+  const acc = concatPcm16MonoWithCrossfade(
+    pcmParts,
+    OUTPUT_SAMPLE_RATE,
+    fadeMs,
+    joins
+  );
 
   const wav = Buffer.concat([
     createWavHeader(acc.length, { sampleRate: OUTPUT_SAMPLE_RATE }),

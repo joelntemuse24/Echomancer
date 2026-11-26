@@ -1,11 +1,15 @@
 # Kokoro ONNX deploy
 
 CPU-only. This does not touch `echomancer-s2-clone` or a GPU. Drew's native
-Kokoro speed is **1.0**, applied once in `scripts/sowell/drew.py`
-(`DREW_NATIVE_KOKORO_SPEED`). Style row **300** stays. The take-home cache
-key is `drew-kokoro82m-ft-stageA-step00900-style300-<runtime>-speed1.000`.
+Kokoro speed is **0.88**, applied once in `scripts/sowell/drew.py`
+(`DREW_NATIVE_KOKORO_SPEED`). The app still sends 1.0. On this graph 0.88
+is about 5–6% longer than 1.0 (123.1 s versus 116.4 s on a two-minute
+passage). Style row **300** stays. The take-home cache
+key is `drew-kokoro82m-ft-stageA-step00900-style300-<runtime>-speed0.880-g2plex1`.
 The worker's `KOKORO_RUNTIME` picks `torch` or `onnx`. The provider stores
-the bytes only when `x-kokoro-speed` and `x-kokoro-runtime` match that key.
+the bytes only when `x-kokoro-speed`, `x-kokoro-runtime`, and
+`x-kokoro-pronunciation` match that key. Esther, George, and Walter
+require the pronunciation header the same way.
 A worker that ships before the image refuses the old 0.88 container instead
 of caching it, and a torch rollback does not replay an ONNX take. Prosody G
 stays off.
@@ -133,10 +137,9 @@ container count. Unset
 `KOKORO_CONTAINER_MASTER` on the worker and restart it. Torch reads the
 checkpoint from the volume; it does not need the ONNX export. Drew's cache
 key changes with the runtime, so ONNX sections are not replayed. New torch
-sections use Kokoro speed 1.0.
+sections use Kokoro speed 0.88.
 
 ## 6. Picker sample
 
-`public/voice-previews/drew.mp3` was recorded at Kokoro **0.88**. Re-record
-it at 1.0, style row 300, before customers hear the new pace in the picker.
-The file is not a 1.0 render.
+`public/voice-previews/drew.mp3` is Kokoro **0.88**, style row 300, which
+matches `DREW_NATIVE_KOKORO_SPEED`. Re-record it if that constant changes.

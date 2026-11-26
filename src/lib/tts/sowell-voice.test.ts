@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { resolveStockAdapter } from "@/lib/tts/providers";
 import { splitSowellText } from "@/lib/tts/providers/sowell";
+import { KOKORO_PRONUNCIATION_ID } from "@/lib/tts/kokoro-pronunciation";
 import { KOKORO_BUNDLE_CONTENT_TYPE } from "@/lib/tts/kokoro-master";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import { voicesForPath } from "@/lib/voice-path";
@@ -140,7 +141,10 @@ describe("sowell voice", () => {
       req.on("end", () => {
         body = Buffer.concat(chunks).toString("utf8");
         auth = req.headers.authorization || "";
-        res.writeHead(200, { "content-type": "audio/wav" });
+        res.writeHead(200, {
+          "content-type": "audio/wav",
+          "x-kokoro-pronunciation": KOKORO_PRONUNCIATION_ID,
+        });
         res.end(Buffer.alloc(1200, 1));
       });
     });
@@ -160,6 +164,27 @@ describe("sowell voice", () => {
       expect(sent.text.length).toBeLessThanOrEqual(SOWELL_MAX_CHARS);
       expect(sent.text).toContain("The harbor was quiet.");
       expect(auth).toBe("Bearer token");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("refuses audio that omitted the pronunciation id", async () => {
+    Object.assign(process.env, readyEnv);
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "audio/wav" });
+      res.end(Buffer.alloc(1200, 1));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    process.env.SOWELL_URL = `http://127.0.0.1:${port}`;
+    delete process.env.WORKER;
+    try {
+      const adapter = resolveStockAdapter({ provider: "sowell", catalogVoiceId: "sowell" });
+      await expect(
+        adapter.synthesize({ text: "The harbor was quiet.", voice: "am_sowell_avg" })
+      ).rejects.toThrow(/not stored/i);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -198,6 +223,7 @@ describe("sowell voice", () => {
           "content-type": KOKORO_BUNDLE_CONTENT_TYPE,
           "x-kokoro-mp3-bytes": String(mp3.length),
           "x-kokoro-wav-bytes": String(wav.length),
+          "x-kokoro-pronunciation": KOKORO_PRONUNCIATION_ID,
         });
         res.end(body);
       });
@@ -261,7 +287,10 @@ describe("sowell voice", () => {
           header.write("data", 36);
           header.writeUInt32LE(200, 40);
           const mark = Buffer.alloc(200, sent.text.length % 251);
-          res.writeHead(200, { "content-type": "audio/wav" });
+          res.writeHead(200, {
+            "content-type": "audio/wav",
+            "x-kokoro-pronunciation": KOKORO_PRONUNCIATION_ID,
+          });
           res.end(Buffer.concat([header, mark]));
         }, 80);
       });
@@ -335,7 +364,7 @@ describe("sowell voice", () => {
     expect(source).not.toContain("s2_clone");
     expect(source).not.toContain("S2C_");
     const drew = readFileSync(path.join(process.cwd(), "scripts/sowell/drew.py"), "utf8");
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_kmodel.pth");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_voice.pt");
     expect(drew).toContain("PACK_SHAPE = (510, 1, 256)");

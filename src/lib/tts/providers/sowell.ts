@@ -16,6 +16,7 @@ import {
   parseKokoroBody,
 } from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
+import { kokoroPronunciationMismatch } from "@/lib/tts/kokoro-pronunciation";
 import type {
   SynthesizeInput,
   SynthesizeResult,
@@ -149,6 +150,8 @@ async function onePiece(
       last = await res.text().catch(() => "");
       throw new Error(`Sowell TTS ${res.status}: ${last.slice(0, 300)}`);
     }
+    const pronunciation = kokoroPronunciationMismatch(res.headers);
+    if (pronunciation) throw new Error(pronunciation);
     const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
     const audio = take.wav;
     const bodyMs = Date.now() - sentAt - headerMs;

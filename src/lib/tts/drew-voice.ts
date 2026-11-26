@@ -6,10 +6,17 @@
  * The weights are private and are not in this repository. The Modal CPU app
  * reads them from the `andrew-distill` volume (see `modal/drew_worker.py`).
  *
- * **1.0 is Drew's native 1x.** Joel picked Kokoro speed 1.0 by ear; it is
- * also the closest match to real Andrew's pace. Request 1.0 renders at
- * Kokoro speed 1.0. Nothing else slows Drew down. Style row 300 is unchanged.
+ * **0.88 is Drew's native 1x.** The app sends 1.0 for natural pace and the
+ * container multiplies by {@link DREW_NATIVE_KOKORO_SPEED} once. On the ONNX
+ * graph that is only about 5–6% longer than Kokoro 1.0 (123.1 s versus
+ * 116.4 s on a two-minute passage). Do not also lower `DREW_APP_SPEED_MAX`:
+ * that would apply 0.88 twice. Style row 300 is unchanged.
  */
+
+import {
+  KOKORO_PRONUNCIATION_SUFFIX,
+  kokoroPronunciationMismatch,
+} from "@/lib/tts/kokoro-pronunciation";
 
 export const DREW_CATALOG_VOICE_ID = "drew";
 /** Provider-native id. The worker allowlists this one name only. */
@@ -19,7 +26,7 @@ export const DREW_PROVIDER_VOICE_ID = "drew";
  * Kokoro speed that is Drew's natural reading pace. The worker multiplies
  * the requested speed by this value; it is never applied twice.
  */
-export const DREW_NATIVE_KOKORO_SPEED = 1.0;
+export const DREW_NATIVE_KOKORO_SPEED = 0.88;
 /** Same clamp the worker applies after the multiply. */
 export const DREW_KOKORO_SPEED_MIN = 0.5;
 export const DREW_KOKORO_SPEED_MAX = 2.0;
@@ -68,10 +75,10 @@ export function drewRuntimeLabel(env: KokoroEnv = process.env): "onnx" | "torch"
  * Prosody G, when on, is appended by {@link drewCacheVariant}.
  */
 export function drewCacheIdentity(env: KokoroEnv = process.env): string {
-  return `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-${drewRuntimeLabel(env)}-speed${DREW_NATIVE_KOKORO_SPEED.toFixed(3)}`;
+  return `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-${drewRuntimeLabel(env)}-speed${DREW_NATIVE_KOKORO_SPEED.toFixed(3)}${KOKORO_PRONUNCIATION_SUFFIX}`;
 }
 
-/** Default key: torch, Kokoro speed 1.000. Tests and docs import this. */
+/** Default key: torch, Kokoro speed 0.880, pronunciation lexicon. Tests and docs import this. */
 export const DREW_CACHE_VARIANT = drewCacheIdentity({});
 /**
  * Suffix while variant G is on. Mirrors `PROSODY_G_CACHE_SUFFIX` in
@@ -98,8 +105,8 @@ export function drewCacheVariant(env: KokoroEnv = process.env): string {
 
 /**
  * Null when this response is the take the cache key names. A string is the
- * reason it must not be stored: the container's speed or runtime is not
- * the one this worker will look up later.
+ * reason it must not be stored: the container's speed, runtime, or
+ * pronunciation is not the one this worker will look up later.
  */
 export function drewTakeMismatch(
   headers: { get(name: string): string | null },
@@ -117,7 +124,7 @@ export function drewTakeMismatch(
   if (runtime !== expectedRuntime) {
     return `Drew endpoint runtime was ${runtime ?? "unknown"}, not ${expectedRuntime}. The audio was not stored.`;
   }
-  return null;
+  return kokoroPronunciationMismatch(headers);
 }
 
 /** The request field, or nothing. Omitting it is how the container stays stock. */
@@ -132,7 +139,7 @@ export const DREW_KMODEL_PATH = "/kokoro/retrain_v3/stageA/step00900_kmodel.pth"
 export const DREW_VOICE_PACK_PATH = "/kokoro/retrain_v3/stageA/step00900_voice.pt";
 
 /**
- * Kokoro speed for a requested app speed. 1.0 stays 1.0, and the result is
+ * Kokoro speed for a requested app speed. 1.0 becomes 0.88, and the result is
  * clamped to what the container accepts. The request path does not call
  * this; the container multiplies once.
  */

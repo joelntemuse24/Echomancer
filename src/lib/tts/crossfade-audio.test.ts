@@ -5,6 +5,7 @@ import {
   CROSSFADE_MS_MAX,
   CROSSFADE_MS_MIN,
   JOIN_SILENCE_KEEP_MS,
+  JOIN_SILENCE_THRESHOLD,
   MICRO_JOIN_FADE_MS,
   clampCrossfadeMs,
   concatPcm16MonoWithCrossfade,
@@ -107,7 +108,7 @@ describe("resolveJoinFadeMs", () => {
 describe("trimPcm16EdgeSilence", () => {
   it("keeps a short pad and does not eat the spoken samples", () => {
     const keep = Math.round((RATE * JOIN_SILENCE_KEEP_MS) / 1000);
-    const pad = Math.round((RATE * 200) / 1000);
+    const pad = Math.round((RATE * 500) / 1000);
     const body = constPcm(8000, RATE);
     const pcm = Buffer.concat([constPcm(0, pad), body, constPcm(0, pad)]);
     const trimmed = trimPcm16EdgeSilence(pcm, RATE);
@@ -123,10 +124,104 @@ describe("trimPcm16EdgeSilence", () => {
   });
 });
 
+function toneThenSilence(toneMs: number, silenceMs: number, amp = 8000): Buffer {
+  const tone = Math.round((RATE * toneMs) / 1000);
+  const silence = Math.round((RATE * silenceMs) / 1000);
+  const pcm = Buffer.alloc((tone + silence) * BYTES_PER_SAMPLE);
+  for (let i = 0; i < tone; i++) pcm.writeInt16LE(amp, i * BYTES_PER_SAMPLE);
+  return pcm;
+}
+
+function silenceThenTone(silenceMs: number, toneMs: number, amp = 8000): Buffer {
+  const tone = Math.round((RATE * toneMs) / 1000);
+  const silence = Math.round((RATE * silenceMs) / 1000);
+  const pcm = Buffer.alloc((silence + tone) * BYTES_PER_SAMPLE);
+  for (let i = 0; i < tone; i++) {
+    pcm.writeInt16LE(amp, (silence + i) * BYTES_PER_SAMPLE);
+  }
+  return pcm;
+}
+
+/** Quiet samples between the two tones, in milliseconds. */
+function joinGapMs(pcm: Buffer): number {
+  const samples = Math.floor(pcm.length / BYTES_PER_SAMPLE);
+  let seen = false;
+  let run = 0;
+  let best = 0;
+  for (let i = 0; i < samples; i++) {
+    const loud = Math.abs(pcm.readInt16LE(i * BYTES_PER_SAMPLE)) > JOIN_SILENCE_THRESHOLD;
+    if (loud) {
+      if (seen && run > best) best = run;
+      seen = true;
+      run = 0;
+    } else if (seen) {
+      run++;
+    }
+  }
+  return (best * 1000) / RATE;
+}
+
+describe("join pauses", () => {
+  it("keeps a sentence-sized gap at a mid-paragraph join", () => {
+    const joined = concatPcm16MonoWithCrossfade(
+      [toneThenSilence(250, 450), silenceThenTone(450, 250)],
+      RATE,
+      120,
+      ["mid-paragraph", "mid-paragraph"]
+    );
+    const gap = joinGapMs(joined);
+    // 225 ms kept on each edge, minus the 12 ms fade that sits in the silence.
+    expect(gap).toBeGreaterThan(390);
+    expect(gap).toBeLessThan(470);
+    expect(joined.readInt16LE(Math.round((RATE * 40) / 1000) * BYTES_PER_SAMPLE)).toBe(8000);
+  });
+
+  it("keeps a longer paragraph gap and does not fade the next word", () => {
+    const joined = concatPcm16MonoWithCrossfade(
+      [toneThenSilence(250, 450), silenceThenTone(450, 250, 9000)],
+      RATE,
+      140,
+      ["paragraph", "paragraph"]
+    );
+    const gap = joinGapMs(joined);
+    expect(gap).toBeGreaterThan(420);
+    expect(gap).toBeLessThan(520);
+    let at = -1;
+    for (let i = 0; i < joined.length / BYTES_PER_SAMPLE; i++) {
+      if (joined.readInt16LE(i * BYTES_PER_SAMPLE) === 9000) {
+        at = i;
+        break;
+      }
+    }
+    expect(at).toBeGreaterThan(0);
+    expect(joined.readInt16LE(at * BYTES_PER_SAMPLE)).toBe(9000);
+  });
+
+  it("does not run a paragraph fade into speech when the next section has no pause", () => {
+    const joined = concatPcm16MonoWithCrossfade(
+      [toneThenSilence(250, 450), silenceThenTone(0, 250, 9000)],
+      RATE,
+      140,
+      ["paragraph", "paragraph"]
+    );
+    const gap = joinGapMs(joined);
+    expect(gap).toBeGreaterThan(270);
+    expect(gap).toBeLessThan(340);
+    let at = -1;
+    for (let i = 0; i < joined.length / BYTES_PER_SAMPLE; i++) {
+      if (joined.readInt16LE(i * BYTES_PER_SAMPLE) === 9000) {
+        at = i;
+        break;
+      }
+    }
+    expect(joined.readInt16LE(at * BYTES_PER_SAMPLE)).toBe(9000);
+  });
+});
+
 describe("WAV helper round-trip", () => {
   it("crossfades PCM extracted from WAV headers", () => {
     const left = pcmToWav(constPcm(8000, RATE), { sampleRate: RATE });
-    const right = pcmToWav(constPcm(0, RATE), { sampleRate: RATE });
+    const right = pcmToWav(constPcm(4000, RATE), { sampleRate: RATE });
     const out = concatPcm16MonoWithCrossfade(
       [stripWavHeader(left), stripWavHeader(right)],
       RATE,

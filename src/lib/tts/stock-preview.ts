@@ -12,10 +12,9 @@ export const STOCK_PREVIEW_PUBLIC_DIR = "voice-previews";
  * Ids that actually have a committed file at `public/voice-previews/<id>.mp3`.
  *
  * Drew's take is `PREVIEW_TEXT` rendered with the stage A checkpoint
- * (`step00900_kmodel.pth` + `step00900_voice.pt`) at app speed 1.0. The
- * file on disk was recorded at Kokoro 0.88, style row 300, 24 kHz mono.
- * Re-record it at Kokoro 1.0 (`DREW_NATIVE_KOKORO_SPEED`) before that
- * speed is what customers hear in the picker.
+ * (`step00900_kmodel.pth` + `step00900_voice.pt`) at app speed 1.0.
+ * The file on disk is Kokoro 0.88, style row 300, 24 kHz mono, which is
+ * `DREW_NATIVE_KOKORO_SPEED`. Re-record it when that constant changes.
  *
  * Walter keeps the id `sowell`, so its file keeps the old name. Only the
  * listed label changed.

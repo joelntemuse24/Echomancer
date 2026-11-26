@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from phoneme_runs import PHONEME_CAP, Tokenizer, iter_phoneme_runs, words
+from pronounce import install_pronunciations, prepare_kokoro_text
 
 MAX_CHARS = 2000
 SAMPLE_RATE = 24_000
@@ -189,7 +190,9 @@ class OnnxEngine:
                 fallback = espeak.EspeakFallback(british=british)
             except Exception:  # same as KPipeline: OOD words are skipped
                 fallback = None
-            self._g2p[lang] = en.G2P(trf=False, british=british, fallback=fallback, unk="")
+            g2p = en.G2P(trf=False, british=british, fallback=fallback, unk="")
+            install_pronunciations(g2p)
+            self._g2p[lang] = g2p
         self._manifest = manifest
 
     def open_sessions(self) -> None:
@@ -263,7 +266,7 @@ class OnnxEngine:
 
     def speak(self, text: str, voice: str = SOWELL_VOICE_ID, speed: float = 1.0, prosody: str | None = None):
         started = time.perf_counter()
-        cleaned = " ".join(str(text).split())
+        cleaned = prepare_kokoro_text(text)
         if not cleaned:
             raise OnnxEngineError("empty text")
         if len(cleaned) > MAX_CHARS:

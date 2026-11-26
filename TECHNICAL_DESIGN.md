@@ -1312,12 +1312,16 @@ for that one recovery.
 
 Drew's Kokoro pack is pinned to tensor index 300 when the voice loads
 (`pin_style` in `scripts/sowell/style.py`). Infer still reads
-`pack[phoneme_count - 1]` and still receives Drew's 1.0 speed, applied
-once. The take-home cache variant is
-`drew-kokoro82m-ft-stageA-step00900-style300-torch-speed1.000` (or `onnx`
+`pack[phoneme_count - 1]` and still receives the app speed. The container
+multiplies by 0.88 once. The take-home cache variant is
+`drew-kokoro82m-ft-stageA-step00900-style300-torch-speed0.880-g2plex1` (or `onnx`
 when `KOKORO_RUNTIME=onnx`). The provider accepts the take only when
-`x-kokoro-speed` and `x-kokoro-runtime` match that key. `v2` was Kokoro
-speed 0.88 with the app speed still stored as 1.0. Deploy steps are
+`x-kokoro-speed` and `x-kokoro-runtime` match that key. The `g2plex1`
+suffix is the shared pronunciation lexicon (`scripts/sowell/pronounce.py`),
+checked before misaki `us_gold` on every Kokoro path. The container
+returns `x-kokoro-pronunciation` with that id. Drew, Esther, George, and
+Walter refuse the body when the header is missing or different, so an
+older image is not cached under the new key. Deploy steps are
 in `docs/kokoro-onnx-runbook.md`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`
@@ -2448,9 +2452,10 @@ order is always `0,1,2,3,4`.
 Production finalize (`src/lib/tts/stream-finalize.ts`) never holds the
 book. Each section is downloaded into `ECHOMANCER_SCRATCH_DIR/<jobId>`
 (default `os.tmpdir()/echomancer/<jobId>`), decoded to 44.1 kHz mono
-s16 WAV, then deleted. Edge silence (320 ms cap, 40 ms kept) and the
-equal-power crossfade (120 ms paragraph, 12 ms mid-paragraph) run on
-those edge windows only. ffmpeg's concat demuxer streams the bodies
+s16 WAV, then deleted. Edge silence (320 ms cap, 225 ms kept on a
+sentence join, 300 ms on a paragraph or chapter join) and the
+equal-power crossfade (120 ms paragraph, limited to the silence on both
+edges, 12 ms mid-paragraph) run on those edge windows only. ffmpeg's concat demuxer streams the bodies
 plus the tiny mix WAVs through the same podcast chain. `full.mp3` is
 uploaded with `uploadFileFromPath` (PutObject stream under 8 MB,
 multipart 8 MB parts above that). The scratch dir is removed in
