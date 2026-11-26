@@ -2136,7 +2136,7 @@ preserved and a section that is merely still rendering is not skipped.
 The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK,
 ceiling, remaining)` indexes starting at 0. Direct Fish uses the account
 fan-out (4, or 5 when idle) and ceiling 5, so `TTS_SECTIONS_PER_TICK=8` does
-not raise Fish past 5. A Modal clone's fan-out is `modalCloneLanes()` (code
+not raise Fish past 5. Kokoro lanes ignore `TTS_SECTIONS_PER_TICK`. They come from `sowellBookLanes` and the fleet cap; an explicit `sectionsPerTick` option still wins. A Modal clone's fan-out is `modalCloneLanes()` (code
 default 4, `MODAL_S2_SECTION_CONCURRENCY`, max 8). The tick claims toward
 `modalCloneBatchSize()` (code default 24), because one GPU call decodes every
 row together. Paradee uses `paradeeFanout()` (code default 3). Edge runs a
@@ -2210,7 +2210,7 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set per tick; with a tick deadline, the Edge/Google rolling pool keeps claiming until the deadline instead (no deadline keeps this budget) |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set per tick for Edge, Fish, and the other non-Kokoro providers. Kokoro lanes ignore it. With a tick deadline, the Edge/Google rolling pool keeps claiming until the deadline instead (no deadline keeps this budget) |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–16). Fish ignores it. Halves on 429/503. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock |
@@ -3346,7 +3346,11 @@ counted call is made:
 
 Budgets are enforced unless `REMOTE_ENFORCE_BUDGETS=0`; under Vitest they are
 off unless it is `1`. On a breach the book fails with "This book is over its
-remote-call budget." Remote time is the merged busy interval of a book's
+remote-call budget." A 404 or 5xx is recorded as `failure`, not `success`.
+A Modal workspace refusal throws `ModalWorkspaceDisabledError` (the same
+15-minute backoff as CPU and S2) and the reservation is zero, in memory
+and on the `started` row. A budget or in-flight refusal does not write the
+section `failed`. Remote time is the merged busy interval of a book's
 calls (`mergedIntervalMs`). The Stop button (`POST /api/jobs/[id]/cancel`) and
 `DELETE /api/jobs/[id]` call `stopBookRemotely` (`src/lib/remote/stop.ts`),
 which refuses new remote calls for that book in this process and asks the

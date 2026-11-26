@@ -36,6 +36,7 @@ import {
   lowestUnreadyIndex,
   parseSegmentMap,
   readyCount,
+  reviveUnspokenFailures,
 } from "@/lib/tts/section-index";
 import { narrationProgressPercent } from "@/lib/tts/narration-progress";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
@@ -291,8 +292,10 @@ export async function PATCH(
       );
     }
 
-    const segments = parseSegmentMap(
-      typeof job.segments_json === "string" ? job.segments_json : null
+    const segments = reviveUnspokenFailures(
+      parseSegmentMap(
+        typeof job.segments_json === "string" ? job.segments_json : null
+      )
     );
     const total =
       typeof job.total_sections === "number" && job.total_sections > 0
@@ -302,11 +305,12 @@ export async function PATCH(
     const done = readyCount(segments);
 
     // Resume from the lowest unready index. Ready section files stay put.
-    // Timings restart with the attempt: ETA measures throughput from the first
-    // section of this run, not from one finished days ago.
+    // A failed section with no audio is unattempted again, so Retry generates
+    // it. Timings restart with the attempt: ETA measures throughput from the
+    // first section of this run, not from one finished days ago.
     const requeued = await execute(
       `UPDATE jobs SET status = 'queued', progress = ?, current_section = ?,
-       next_section_index = ?, error_message = NULL,
+       next_section_index = ?, segments_json = ?, error_message = NULL,
        processing_started_at = NULL, processing_lease_token = NULL,
        lease_expires_at = NULL, audio_storage_path = NULL,
        generation_started_at = NULL, first_section_at = NULL,
@@ -317,6 +321,7 @@ export async function PATCH(
         narrationProgressPercent(done, total),
         done,
         nextIndex,
+        JSON.stringify(segments),
         id,
       ]
     );

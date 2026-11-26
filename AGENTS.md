@@ -1738,7 +1738,7 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
-TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it as the lane cap and the no-deadline clock budget. Fish stays at 5.
+TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it as the lane cap and the no-deadline clock budget. Fish stays at 5. Kokoro lanes ignore it.
 TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–16. Fish ignores this.
 # TTS_QA_PROVIDER=local # local (self-hosted Whisper, default) | deepgram (Nova-3 via OPENROUTER_API_KEY) | off
 # TTS_QA_WHISPER_MODEL=base # base | small. int8 CPU. ~5% WER at RTF 0.02

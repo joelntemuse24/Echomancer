@@ -24,6 +24,7 @@ import {
 } from "@/lib/tts/heart-voice";
 import { concatWav, splitSowellText } from "@/lib/tts/providers/sowell";
 import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
+import { kokoroRemoteEstimate, refuseKokoroHttp } from "@/lib/tts/kokoro-remote";
 
 async function onePiece(
   input: SynthesizeInput,
@@ -38,7 +39,7 @@ async function onePiece(
         provider: "kokoro",
         jobId: input.jobId,
         section: remoteSectionKey(input.sectionIndex, text),
-        estCostUsd: 0.01,
+        ...kokoroRemoteEstimate(text.length),
         url,
         init: {
           method: "POST",
@@ -59,6 +60,7 @@ async function onePiece(
           signal: input.signal,
         },
       });
+    await refuseKokoroHttp(res);
     if (res.status === 429 && attempt < 3) {
       await new Promise((resolve) => setTimeout(resolve, 40));
       continue;

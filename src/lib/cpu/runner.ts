@@ -35,6 +35,7 @@ import {
 import {
   isModalWorkspaceDisabled,
   modalWorkspaceDisabledActive,
+  ModalWorkspaceDisabledError,
   noteModalWorkspaceDisabled,
   redactModalAccount,
 } from "@/lib/modal/workspace-disabled";
@@ -328,6 +329,17 @@ async function postCpuPlacement(
       throw err;
     }
   } catch (err) {
+    if (err instanceof ModalWorkspaceDisabledError) {
+      await releaseCpuPlacement(taskId, owner, "cpu provider unavailable: workspace disabled");
+      logCpu({
+        event: "cpu_dispatch",
+        id: taskId,
+        kind,
+        result: "unavailable",
+        reason: "workspace_disabled",
+      });
+      return "unavailable";
+    }
     const refusal = remoteCallRefusal(err);
     // A budget or cancel refusal never left this process. It is not a
     // network error and the container did not accept the POST. Keeping

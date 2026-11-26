@@ -26,6 +26,7 @@ import {
   SOWELL_PIECE_IN_FLIGHT,
   sowellEndpoint,
 } from "@/lib/tts/sowell-voice";
+import { kokoroRemoteEstimate, refuseKokoroHttp } from "@/lib/tts/kokoro-remote";
 import {
   formatSowellRequestLog,
   readSowellTimingHeaders,
@@ -108,7 +109,7 @@ async function onePiece(
         provider: "kokoro",
         jobId: input.jobId,
         section: remoteSectionKey(input.sectionIndex, text),
-        estCostUsd: 0.01,
+        ...kokoroRemoteEstimate(text.length),
         url,
         init: {
           method: "POST",
@@ -129,6 +130,7 @@ async function onePiece(
         },
       });
     const headerMs = Date.now() - sentAt;
+    await refuseKokoroHttp(res);
     if (res.status === 429 && attempt < 3) {
       console.info(
         `[sowell] ${formatSowellRequestLog({

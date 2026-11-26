@@ -58,6 +58,7 @@ import {
   MODAL_WORKSPACE_DISABLED_MESSAGE,
   ModalWorkspaceDisabledError,
 } from "@/lib/modal/workspace-disabled";
+import { RemoteCallRefused } from "@/lib/remote/layer";
 import { incompleteAudiobookMessage, userFriendlyError } from "@/lib/errors-ui";
 import {
   chooseCloneGpuTurn,
@@ -2029,14 +2030,6 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
-  /**
-   * Explicit `TTS_SECTIONS_PER_TICK` only. Kokoro lanes must not fall back to
-   * the planned fair share: that share is re-read per claim, and capping the
-   * tick at the share it saw at start would freeze the book there.
-   */
-  const explicitPerTick = process.env.TTS_SECTIONS_PER_TICK?.trim()
-    ? Number(process.env.TTS_SECTIONS_PER_TICK)
-    : Number.NaN;
   const clonePath = usesModalClone(job.catalog_voice_id);
   /**
    * How many sections one tick may claim.
@@ -2056,16 +2049,14 @@ async function runClaimedTick(
    * tick opens the whole per-book ceiling and lets the budget gate each claim.
    * A book that starts mid-wave then takes lanes as another book finishes
    * sections instead of being stuck at the share it saw at tick start.
+   * `TTS_SECTIONS_PER_TICK` is the Edge, Fish, and clone claim budget. It
+   * does not cap Kokoro: those lanes come from the Kokoro lane and fleet
+   * settings. An explicit `sectionsPerTick` option still wins below.
    */
   const claimDefault = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
     : kokoroBook
-      ? // Open the whole per-book ceiling; `kokoroLaneBudget` gates each
-        // claim. An explicit `TTS_SECTIONS_PER_TICK` still caps the total.
-        Math.min(
-          sowellCap,
-          Number.isFinite(explicitPerTick) ? explicitPerTick : sowellCap
-        )
+      ? sowellCap
       : Number.isFinite(envPerTick)
         ? envPerTick
         : fanout;
@@ -4328,6 +4319,13 @@ async function synthesizeSection(args: {
           if (err.reason === "budget") return { ok: false, error: err.message, budget: true };
           return { ok: false, error: err.message, held: true };
         }
+        if (err instanceof RemoteCallRefused) {
+          // A budget or in-flight refusal is the book's, not this section's.
+          // Leaving it as a plain failure writes `retry` and the same tick's
+          // hole-retry then writes `failed`.
+          if (err.code === "budget") return { ok: false, error: err.message, budget: true };
+          if (err.code === "in_flight") return { ok: false, error: err.message, held: true };
+        }
         if (err instanceof ModalCloneColdError) {
           // The pool is empty, not broken. Stop retrying this section in this
           // tick: every attempt would open another container that is still
@@ -4377,6 +4375,11 @@ async function synthesizeSection(args: {
       }
     } catch (err) {
       if (err instanceof ProviderSlotBusyError) throw err;
+      if (err instanceof ModalWorkspaceDisabledError) throw err;
+      if (err instanceof RemoteCallRefused) {
+        if (err.code === "budget") return { ok: false, error: err.message, budget: true };
+        if (err.code === "in_flight") return { ok: false, error: err.message, held: true };
+      }
       lastError = err instanceof Error ? err.message : String(err);
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,

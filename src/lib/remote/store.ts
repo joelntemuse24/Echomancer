@@ -42,6 +42,25 @@ function asMs(value: number): number {
   return n > 10_000_000_000 ? n : n * 1000;
 }
 
+/** A platform refusal must not keep the dollar row written at start. */
+export async function releasePersistedReservation(
+  flightKey: string,
+  startedAt: number
+): Promise<void> {
+  try {
+    await execute(
+      `UPDATE remote_calls SET est_cost_usd = 0
+       WHERE flight_key = ? AND outcome = 'started' AND started_at = ?`,
+      [flightKey, Math.floor(startedAt)]
+    );
+  } catch (err) {
+    console.warn(
+      "[remote] reservation was not released:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 export async function persistRemoteEvent(event: RemoteEvent): Promise<void> {
   try {
     await execute(
