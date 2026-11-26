@@ -64,7 +64,7 @@ OpenRouter.
 
 ## Cache
 
-George sections use `kokoro82m-b-bm_george-f3ff3571791e`. Ryan's Edge
+George sections use `kokoro82m-b-bm_george-f3ff3571791e-g2plex1`. Ryan's Edge
 takes stay under the Edge key. They are not replayed as George.
 
 ## Preview

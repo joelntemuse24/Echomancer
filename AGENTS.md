@@ -457,21 +457,40 @@ harbor paragraph is 39.7 s of audio and took 25.3-27.1 s at 2 threads
 at the same container cost. `modal/sowell_bench.py` re-measures it on the
 same CPU-only image.
 
-**Drew speed:** Drew renders at Kokoro speed **1.0**, which is real
-Andrew's natural 1x (Joel picked it by ear; it is also the closest measured
-match). That 1.0 is applied **once**, in the container
-(`scripts/sowell/drew.py` → `drew_speed`), by multiplying the app's own
-speed. The app therefore sends 1.0 for natural pace and never
-calibrates Drew down: `initialNarrationSpeed` returns 1.0 for Drew, and the
-per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
-(the same exemption Paradee has). Do not apply the native speed in TypeScript
-as well — `drewKokoroSpeed` exists for tests and documentation, not as a
-second multiplier on the request. The take-home cache key names the
-runtime and the Kokoro speed (`-torch-speed1.000` or `-onnx-speed1.000`).
-The provider stores a take only when `x-kokoro-speed` and
-`x-kokoro-runtime` match that key, so a worker deploy ahead of the image
-cannot file an 0.88 take under the 1.0 name, and a rollback cannot replay
-the other graph. Style row 300 is unchanged.
+**Drew speed:** Drew renders at Kokoro speed **0.88**. The app sends 1.0
+for natural pace and the container applies 0.88 **once**
+(`scripts/sowell/drew.py` → `drew_speed`, `DREW_NATIVE_KOKORO_SPEED`).
+`DREW_APP_SPEED_MAX` stays 1.0 so the slowdown is not applied twice.
+`initialNarrationSpeed` returns 1.0 for Drew, and the per-section
+`calibrateNarrationSpeed` step is skipped for `provider: "drew"`
+(the same exemption Paradee has). Do not apply 0.88 in TypeScript as well —
+`drewKokoroSpeed` exists for tests and the `x-kokoro-speed` check, not as a
+second multiplier on the request. On the ONNX graph, 0.88 is only about
+5–6% longer than 1.0 (123.1 s versus 116.4 s on a two-minute passage).
+The take-home cache key names the runtime, the Kokoro speed
+(`-torch-speed0.880` or `-onnx-speed0.880`), and the pronunciation id
+(`-g2plex1`). The provider stores a take only when `x-kokoro-speed` and
+`x-kokoro-runtime` match that key. Style row 300 is unchanged. The listen
+speed picker (`ec-player-speed`, 0.8–1.5) is playback rate and is separate
+from this generation speed.
+
+**Kokoro pronunciation:** `scripts/sowell/pronounce.py` runs before misaki
+on every Kokoro path (ONNX and torch). It folds typographic quotes
+(U+2018/2019/201C/201D, and ― ‖ when they are used as quotes) so a curly
+don't stays one word, splits a glued letter-number token (`CS183` → `CS 183`),
+and speaks a roman outline heading at the start of a line (`I.`, `II.`, `IV.`)
+as `One.`, `Two.`, `Four.`. A pronoun I in running text is unchanged.
+`PRONUNCIATIONS` is checked before misaki `us_gold`. Add a lowercase key
+there and bump `PRONUNCIATION_ID` together with
+`KOKORO_PRONUNCIATION_ID` in `src/lib/tts/kokoro-pronunciation.ts`.
+
+**Section joins:** `JOIN_SILENCE_KEEP_MS` is 225 ms per edge on a sentence
+or mid-paragraph join, and `JOIN_PARAGRAPH_SILENCE_KEEP_MS` is 300 ms on a
+paragraph or chapter join. A paragraph fade is limited to the silence on
+both edges, so it does not run into the next word. The PCM concat and the
+disk finalize use that keep. The mastered MP3 copy-join leaves a longer
+pause in the copied body and fades only its last window; shrinking that
+window clicks a clean splice.
 
 **Drew prosody G:** sentence-type F0 rules (`scripts/sowell/prosody_rules.py`,
 variant `G_rules_phrase`) are off unless `DREW_PROSODY_RULES` is set on the
@@ -481,8 +500,8 @@ edit the F0 tensor that forward already produced. Constants are hardcoded
 (`ACCENT_K` 0.7, `DECL_ST` 3, short exclamation +4 st, long +1.5 st, yes/no
 rise +7 st). Do not read those from the environment. With the flag off the
 request omits `prosody` and the cache key stays
-`drew-kokoro82m-ft-stageA-step00900-style300-` plus the runtime and
-`speed1.000`. With it on, the body is
+`drew-kokoro82m-ft-stageA-step00900-style300-` plus the runtime,
+`speed0.880`, and `-g2plex1`. With it on, the body is
 `prosody: "G"` and the key gains `-prosodyG`. The container applies G only
 when that field is present; its own env cannot rule a take cached as
 unruled. Deploy the Modal app that honors the field before setting the flag.

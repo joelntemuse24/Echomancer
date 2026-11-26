@@ -75,12 +75,13 @@ The container's own request cap stays 2,000 (`MAX_CHARS` in
 Nothing else about the call changed: same voice, same 429 retry, same audio
 guard.
 
-The inter-section pause is unchanged. Mastered sections join with the usual
-delivery crossfade — **80 ms** for a book under 4,000 characters, **120 ms**
-otherwise, resolved by `resolveDeliverySettings` — with edge silence trimmed
-to 40 ms of keep before the fade. A mid-paragraph cut uses a 12 ms micro
-fade. More sections means more of those 80/120 ms joins; each is a
-crossfade, not an added silence, so the pause at a boundary stays natural.
+The PCM concat and the disk finalize keep **225 ms** of silence on a
+sentence or mid-paragraph edge and **300 ms** on a paragraph or chapter
+edge. The paragraph fade stays inside that silence, so it does not run
+into the next word. A mid-paragraph cut uses a 12 ms micro fade. The
+mastered MP3 copy-join leaves a longer pause in the copied body and fades
+only its last window (**80 ms** for a book under 4,000 characters, **120 ms**
+otherwise).
 Every section is verified to be more than four seconds of audio
 (`COPY_JOIN_MIN_SECONDS`) so the copy-join never re-encodes a stub.
 
@@ -349,4 +350,4 @@ Andrew.
 
 Use a short original note, not a customer book. Confirm the raw object
 is wav from this provider, the section cache key contains
-`sowell-kokoro82m-v1_0-a9fa4422864e`, and Andrew's preview is unchanged.
+`sowell-kokoro82m-v1_0-a9fa4422864e-g2plex1`, and Andrew's preview is unchanged.

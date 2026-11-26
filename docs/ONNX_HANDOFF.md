@@ -62,7 +62,7 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
    - Set worker env `KOKORO_STREAMS_PER_CONTAINER=4` and `KOKORO_CONTAINER_MASTER=1`.
    - To roll back: `KOKORO_RUNTIME=torch` redeploy, and unset the two worker env vars.
    - Note that Drew answers 503 on ONNX until the export exists.
-8. `DREW_NATIVE_KOKORO_SPEED` is **1.0**. Joel picked it by ear. The cache variant is `v3` so a 0.88 take is not replayed. Style row 300 is unchanged.
+8. `DREW_NATIVE_KOKORO_SPEED` is **0.88**, applied once. The app still sends 1.0. On the ONNX graph 0.88 is about 5–6% longer than 1.0 (123.1 s versus 116.4 s on a two-minute passage). The cache key includes `speed0.880` so a 1.0 take is not replayed. Style row 300 is unchanged.
 
 ## Test results so far
 - Earlier Modal benchmark (OPTIMISE.md, Nov 25–26): ONNX fp32 with 4 procs × 1 thread gave **1.57×** the audio per core-second of torch's 1 × 4 threads, with identical WER.
@@ -84,7 +84,7 @@ I used 28 real Edge Andrew clips (623 words) from `andrew-distill` `/eval/edge_a
 | Drew 0.95 | 175.5 | 192.7 | 4.94 | 1.05 |
 | Drew 1.0 | 179.1 | 196.0 | 5.02 | 1.02 |
 
-So 1.0 is the closest match; about 1.04 would match exactly. 0.88 is 8–9% slower than Andrew. Joel then picked 1.0 by ear. `DREW_NATIVE_KOKORO_SPEED` is 1.0 on both the torch and ONNX paths. The table is the measurement, not the current default.
+The table is the Edge-Andrew comparison. The current default is 0.88 again: on this ONNX graph a two-minute passage is 116.4 s at 1.0 and 123.1 s at 0.88, about 5–6% longer, and that is the pace the books use. `DREW_NATIVE_KOKORO_SPEED` is 0.88 on both the torch and ONNX paths. The app speed stays 1.0.
 
 ## Samples made (on the box: the operator box (samples dir))
 Same ~35 s passage throughout:

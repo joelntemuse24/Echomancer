@@ -44,6 +44,7 @@ from pack import (
     load_manifest,
     manifest_path,
 )
+from pronounce import install_pronunciations, prepare_kokoro_text
 from drew import (
     DREW_VOICE_ID,
     DrewPackError,
@@ -283,6 +284,8 @@ class SowellEngine:
             "a": KPipeline(lang_code="a", repo_id=PINNED_REPO, model=model),
             "b": KPipeline(lang_code="b", repo_id=PINNED_REPO, model=model),
         }
+        for pipeline in self._pipelines.values():
+            install_pronunciations(pipeline.g2p)
         self._packs = {
             SOWELL_VOICE_ID: pin_style(pack, fixed_style_index(SOWELL_VOICE_ID)),
             GEORGE_VOICE_ID: pin_style(
@@ -331,7 +334,7 @@ class SowellEngine:
         speed: float = 1.0,
         prosody: str | None = None,
     ) -> tuple[torch.Tensor, str, float, list[float], str | None]:
-        cleaned = " ".join(text.split())
+        cleaned = prepare_kokoro_text(text)
         if not cleaned:
             raise PackError("empty text")
         if len(cleaned) > MAX_CHARS:

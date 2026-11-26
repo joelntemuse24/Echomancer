@@ -39,11 +39,10 @@ describe("initialNarrationSpeed", () => {
     ).toBe(1);
   });
 
-  it("keeps Drew at 1.0 on academic text — 1.0 is already his natural pace", () => {
-    // The container renders 1.0 at Kokoro speed 1.0, so the academic
-    // heuristic here would stack a second slowdown on top of a voice that is
-    // already at Andrew's pace. This is the drift that moved later Andrew
-    // sections to ~0.85.
+  it("keeps Drew at app speed 1.0 on academic text", () => {
+    // The container multiplies 1.0 by 0.88 once. The academic heuristic
+    // here would stack a second slowdown. This is the drift that moved
+    // later Andrew sections to ~0.85.
     expect(
       initialNarrationSpeed({ catalogVoiceId: "drew", text: ACADEMIC })
     ).toBe(1);

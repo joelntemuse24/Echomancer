@@ -335,7 +335,7 @@ describe("sowell voice", () => {
     expect(source).not.toContain("s2_clone");
     expect(source).not.toContain("S2C_");
     const drew = readFileSync(path.join(process.cwd(), "scripts/sowell/drew.py"), "utf8");
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_kmodel.pth");
     expect(drew).toContain("/kokoro/retrain_v3/stageA/step00900_voice.pt");
     expect(drew).toContain("PACK_SHAPE = (510, 1, 256)");

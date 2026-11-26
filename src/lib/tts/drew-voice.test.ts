@@ -138,12 +138,12 @@ describe("Drew identity", () => {
     ).toBe(DREW_MAX_CHARS);
     expect(DREW_IN_FLIGHT).toBe(2);
     expect(DREW_CACHE_VARIANT).toBe(
-      `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-torch-speed1.000`
+      `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-torch-speed0.880-g2plex1`
     );
     expect(drewRuntimeLabel({})).toBe("torch");
     expect(drewRuntimeLabel({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toBe("onnx");
     expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toContain(
-      "-onnx-speed1.000"
+      "-onnx-speed0.880-g2plex1"
     );
     expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).not.toBe(
       DREW_CACHE_VARIANT
@@ -186,26 +186,26 @@ describe("Drew identity", () => {
 });
 
 describe("Drew speed mapping", () => {
-  it("treats 1.0 as native 1x", () => {
-    expect(DREW_NATIVE_KOKORO_SPEED).toBe(1);
-    expect(drewKokoroSpeed(1)).toBe(1);
-    expect(drewKokoroSpeed(undefined)).toBe(1);
-    expect(drewKokoroSpeed(null)).toBe(1);
+  it("applies 0.88 once to the app's natural 1.0", () => {
+    expect(DREW_NATIVE_KOKORO_SPEED).toBe(0.88);
+    expect(drewKokoroSpeed(1)).toBe(0.88);
+    expect(drewKokoroSpeed(undefined)).toBe(0.88);
+    expect(drewKokoroSpeed(null)).toBe(0.88);
   });
 
   it("scales from native pace instead of slowing further", () => {
-    // 1.0 is natural. The container multiplies once, so 1.0 stays 1.0.
-    expect(drewKokoroSpeed(1)).toBe(1);
-    expect(drewKokoroSpeed(0.95)).toBe(0.95);
-    expect(drewKokoroSpeed(1.2)).toBe(1.2);
+    // The app still sends 1.0. The container multiplies once.
+    expect(drewKokoroSpeed(1)).toBe(0.88);
+    expect(drewKokoroSpeed(0.95)).toBe(0.836);
+    expect(drewKokoroSpeed(1.2)).toBe(1.056);
   });
 
   it("clamps to what the container accepts", () => {
-    expect(drewKokoroSpeed(0)).toBe(1);
-    expect(drewKokoroSpeed(-3)).toBe(1);
+    expect(drewKokoroSpeed(0)).toBe(0.88);
+    expect(drewKokoroSpeed(-3)).toBe(0.88);
     expect(drewKokoroSpeed(0.01)).toBe(0.5);
     expect(drewKokoroSpeed(100)).toBe(2);
-    expect(drewKokoroSpeed(Number.NaN)).toBe(1);
+    expect(drewKokoroSpeed(Number.NaN)).toBe(0.88);
   });
 });
 
@@ -244,7 +244,7 @@ describe("Drew provider", () => {
       res.writeHead(200, {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
-        "x-kokoro-speed": "1.0",
+        "x-kokoro-speed": "0.88",
         "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
@@ -265,7 +265,7 @@ describe("Drew provider", () => {
     expect(audio.contentType).toBe("audio/wav");
     expect(audio.audio.length).toBe(244);
     expect(seen).toHaveLength(1);
-    // The container multiplies by 1.0. The worker sends the app's 1.0 unchanged so
+    // The container multiplies by 0.88. The worker sends the app's 1.0 unchanged so
     // the multiply happens exactly once.
     expect(seen[0]!.speed).toBe(1);
     expect(seen[0]!.voice).toBe("drew");
@@ -304,7 +304,7 @@ describe("Drew provider", () => {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
         "x-kokoro-prosody": "G",
-        "x-kokoro-speed": "1.0",
+        "x-kokoro-speed": "0.88",
         "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
@@ -323,17 +323,17 @@ describe("Drew provider", () => {
   });
 
   it("refuses a take whose Kokoro speed or runtime is not the cache key", async () => {
-    const headers = new Headers({ "x-kokoro-speed": "0.88", "x-kokoro-runtime": "torch" });
-    expect(drewTakeMismatch(headers, 1)).toMatch(/0\.88/);
+    const headers = new Headers({ "x-kokoro-speed": "1.0", "x-kokoro-runtime": "torch" });
+    expect(drewTakeMismatch(headers, 1)).toMatch(/1\.0/);
     expect(drewTakeMismatch(headers, 1)).toMatch(/not stored/i);
-    const otherGraph = new Headers({ "x-kokoro-speed": "1", "x-kokoro-runtime": "onnx" });
+    const otherGraph = new Headers({ "x-kokoro-speed": "0.88", "x-kokoro-runtime": "onnx" });
     expect(drewTakeMismatch(otherGraph, 1)).toMatch(/onnx/);
-    expect(drewTakeMismatch(new Headers({ "x-kokoro-speed": "1" }), 1)).toMatch(/unknown/);
+    expect(drewTakeMismatch(new Headers({ "x-kokoro-speed": "0.88" }), 1)).toMatch(/unknown/);
     const url = await listen((_body, res) => {
       res.writeHead(200, {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
-        "x-kokoro-speed": "0.88",
+        "x-kokoro-speed": "1.0",
         "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
@@ -406,7 +406,7 @@ describe("Drew on the Modal CPU app", () => {
       path.join(process.cwd(), "scripts/sowell/drew.py"),
       "utf8"
     );
-    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 1.0");
+    expect(drew).toContain("DREW_NATIVE_KOKORO_SPEED = 0.88");
     const index = drew.match(/DREW_FIXED_STYLE_INDEX = (\d+)/);
     expect(index, drew).toBeTruthy();
     expect(DREW_FIXED_STYLE_INDEX).toBe(Number(index![1]));

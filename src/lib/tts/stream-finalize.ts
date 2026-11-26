@@ -11,12 +11,15 @@ import { createWavHeader } from "@/lib/tts/pcm-wav";
 import {
   ConcatAssembleError,
   CROSSFADE_MS_MAX,
-  crossfadePcm16Mono,
+  fadeMsThatSparesSpeech,
   ffmpegConcatAvailable,
   resolveJoinFadeMs,
   planEdgeSilenceTrim,
+  sectionEdgeKeepMs,
   JOIN_SILENCE_KEEP_MS,
+  JOIN_PARAGRAPH_SILENCE_KEEP_MS,
   JOIN_SILENCE_MAX_TRIM_MS,
+  joinTrimmedPcm,
 } from "@/lib/tts/crossfade-audio";
 import {
   MASTER_OUTPUT_MP3_BITRATE,
@@ -149,7 +152,9 @@ export async function readWavSampleRange(
 }
 
 function scanWindowSamples(sampleRate: number): number {
-  const keep = Math.round((sampleRate * JOIN_SILENCE_KEEP_MS) / 1000);
+  const keep = Math.round(
+    (sampleRate * Math.max(JOIN_SILENCE_KEEP_MS, JOIN_PARAGRAPH_SILENCE_KEEP_MS)) / 1000
+  );
   const maxTrim = Math.round((sampleRate * JOIN_SILENCE_MAX_TRIM_MS) / 1000);
   return maxTrim + keep;
 }
@@ -179,7 +184,13 @@ export async function planDiskJoins(
     const scan = Math.min(scanWindowSamples(layout.sampleRate), samples);
     const lead = await readWavSampleRange(file, 0, scan, layout);
     const tail = await readWavSampleRange(file, Math.max(0, samples - scan), scan, layout);
-    const trim = planEdgeSilenceTrim(lead, tail, samples, layout.sampleRate);
+    const trim = planEdgeSilenceTrim(
+      lead,
+      tail,
+      samples,
+      layout.sampleRate,
+      sectionEdgeKeepMs(spans.length, files.length, joins)
+    );
     const start = trim.trimLead;
     const end = samples - trim.trimTail;
     if (end - start < 2) {
@@ -195,28 +206,30 @@ export async function planDiskJoins(
     const fade = resolveJoinFadeMs(joins[i], crossfadeMs);
     const left = spans[i - 1]!;
     const right = spans[i]!;
-    const fadeSamples =
-      fade.ms <= 0
-        ? 0
-        : Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
-    const clampedFade = Math.min(fadeSamples, CROSSFADE_MS_MAX * SAMPLE_RATE);
+    const requestedSamples =
+      fade.ms <= 0 ? 0 : Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
     const leftAvail = left.end - left.start;
     const rightAvail = right.end - right.start;
-    if (
-      clampedFade <= 0 ||
-      leftAvail < clampedFade ||
-      rightAvail < clampedFade
-    ) {
+    const probe = Math.min(requestedSamples, leftAvail, rightAvail, CROSSFADE_MS_MAX * SAMPLE_RATE);
+    if (probe <= 0) {
       pieces.push({ kind: "span", index: i });
       continue;
     }
-    const leftTail = await readWavSampleRange(left.file, left.end - clampedFade, clampedFade);
-    const rightHead = await readWavSampleRange(right.file, right.start, clampedFade);
-    const mixed = crossfadePcm16Mono(leftTail, rightHead, SAMPLE_RATE, fade.ms, {
-      clamp: fade.clamp,
-    });
-    left.end -= clampedFade;
-    right.start += clampedFade;
+    const leftProbe = await readWavSampleRange(left.file, left.end - probe, probe);
+    const rightProbe = await readWavSampleRange(right.file, right.start, probe);
+    const fittedMs = fade.clamp
+      ? fadeMsThatSparesSpeech(fade.ms, SAMPLE_RATE, leftProbe, rightProbe)
+      : fade.ms;
+    const fitted = fittedMs <= 0 ? 0 : Math.max(1, Math.round((SAMPLE_RATE * fittedMs) / 1000));
+    if (fitted <= 0 || leftAvail < fitted || rightAvail < fitted) {
+      pieces.push({ kind: "span", index: i });
+      continue;
+    }
+    const leftTail = leftProbe.subarray(leftProbe.length - fitted * 2);
+    const rightHead = rightProbe.subarray(0, fitted * 2);
+    const mixed = joinTrimmedPcm(leftTail, rightHead, SAMPLE_RATE, joins[i], fittedMs);
+    left.end -= fitted;
+    right.start += fitted;
     pieces.push({ kind: "mix", pcm: mixed });
     pieces.push({ kind: "span", index: i });
   }

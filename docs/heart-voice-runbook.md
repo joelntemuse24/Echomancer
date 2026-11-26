@@ -100,8 +100,8 @@ plays on Edge. Do not point Esther at OpenRouter.
 
 ## Cache
 
-Esther's sections use `kokoro82m-a-af_heart-f3ff3571791e`. George's key is
-`kokoro82m-b-bm_george-f3ff3571791e`. Drew's key is the fine-tune id
+Esther's sections use `kokoro82m-a-af_heart-f3ff3571791e-g2plex1`. George's key is
+`kokoro82m-b-bm_george-f3ff3571791e-g2plex1`. Drew's key is the fine-tune id
 `drew-kokoro82m-ft-…`. Ava's and Libby's Edge takes stay under the Edge
 key. They are not replayed as Esther.
 

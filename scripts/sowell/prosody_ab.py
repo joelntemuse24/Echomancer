@@ -1,6 +1,6 @@
 """Offline A/B of Drew prosody G on the production render path.
 
-Style row 300, Kokoro speed 1.0, and the production phoneme chunker.
+Style row 300, the production phoneme chunker, and Drew's container speed.
 No Modal call. The private weights are not in git. Point
 ``DREW_VOLUME_MOUNT`` at the directory that contains
 

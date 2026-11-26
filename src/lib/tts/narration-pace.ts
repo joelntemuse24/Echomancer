@@ -24,10 +24,10 @@ export const FISH_SPEED_MIN = 0.75;
 export const FISH_SPEED_MAX = 1.0;
 
 /**
- * Drew's app-speed range. 1.0 is Drew's own natural pace, which the container
- * renders at Kokoro speed 1.0 — so this is a multiplier on that baseline,
- * not a second slowdown. Widening it past 1.0 makes Drew speak faster than
- * Andrew did, which the product does not offer.
+ * Drew's app-speed range. 1.0 is natural pace. The container multiplies by
+ * 0.88 once (`DREW_NATIVE_KOKORO_SPEED`), so this ceiling stays 1.0 and
+ * must not be lowered to 0.88 — that would apply the slowdown twice.
+ * Widening it past 1.0 makes Drew speak faster than that pace.
  */
 export const DREW_APP_SPEED_MIN = 0.75;
 export const DREW_APP_SPEED_MAX = 1.0;
@@ -122,10 +122,10 @@ export function isDenseAcademicText(text: string): boolean {
  * slow it down. The id is unlisted; this still applies to a row already
  * stored with it. A new request is coerced to Drew before it gets here.
  *
- * Drew stays at 1.0 too, and for a stronger reason. Its container renders 1.0
- * at Kokoro speed 1.0, which already **is** real Andrew's natural pace. This
- * is the module whose calibration drifted Andrew's later sections down to
- * ~0.85; Drew must not inherit that. 1.0 here means "Drew at his own pace".
+ * Drew stays at app speed 1.0 too. The container multiplies that by 0.88
+ * once. This is the module whose calibration drifted Andrew's later sections
+ * down to ~0.85; Drew must not inherit that, and the app must not also send
+ * 0.88. 1.0 here means "Drew at his own pace".
  */
 export function initialNarrationSpeed(input: {
   catalogVoiceId?: string | null;
@@ -156,7 +156,7 @@ export function keepsOwnPace(catalogVoiceId?: string | null): boolean {
   );
 }
 
-/** Drew's app speed, clamped. 1.0 is his native pace; the worker multiplies by 1.0. */
+/** Drew's app speed, clamped. 1.0 is natural; the container multiplies by 0.88 once. */
 export function drewSpeedForRequest(speed?: number): number {
   if (typeof speed !== "number" || !Number.isFinite(speed)) {
     return 1;

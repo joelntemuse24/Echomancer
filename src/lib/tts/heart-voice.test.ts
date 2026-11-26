@@ -77,7 +77,7 @@ describe("heart voice", () => {
   });
 
   it("keeps a cache key apart from George, Drew, Walter, and stored Edge Ava", () => {
-    expect(HEART_CACHE_VARIANT).toBe("kokoro82m-a-af_heart-f3ff3571791e");
+    expect(HEART_CACHE_VARIANT).toBe("kokoro82m-a-af_heart-f3ff3571791e-g2plex1");
     expect(takehomeCacheVariant("heart", "heart")).toBe(HEART_CACHE_VARIANT);
     expect(HEART_CACHE_VARIANT).not.toBe(GEORGE_CACHE_VARIANT);
     expect(HEART_CACHE_VARIANT).not.toBe(DREW_CACHE_VARIANT);

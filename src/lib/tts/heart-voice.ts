@@ -8,6 +8,8 @@
  * The customer-facing name lives only in {@link HEART_DISPLAY_NAME}.
  */
 
+import { KOKORO_PRONUNCIATION_SUFFIX } from "@/lib/tts/kokoro-pronunciation";
+
 export const HEART_CATALOG_VOICE_ID = "heart";
 /** The one customer-facing name. Catalog id, pack, and env names stay `heart`. */
 export const HEART_DISPLAY_NAME = "Esther";
@@ -18,7 +20,7 @@ export const HEART_KOKORO_REVISION = "f3ff3571791e39611d31c381e3a41a3af07b4987";
  * American phonemes (`a`), so this key cannot collide with George's British
  * `bm_george` variant or with Drew's fine-tuned checkpoint key.
  */
-export const HEART_CACHE_VARIANT = `kokoro82m-a-${HEART_PROVIDER_VOICE_ID}-${HEART_KOKORO_REVISION.slice(0, 12)}`;
+export const HEART_CACHE_VARIANT = `kokoro82m-a-${HEART_PROVIDER_VOICE_ID}-${HEART_KOKORO_REVISION.slice(0, 12)}${KOKORO_PRONUNCIATION_SUFFIX}`;
 export const HEART_MAX_CHARS = 2000;
 /**
  * Pieces of one over-cap section that may run at once. A section is packed to
