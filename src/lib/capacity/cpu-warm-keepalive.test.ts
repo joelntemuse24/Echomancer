@@ -17,23 +17,23 @@ describe("cpu warm keepalive", () => {
     expect(cpuWarmKeepaliveEnabled({ CPU_SCALEDOWN_SECONDS: "300" } as NodeJS.ProcessEnv)).toBe(
       false
     );
-    expect(cpuWarmKeepaliveEnabled({ CPU_SCALEDOWN_SECONDS: "45" } as NodeJS.ProcessEnv)).toBe(
+    expect(cpuWarmKeepaliveEnabled({ CPU_SCALEDOWN_SECONDS: "10" } as NodeJS.ProcessEnv)).toBe(
       true
     );
   });
 
   it("posts inside the idle window and lets the container die with the hold", () => {
-    const delays = cpuWarmKeepaliveDelays(CPU_WARM_HOLD_MS, 45);
+    const delays = cpuWarmKeepaliveDelays(CPU_WARM_HOLD_MS, 10);
     expect(delays.length).toBeGreaterThan(1);
-    expect(delays[delays.length - 1]).toBe(CPU_WARM_HOLD_MS - 45_000);
+    expect(delays[delays.length - 1]).toBe(CPU_WARM_HOLD_MS - 10_000);
     for (let i = 1; i < delays.length; i++) {
-      expect(delays[i]! - delays[i - 1]!).toBeLessThanOrEqual(45_000);
+      expect(delays[i]! - delays[i - 1]!).toBeLessThan(10_000);
     }
-    expect(delays[0]).toBeLessThan(45_000);
+    expect(delays[0]).toBeLessThan(10_000);
   });
 
   it("does not start a second loop inside the hold", () => {
-    const env = { CPU_SCALEDOWN_SECONDS: "45" } as NodeJS.ProcessEnv;
+    const env = { CPU_SCALEDOWN_SECONDS: "10" } as NodeJS.ProcessEnv;
     const now = Date.now();
     expect(startCpuWarmKeepalive(async () => undefined, env, now)).toBe(true);
     expect(startCpuWarmKeepalive(async () => undefined, env, now + 10_000)).toBe(false);

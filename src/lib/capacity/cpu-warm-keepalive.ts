@@ -1,8 +1,8 @@
 /**
  * Keep one CPU container warm for the New Book hold after a short scaledown.
  *
- * `echomancer-cpu` idles for `CPU_SCALEDOWN_SECONDS` (default 45). A single
- * warm POST would then die in under a minute. The create flow's hold is
+ * `echomancer-cpu` idles for `CPU_SCALEDOWN_SECONDS` (default 10). A single
+ * warm POST would then die within seconds. The create flow's hold is
  * still five minutes (`WARM_HOLD_MS`): this schedules the extra POSTs that
  * land before the idle window closes, and the last one is early enough that
  * the container is gone at the end of the hold instead of a full window later.
@@ -15,7 +15,7 @@
 
 import { WARM_HOLD_MS } from "@/lib/capacity/warm";
 
-export const CPU_SCALEDOWN_DEFAULT_S = 45;
+export const CPU_SCALEDOWN_DEFAULT_S = 10;
 export const CPU_WARM_HOLD_MS = WARM_HOLD_MS;
 
 export function cpuScaledownSeconds(env: NodeJS.ProcessEnv = process.env): number {

@@ -178,7 +178,7 @@ not a ceiling the code enforces.
 | Document extract | Warm child process of the worker (`POST /extract`, `src/worker/extract-child.ts`); Cloudflare `workers/extract` when that POST fails; Vercel as the last resort (§9). |
 | Clone GPU | Modal app `echomancer-s2-clone` (`modal/s2_clone_service.py`): Fish S2-Pro on an H100, GPU memory snapshots, `min_containers=0`, code-default `max_containers=1`. Used only when `MODAL_S2_TTS_URL` is set. Submit/poll/cancel goes through the CPU-only `s2_control` function at `MODAL_S2_CONTROL_URL`. |
 | Kokoro voices | Modal app `echomancer-sowell` (`modal/sowell_worker.py`, image `workers/sowell/Dockerfile`): CPU Kokoro-82M serving Drew (fine-tuned weights on the `andrew-distill` volume), Esther (`af_heart`), George (`bm_george`), and Walter (`sowell`). `cpu=2`, `memory=6144`, `min_containers=0`, `max_containers` from `SOWELL_MAX_CONTAINERS` (default 16, clamp 1–16), `scaledown_window` default 5 s. |
-| CPU tasks | Modal app `echomancer-cpu` (`modal/cpu_worker.py`, image `workers/cpu/Dockerfile`): `master`, `whisper`, `concat`, and `extract` tasks when `CPU_RUNNER=modal`. `min_containers=0`, `CPU_MAX_CONTAINERS` default 4, `CPU_FUNCTION_CPU` 2, `CPU_FUNCTION_MEMORY_MB` 4096, `CPU_SCALEDOWN_SECONDS` 45. The five-minute New Book warm is a worker keepalive when that variable is set on the worker below 300s; it is not a 300s idle window on every task. With `CPU_RUNNER` unset (the code default) the same tasks run on the VM (§19). Whether production has `CPU_RUNNER=modal` is not verified here; `env.worker.example` shows it commented out. |
+| CPU tasks | Modal app `echomancer-cpu` (`modal/cpu_worker.py`, image `workers/cpu/Dockerfile`): `master`, `whisper`, `concat`, and `extract` tasks when `CPU_RUNNER=modal`. `min_containers=0`, `CPU_MAX_CONTAINERS` default 4, `CPU_FUNCTION_CPU` 2, `CPU_FUNCTION_MEMORY_MB` 4096, `CPU_SCALEDOWN_SECONDS` 10. The five-minute New Book warm is a worker keepalive when that variable is set on the worker below 300s; it is not a 300s idle window on every task. With `CPU_RUNNER` unset (the code default) the same tasks run on the VM (§19). Whether production has `CPU_RUNNER=modal` is not verified here; `env.worker.example` shows it commented out. |
 | Fish API | Direct Fish (`FISH_API_KEY`, `src/lib/tts/providers/fish.ts`): clone training (`POST /model`), clone synthesis when the book is pinned to `fish`, clone preview bakes, stored Clara books, Live Listen for clones. Native model id `s2.1-pro-free` (`FISH_NATIVE_FREE_MODEL`). |
 | Edge TTS (legacy) | Microsoft Edge Read Aloud websocket (`src/lib/tts/edge-tts.ts`): stored Andrew/Ava/Libby/Ryan/Michelle books, and new Ava/Libby/Michelle requests until Esther is configured. |
 | Paradee (legacy) | `src/lib/tts/providers/paradee.ts`: only a book already stored as Echomancer Andrew (`echomancer-andrew`). A new request that names that id is coerced to Drew. |
@@ -2368,7 +2368,7 @@ books or doubling provider calls:
   It deletes only that job's rows and `audiobooks/<id>/` keys.
   `min_containers=0`. `CPU_MAX_CONTAINERS` (default 4),
   `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB` (default 4096),
-  and `CPU_SCALEDOWN_SECONDS` (default 45) are the knobs. The container
+  and `CPU_SCALEDOWN_SECONDS` (default 10) are the knobs. The container
   cap is not a dollar cap. Cold start, idle before scaledown, and a burst
   up to the cap are the spend. No dollar figure is recorded here.
 - **Unmastered audio is not a ready section.** When mastering is on, the
@@ -3318,7 +3318,7 @@ it, and then scales to zero after its scaledown window.
 |-----|-----|-----|-----------|-------|
 | `echomancer-s2-clone` (H100 GPU) | 0 | `S2C_MAX_CONTAINERS`, default **1** (clamp 1–64) | `S2C_SCALEDOWN`, default 300 s | A production cap above 1 needs `S2_ALLOW_PROD_CAP_ABOVE_1`. The drain may brake the live max and restore the value it read; any other change is an operator running `scripts/s2/set-live-autoscaler.py`. Live value is operator-reported as max 1. |
 | `echomancer-sowell` (CPU Kokoro) | 0 | `SOWELL_MAX_CONTAINERS`, default 16 (clamp 1–16) | default 5 s (clamp 2–1200) | Drew, Walter, George, Esther. |
-| `echomancer-cpu` (CPU) | 0 | `CPU_MAX_CONTAINERS`, default 4 | 45 s | Mastering, Whisper for engines that still transcribe, join, extract when `CPU_RUNNER=modal`. The five-minute New Book warm is a worker keepalive when the worker is told this window. A fleet size, not a spend cap. |
+| `echomancer-cpu` (CPU) | 0 | `CPU_MAX_CONTAINERS`, default 4 | 10 s | Mastering, Whisper for engines that still transcribe, join, extract when `CPU_RUNNER=modal`. The five-minute New Book warm is a worker keepalive when the worker is told this window. A fleet size, not a spend cap. |
 
 `MODAL_S2_MAX_GPUS` (default 20) is a count of `modal_gpu_leases` rows the app
 will hand out (`src/lib/tts/providers/modal-gpu-lease.ts`). It does not start
