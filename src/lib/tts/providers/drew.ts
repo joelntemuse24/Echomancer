@@ -8,6 +8,12 @@
  * `DREW_NATIVE_KOKORO_SPEED` (0.88), so 1.0 here is Drew's natural pace.
  */
 
+import {
+  type KokoroTake,
+  kokoroContainerMasterEnabled,
+  kokoroMasterRecipe,
+  parseKokoroBody,
+} from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
 import type {
   SynthesizeInput,
@@ -28,8 +34,9 @@ import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
 async function onePiece(
   input: SynthesizeInput,
   text: string,
-  url: string
-): Promise<Buffer> {
+  url: string,
+  master = false
+): Promise<KokoroTake> {
   const token = process.env.DREW_TOKEN?.trim() || "";
   // App speed. 1 is Drew's native pace (0.88 Kokoro speed).
   const speed =
@@ -59,6 +66,8 @@ async function onePiece(
             // Present only while G is on. An omitted field is the stock
             // forward, and the container does not consult its own env.
             ...(prosody ? { prosody } : {}),
+            // The container masters this take too (one section, one call).
+            ...(master ? { master: kokoroMasterRecipe() } : {}),
             ...(input.jobId ? { jobId: input.jobId } : {}),
             ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
           }),
@@ -86,9 +95,10 @@ async function onePiece(
         "Drew endpoint did not apply prosody G. The audio was not stored."
       );
     }
-    const audio = Buffer.from(await res.arrayBuffer());
+    const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
+    const audio = take.wav;
     if (audio.length < 44) throw new Error("Drew returned empty audio");
-    return audio;
+    return take;
   }
   throw new Error(`Drew TTS 429: ${last}`);
 }
@@ -97,10 +107,18 @@ async function synthesizeDrew(input: SynthesizeInput): Promise<SynthesizeResult>
   const url = drewEndpoint();
   const pieces = splitSowellText(input.text, DREW_MAX_CHARS);
   if (pieces.length === 0) throw new Error("Drew received empty text");
-  const buffers = await mapPool(pieces, DREW_IN_FLIGHT, (piece) =>
-    onePiece(input, piece, url)
+  // A split section is joined here, so only a one-call section can come
+  // back mastered; the rest go through the CPU master task as before.
+  const master = pieces.length === 1 && kokoroContainerMasterEnabled();
+  const takes = await mapPool(pieces, DREW_IN_FLIGHT, (piece) =>
+    onePiece(input, piece, url, master)
   );
-  return { audio: concatWav(buffers), contentType: "audio/wav" };
+  const mastered = master ? takes[0]?.mastered : undefined;
+  return {
+    audio: concatWav(takes.map((take) => take.wav)),
+    contentType: "audio/wav",
+    ...(mastered ? { mastered } : {}),
+  };
 }
 
 async function* streamDrew(input: SynthesizeInput): AsyncIterable<Uint8Array> {

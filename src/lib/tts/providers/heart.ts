@@ -4,6 +4,12 @@
  * Drew checkpoint, and no Sowell pack.
  */
 
+import {
+  type KokoroTake,
+  kokoroContainerMasterEnabled,
+  kokoroMasterRecipe,
+  parseKokoroBody,
+} from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
 import type {
   SynthesizeInput,
@@ -22,8 +28,9 @@ import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
 async function onePiece(
   input: SynthesizeInput,
   text: string,
-  url: string
-): Promise<Buffer> {
+  url: string,
+  master = false
+): Promise<KokoroTake> {
   const token = process.env.HEART_TOKEN?.trim() || "";
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -44,6 +51,8 @@ async function onePiece(
             text,
             speed: 1,
             voice: HEART_PROVIDER_VOICE_ID,
+            // The container masters this take too (one section, one call).
+            ...(master ? { master: kokoroMasterRecipe() } : {}),
             ...(input.jobId ? { jobId: input.jobId } : {}),
             ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
           }),
@@ -64,9 +73,10 @@ async function onePiece(
         "Heart endpoint did not confirm af_heart. The audio was not stored."
       );
     }
-    const audio = Buffer.from(await res.arrayBuffer());
+    const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
+    const audio = take.wav;
     if (audio.length < 44) throw new Error("Heart returned empty audio");
-    return audio;
+    return take;
   }
   throw new Error(`Heart TTS 429: ${last}`);
 }
@@ -75,10 +85,18 @@ async function synthesizeHeart(input: SynthesizeInput): Promise<SynthesizeResult
   const url = heartEndpoint();
   const pieces = splitSowellText(input.text, HEART_MAX_CHARS);
   if (pieces.length === 0) throw new Error("Heart received empty text");
-  const buffers = await mapPool(pieces, HEART_IN_FLIGHT, (piece) =>
-    onePiece(input, piece, url)
+  // A split section is joined here, so only a one-call section can come
+  // back mastered; the rest go through the CPU master task as before.
+  const master = pieces.length === 1 && kokoroContainerMasterEnabled();
+  const takes = await mapPool(pieces, HEART_IN_FLIGHT, (piece) =>
+    onePiece(input, piece, url, master)
   );
-  return { audio: concatWav(buffers), contentType: "audio/wav" };
+  const mastered = master ? takes[0]?.mastered : undefined;
+  return {
+    audio: concatWav(takes.map((take) => take.wav)),
+    contentType: "audio/wav",
+    ...(mastered ? { mastered } : {}),
+  };
 }
 
 async function* streamHeart(input: SynthesizeInput): AsyncIterable<Uint8Array> {

@@ -1,5 +1,26 @@
 """Drew, Walter, George, and Heart on Modal CPU.
 
+Runtime (Nov 2026). ``KOKORO_RUNTIME`` is read at deploy time:
+
+* ``onnx`` (default): ONNX Runtime fp32, no torch in the serving process.
+  One container serves ``KOKORO_STREAMS`` (4) calls at once, one ORT thread
+  each, on ``cpu=2`` (4 vCPU) and one shared copy of the weights. Measured
+  1.57x the audio per core-second of the torch runtime. Memory is sized to
+  the measured peak (``ONNX_MEMORY_MB``). Drew's graph is exported once into
+  his volume: ``modal run modal/sowell_worker.py::export_drew_onnx``.
+  Prosody G is a torch hook and is refused here (the worker's default is
+  off, ``DREW_PROSODY_RULES``).
+* ``torch``: the previous runtime, unchanged (one call per container,
+  ``memory=6144``). The fallback: ``KOKORO_RUNTIME=torch modal deploy ...``.
+
+Mastering. A request may carry ``master`` (the recipe the worker builds in
+``src/lib/tts/kokoro-master.ts``). The container then returns the podcast-
+chain MP3 and the raw WAV in one body, and the worker publishes the section
+without an ``echomancer-cpu`` task. A failed pass returns the plain WAV and
+the worker masters it as before.
+
+The text below describes the torch runtime where it differs.
+
 A separate app from echomancer-cpu and echomancer-s2-clone. It is the same
 `echomancer-sowell` app the Walter/George voices already ship from: Renaming
 Walter is a copy change, Drew is a second resident model on that app, and
@@ -70,8 +91,10 @@ same value; the handler accepts either.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import modal
@@ -86,6 +109,54 @@ image = modal.Image.from_dockerfile(
 
 DREW_VOLUME_NAME = os.environ.get("DREW_VOLUME_NAME", "andrew-distill")
 DREW_VOLUME_MOUNT = os.environ.get("DREW_VOLUME_MOUNT", "/andrew-distill")
+
+#: Deploy-time runtime choice, baked into the container env below.
+RUNTIMES = ("onnx", "torch")
+
+
+def kokoro_runtime(env: dict | None = None) -> str:
+    raw = str((env or os.environ).get("KOKORO_RUNTIME", "onnx")).strip().lower()
+    return raw if raw in RUNTIMES else "onnx"
+
+
+RUNTIME = kokoro_runtime()
+#: Calls one ONNX container serves at once (one ORT thread each, cpu=2).
+STREAMS_DEFAULT = 4
+STREAMS_CEILING = 8
+
+
+def kokoro_streams(env: dict | None = None) -> int:
+    """Concurrent calls per container: 1 on torch, ``KOKORO_STREAMS`` (4) on ONNX."""
+    env = env or os.environ
+    if kokoro_runtime(env) == "torch":
+        return 1
+    try:
+        n = int(str(env.get("KOKORO_STREAMS", STREAMS_DEFAULT)).strip())
+    except (TypeError, ValueError):
+        n = STREAMS_DEFAULT
+    return max(1, min(STREAMS_CEILING, n))
+
+
+STREAMS = kokoro_streams()
+#: Torch runtime memory: stock + Drew kmodels on the old image.
+TORCH_MEMORY_MB = 6144
+#: ONNX runtime memory, sized to the measured container peak (see
+#: `ONNX_MEMORY_MB` in the PR notes) plus headroom. Overridable at deploy.
+ONNX_MEMORY_MB_DEFAULT = 3072
+
+
+def memory_mb(env: dict | None = None) -> int:
+    env = env or os.environ
+    if kokoro_runtime(env) == "torch":
+        return TORCH_MEMORY_MB
+    try:
+        n = int(str(env.get("ONNX_MEMORY_MB", ONNX_MEMORY_MB_DEFAULT)).strip())
+    except (TypeError, ValueError):
+        n = ONNX_MEMORY_MB_DEFAULT
+    return max(1536, min(TORCH_MEMORY_MB, n))
+
+
+image = image.env({"KOKORO_RUNTIME": RUNTIME, "KOKORO_STREAMS": str(STREAMS)})
 
 app = modal.App(APP_NAME)
 MAX_CHARS = 2000
@@ -111,13 +182,21 @@ SCALEDOWN_DEFAULT = 5
 
 
 def max_containers(env: dict | None = None) -> int:
-    """Deploy-time `max_containers`, clamped to 1..16. Default 16."""
-    raw = (env or os.environ).get("SOWELL_MAX_CONTAINERS", "")
+    """Deploy-time `max_containers`. Default 16, clamped to 1..16.
+
+    ``SOWELL_MAX_CONTAINERS`` is the fleet in *calls* (the worker's
+    ``SOWELL_MAX_CONTAINERS`` / provider-slot rows). On ONNX one container
+    serves ``KOKORO_STREAMS`` calls, so 16 calls are ceil(16 / 4) = 4
+    containers.
+    """
+    env = env or os.environ
+    raw = env.get("SOWELL_MAX_CONTAINERS", "")
     try:
         n = int(str(raw).strip())
     except (TypeError, ValueError):
         n = MAX_CONTAINERS_DEFAULT
-    return max(1, min(MAX_CONTAINERS_CEILING, n))
+    calls = max(1, min(MAX_CONTAINERS_CEILING, n))
+    return -(-calls // kokoro_streams(env))
 
 
 def scaledown_seconds(env: dict | None = None) -> int:
@@ -130,6 +209,8 @@ def scaledown_seconds(env: dict | None = None) -> int:
     return max(SCALEDOWN_MIN, min(SCALEDOWN_MAX, n))
 
 drew_volume = modal.Volume.from_name(DREW_VOLUME_NAME, create_if_missing=True)
+#: Same string as `KOKORO_BUNDLE_CONTENT_TYPE` in src/lib/tts/kokoro-master.ts.
+KOKORO_BUNDLE_CONTENT_TYPE = "application/x-echomancer-kokoro-bundle"
 
 
 def _authorized(request: Request) -> bool:
@@ -144,7 +225,7 @@ def _authorized(request: Request) -> bool:
 @app.cls(
     image=image,
     cpu=2,
-    memory=6144,
+    memory=memory_mb(),
     timeout=180,
     min_containers=0,
     max_containers=max_containers(),
@@ -156,11 +237,25 @@ def _authorized(request: Request) -> bool:
     secrets=[modal.Secret.from_name("echomancer-sowell")],
     volumes={DREW_VOLUME_MOUNT: drew_volume},
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=STREAMS)
 class Speaker:
     @modal.enter(snap=True)
     def load(self) -> None:
         sys.path.insert(0, "/opt/sowell/scripts")
+        self.runtime = kokoro_runtime()
+        if self.runtime == "onnx":
+            from onnx_engine import OnnxEngine
+
+            self.engine = OnnxEngine()
+            self.engine.load()
+            if not self.engine.load_drew():
+                print(
+                    "[drew] ONNX export unavailable; Drew answers 503 until "
+                    "`modal run modal/sowell_worker.py::export_drew_onnx`: "
+                    + str(self.engine.drew_error),
+                    flush=True,
+                )
+            return
         from engine import apply_torch_threads, SowellEngine
 
         # Before the first model load: torch reads the pool size lazily, but a
@@ -178,7 +273,15 @@ class Speaker:
 
     @modal.enter()
     def open_gate(self) -> None:
-        self.gate = threading.Lock()
+        # One permit per stream: 1 on torch, KOKORO_STREAMS on ONNX.
+        self.gate = threading.BoundedSemaphore(kokoro_streams())
+
+    def _drew_ready(self) -> bool:
+        if getattr(self, "runtime", "torch") == "onnx":
+            return bool(self.engine.drew_loaded)
+        from drew import drew_assets_present
+
+        return drew_assets_present()
 
     @modal.fastapi_endpoint(method="POST", docs=False)
     def speak(self, item: dict, request: Request):
@@ -205,9 +308,9 @@ class Speaker:
             voice = canonical_kokoro_voice(str(item.get("voice") or "am_sowell"))
         except PackError:
             return JSONResponse({"ok": False, "error": "voice is not allowed"}, status_code=400)
-        from drew import DREW_VOICE_ID, drew_assets_present
+        from drew import DREW_VOICE_ID
 
-        if voice == DREW_VOICE_ID and not drew_assets_present():
+        if voice == DREW_VOICE_ID and not self._drew_ready():
             return JSONResponse(
                 {"ok": False, "error": "Drew weights are not mounted", "code": "DREW_UNAVAILABLE"},
                 status_code=503,
@@ -225,17 +328,28 @@ class Speaker:
                 {"ok": False, "error": "prosody is not supported"},
                 status_code=400,
             )
+        if prosody and self.runtime == "onnx":
+            return JSONResponse(
+                {"ok": False, "error": "prosody G needs KOKORO_RUNTIME=torch"},
+                status_code=400,
+            )
+        recipe = item.get("master")
+        if recipe is not None and not isinstance(recipe, dict):
+            return JSONResponse({"ok": False, "error": "master is not an object"}, status_code=400)
         if not self.gate.acquire(blocking=False):
             return JSONResponse({"ok": False, "deferred": True}, status_code=429)
         try:
-            wav, report = self.engine.speak(
-                text,
-                Path(PACK),
-                Path(MANIFEST),
-                voice=voice,
-                speed=item.get("speed", 1.0),
-                prosody=prosody,
-            )
+            if self.runtime == "onnx":
+                wav, report = self.engine.speak(text, voice, item.get("speed", 1.0))
+            else:
+                wav, report = self.engine.speak(
+                    text,
+                    Path(PACK),
+                    Path(MANIFEST),
+                    voice=voice,
+                    speed=item.get("speed", 1.0),
+                    prosody=prosody,
+                )
             if len(wav) < 1000:
                 return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
             from timing import timing_headers
@@ -260,8 +374,58 @@ class Speaker:
                 ),
                 flush=True,
             )
+            headers["x-kokoro-runtime"] = self.runtime
+            if recipe is not None:
+                from master import MasterError, master_wav
+
+                started = time.perf_counter()
+                try:
+                    mp3, info = master_wav(wav, float(report.get("seconds") or 0), recipe)
+                except (MasterError, OSError, subprocess.SubprocessError) as err:
+                    # The worker masters the WAV on the CPU app, as before.
+                    headers["x-kokoro-master-error"] = str(err)[:200].replace("\n", " ")
+                else:
+                    headers["x-kokoro-master"] = str(info.get("plan"))
+                    headers["x-kokoro-master-seconds"] = f"{time.perf_counter() - started:.3f}"
+                    headers["x-kokoro-mp3-bytes"] = str(len(mp3))
+                    headers["x-kokoro-wav-bytes"] = str(len(wav))
+                    return Response(
+                        content=mp3 + wav,
+                        media_type=KOKORO_BUNDLE_CONTENT_TYPE,
+                        headers=headers,
+                    )
             return Response(content=wav, media_type="audio/wav", headers=headers)
         except Exception as err:
             return JSONResponse({"ok": False, "error": str(err)[:300]}, status_code=500)
         finally:
             self.gate.release()
+
+
+@app.function(
+    image=image,
+    cpu=2,
+    memory=8192,
+    timeout=1800,
+    volumes={DREW_VOLUME_MOUNT: drew_volume},
+)
+def export_drew_onnx() -> str:
+    """Export Drew's checkpoint to ONNX next to it on his volume. Idempotent.
+
+    Runs the exporter in a child process (it needs torch; the serving process
+    does not import it), then commits the volume. Containers that start after
+    this load Drew from the export; ``onnx_engine.read_manifest`` checks every
+    file's SHA-256 first.
+    """
+    sys.path.insert(0, "/opt/sowell/scripts")
+    from onnx_engine import drew_onnx_dir
+
+    out = drew_onnx_dir()
+    run = subprocess.run(
+        [sys.executable, "/opt/sowell/scripts/onnx_export.py", "drew", "--out", str(out)],
+        capture_output=True,
+        text=True,
+    )
+    if run.returncode != 0:
+        raise RuntimeError(f"Drew ONNX export failed: {run.stderr[-800:]}")
+    drew_volume.commit()
+    return run.stdout

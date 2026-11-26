@@ -248,6 +248,33 @@ export function lanesForSameWaves(sections: number, quota: number): number {
   return Math.max(1, Math.min(cap, Math.ceil(count / waves)));
 }
 
+/** Audio minutes one container is sized for (one ONNX container per 5 min). */
+export const KOKORO_AUDIO_MINUTES_PER_CONTAINER = 5;
+/** Characters of book text per minute of Kokoro audio (Drew ≈ 170-180 wpm). */
+export const KOKORO_CHARS_PER_AUDIO_MINUTE = 1000;
+
+/**
+ * Concurrent calls one Kokoro container serves (`KOKORO_STREAMS` on the
+ * ONNX image: 4 calls x 1 thread on cpu=2). Unset or 0 means "not sized by
+ * audio", the torch-era behaviour. Clamped to 1..8.
+ */
+export function kokoroStreamsPerContainer(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.KOKORO_STREAMS_PER_CONTAINER?.trim() || 0);
+  if (!Number.isFinite(raw) || raw < 1) return 0;
+  return Math.min(8, Math.floor(raw));
+}
+
+/**
+ * Calls for `chars` of text: one container per
+ * {@link KOKORO_AUDIO_MINUTES_PER_CONTAINER} minutes of audio, times the
+ * calls each container serves. 16 min of audio → 4 containers → 16 calls.
+ */
+export function kokoroAudioLaneCap(chars: number, streams: number): number {
+  const minutes = Math.max(0, chars) / KOKORO_CHARS_PER_AUDIO_MINUTE;
+  const containers = Math.max(1, Math.ceil(minutes / KOKORO_AUDIO_MINUTES_PER_CONTAINER));
+  return containers * Math.max(1, Math.floor(streams));
+}
+
 export function planKokoroBookLanes(input: {
   configured: number;
   fleet: number;
@@ -255,8 +282,17 @@ export function planKokoroBookLanes(input: {
   remainingSections: number;
   /** Zero-based rank among the active books, oldest first. Defaults to 0. */
   rank?: number;
+  /** Characters left to speak. With `streamsPerContainer`, caps lanes by audio. */
+  remainingChars?: number;
+  /** {@link kokoroStreamsPerContainer}. 0 / absent: no audio cap. */
+  streamsPerContainer?: number;
 }): number {
   const sections = Math.max(0, Math.floor(input.remainingSections) || 0);
   if (sections < 1) return 1;
-  return lanesForSameWaves(sections, kokoroFairQuota(input));
+  let quota = kokoroFairQuota(input);
+  const streams = Math.floor(input.streamsPerContainer ?? 0);
+  if (streams > 0 && input.remainingChars != null && Number.isFinite(input.remainingChars)) {
+    quota = Math.max(1, Math.min(quota, kokoroAudioLaneCap(input.remainingChars, streams)));
+  }
+  return lanesForSameWaves(sections, quota);
 }

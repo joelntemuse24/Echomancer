@@ -4,6 +4,12 @@
  * no Sowell pack.
  */
 
+import {
+  type KokoroTake,
+  kokoroContainerMasterEnabled,
+  kokoroMasterRecipe,
+  parseKokoroBody,
+} from "@/lib/tts/kokoro-master";
 import { mapPool } from "@/lib/async-pool";
 import type {
   SynthesizeInput,
@@ -22,8 +28,9 @@ import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
 async function onePiece(
   input: SynthesizeInput,
   text: string,
-  url: string
-): Promise<Buffer> {
+  url: string,
+  master = false
+): Promise<KokoroTake> {
   const token = process.env.GEORGE_TOKEN?.trim() || "";
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -44,6 +51,8 @@ async function onePiece(
             text,
             speed: 1,
             voice: GEORGE_PROVIDER_VOICE_ID,
+            // The container masters this take too (one section, one call).
+            ...(master ? { master: kokoroMasterRecipe() } : {}),
             ...(input.jobId ? { jobId: input.jobId } : {}),
             ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
           }),
@@ -64,9 +73,10 @@ async function onePiece(
         "George endpoint did not confirm bm_george. The audio was not stored."
       );
     }
-    const audio = Buffer.from(await res.arrayBuffer());
+    const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
+    const audio = take.wav;
     if (audio.length < 44) throw new Error("George returned empty audio");
-    return audio;
+    return take;
   }
   throw new Error(`George TTS 429: ${last}`);
 }
@@ -75,10 +85,18 @@ async function synthesizeGeorge(input: SynthesizeInput): Promise<SynthesizeResul
   const url = georgeEndpoint();
   const pieces = splitSowellText(input.text, GEORGE_MAX_CHARS);
   if (pieces.length === 0) throw new Error("George received empty text");
-  const buffers = await mapPool(pieces, GEORGE_IN_FLIGHT, (piece) =>
-    onePiece(input, piece, url)
+  // A split section is joined here, so only a one-call section can come
+  // back mastered; the rest go through the CPU master task as before.
+  const master = pieces.length === 1 && kokoroContainerMasterEnabled();
+  const takes = await mapPool(pieces, GEORGE_IN_FLIGHT, (piece) =>
+    onePiece(input, piece, url, master)
   );
-  return { audio: concatWav(buffers), contentType: "audio/wav" };
+  const mastered = master ? takes[0]?.mastered : undefined;
+  return {
+    audio: concatWav(takes.map((take) => take.wav)),
+    contentType: "audio/wav",
+    ...(mastered ? { mastered } : {}),
+  };
 }
 
 async function* streamGeorge(input: SynthesizeInput): AsyncIterable<Uint8Array> {

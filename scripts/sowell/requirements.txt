@@ -1,4 +1,8 @@
-# CPU Kokoro for the Sowell pack only. Installed in the Sowell image,
+# CPU Kokoro (ONNX Runtime default, torch fallback). torch itself is the
+# CPU wheel, installed first by workers/sowell/Dockerfile. Installed in the Sowell image,
 # which is the official Python image, not Debian's apt Python.
 kokoro==0.9.4
+onnxruntime==1.20.1
+# The exporter (onnx_export.py). Not imported by the runtime.
+onnx==1.17.0
 huggingface_hub==0.36.2

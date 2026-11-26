@@ -10,6 +10,7 @@ import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { jobAudiobookClosed } from "@/lib/jobs/job-audiobook-closed";
 import { padSectionIndex, sectionObjectName, upsertSegment } from "@/lib/tts/section-index";
 import { shouldSectionMaster } from "@/lib/tts/section-master";
+import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import type { JobSegment } from "@/lib/tts/types";
 import { cpuTaskId, enqueueCpuTask, getCpuTask } from "@/lib/cpu/tasks";
 import { readWhisperVerdict, runCpuTask } from "@/lib/cpu/runner";
@@ -36,6 +37,12 @@ export async function commitSectionAudio(input: {
   chain: "podcast" | "s2";
   qaDeferred: boolean;
   sourceText?: string;
+  /**
+   * Podcast-chain MP3 of `audio`, already mastered by the provider (the
+   * Kokoro container). Published straight to the section key, with no CPU
+   * task, when mastering is on and no transcript check is pending.
+   */
+  premastered?: Buffer;
 }): Promise<SectionCommit> {
   if (await jobAudiobookClosed(input.jobId)) {
     return {
@@ -122,6 +129,27 @@ export async function commitSectionAudio(input: {
       rawPath: raw.path,
       contentType: input.contentType,
       mastered: false,
+    };
+  }
+
+  if (
+    input.premastered &&
+    input.chain === "podcast" &&
+    !input.qaDeferred &&
+    !isEmptyOrSilentAudio(input.premastered)
+  ) {
+    const uploaded = await uploadFile(
+      `audiobooks/${input.jobId}`,
+      sectionObjectName(input.index, "mp3"),
+      input.premastered,
+      "audio/mpeg"
+    );
+    return {
+      ready: true,
+      path: uploaded.path,
+      rawPath: raw.path,
+      contentType: "audio/mpeg",
+      mastered: true,
     };
   }
 

@@ -161,7 +161,11 @@ import {
   sowellBookLanes,
   sowellFleetContainers,
 } from "@/lib/tts/sowell-voice";
-import { planKokoroBookLanes, runRollingRenderPool } from "@/lib/tts/kokoro-pool";
+import {
+  kokoroStreamsPerContainer,
+  planKokoroBookLanes,
+  runRollingRenderPool,
+} from "@/lib/tts/kokoro-pool";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -1909,6 +1913,7 @@ async function runClaimedTick(
   const kokoroRank = kokoroBook
     ? await kokoroFairnessRank(jobId, job.created_at)
     : 0;
+  const kokoroBookChars = sections.reduce((sum, section) => sum + section.length, 0);
   const kokoroLaneBudget = async (): Promise<number> => {
     const others = await countOtherKokoroBooks(jobId);
     return planKokoroBookLanes({
@@ -1917,6 +1922,10 @@ async function runClaimedTick(
       activeBooks: others + 1,
       remainingSections: total,
       rank: kokoroRank,
+      // One container per ~5 min of audio when the ONNX image serves several
+      // calls per container (KOKORO_STREAMS_PER_CONTAINER).
+      remainingChars: kokoroBookChars,
+      streamsPerContainer: kokoroStreamsPerContainer(),
     });
   };
   if (kokoroBook) {
@@ -2360,6 +2369,7 @@ async function runClaimedTick(
           chain: usesModalClone(catalog?.id) ? "s2" : "podcast",
           qaDeferred: synthesized.qaDeferred === true,
           sourceText: sections[index],
+          premastered: synthesized.mastered,
         });
         if (!stored.ready) {
           const segment: JobSegment = {
@@ -3845,6 +3855,8 @@ interface SynthesisSuccess {
   cacheKey?: string;
   /** Whisper could not run. The raw take is stored; the section is not ready. */
   qaDeferred?: boolean;
+  /** Podcast-chain MP3 mastered by the provider (Kokoro container). */
+  mastered?: Buffer;
 }
 
 /**
@@ -4290,6 +4302,7 @@ async function synthesizeSection(args: {
           extension,
           durationHintSeconds: result.durationHintSeconds,
           cacheKey,
+          ...(result.mastered ? { mastered: result.mastered } : {}),
         };
       } catch (err) {
         if (err instanceof ProviderSlotBusyError) throw err;
