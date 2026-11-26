@@ -31,9 +31,9 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
   - `section-publish.ts` publishes it straight to `sections/NNNN.mp3` (the raw WAV is still kept under `raw/`) when the chain is podcast, no QA is deferred, and the audio isn't silent. Otherwise the old CPU task runs.
 - `kokoro-pool.ts`: `kokoroStreamsPerContainer()` (`KOKORO_STREAMS_PER_CONTAINER`, unset = old behaviour) and `kokoroAudioLaneCap()`. Lanes are capped at ceil(chars / 1000 / 5) containers × streams, so the 16-minute book gets 4 containers and 16 calls. `planKokoroBookLanes` takes `remainingChars` and `streamsPerContainer`.
 - `modal/sowell_worker.py`:
-  - `KOKORO_RUNTIME` (deploy-time `onnx` default | `torch` fallback, baked into the container env).
+  - `KOKORO_RUNTIME` (deploy-time `torch` default | `onnx` opt-in, baked into the container env).
   - `@modal.concurrent(max_inputs=KOKORO_STREAMS)` with a `BoundedSemaphore` gate.
-  - `memory_mb()` (ONNX default 3072, **placeholder**, not yet measured on Modal; torch stays at 6144).
+  - `memory_mb()` (ONNX default 5120 until measured; torch stays at 6144). A plain deploy is torch.
   - `max_containers` = ceil(calls / streams).
   - Prosody G is refused on ONNX with a 400. The prod worker default `DREW_PROSODY_RULES` is off, so prod doesn't send G.
   - Optional `master` gives a bundle response; if mastering fails, it returns a plain WAV with `x-kokoro-master-error`.
@@ -43,12 +43,12 @@ Branch `cursor/kokoro-onnx-lean`. It holds work in progress and has **not** been
   - `requirements.txt` adds `onnxruntime==1.20.1` and `onnx==1.17.0`.
   - Uninstalls `spacy-curated-transformers`.
   - Exports the stock ONNX at build time and verifies its manifest.
-  - Sets `KOKORO_RUNTIME=onnx`, `KOKORO_ONNX_THREADS=1` and `KOKORO_STREAMS=4`.
+  - Image env defaults to `KOKORO_RUNTIME=torch` and `KOKORO_STREAMS=1`. The ONNX deploy bakes `onnx` and 4 streams over that.
   - The image **built successfully on Modal**, including the stock export.
 
 ## Left to do
 1. Redeploy the throwaway test app and smoke-test Drew + master. The first smoke returned 500 because of `pack.py`'s top-level `import torch`. That is fixed in this branch but not re-verified on Modal. Check Walter, George and Heart as well.
-2. Check that the memory snapshot works with ORT sessions (cold start), and measure the **container peak RAM** with 4 concurrent Drew calls. Then set `ONNX_MEMORY_MB` (the 3072 default is a guess; see the local numbers below).
+2. Check that a restore works after the plain enter creates the ORT sessions (they are not inside the memory snapshot), and measure the **container peak RAM** with 4 concurrent Drew calls. Then set `ONNX_MEMORY_MB` (the 5120 default is headroom, not a measurement; see the local numbers below).
 3. Run the 16-minute-book measurement with the harness pattern from PR 331's test (25 sections, Christmas Carol stave 1, 15.7k chars, Drew):
    - 13–16 calls against the ONNX test app, with master in the request.
    - The concat still runs on the CPU app.
@@ -97,7 +97,7 @@ Earlier ONNX/torch A/B samples are on the operator box. The prod vs new A/B for 
 ## Known problems / risks
 - `pack.py` torch import: fixed, but not re-verified on Modal.
 - Memory snapshot plus ORT sessions created in `@modal.enter(snap=True)` is untested.
-- `ONNX_MEMORY_MB=3072` is unmeasured.
+- `ONNX_MEMORY_MB=5120` is the unmeasured safe default, not a Modal peak.
 - G2P runs under one lock across the 4 streams. That is about 0.2% of section time, so it should be fine.
 - The Drew ONNX export must exist before an ONNX deploy, or Drew (the default narrator) returns 503. There is no automatic fallback to torch inside the ONNX process, because torch is blocked there.
 - `KOKORO_STREAMS_PER_CONTAINER` on the worker must match the deploy (4 on ONNX). With the torch fallback deploy, unset it.

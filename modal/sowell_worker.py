@@ -2,16 +2,16 @@
 
 Runtime (Nov 2026). ``KOKORO_RUNTIME`` is read at deploy time:
 
-* ``onnx`` (default): ONNX Runtime fp32, no torch in the serving process.
-  One container serves ``KOKORO_STREAMS`` (4) calls at once, one ORT thread
-  each, on ``cpu=2`` (4 vCPU) and one shared copy of the weights. Measured
-  1.57x the audio per core-second of the torch runtime. Memory is sized to
-  the measured peak (``ONNX_MEMORY_MB``). Drew's graph is exported once into
+* ``torch`` (default): the previous runtime (one call per container,
+  ``memory=6144``). A plain ``modal deploy`` stays here.
+* ``onnx``: ONNX Runtime fp32, no torch in the serving process. Set
+  ``KOKORO_RUNTIME=onnx`` at deploy. One container serves ``KOKORO_STREAMS``
+  (4) calls at once, one ORT thread each, on ``cpu=2`` (4 vCPU) and one
+  shared copy of the weights. Memory defaults to 5120 MB until a measured
+  peak replaces it (``ONNX_MEMORY_MB``). Drew's graph is exported once into
   his volume: ``modal run modal/sowell_worker.py::export_drew_onnx``.
   Prosody G is a torch hook and is refused here (the worker's default is
   off, ``DREW_PROSODY_RULES``).
-* ``torch``: the previous runtime, unchanged (one call per container,
-  ``memory=6144``). The fallback: ``KOKORO_RUNTIME=torch modal deploy ...``.
 
 Mastering. A request may carry ``master`` (the recipe the worker builds in
 ``src/lib/tts/kokoro-master.ts``). The container then returns the podcast-
@@ -115,8 +115,8 @@ RUNTIMES = ("onnx", "torch")
 
 
 def kokoro_runtime(env: dict | None = None) -> str:
-    raw = str((env or os.environ).get("KOKORO_RUNTIME", "onnx")).strip().lower()
-    return raw if raw in RUNTIMES else "onnx"
+    raw = str((env or os.environ).get("KOKORO_RUNTIME", "torch")).strip().lower()
+    return raw if raw in RUNTIMES else "torch"
 
 
 RUNTIME = kokoro_runtime()
@@ -140,9 +140,10 @@ def kokoro_streams(env: dict | None = None) -> int:
 STREAMS = kokoro_streams()
 #: Torch runtime memory: stock + Drew kmodels on the old image.
 TORCH_MEMORY_MB = 6144
-#: ONNX runtime memory, sized to the measured container peak (see
-#: `ONNX_MEMORY_MB` in the PR notes) plus headroom. Overridable at deploy.
-ONNX_MEMORY_MB_DEFAULT = 3072
+#: ONNX memory until a Modal measurement replaces it. 5120 is the runbook's
+#: measurement size: the local estimate was ~3–3.5 GB, and 3072 was tight
+#: enough to OOM before that measurement. Overridable at deploy.
+ONNX_MEMORY_MB_DEFAULT = 5120
 
 
 def memory_mb(env: dict | None = None) -> int:
@@ -281,14 +282,9 @@ class Speaker:
             from onnx_engine import OnnxEngine
 
             self.engine = OnnxEngine()
-            self.engine.load()
-            if not self.engine.load_drew():
-                print(
-                    "[drew] ONNX export unavailable; Drew answers 503 until "
-                    "`modal run modal/sowell_worker.py::export_drew_onnx`: "
-                    + str(self.engine.drew_error),
-                    flush=True,
-                )
+            # Packs and G2P only. ORT sessions, their thread pools, and the
+            # engine locks are created in `open_gate` after a restore.
+            self.engine.load_assets()
             return
         from engine import apply_torch_threads, SowellEngine
 
@@ -303,7 +299,10 @@ class Speaker:
         # present: the first Drew section must not pay a disk read. A missing
         # volume is reported and left alone — Walter and George still work.
         if not self.engine.load_drew():
-            print("[drew] weights unavailable; Drew answers 503", flush=True)
+            print(
+                "[drew] weights unavailable at boot; the next Drew request loads them",
+                flush=True,
+            )
 
     @modal.enter()
     def open_gate(self) -> None:
@@ -314,14 +313,22 @@ class Speaker:
         now = time.monotonic()
         self.boot = "restored" if isinstance(snap, float) and now + 0.5 < snap else "unknown"
         self.gate = threading.BoundedSemaphore(kokoro_streams())
+        if self.runtime == "onnx":
+            self.engine.open_sessions()
+            if not self.engine.ensure_drew():
+                print(
+                    "[drew] ONNX export not loaded at boot; the next Drew request "
+                    "loads it if the export is on the volume: "
+                    + str(self.engine.drew_error),
+                    flush=True,
+                )
         print(f"[kokoro] boot={self.boot} runtime={self.runtime}", flush=True)
 
-    def _drew_ready(self) -> bool:
-        if getattr(self, "runtime", "torch") == "onnx":
-            return bool(self.engine.drew_loaded)
-        from drew import drew_assets_present
-
-        return drew_assets_present()
+    def _ensure_drew(self) -> bool:
+        """Load Drew now. A snapshot that missed the export tries again."""
+        if self.runtime == "onnx":
+            return bool(self.engine.ensure_drew())
+        return bool(self.engine.load_drew())
 
     @modal.fastapi_endpoint(method="POST", docs=False)
     def speak(self, item: dict, request: Request):
@@ -350,7 +357,7 @@ class Speaker:
             return JSONResponse({"ok": False, "error": "voice is not allowed"}, status_code=400)
         from drew import DREW_VOICE_ID
 
-        if voice == DREW_VOICE_ID and not self._drew_ready():
+        if voice == DREW_VOICE_ID and not self._ensure_drew():
             return JSONResponse(
                 {"ok": False, "error": "Drew weights are not mounted", "code": "DREW_UNAVAILABLE"},
                 status_code=503,
@@ -378,6 +385,7 @@ class Speaker:
             return JSONResponse({"ok": False, "error": "master is not an object"}, status_code=400)
         if not self.gate.acquire(blocking=False):
             return JSONResponse({"ok": False, "deferred": True}, status_code=429)
+        holding = True
         try:
             if self.runtime == "onnx":
                 wav, report = self.engine.speak(text, voice, item.get("speed", 1.0))
@@ -422,6 +430,10 @@ class Speaker:
             if recipe is not None:
                 from master import MasterError, master_wav
 
+                # The permit is the speech lane. ffmpeg is another process;
+                # holding the permit left the other streams idle for the loudnorm.
+                self.gate.release()
+                holding = False
                 started = time.perf_counter()
                 try:
                     mp3, info = master_wav(wav, float(report.get("seconds") or 0), recipe)
@@ -442,7 +454,8 @@ class Speaker:
         except Exception as err:
             return JSONResponse({"ok": False, "error": str(err)[:300]}, status_code=500)
         finally:
-            self.gate.release()
+            if holding:
+                self.gate.release()
 
 
 @app.function(

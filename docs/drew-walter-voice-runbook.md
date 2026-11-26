@@ -190,7 +190,10 @@ the request path does not use it.
 
 ## Cache
 
-Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-v3`. Andrew's
+Drew sections use `drew-kokoro82m-ft-stageA-step00900-style300-` plus the
+worker runtime and `speed1.000` (`torch` unless `KOKORO_RUNTIME=onnx`).
+The provider refuses a response whose `x-kokoro-speed` or
+`x-kokoro-runtime` is anything else, so the take is not cached. Andrew's
 Edge takes stay under the Edge key and are never replayed as Drew. Bump
 `DREW_WEIGHTS_ID` in `src/lib/tts/drew-voice.ts` when the volume gets a
 different checkpoint — that is a different model, so its audio must not be

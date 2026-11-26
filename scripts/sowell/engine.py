@@ -160,9 +160,9 @@ class SowellEngine:
         self._lock = threading.Lock()
         self._pipelines: dict = {}
         self._packs: dict[str, torch.Tensor] = {}
-        # Drew's own model, loaded lazily. `_drew_error` remembers a failed
-        # load so a missing volume fails fast instead of retrying the disk read
-        # on every section.
+        # Drew's own model, loaded lazily. A failed load is not sticky: a
+        # snapshot taken before the volume is mounted must try again on the
+        # next request instead of 503ing until a new snapshot.
         self._drew_pipes: dict | None = None
         self._drew_pack: torch.Tensor | None = None
         self._drew_error: str | None = None
@@ -187,8 +187,6 @@ class SowellEngine:
     def _load_drew_locked(self) -> bool:
         if self._drew_pipes is not None:
             return True
-        if self._drew_error is not None:
-            return False
         try:
             assets = check_drew_assets()
             model = load_kmodel(assets.kmodel)

@@ -182,6 +182,51 @@ class DrewSpeedMultiply(unittest.TestCase):
         self.assertIsNone(walter["styleIndex"])
         self.assertIsNone(george["styleIndex"])
 
+    def test_a_failed_drew_load_is_retried(self) -> None:
+        eng = SowellEngine()
+        eng._drew_error = "frozen from a snapshot"
+        calls = {"n": 0}
+        saved = {
+            "check_drew_assets": engine_module.check_drew_assets,
+            "load_kmodel": engine_module.load_kmodel,
+            "load_voice_pack": engine_module.load_voice_pack,
+            "pin_style": engine_module.pin_style,
+            "fixed_style_index": engine_module.fixed_style_index,
+            "KPipeline": engine_module.KPipeline,
+        }
+
+        def restore() -> None:
+            for name, value in saved.items():
+                setattr(engine_module, name, value)
+
+        self.addCleanup(restore)
+
+        def miss() -> None:
+            calls["n"] += 1
+            raise engine_module.DrewPackError("no volume")
+
+        engine_module.check_drew_assets = miss
+        self.assertFalse(eng.load_drew())
+        self.assertIsNone(eng._drew_pipes)
+
+        def hit() -> object:
+            calls["n"] += 1
+            return type("Assets", (), {"kmodel": "k", "voice": "v"})()
+
+        class Pipe:
+            def __init__(self, lang_code: str, repo_id: str, model: object) -> None:
+                del lang_code, repo_id, model
+
+        engine_module.check_drew_assets = hit
+        engine_module.load_kmodel = lambda path: object()
+        engine_module.load_voice_pack = lambda path: torch.zeros(1)
+        engine_module.pin_style = lambda pack, index: pack
+        engine_module.fixed_style_index = lambda voice: 300
+        engine_module.KPipeline = Pipe
+        self.assertTrue(eng.load_drew())
+        self.assertIsNotNone(eng._drew_pipes)
+        self.assertEqual(calls["n"], 2)
+
 
 class ThreadBudget(unittest.TestCase):
     """`SOWELL_TORCH_THREADS` is the knob; the old name still works."""

@@ -123,17 +123,19 @@ ENV PYTHONPATH=/opt/sowell/scripts
 
 RUN python /opt/sowell/scripts/pack_main.py
 
-# ONNX runtime (default). Stock Kokoro graph plus Walter's, George's and
+# ONNX graph, baked for the opt-in runtime. Stock Kokoro plus Walter's, George's and
 # Heart's pinned packs, exported at build from the same pinned checkpoint and
 # packs the torch runtime loads. Drew's graph is private: it is exported into
 # his volume (`modal run modal/sowell_worker.py::export_drew_onnx`).
 ENV KOKORO_ONNX_DIR=/opt/sowell/onnx
 RUN python /opt/sowell/scripts/onnx_export.py stock --out /opt/sowell/onnx >/dev/null \
   && python -c "import sys; sys.path.insert(0,'/opt/sowell/scripts'); from pathlib import Path; from onnx_engine import read_manifest; read_manifest(Path('/opt/sowell/onnx'))"
-# 4 requests at once per container, one ORT thread each (cpu=2 = 4 vCPU).
-ENV KOKORO_RUNTIME=onnx
+# The image default is the torch fallback. A deploy that sets
+# KOKORO_RUNTIME=onnx bakes that choice, and the stream count, over these
+# (modal/sowell_worker.py image.env). One ORT thread when that runtime is on.
+ENV KOKORO_RUNTIME=torch
 ENV KOKORO_ONNX_THREADS=1
-ENV KOKORO_STREAMS=4
+ENV KOKORO_STREAMS=1
 
 WORKDIR /opt/sowell/scripts
 CMD ["python", "synthesize.py", "--help"]

@@ -223,13 +223,14 @@ def test_worker_class_resolves_with_the_declared_fleet(monkeypatch) -> None:
 
     assert worker.APP_NAME == "echomancer-sowell"
     kwargs = worker.app.cls_kwargs
-    # ONNX default: 16 calls / 4 streams = 4 containers, memory from the
-    # measured ONNX constant (torch stays 6144 and one call per container).
-    assert kwargs["max_containers"] == 4
+    # Plain deploy is torch: 16 containers, one call each, 6144 MB.
+    # ONNX is opt-in and uses ONNX_MEMORY_MB_DEFAULT until it is measured.
+    assert kwargs["max_containers"] == 16
     assert kwargs["scaledown_window"] == 5
     assert kwargs["min_containers"] == 0
-    assert kwargs["memory"] == worker.ONNX_MEMORY_MB_DEFAULT
-    assert kwargs["memory"] != worker.TORCH_MEMORY_MB
+    assert kwargs["memory"] == worker.TORCH_MEMORY_MB
+    assert worker.ONNX_MEMORY_MB_DEFAULT == 5120
+    assert worker.kokoro_runtime() == "torch"
     assert kwargs["cpu"] == 2
     assert kwargs["enable_memory_snapshot"] is True
     assert "gpu" not in kwargs
@@ -266,6 +267,27 @@ def test_max_containers_reads_a_respected_fleet_between_one_and_sixteen(monkeypa
         monkeypatch.setenv("SOWELL_MAX_CONTAINERS", str(n))
         worker = _load_worker_with_fake_modal(monkeypatch)
         assert worker.app.cls_kwargs["max_containers"] == expected
+
+
+def test_onnx_runtime_uses_four_streams_and_5120_mb(monkeypatch) -> None:
+    monkeypatch.setenv("KOKORO_RUNTIME", "onnx")
+    monkeypatch.delenv("ONNX_MEMORY_MB", raising=False)
+    monkeypatch.delenv("SOWELL_MAX_CONTAINERS", raising=False)
+    worker = _load_worker_with_fake_modal(monkeypatch)
+    assert worker.kokoro_streams() == 4
+    assert worker.memory_mb() == 5120
+    assert worker.app.cls_kwargs["max_containers"] == 4
+    assert worker.app.cls_kwargs["memory"] == 5120
+    text = (ROOT / "modal" / "sowell_worker.py").read_text()
+    snap = text.split("def load", 1)[1].split("def open_gate", 1)[0]
+    assert "load_assets()" in snap
+    assert "open_sessions()" not in snap
+    assert "InferenceSession" not in snap
+    gate = text.split("def open_gate", 1)[1].split("def _ensure_drew", 1)[0]
+    assert "open_sessions()" in gate
+    speak = text.split("def speak", 1)[1].split("def export_drew_onnx", 1)[0]
+    master = speak.index("master_wav")
+    assert speak.rindex("self.gate.release()", 0, master) < master
 
 
 def test_torch_runtime_keeps_one_call_and_6144_mb(monkeypatch) -> None:

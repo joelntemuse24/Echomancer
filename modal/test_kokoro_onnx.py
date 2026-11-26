@@ -8,6 +8,7 @@ and the torch-import block. They do not load a Kokoro graph.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -62,6 +63,54 @@ def test_read_manifest_refuses_a_hash_mismatch(tmp_path: Path) -> None:
     )
     with pytest.raises(OnnxEngineError, match="hash mismatch"):
         read_manifest(tmp_path)
+
+
+def test_ensure_drew_retries_after_a_missing_export(tmp_path: Path, monkeypatch) -> None:
+    import hashlib
+
+    import numpy as np
+
+    import onnx_engine as mod
+
+    engine = mod.OnnxEngine()
+    assert engine._load_lock is None
+    assert engine._g2p_lock is None
+    assert engine._stock is None
+    assert engine._drew is None
+    monkeypatch.setattr(mod, "drew_onnx_dir", lambda: tmp_path)
+    opened: list[str] = []
+
+    def fake_session(path: Path):
+        opened.append(path.name)
+        return {"name": path.name}
+
+    monkeypatch.setattr(mod, "_session", fake_session)
+    assert engine.ensure_drew() is False
+    assert engine._drew is None
+    npy = tmp_path / "drew.npy"
+    np.save(npy, np.zeros((2, 1, 4), dtype=np.float32))
+    graph = tmp_path / "drew.onnx"
+    graph.write_bytes(b"not-a-graph")
+    files = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (npy, graph)
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps({"files": files}))
+    assert engine.ensure_drew() is True
+    assert opened == ["drew.onnx"]
+    assert engine.ensure_drew() is True
+    assert opened == ["drew.onnx"]
+
+
+def test_python_lufs_reads_the_shared_fixture() -> None:
+    import numpy as np
+
+    from master import integrated_lufs
+
+    fixture = Path(__file__).resolve().parents[1] / "scripts" / "sowell" / "fixtures" / "lufs-short.f32le"
+    samples = np.fromfile(fixture, dtype="<f4")
+    measured = integrated_lufs(samples, 16_000)
+    assert measured is not None and math.isfinite(measured)
 
 
 def test_block_torch_import_is_reversible(monkeypatch) -> None:

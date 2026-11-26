@@ -1314,8 +1314,10 @@ Drew's Kokoro pack is pinned to tensor index 300 when the voice loads
 (`pin_style` in `scripts/sowell/style.py`). Infer still reads
 `pack[phoneme_count - 1]` and still receives Drew's 1.0 speed, applied
 once. The take-home cache variant is
-`drew-kokoro82m-ft-stageA-step00900-style300-v3` (`v2` was Kokoro speed
-0.88; the key stores the app speed, which stayed 1.0). Deploy steps are
+`drew-kokoro82m-ft-stageA-step00900-style300-torch-speed1.000` (or `onnx`
+when `KOKORO_RUNTIME=onnx`). The provider accepts the take only when
+`x-kokoro-speed` and `x-kokoro-runtime` match that key. `v2` was Kokoro
+speed 0.88 with the app speed still stored as 1.0. Deploy steps are
 in `docs/kokoro-onnx-runbook.md`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`

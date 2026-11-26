@@ -27,6 +27,7 @@ import {
   drewEndpoint,
   drewProsodyField,
   drewProsodyRulesEnabled,
+  drewTakeMismatch,
 } from "@/lib/tts/drew-voice";
 import { concatWav, splitSowellText } from "@/lib/tts/providers/sowell";
 import { remoteFetch, remoteSectionKey } from "@/lib/remote/http";
@@ -95,6 +96,10 @@ async function onePiece(
         "Drew endpoint did not apply prosody G. The audio was not stored."
       );
     }
+    // The cache key names this worker's runtime and Kokoro speed. A container
+    // that is still on 0.88, or on the other graph, must not be stored under it.
+    const mismatch = drewTakeMismatch(res.headers, speed);
+    if (mismatch) throw new Error(mismatch);
     const take = parseKokoroBody(Buffer.from(await res.arrayBuffer()), res.headers);
     const audio = take.wav;
     if (audio.length < 44) throw new Error("Drew returned empty audio");

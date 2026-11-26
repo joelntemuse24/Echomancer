@@ -3,16 +3,20 @@
 CPU-only. This does not touch `echomancer-s2-clone` or a GPU. Drew's native
 Kokoro speed is **1.0**, applied once in `scripts/sowell/drew.py`
 (`DREW_NATIVE_KOKORO_SPEED`). Style row **300** stays. The take-home cache
-variant is `drew-kokoro82m-ft-stageA-step00900-style300-v3`, so a section
-recorded at the old 0.88 is not replayed. Prosody G stays off.
+key is `drew-kokoro82m-ft-stageA-step00900-style300-<runtime>-speed1.000`.
+The worker's `KOKORO_RUNTIME` picks `torch` or `onnx`. The provider stores
+the bytes only when `x-kokoro-speed` and `x-kokoro-runtime` match that key.
+A worker that ships before the image refuses the old 0.88 container instead
+of caching it, and a torch rollback does not replay an ONNX take. Prosody G
+stays off.
 
-`ONNX_MEMORY_MB` still defaults to **3072**. That number is a local estimate
-(4-stream stock maxrss 2.64 GB, plus about 0.35 GB for Drew's graph), not a
-Modal measurement. Deploy the first ONNX app with `ONNX_MEMORY_MB=5120` so
-the container does not OOM, read `x-kokoro-rss-mb` and `x-kokoro-cgroup-mb`
-under 4 concurrent Drew calls, then set the code default to that peak plus
-headroom before the production deploy. Torch stays `memory=6144` and one
-call per container.
+A plain `modal deploy` is **torch**: one call per container, `memory=6144`.
+`KOKORO_RUNTIME=onnx` is the opt-in. ONNX memory defaults to **5120** MB
+until a measurement replaces it. That is the runbook size, above the local
+estimate of ~3–3.5 GB (4-stream stock maxrss 2.64 GB, plus about 0.35 GB
+for Drew's graph). Read `x-kokoro-rss-mb` and `x-kokoro-cgroup-mb` under 4
+concurrent Drew calls, then set `ONNX_MEMORY_MB` (or
+`ONNX_MEMORY_MB_DEFAULT`) to that peak plus headroom.
 
 ## 1. The image needs Walter's pack
 
@@ -66,15 +70,21 @@ modal run modal/sowell_worker.py::export_drew_onnx
 ```bash
 SOWELL_APP_NAME=echomancer-sowell \
 KOKORO_RUNTIME=onnx \
-ONNX_MEMORY_MB=5120 \
 modal deploy modal/sowell_worker.py
 ```
 
 `KOKORO_RUNTIME` is read at deploy and baked into the image env. A later
 shell export does not change a running container. `max_containers` becomes
-`ceil(SOWELL_MAX_CONTAINERS / KOKORO_STREAMS)`. The defaults are 16 calls
-and 4 streams, so 4 containers. Each container still has `cpu=2` and
-accepts 4 calls (`@modal.concurrent(max_inputs=4)` plus a semaphore).
+`ceil(SOWELL_MAX_CONTAINERS / KOKORO_STREAMS)`. With the ONNX opt-in that is
+16 calls and 4 streams, so 4 containers, each `cpu=2`, `memory=5120`, and
+4 calls (`@modal.concurrent(max_inputs=4)` plus a semaphore). Omit
+`KOKORO_RUNTIME` and the deploy stays torch.
+
+ORT sessions, their thread pools, and the engine locks are created in the
+plain `@modal.enter`, after a memory snapshot restores. The snap enter
+loads packs and G2P only. A Drew export that is missing at boot is retried
+on the next Drew request, under the engine lock. A snapshot taken before
+`export_drew_onnx` does not 503 forever.
 
 After the memory measurement, set `ONNX_MEMORY_MB` to the measured value
 (or change `ONNX_MEMORY_MB_DEFAULT` and redeploy without the override).
@@ -84,9 +94,13 @@ After the memory measurement, set `ONNX_MEMORY_MB` to the measured value
 On the take-home VM, then restart the worker:
 
 ```bash
+KOKORO_RUNTIME=onnx
 KOKORO_STREAMS_PER_CONTAINER=4
 KOKORO_CONTAINER_MASTER=1
 ```
+
+`KOKORO_RUNTIME` on the worker is the same value baked into the image. It
+is part of Drew's cache key. Leave it unset while the deploy is still torch.
 
 `KOKORO_STREAMS_PER_CONTAINER` must match the deploy. Unset or `0` is the
 torch-era lane plan (no audio cap). Container mastering publishes a
@@ -98,12 +112,13 @@ cache hit still master on the CPU app. The book join stays there too.
 
 ## 5. Rollback
 
-Redeploy with `KOKORO_RUNTIME=torch`. That forces one stream, `memory=6144`,
-and `max_containers` equal to the call cap. Unset
-`KOKORO_STREAMS_PER_CONTAINER` and `KOKORO_CONTAINER_MASTER` on the worker
-and restart it. Torch reads the checkpoint from the volume; it does not
-need the ONNX export. Sections already stored under `v3` stay. New torch
-sections use the same 1.0 speed and the same cache key.
+Redeploy with `KOKORO_RUNTIME` unset (or `torch`). That forces one stream,
+`memory=6144`, and `max_containers` equal to the call cap. Unset
+`KOKORO_RUNTIME`, `KOKORO_STREAMS_PER_CONTAINER`, and
+`KOKORO_CONTAINER_MASTER` on the worker and restart it. Torch reads the
+checkpoint from the volume; it does not need the ONNX export. Drew's cache
+key changes with the runtime, so ONNX sections are not replayed. New torch
+sections use Kokoro speed 1.0.
 
 ## 6. Picker sample
 

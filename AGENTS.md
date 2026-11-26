@@ -464,8 +464,12 @@ calibrates Drew down: `initialNarrationSpeed` returns 1.0 for Drew, and the
 per-section `calibrateNarrationSpeed` step is skipped for `provider: "drew"`
 (the same exemption Paradee has). Do not apply the native speed in TypeScript
 as well — `drewKokoroSpeed` exists for tests and documentation, not as a
-second multiplier on the request. The take-home cache variant is `v3` so a
-section recorded at the old 0.88 is not replayed. Style row 300 is unchanged.
+second multiplier on the request. The take-home cache key names the
+runtime and the Kokoro speed (`-torch-speed1.000` or `-onnx-speed1.000`).
+The provider stores a take only when `x-kokoro-speed` and
+`x-kokoro-runtime` match that key, so a worker deploy ahead of the image
+cannot file an 0.88 take under the 1.0 name, and a rollback cannot replay
+the other graph. Style row 300 is unchanged.
 
 **Drew prosody G:** sentence-type F0 rules (`scripts/sowell/prosody_rules.py`,
 variant `G_rules_phrase`) are off unless `DREW_PROSODY_RULES` is set on the
@@ -475,7 +479,8 @@ edit the F0 tensor that forward already produced. Constants are hardcoded
 (`ACCENT_K` 0.7, `DECL_ST` 3, short exclamation +4 st, long +1.5 st, yes/no
 rise +7 st). Do not read those from the environment. With the flag off the
 request omits `prosody` and the cache key stays
-`drew-kokoro82m-ft-stageA-step00900-style300-v3`. With it on, the body is
+`drew-kokoro82m-ft-stageA-step00900-style300-` plus the runtime and
+`speed1.000`. With it on, the body is
 `prosody: "G"` and the key gains `-prosodyG`. The container applies G only
 when that field is present; its own env cannot rule a take cached as
 unruled. Deploy the Modal app that honors the field before setting the flag.

@@ -1,7 +1,7 @@
 """Kokoro on ONNX Runtime, with no torch import.
 
-The container's default runtime (``KOKORO_RUNTIME=onnx``). ``engine.py``
-(torch) stays in the image as the fallback (``KOKORO_RUNTIME=torch``).
+``KOKORO_RUNTIME=onnx`` selects this engine. The image default is torch
+(``engine.py``); ONNX is the opt-in.
 
 One process, one ``InferenceSession`` per model, shared by every request.
 ONNX Runtime releases the GIL in ``run`` and a session may be run from
@@ -141,41 +141,81 @@ def drew_speed(requested: object) -> float:
 
 class OnnxEngine:
     def __init__(self) -> None:
-        self._g2p_lock = threading.Lock()
-        self._load_lock = threading.Lock()
+        # Locks and ORT sessions are created in ``open_sessions``, after a
+        # memory snapshot restores. A lock or an InferenceSession thread pool
+        # captured in the snapshot is tied to the process that took it.
+        self._g2p_lock: threading.Lock | None = None
+        self._load_lock: threading.Lock | None = None
         self._g2p: dict = {}
         self._vocab: dict[str, int] = {}
         self._stock = None
+        self._stock_onnx: Path | None = None
         self._drew = None
         self._packs: dict[str, np.ndarray] = {}
         self._drew_error: str | None = None
         self.init_count = 0
 
+    def _ensure_locks(self) -> None:
+        if self._load_lock is None:
+            self._load_lock = threading.Lock()
+            self._g2p_lock = threading.Lock()
+
     # ---- loading ---------------------------------------------------------
-    def load(self, stock_dir: Path | None = None, verify: bool = True) -> None:
+    def load_assets(self, stock_dir: Path | None = None, verify: bool = True) -> None:
+        """Packs, vocab, and G2P. No ORT session and no lock.
+
+        This is what ``@modal.enter(snap=True)`` may call. ``open_sessions``
+        builds the sessions after restore.
+        """
+        if self._vocab:
+            return
+        folder = stock_dir or STOCK_DIR
+        manifest = read_manifest(folder, verify=verify)
+        self._vocab = json.loads((folder / "vocab.json").read_text())
+        for voice in STOCK_VOICES:
+            self._packs[voice] = np.load(folder / f"{voice}.npy")
+        self._stock_onnx = folder / "kokoro-v1_0.onnx"
+        self.torch_blocked = block_torch_import()
+        from misaki import en, espeak
+
+        for lang in ("a", "b"):
+            british = lang == "b"
+            try:
+                fallback = espeak.EspeakFallback(british=british)
+            except Exception:  # same as KPipeline: OOD words are skipped
+                fallback = None
+            self._g2p[lang] = en.G2P(trf=False, british=british, fallback=fallback, unk="")
+        self._manifest = manifest
+
+    def open_sessions(self) -> None:
+        """Create the locks and the stock ORT session. Safe after restore."""
+        self._ensure_locks()
+        assert self._load_lock is not None
         with self._load_lock:
             if self._stock is not None:
                 return
-            folder = stock_dir or STOCK_DIR
-            manifest = read_manifest(folder, verify=verify)
-            self._vocab = json.loads((folder / "vocab.json").read_text())
-            for voice in STOCK_VOICES:
-                self._packs[voice] = np.load(folder / f"{voice}.npy")
-            self._stock = _session(folder / "kokoro-v1_0.onnx")
-            self.torch_blocked = block_torch_import()
-            from misaki import en, espeak
-
-            for lang in ("a", "b"):
-                british = lang == "b"
-                try:
-                    fallback = espeak.EspeakFallback(british=british)
-                except Exception:  # same as KPipeline: OOD words are skipped
-                    fallback = None
-                self._g2p[lang] = en.G2P(trf=False, british=british, fallback=fallback, unk="")
-            self._manifest = manifest
+            if self._stock_onnx is None:
+                raise OnnxEngineError("runtime assets are not loaded")
+            self._stock = _session(self._stock_onnx)
             self.init_count += 1
 
+    def load(self, stock_dir: Path | None = None, verify: bool = True) -> None:
+        """Assets and sessions, for a process that is not snapshotted."""
+        self.load_assets(stock_dir, verify=verify)
+        self.open_sessions()
+
     def load_drew(self, folder: Path | None = None, verify: bool = True) -> bool:
+        return self.ensure_drew(folder, verify=verify)
+
+    def ensure_drew(self, folder: Path | None = None, verify: bool = True) -> bool:
+        """Load Drew's session. A miss is retried on the next call.
+
+        A snapshot taken before the export exists restores ``_drew is None``.
+        The following request tries again under the load lock, so the book
+        does not 503 until a new snapshot.
+        """
+        self._ensure_locks()
+        assert self._load_lock is not None
         with self._load_lock:
             if self._drew is not None:
                 return True
@@ -187,6 +227,7 @@ class OnnxEngine:
                 self._drew_error = None
                 return True
             except Exception as err:  # missing export → caller decides
+                self._drew = None
                 self._drew_error = str(err)
                 return False
 
@@ -200,6 +241,8 @@ class OnnxEngine:
 
     # ---- speech ----------------------------------------------------------
     def phoneme_runs(self, text: str, lang: str) -> list[tuple[str, str]]:
+        self._ensure_locks()
+        assert self._g2p_lock is not None
         with self._g2p_lock:
             _, tokens = self._g2p[lang](text)
         runs = []
@@ -223,7 +266,7 @@ class OnnxEngine:
         if self._stock is None:
             raise OnnxEngineError("runtime is not loaded")
         if voice == DREW_VOICE_ID:
-            if self._drew is None:
+            if not self.ensure_drew():
                 raise OnnxEngineError(self._drew_error or "Drew ONNX export is not loaded")
             session, kokoro_speed, lang = self._drew, drew_speed(speed), "a"
         elif voice in STOCK_VOICES:

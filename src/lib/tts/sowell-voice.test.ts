@@ -314,10 +314,16 @@ describe("sowell voice", () => {
     // ONNX sizes memory to the measured peak. Torch stays at 6144 and one call.
     expect(source).toContain("memory=memory_mb()");
     expect(source).toContain("TORCH_MEMORY_MB = 6144");
+    expect(source).toContain("ONNX_MEMORY_MB_DEFAULT = 5120");
     expect(source).toContain("max_inputs=STREAMS");
     expect(source).toContain("BoundedSemaphore");
     expect(source).toContain("timing_headers");
     const speak = source.slice(source.indexOf("def speak"), source.indexOf("def export_drew_onnx"));
+    const masterAt = speak.indexOf("master_wav(");
+    expect(speak.slice(0, masterAt)).toContain("The permit is the speech lane");
+    expect(speak.lastIndexOf("self.gate.release()", masterAt)).toBeGreaterThan(
+      speak.indexOf("The permit is the speech lane")
+    );
     expect(speak).not.toContain("subprocess.run");
     expect(source).toContain("subprocess.run");
     expect(source).not.toContain("/tmp/sowell.wav");

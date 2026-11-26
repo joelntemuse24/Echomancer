@@ -12,6 +12,9 @@ import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
   DREW_CACHE_VARIANT,
+  drewCacheIdentity,
+  drewRuntimeLabel,
+  drewTakeMismatch,
   DREW_PROSODY_G_SUFFIX,
   DREW_FIXED_STYLE_INDEX,
   DREW_IN_FLIGHT,
@@ -21,6 +24,7 @@ import {
   DREW_KMODEL_PATH,
   DREW_VOICE_PACK_PATH,
   DREW_VOLUME_NAME,
+  DREW_WEIGHTS_ID,
   DrewNotConfiguredError,
   drewCacheVariant,
   drewEnabled,
@@ -133,8 +137,17 @@ describe("Drew identity", () => {
       })
     ).toBe(DREW_MAX_CHARS);
     expect(DREW_IN_FLIGHT).toBe(2);
-    expect(DREW_CACHE_VARIANT).toContain(`style${DREW_FIXED_STYLE_INDEX}-v3`);
-    expect(DREW_CACHE_VARIANT.endsWith("-v1")).toBe(false);
+    expect(DREW_CACHE_VARIANT).toBe(
+      `drew-kokoro82m-ft-${DREW_WEIGHTS_ID}-style${DREW_FIXED_STYLE_INDEX}-torch-speed1.000`
+    );
+    expect(drewRuntimeLabel({})).toBe("torch");
+    expect(drewRuntimeLabel({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toBe("onnx");
+    expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).toContain(
+      "-onnx-speed1.000"
+    );
+    expect(drewCacheIdentity({ KOKORO_RUNTIME: "onnx" } as NodeJS.ProcessEnv)).not.toBe(
+      DREW_CACHE_VARIANT
+    );
     expect(takehomeCacheVariant("sowell", "sowell")).not.toContain("style");
     expect(takehomeCacheVariant("george", "george")).not.toContain("style");
     delete process.env.DREW_PROSODY_RULES;
@@ -232,6 +245,7 @@ describe("Drew provider", () => {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
         "x-kokoro-speed": "1.0",
+        "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
     });
@@ -290,6 +304,8 @@ describe("Drew provider", () => {
         "content-type": "audio/wav",
         "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
         "x-kokoro-prosody": "G",
+        "x-kokoro-speed": "1.0",
+        "x-kokoro-runtime": "torch",
       });
       res.end(wavBody());
     });
@@ -304,6 +320,34 @@ describe("Drew provider", () => {
       voice: DREW_PROVIDER_VOICE_ID,
     });
     expect(audio.audio.length).toBe(244);
+  });
+
+  it("refuses a take whose Kokoro speed or runtime is not the cache key", async () => {
+    const headers = new Headers({ "x-kokoro-speed": "0.88", "x-kokoro-runtime": "torch" });
+    expect(drewTakeMismatch(headers, 1)).toMatch(/0\.88/);
+    expect(drewTakeMismatch(headers, 1)).toMatch(/not stored/i);
+    const otherGraph = new Headers({ "x-kokoro-speed": "1", "x-kokoro-runtime": "onnx" });
+    expect(drewTakeMismatch(otherGraph, 1)).toMatch(/onnx/);
+    expect(drewTakeMismatch(new Headers({ "x-kokoro-speed": "1" }), 1)).toMatch(/unknown/);
+    const url = await listen((_body, res) => {
+      res.writeHead(200, {
+        "content-type": "audio/wav",
+        "x-kokoro-voice": DREW_PROVIDER_VOICE_ID,
+        "x-kokoro-speed": "0.88",
+        "x-kokoro-runtime": "torch",
+      });
+      res.end(wavBody());
+    });
+    process.env.DREW_URL = url;
+    delete process.env.WORKER;
+    delete process.env.KOKORO_RUNTIME;
+    await expect(
+      resolveStockAdapter({ provider: "drew", catalogVoiceId: "drew" }).synthesize({
+        text: "The harbor was quiet.",
+        voice: DREW_PROVIDER_VOICE_ID,
+        speed: 1,
+      })
+    ).rejects.toThrow(/not stored/i);
   });
 
   it("refuses audio that did not confirm the Drew voice", async () => {
@@ -349,6 +393,10 @@ describe("Drew on the Modal CPU app", () => {
     expect(worker).toContain("memory=memory_mb()");
     expect(worker).toContain("TORCH_MEMORY_MB = 6144");
     expect(worker).toContain("@modal.concurrent(max_inputs=STREAMS)");
+    expect(worker).toContain("load_assets()");
+    expect(worker).toContain("open_sessions()");
+    expect(worker).toContain("ensure_drew()");
+    expect(worker).toContain("ONNX_MEMORY_MB_DEFAULT = 5120");
     expect(worker).toContain("load_drew()");
     expect(worker).toContain("DREW_UNAVAILABLE");
     expect(worker).toContain('raw_prosody == "G"');
