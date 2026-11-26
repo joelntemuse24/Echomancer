@@ -14,6 +14,7 @@
  * keeps the audio. A transport, model, or budget error does the same.
  */
 import { Worker } from "node:worker_threads";
+import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { splitSentences } from "@/lib/tts/speakable-text";
 import { assembleSectionTakes } from "@/lib/tts/section-master";
 import { CpuSaturatedError } from "@/lib/cpu/errors";
@@ -558,6 +559,89 @@ function logQaDisabled(jobId: string): void {
   if (qaDisabledJobs.has(jobId)) return;
   qaDisabledJobs.add(jobId);
   console.log(`[Job ${jobId}] qa skipped: disabled`);
+}
+
+const noTranscriptJobs = new Set<string>();
+
+function logNoTranscript(jobId: string, why: string): void {
+  if (noTranscriptJobs.has(jobId)) return;
+  noTranscriptJobs.add(jobId);
+  console.log(`[Job ${jobId}] qa skipped: no transcript (${why})`);
+}
+
+export type CheapTake = {
+  audio: Buffer;
+  contentType: string;
+  /**
+   * Measured duration. Leave unset to read the bytes. Tests pass this so a
+   * fake MP3 is not walked.
+   */
+  durationSec?: number | null;
+};
+
+/**
+ * Obvious failures only: silence, a duration far from the text, or a
+ * caller-supplied truncation check. One resynthesis, then the better take.
+ * No Whisper, no word-error score, no sentence split.
+ *
+ * Under Vitest a missing `durationSec` is not judged. Production audio is
+ * measured from the bytes. The unit tests pass a duration on purpose.
+ */
+export async function settleTakeWithoutTranscript(opts: {
+  jobId: string;
+  index: number;
+  sourceText: string;
+  first: CheapTake;
+  rate: SpeechRate;
+  why: string;
+  synthesize: () => Promise<CheapTake | null>;
+  /** True when this duration is an obvious truncated take. */
+  truncated?: (durationSec: number | null) => boolean;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{ audio: Buffer; contentType: string; durationSec: number | null }> {
+  const env = opts.env ?? process.env;
+  logNoTranscript(opts.jobId, opts.why);
+  const durationOf = (take: CheapTake): number | null => {
+    if (take.durationSec !== undefined) return take.durationSec;
+    if (env.VITEST || process.env.VITEST) return null;
+    const measured = audioDurationSeconds(take.audio);
+    return measured != null && measured > 0 ? measured : null;
+  };
+  const bad = (take: CheapTake, durationSec: number | null): boolean => {
+    if (isEmptyOrSilentAudio(take.audio)) return true;
+    if (opts.truncated?.(durationSec)) return true;
+    if (durationSec == null) return false;
+    return durationDrift(spokenCharCount(opts.sourceText), durationSec, charsPerSec(opts.rate));
+  };
+  const firstDuration = durationOf(opts.first);
+  if (!bad(opts.first, firstDuration)) {
+    noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), firstDuration);
+    return { audio: opts.first.audio, contentType: opts.first.contentType, durationSec: firstDuration };
+  }
+  let second: CheapTake | null = null;
+  try {
+    second = await opts.synthesize();
+  } catch {
+    second = null;
+  }
+  if (!second) {
+    console.log(
+      `[Job ${opts.jobId}] section ${opts.index} duration guard action=keep`
+    );
+    return { audio: opts.first.audio, contentType: opts.first.contentType, durationSec: firstDuration };
+  }
+  const secondDuration = durationOf(second);
+  if (!bad(second, secondDuration)) {
+    noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), secondDuration);
+    console.log(
+      `[Job ${opts.jobId}] section ${opts.index} duration guard action=retry`
+    );
+    return { audio: second.audio, contentType: second.contentType, durationSec: secondDuration };
+  }
+  console.log(
+    `[Job ${opts.jobId}] section ${opts.index} duration guard action=keep`
+  );
+  return { audio: opts.first.audio, contentType: opts.first.contentType, durationSec: firstDuration };
 }
 
 /**

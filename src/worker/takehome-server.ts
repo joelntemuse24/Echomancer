@@ -366,6 +366,10 @@ async function handle(
               ? await (await import("@/lib/remote/prewarm")).prewarmS2Clone()
               : await postWarm(pool, process.env, fetch);
         }
+        if (results.cpu === "ready") {
+          const { startCpuWarmKeepalive } = await import("@/lib/capacity/cpu-warm-keepalive");
+          startCpuWarmKeepalive(() => postWarm("cpu", process.env, fetch));
+        }
         return results;
       },
       startListenPrep: (uploadId) => {

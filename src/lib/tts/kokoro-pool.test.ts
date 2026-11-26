@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  kokoroFairQuota,
+  lanesForSameWaves,
   planKokoroBookLanes,
   runRollingRenderPool,
   type KokoroPoolEvent,
@@ -321,15 +323,14 @@ describe("kokoro book lanes", () => {
     expect(eight.every((n) => n >= 1)).toBe(true);
   });
 
-  it("sums every book's quota to the fleet when books fit inside it", () => {
+  it("sums every book's fair share to the fleet when books fit inside it", () => {
     for (const fleet of [6, 8, 12, 16]) {
       for (let books = 1; books <= fleet; books++) {
         const quotas = Array.from({ length: books }, (_, rank) =>
-          planKokoroBookLanes({
+          kokoroFairQuota({
             configured: fleet,
             fleet,
             activeBooks: books,
-            remainingSections: 99,
             rank,
           })
         );
@@ -338,7 +339,36 @@ describe("kokoro book lanes", () => {
     }
   });
 
+  it("drops lanes that would not remove a wave", () => {
+    // 22 sections at 16 lanes is two waves (16 + 6). Eleven lanes is also two.
+    expect(lanesForSameWaves(22, 16)).toBe(11);
+    expect(Math.ceil(22 / 11)).toBe(Math.ceil(22 / 16));
+    expect(
+      planKokoroBookLanes({
+        configured: 16,
+        fleet: 16,
+        activeBooks: 1,
+        remainingSections: 22,
+      })
+    ).toBe(11);
+    // A long book still fills the fleet. 714 sections is 45 waves at 16.
+    const long = planKokoroBookLanes({
+      configured: 16,
+      fleet: 16,
+      activeBooks: 1,
+      remainingSections: 714,
+    });
+    expect(long).toBe(16);
+    expect(Math.ceil(714 / long)).toBe(Math.ceil(714 / 16));
+    // Two books keep their fair shares when those shares already fill each wave.
+    expect([
+      planKokoroBookLanes({ configured: 16, fleet: 16, activeBooks: 2, remainingSections: 40, rank: 0 }),
+      planKokoroBookLanes({ configured: 16, fleet: 16, activeBooks: 2, remainingSections: 40, rank: 1 }),
+    ]).toEqual([8, 8]);
+  });
+
   it("honours a 16-lane fleet for one book and a 16-lane per-book cap", () => {
+    // 40 sections is three waves at 16 lanes and still three at 14.
     expect(
       planKokoroBookLanes({
         configured: 16,
@@ -346,7 +376,8 @@ describe("kokoro book lanes", () => {
         activeBooks: 1,
         remainingSections: 40,
       })
-    ).toBe(16);
+    ).toBe(14);
+    expect(Math.ceil(40 / 14)).toBe(Math.ceil(40 / 16));
     // Two books over 16 containers get 8 each.
     expect([
       planKokoroBookLanes({ configured: 16, fleet: 16, activeBooks: 2, remainingSections: 40, rank: 0 }),

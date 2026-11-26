@@ -149,12 +149,16 @@ def _authorized(request: Request) -> bool:
     min_containers=0,
     max_containers=max_containers(),
     scaledown_window=scaledown_seconds(),
+    # The model load is the cold start. A memory snapshot restores it instead
+    # of reading the checkpoint again. The gate lock is created after restore:
+    # a lock captured in the snapshot is tied to the process that took it.
+    enable_memory_snapshot=True,
     secrets=[modal.Secret.from_name("echomancer-sowell")],
     volumes={DREW_VOLUME_MOUNT: drew_volume},
 )
 @modal.concurrent(max_inputs=1)
 class Speaker:
-    @modal.enter()
+    @modal.enter(snap=True)
     def load(self) -> None:
         sys.path.insert(0, "/opt/sowell/scripts")
         from engine import apply_torch_threads, SowellEngine
@@ -171,6 +175,9 @@ class Speaker:
         # volume is reported and left alone — Walter and George still work.
         if not self.engine.load_drew():
             print("[drew] weights unavailable; Drew answers 503", flush=True)
+
+    @modal.enter()
+    def open_gate(self) -> None:
         self.gate = threading.Lock()
 
     @modal.fastapi_endpoint(method="POST", docs=False)

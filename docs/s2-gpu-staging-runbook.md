@@ -1075,8 +1075,9 @@ pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-wa
 - `[modal-clone] pre-warm started` appears when extract is accepted or the
   voice list is built, for a `user_*` with a trained clone, and again near
   the top of the tick (before `listen-prep` / `pack`) when that earlier start
-  is outside the 3-minute cooldown. `section 0 published before transcript QA`
-  is the first-light line
+  is outside the 3-minute cooldown. An S2 book logs
+  `qa skipped: no transcript (s2)` and does not transcribe. `section 0 published before transcript QA`
+  is the Edge first-light line, not this book's
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock

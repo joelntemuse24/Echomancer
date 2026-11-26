@@ -105,7 +105,7 @@ def test_torch_threads_are_an_env_knob_with_four_as_the_default() -> None:
 
 def test_worker_applies_threads_before_loading_a_model() -> None:
     worker = (ROOT / "modal" / "sowell_worker.py").read_text()
-    enter = worker.index("@modal.enter()")
+    enter = worker.index("@modal.enter(snap=True)")
     threads = worker.index("apply_torch_threads()", enter)
     engine_load = worker.index("SowellEngine()", enter)
     assert threads < engine_load
@@ -218,6 +218,7 @@ def test_worker_class_resolves_with_the_declared_fleet(monkeypatch) -> None:
     assert kwargs["min_containers"] == 0
     assert kwargs["memory"] == 6144
     assert kwargs["cpu"] == 2
+    assert kwargs["enable_memory_snapshot"] is True
     assert "gpu" not in kwargs
     assert worker.TORCH_THREADS == "4"
 

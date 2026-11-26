@@ -236,7 +236,9 @@ describe("sowell voice", () => {
 
   it("keeps one resident runtime in the Modal class and does not spawn per request", () => {
     const source = readFileSync(path.join(process.cwd(), "modal/sowell_worker.py"), "utf8");
+    expect(source).toContain("@modal.enter(snap=True)");
     expect(source).toContain("@modal.enter()");
+    expect(source).toContain("enable_memory_snapshot=True");
     expect(source).toContain("min_containers=0");
     // Sixteen containers by default: the fleet the worker's book lanes share.
     // Idle scale down is 5s so the idle tail does not dominate a book's cost.
