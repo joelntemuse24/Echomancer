@@ -1,12 +1,16 @@
 import {
   chooseLiveTransport,
   evictionEnd,
+  LIVE_AHEAD_SECONDS,
   liveAttachAllowed,
+  liveSectionHold,
   pendingSegmentUris,
   playlistDurationSeconds,
   readHlsPlaylist,
+  segmentUrisAhead,
   seekTargetIfCovered,
   shouldResumeLive,
+  type LiveSegment,
   type LiveTransport,
 } from "@/lib/player/live-playlist";
 
@@ -14,6 +18,7 @@ type SourceBufferLike = {
   mode: string;
   updating: boolean;
   appendBuffer(data: Uint8Array): void;
+  abort?(): void;
   remove?(start: number, end: number): void;
   addEventListener(
     type: "updateend" | "error",
@@ -63,6 +68,11 @@ type Session = {
   keepPlaying?: boolean;
   onGrow?: () => void;
   onEnd?: () => void;
+  onAhead?: () => void;
+  /** Segment list from the last playlist read. The append window grows with the playhead. */
+  segments: LiveSegment[];
+  playlistUrl: string;
+  extending: boolean;
 };
 
 const sessions = new WeakMap<HTMLAudioElement, Session>();
@@ -209,10 +219,29 @@ function isQuotaError(err: unknown): boolean {
   return err instanceof Error && (err.name === "QuotaExceededError" || /quota/i.test(err.message));
 }
 
+const APPEND_TIMEOUT_MS = 8_000;
+
 function bufferEvent(buffer: SourceBufferLike): Promise<void> {
   return new Promise((resolve, reject) => {
-    buffer.addEventListener("updateend", () => resolve(), { once: true });
-    buffer.addEventListener("error", () => reject(new Error("append failed")), { once: true });
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      try {
+        buffer.abort?.();
+      } catch {
+        /* the buffer was already idle */
+      }
+      finish(() => reject(new Error("append timed out")));
+    }, APPEND_TIMEOUT_MS);
+    buffer.addEventListener("updateend", () => finish(resolve), { once: true });
+    buffer.addEventListener("error", () => finish(() => reject(new Error("append failed"))), {
+      once: true,
+    });
   });
 }
 
@@ -242,6 +271,12 @@ async function appendChunk(
       await removePlayed(buffer, audio);
     }
   }
+}
+
+/** Seconds the element can play without waiting. Sequence mode's duration is Infinity. */
+export function liveBufferedSeconds(audio: HTMLAudioElement | null): number {
+  if (!audio) return 0;
+  return coveredSeconds(audio);
 }
 
 function coveredSeconds(audio: HTMLAudioElement): number {
@@ -282,6 +317,48 @@ function maybeResume(audio: HTMLAudioElement, session: Session): void {
     return;
   }
   startKeptPlayback(audio, session);
+}
+
+function appendedPlaylistSeconds(session: Session): number {
+  let sum = 0;
+  for (const segment of session.segments) {
+    if (!session.appended.includes(segment.uri)) break;
+    sum += Number.isFinite(segment.seconds) ? Math.max(0, segment.seconds) : 0;
+  }
+  return sum;
+}
+
+/**
+ * Keep appending a short window ahead of the playhead. A job poll is not
+ * required: once the published length stops changing, timeupdate is what
+ * fetches the next segments.
+ */
+function watchAhead(audio: HTMLAudioElement, session: Session): void {
+  if (session.onAhead || session.transport === "hls") return;
+  const onAhead = () => {
+    if (sessions.get(audio) !== session || session.extending || session.closed) return;
+    const have = appendedPlaylistSeconds(session);
+    const at = Math.max(
+      Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+      session.resumeAt
+    );
+    if (have + 0.5 >= at + LIVE_AHEAD_SECONDS) return;
+    const published = playlistDurationSeconds(session.segments);
+    if (have + 0.5 >= published) return;
+    session.extending = true;
+    void syncLivePlayback({
+      audio,
+      playlistUrl: session.playlistUrl,
+      jobId: session.jobId,
+      resumeAt: Math.max(session.resumeAt, at),
+      play: false,
+      listenerPaused: session.hold,
+    }).finally(() => {
+      session.extending = false;
+    });
+  };
+  session.onAhead = onAhead;
+  audio.addEventListener("timeupdate", onAhead);
 }
 
 function watchResume(audio: HTMLAudioElement, session: Session): void {
@@ -362,7 +439,14 @@ function dropSession(audio: HTMLAudioElement, session: Session): void {
   if (sessions.get(audio) === session) sessions.delete(audio);
   unwatch(audio, session);
   detachEnd(audio, session);
+  detachAhead(audio, session);
   revokeBlob(session);
+}
+
+function detachAhead(audio: HTMLAudioElement, session: Session): void {
+  if (!session.onAhead) return;
+  audio.removeEventListener("timeupdate", session.onAhead);
+  session.onAhead = undefined;
 }
 
 function detachEnd(audio: HTMLAudioElement, session: Session): void {
@@ -525,6 +609,17 @@ async function syncOnce(
   const body = await response.text();
   if (staleAttach(opts.audio, token)) return missed();
   const playlist = readHlsPlaylist(body);
+  if (
+    !current &&
+    liveSectionHold({
+      src: opts.audio.currentSrc || opts.audio.src || "",
+      paused: opts.audio.paused,
+      ended: opts.audio.ended,
+      resumeAt: Number.isFinite(opts.resumeAt) ? opts.resumeAt : 0,
+    })
+  ) {
+    return { attached: false, url: null, complete: playlist.complete, transport: null };
+  }
   if (playlist.segments.length === 0) {
     return {
       attached: Boolean(current),
@@ -585,6 +680,9 @@ async function syncOnce(
         closed: false,
         revoked: false,
         previousSrc,
+        segments: playlist.segments,
+        playlistUrl: opts.playlistUrl,
+        extending: false,
       };
       sessions.set(opts.audio, session);
       if (staleAttach(opts.audio, token)) {
@@ -646,6 +744,9 @@ async function syncOnce(
       previousSrc,
       previousTime,
       keepPlaying,
+      segments: playlist.segments,
+      playlistUrl: opts.playlistUrl,
+      extending: false,
     };
     sessions.set(opts.audio, session);
     if (staleAttach(opts.audio, token)) {
@@ -656,10 +757,15 @@ async function syncOnce(
     watchResume(opts.audio, session);
   } else if (staleAttach(opts.audio, token)) {
     return missed();
-  } else if (!session.resumed) {
-    session.resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
-    session.play = opts.play === true;
+  } else {
+    session.segments = playlist.segments;
+    session.playlistUrl = opts.playlistUrl;
+    if (!session.resumed) {
+      session.resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
+      session.play = opts.play === true;
+    }
   }
+  watchAhead(opts.audio, session);
   if (session.transport === "hls") {
     maybeResume(opts.audio, session);
     if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
@@ -672,9 +778,13 @@ async function syncOnce(
       transport: session.transport,
     };
   }
+  const through = Math.max(
+    Number.isFinite(opts.audio.currentTime) ? opts.audio.currentTime : 0,
+    session.resumeAt
+  );
   const next = pendingSegmentUris(
     session.reserved,
-    playlist.segments.map((segment) => segment.uri)
+    segmentUrisAhead(playlist.segments, through + LIVE_AHEAD_SECONDS)
   );
   session.reserved.push(...next);
   const target = session;
@@ -694,7 +804,11 @@ async function syncOnce(
           if (target.appended.includes(uri)) continue;
           try {
             const absolute = segmentFetchUrl(uri, opts.playlistUrl);
-            const part = await fetch(absolute, { credentials: "same-origin" });
+            const part = await fetch(absolute, {
+              credentials: "same-origin",
+              cache: "no-store",
+              signal: AbortSignal.timeout(20_000),
+            });
             if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return;
             if (!part.ok) {
               releaseUnplayed(uri);

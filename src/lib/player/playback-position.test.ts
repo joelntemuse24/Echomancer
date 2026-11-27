@@ -448,6 +448,46 @@ describe("bookmark clock", () => {
     ).toBeNull();
   });
 
+  it("does not store a playhead that jumped backward from the confirmed book time", () => {
+    const spans = contiguousSpans(parts);
+    expect(
+      snapshotForPersist({
+        reason: "tick",
+        currentTime: 26,
+        readyState: 4,
+        ended: false,
+        pendingActive: false,
+        pendingBookSeconds: null,
+        restoreLanded: true,
+        confirmedBookSeconds: 473,
+        onSection: false,
+        sectionIndex: null,
+        spans,
+        complete: false,
+        durationSeconds: 1800,
+        hasNextSection: false,
+      })
+    ).toBeNull();
+    expect(
+      snapshotForPersist({
+        reason: "tick",
+        currentTime: 40,
+        readyState: 4,
+        ended: false,
+        pendingActive: false,
+        pendingBookSeconds: null,
+        restoreLanded: true,
+        confirmedBookSeconds: 120,
+        onSection: true,
+        sectionIndex: 1,
+        spans,
+        complete: false,
+        durationSeconds: null,
+        hasNextSection: true,
+      })
+    ).toEqual({ positionSeconds: 140, sectionIndex: null });
+  });
+
   it("ticks only while playing and visible", () => {
     expect(resumeTickAllowed({ playing: true, hidden: false })).toBe(true);
     expect(resumeTickAllowed({ playing: false, hidden: false })).toBe(false);

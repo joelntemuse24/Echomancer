@@ -166,6 +166,53 @@ export function chooseLivePart(input: {
   };
 }
 
+/**
+ * How far ahead of the playhead the live element appends. The rest of a
+ * generated book stays on its section file until the playhead gets there,
+ * so a tap does not wait on a fetch of every earlier part.
+ */
+export const LIVE_AHEAD_SECONDS = 30;
+
+/**
+ * A section whose book time is past this is left on that file. Swapping it
+ * for a new Media Source starts at 0:00 until every earlier segment has
+ * been appended.
+ */
+export const LIVE_SECTION_ATTACH_MAX = 90;
+
+/** Playlist URIs from the start through `throughSeconds`, including the one that crosses it. */
+export function segmentUrisAhead(
+  segments: readonly LiveSegment[],
+  throughSeconds: number
+): string[] {
+  const need = Number.isFinite(throughSeconds) ? Math.max(0, throughSeconds) : 0;
+  let sum = 0;
+  const uris: string[] = [];
+  for (const segment of segments) {
+    uris.push(segment.uri);
+    sum += Number.isFinite(segment.seconds) ? Math.max(0, segment.seconds) : 0;
+    if (sum + 0.05 >= need) break;
+  }
+  return uris;
+}
+
+/**
+ * The element is already on a section file that a live attach would replace
+ * with 0:00. A short prefix still attaches. A part past that prefix, and a
+ * section that just ended, stay so the next file can load.
+ */
+export function liveSectionHold(input: {
+  src: string;
+  paused: boolean;
+  ended: boolean;
+  resumeAt: number;
+}): boolean {
+  if (!input.src.includes("/sections/")) return false;
+  if (input.ended) return true;
+  const at = Number.isFinite(input.resumeAt) ? input.resumeAt : 0;
+  return at > LIVE_SECTION_ATTACH_MAX;
+}
+
 /** Seconds of already-played media to leave in the SourceBuffer. */
 export const LIVE_BACK_BUFFER_SECONDS = 30;
 
