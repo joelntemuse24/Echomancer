@@ -41,7 +41,7 @@ import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/p
 import { advanceAfterSection } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
 import { chooseLivePart, liveAttachResumeAt, liveChapterSeek, liveReadyTransition, seekTargetIfCovered } from "@/lib/player/live-playlist";
-import { liveSessionAttached, releaseLiveSession, retargetLiveResume, setLivePlayIntent, syncLivePlayback } from "@/lib/player/live-session";
+import { liveAttachToken, liveSessionAttached, releaseLiveSession, retargetLiveResume, setLivePlayIntent, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
@@ -1551,7 +1551,7 @@ function PlayerPageInner({ id }: { id: string }) {
         return;
       }
       if (sectionUrl && seg && place) {
-        releaseLiveSession(liveAudio);
+        releaseLiveSession(liveAudio, bookSeconds);
         listenerPausedRef.current = !choice.play;
         armPendingSeekRef.current({
           seconds: place.localSeconds,
@@ -1701,7 +1701,10 @@ function PlayerPageInner({ id }: { id: string }) {
       playAfterLoadRef.current = true;
       setSegmentIndex(seek.sectionIndex);
       setCurrentTime(0);
-      releaseLiveSession(audio);
+      releaseLiveSession(
+        audio,
+        span ? span.startSeconds + sectionFraction * span.durationSeconds : undefined
+      );
       setAudioUrl(`/api/storage/${seg.path}`);
       return;
     }
@@ -1813,7 +1816,7 @@ function PlayerPageInner({ id }: { id: string }) {
         playing: elementIsPlaying(audio),
       });
       if (decision?.action === "handoff") {
-        releaseLiveSession(audio);
+        releaseLiveSession(audio, decision.at);
         listenerPausedRef.current = !decision.play;
         armPendingSeekRef.current(pending);
         playAfterLoadRef.current = decision.play;
@@ -1998,6 +2001,7 @@ function PlayerPageInner({ id }: { id: string }) {
         saved?.sectionIndex != null ? elementClockOffset(spansRef.current, saved.sectionIndex) : 0,
     });
     const playing = elementIsPlaying(audio);
+    const token = liveAttachToken(audio);
     void syncLivePlayback({
       audio,
       playlistUrl: `/api/storage/audiobooks/${job.id}/live.m3u8`,
@@ -2006,7 +2010,8 @@ function PlayerPageInner({ id }: { id: string }) {
       play: playing && !listenerPausedRef.current,
       listenerPaused: listenerPausedRef.current,
     }).then((result) => {
-      if (stopped || !result.attached || !result.url) return;
+      if (stopped || liveAttachToken(audio) !== token || !liveSessionAttached(audio)) return;
+      if (!result.attached || !result.url) return;
       const decision = liveReadyTransition({
         transport: result.transport,
         complete: result.complete,
@@ -2596,7 +2601,7 @@ function PlayerPageInner({ id }: { id: string }) {
                             if (choice.play) void audio.play().catch(() => {});
                             return;
                           }
-                          releaseLiveSession(audio);
+                          releaseLiveSession(audio, rowSpan ? target : undefined);
                           listenerPausedRef.current = false;
                         }
                         armPendingSeekRef.current({

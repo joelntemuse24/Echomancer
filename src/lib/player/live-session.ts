@@ -61,9 +61,26 @@ type Session = {
 
 const sessions = new WeakMap<HTMLAudioElement, Session>();
 const turns = new WeakMap<HTMLAudioElement, Promise<unknown>>();
+/** Bumped by every release, including one that finds no session yet. */
+const attachTokens = new WeakMap<HTMLAudioElement, number>();
+/**
+ * Book time a navigation left the live element for. A later poll must not
+ * attach at an older playhead, and must not attach until the playlist
+ * covers this time.
+ */
+const departedAt = new WeakMap<HTMLAudioElement, number>();
 
 export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
   return Boolean(audio && sessions.has(audio));
+}
+
+/** Captured when a poll starts. Release changes it, so that poll must stop. */
+export function liveAttachToken(audio: HTMLAudioElement): number {
+  return attachTokens.get(audio) ?? 0;
+}
+
+function bumpAttachToken(audio: HTMLAudioElement): void {
+  attachTokens.set(audio, liveAttachToken(audio) + 1);
 }
 
 /**
@@ -100,14 +117,44 @@ function mayRestart(session: Session, listenerPaused: boolean, requested: boolea
   return requested !== false;
 }
 
-/** Drop the session so a later ready poll does not treat the element as live. */
-export function releaseLiveSession(audio: HTMLAudioElement | null): void {
+/**
+ * The listener left the live element. `leftAt` is the book time they moved
+ * to. An in-flight poll stops, and a later one waits until the playlist
+ * covers that time instead of reattaching at the playhead it started with.
+ */
+export function releaseLiveSession(audio: HTMLAudioElement | null, leftAt?: number): void {
   if (!audio) return;
+  bumpAttachToken(audio);
+  if (typeof leftAt === "number" && Number.isFinite(leftAt)) {
+    departedAt.set(audio, Math.max(0, leftAt));
+  }
   const session = sessions.get(audio);
   if (!session) return;
   sessions.delete(audio);
   detachEnd(audio, session);
   revokeBlob(session);
+}
+
+function staleAttach(audio: HTMLAudioElement, token: number): boolean {
+  return liveAttachToken(audio) !== token;
+}
+
+/**
+ * Drop a session this poll created after the listener had already left.
+ * Leave a src the listener has since replaced.
+ */
+function abandonStaleAttach(
+  audio: HTMLAudioElement,
+  session: Session | undefined,
+  assignedUrl: string | null,
+  previousSrc: string
+): void {
+  if (session && sessions.get(audio) === session) {
+    sessions.delete(audio);
+    detachEnd(audio, session);
+    revokeBlob(session);
+  }
+  if (assignedUrl && audio.src === assignedUrl) audio.src = previousSrc;
 }
 
 function serial<T>(audio: HTMLAudioElement, fn: () => Promise<T>): Promise<T> {
@@ -331,23 +378,41 @@ export function syncLivePlayback(opts: {
   complete: boolean;
   transport: LiveTransport | null;
 }> {
-  return serial(opts.audio, () => syncOnce(opts));
+  const token = liveAttachToken(opts.audio);
+  return serial(opts.audio, () => syncOnce(opts, token));
 }
 
-async function syncOnce(opts: {
-  audio: HTMLAudioElement;
-  playlistUrl: string;
-  jobId: string;
-  resumeAt: number;
-  play?: boolean;
-  listenerPaused?: boolean;
-}): Promise<{
+function leftBehind(audio: HTMLAudioElement, resumeAt: number, playlistSeconds: number): boolean {
+  const left = departedAt.get(audio);
+  if (left != null && resumeAt + 0.25 < left) return true;
+  const gate = left != null ? Math.max(resumeAt, left) : resumeAt;
+  return !liveAttachAllowed(gate, playlistSeconds);
+}
+
+async function syncOnce(
+  opts: {
+    audio: HTMLAudioElement;
+    playlistUrl: string;
+    jobId: string;
+    resumeAt: number;
+    play?: boolean;
+    listenerPaused?: boolean;
+  },
+  token: number
+): Promise<{
   attached: boolean;
   url: string | null;
   complete: boolean;
   transport: LiveTransport | null;
 }> {
+  const missed = (): {
+    attached: false;
+    url: null;
+    complete: false;
+    transport: null;
+  } => ({ attached: false, url: null, complete: false, transport: null });
   const response = await fetch(opts.playlistUrl, { credentials: "same-origin", cache: "no-store" });
+  if (staleAttach(opts.audio, token)) return missed();
   const listenerPaused = opts.listenerPaused === true;
   const current = sessions.get(opts.audio);
   if (!response.ok) {
@@ -358,7 +423,9 @@ async function syncOnce(opts: {
       transport: current?.transport ?? null,
     };
   }
-  const playlist = readHlsPlaylist(await response.text());
+  const body = await response.text();
+  if (staleAttach(opts.audio, token)) return missed();
+  const playlist = readHlsPlaylist(body);
   if (playlist.segments.length === 0) {
     return {
       attached: Boolean(current),
@@ -374,9 +441,11 @@ async function syncOnce(opts: {
   }
   if (!session) {
     const resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
-    if (!liveAttachAllowed(resumeAt, playlistDurationSeconds(playlist.segments))) {
+    const covered = playlistDurationSeconds(playlist.segments);
+    if (leftBehind(opts.audio, resumeAt, covered)) {
       return { attached: false, url: null, complete: playlist.complete, transport: null };
     }
+    if (staleAttach(opts.audio, token)) return missed();
     const play = opts.play === true;
     const available = constructors();
     const transport = chooseLiveTransport({
@@ -386,6 +455,8 @@ async function syncOnce(opts: {
       mediaSourceMpeg: available.media?.isTypeSupported?.("audio/mpeg") === true,
     });
     if (transport === "hls") {
+      if (staleAttach(opts.audio, token)) return missed();
+      const previousSrc = opts.audio.src;
       opts.audio.src = opts.playlistUrl;
       session = {
         jobId: opts.jobId,
@@ -404,6 +475,11 @@ async function syncOnce(opts: {
         revoked: false,
       };
       sessions.set(opts.audio, session);
+      if (staleAttach(opts.audio, token)) {
+        abandonStaleAttach(opts.audio, session, opts.playlistUrl, previousSrc);
+        return missed();
+      }
+      departedAt.delete(opts.audio);
       watchResume(opts.audio, session);
       if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
         resumeIfStalled(opts.audio, listenerPaused, false);
@@ -418,8 +494,19 @@ async function syncOnce(opts: {
     const Ctor = (transport === "mms" ? available.managed : available.media) as SourceCtor;
     const media = new Ctor();
     const url = URL.createObjectURL(media as unknown as MediaSource);
+    if (staleAttach(opts.audio, token)) return missed();
+    const previousSrc = opts.audio.src;
     opts.audio.src = url;
     await waitOpen(media);
+    if (staleAttach(opts.audio, token)) {
+      abandonStaleAttach(opts.audio, undefined, url, previousSrc);
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* already revoked */
+      }
+      return missed();
+    }
     const buffer = media.addSourceBuffer("audio/mpeg");
     try {
       buffer.mode = "sequence";
@@ -445,7 +532,14 @@ async function syncOnce(opts: {
       revoked: false,
     };
     sessions.set(opts.audio, session);
+    if (staleAttach(opts.audio, token)) {
+      abandonStaleAttach(opts.audio, session, url, previousSrc);
+      return missed();
+    }
+    departedAt.delete(opts.audio);
     watchResume(opts.audio, session);
+  } else if (staleAttach(opts.audio, token)) {
+    return missed();
   } else if (!session.resumed) {
     session.resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
     session.play = opts.play === true;
@@ -485,11 +579,15 @@ async function syncOnce(opts: {
           try {
             const absolute = new URL(uri, opts.playlistUrl).toString();
             const part = await fetch(absolute, { credentials: "same-origin" });
+            if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return;
             if (!part.ok) {
               releaseUnplayed(uri);
               return;
             }
-            await appendChunk(buffer, new Uint8Array(await part.arrayBuffer()), opts.audio);
+            const bytes = new Uint8Array(await part.arrayBuffer());
+            if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return;
+            await appendChunk(buffer, bytes, opts.audio);
+            if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return;
             target.appended.push(uri);
             maybeResume(opts.audio, target);
           } catch {
@@ -501,9 +599,12 @@ async function syncOnce(opts: {
       })
       .catch(() => undefined);
     await target.chain;
+    if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
   } else if (playlist.complete) {
+    if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
     markComplete(target, opts.audio);
   }
+  if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
   if (!playlist.complete && mayRestart(target, listenerPaused, opts.play)) {
     resumeIfStalled(opts.audio, listenerPaused, false);
   }
