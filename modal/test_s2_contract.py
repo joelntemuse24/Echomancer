@@ -332,6 +332,49 @@ class TestContainerLimits:
         assert container_limits({"S2C_MAX_CONTAINERS": "abc"})["max_containers"] == 1
         assert container_limits({"S2C_LANES": "-4"})["lanes"] == 4
 
+    def test_production_is_pinned_to_one_container(self):
+        """A staging env file must not open a production fleet.
+
+        2026-11-22: a second s2-clone container was requested and stayed
+        Pending while the first one sat on a compile. Production is one
+        H100 in code, not one H100 by convention.
+        """
+        prod = {
+            "S2C_APP_NAME": "echomancer-s2-clone",
+            "S2C_ALLOW_PRODUCTION": "1",
+            "S2C_MAX_CONTAINERS": "4",
+        }
+        limits = container_limits(prod)
+        assert limits["max_containers"] == 1
+        assert limits["min_containers"] == 0
+
+    def test_production_never_keeps_a_buffer_container(self):
+        """A buffer is an idle H100 beside the rendering one."""
+        prod = {
+            "S2C_APP_NAME": "echomancer-s2-clone",
+            "S2C_ALLOW_PRODUCTION": "1",
+            "S2C_BUFFER_CONTAINERS": "2",
+        }
+        assert container_limits(prod)["buffer_containers"] == 0
+
+    def test_only_an_explicit_owner_opt_in_raises_the_production_cap(self):
+        prod = {
+            "S2C_APP_NAME": "echomancer-s2-clone",
+            "S2C_ALLOW_PRODUCTION": "1",
+            "S2C_MAX_CONTAINERS": "4",
+            "S2_ALLOW_PROD_CAP_ABOVE_1": "1",
+        }
+        assert container_limits(prod)["max_containers"] == 4
+
+    def test_staging_keeps_its_env_cap_and_buffer(self):
+        staging = {
+            "S2C_MAX_CONTAINERS": "4",
+            "S2C_BUFFER_CONTAINERS": "1",
+        }
+        limits = container_limits(staging)
+        assert limits["max_containers"] == 4
+        assert limits["buffer_containers"] == 1
+
 
 class TestHistoryAnchor:
     """Book `12534aaa` drifted inside every section and reset at each boundary.

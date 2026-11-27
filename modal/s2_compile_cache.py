@@ -206,13 +206,26 @@ def detect_compile_device(torch_mod=None) -> tuple[str, str, str]:
 
 
 def format_compile_cache_log(report: dict | None) -> str:
-    """The startup line. ``hit`` is ``hit`` or ``miss``; ``compile_s`` is seconds."""
+    """The startup line. ``hit`` is ``hit`` or ``miss``; ``compile_s`` is seconds.
+
+    ``hit`` answers one question only: did this container **load** a
+    mega-cache? It used to answer "is a published run directory present",
+    so a publish that finished with a ``TypeError`` from the loader still
+    logged ``hit=hit`` and then compiled the whole way from
+    ``/opt/s2-pro``. ``reuse`` is the separate fact that the published
+    Inductor/Triton tree is being read anyway, and ``fallback`` names why
+    the loader did not install one.
+    """
     data = report or {}
     hit = data.get("hit")
     if hit not in ("hit", "miss"):
         hit = "miss"
     key = data.get("key") or "-"
     fallback = data.get("fallback") or "-"
+    reuse = data.get("reuse")
+    reuse_text = ""
+    if reuse is not None:
+        reuse_text = f" reuse={'yes' if reuse else 'no'}"
     compile_s = data.get("compile_s")
     if compile_s is None:
         shown = "na"
@@ -223,7 +236,7 @@ def format_compile_cache_log(report: dict | None) -> str:
             shown = "na"
     return (
         f"[S2C] compile_cache hit={hit} key={key} "
-        f"compile_s={shown} fallback={fallback}"
+        f"compile_s={shown} fallback={fallback}{reuse_text}"
     )
 
 
@@ -282,6 +295,9 @@ class CompileCache:
     committed: bool = False
     key_root: str = ""
     run_id: str = ""
+    #: A published run's Inductor/Triton tree is being read, with no
+    #: mega-cache installed. Not a hit: a load that failed must not log one.
+    reuse: bool = False
 
     def report(self) -> dict:
         compile_s = None if self.compile_s is None else round(float(self.compile_s), 2)
@@ -290,6 +306,10 @@ class CompileCache:
             "key": self.key,
             "fallback": self.fallback,
             "compile_s": compile_s,
+            # Whether the published Inductor/Triton tree is being read even
+            # though no mega-cache was installed. Kept separate from `hit` so
+            # "a load failed" cannot be printed as a cache hit.
+            "reuse": self.reuse,
         }
 
     def log_line(self) -> str:
@@ -500,15 +520,25 @@ def _prepare_compile_cache(
         had_files = _dirs_have_files(cache.inductor_dir, cache.triton_dir)
         _point_cache_env(cache, environ)
         mega_state = _try_mega(cache.mega_path, loader)
-        # A failed load can write a partial file into the run. That file is
-        # not a reason to reuse an otherwise empty tree.
-        if mega_state == "loaded" or had_files:
-            cache.hit = "hit"
+        # `hit` is only "the loader installed this run's mega-cache". A run
+        # whose mega-cache failed to unpickle still has the Inductor/Triton
+        # tree beside it, and pointing at that tree is worth doing — but it is
+        # `reuse`, not a hit. The 2026-11-22 book f452bc31 logged
+        # `hit=hit compile_s=na` after `TypeError: a bytes-like object is
+        # required, not 'str'`, so nothing in the line said the load failed.
+        loaded = mega_state == "loaded"
+        if loaded or had_files:
+            cache.hit = "hit" if loaded else "miss"
+            cache.reuse = not loaded and had_files
             cache.persist = False
             if mega_state == "corrupt":
                 cache.fallback = "mega-corrupt"
             elif mega_state == "unsupported":
                 cache.fallback = "unsupported"
+            elif mega_state == "absent":
+                # The published tree lost its mega-cache file. The kernels
+                # beside it are still the cache a later worker reads.
+                cache.fallback = "mega-absent"
             else:
                 cache.fallback = ""
             _point_cache_env(cache, environ)

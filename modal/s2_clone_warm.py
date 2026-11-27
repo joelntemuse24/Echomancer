@@ -606,6 +606,69 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
 
 
 @app.local_entrypoint()
+def snapshot_state(timeout: float = 10.0) -> None:
+    """**Read-only** preflight: is a snapshot ready to serve right now?
+
+    Answers the question an owner has before taking traffic, without spending
+    a GPU-minute: it reads `GET /ready` on the CPU function only. A snapshot is
+    ready when `warm_containers >= 1` for the current build. Anything else —
+    `starting_containers > 0` in particular — means a build is in progress or
+    a deploy has invalidated every snapshot, and a customer book would either
+    wait or pay for it.
+
+    Exit codes: ``0`` ready to serve; ``1`` no warm container. It never starts
+    a container, never writes the autoscaler, and never runs a GPU function.
+
+    Run this after a deploy and before pointing traffic at the app:
+
+        python3 -m modal run modal/s2_clone_warm.py::snapshot_state
+
+    If it reports nothing warm, run the documented owner warm step
+    (``::prewarm``, or ``scripts/s2/post-deploy-cover.sh`` for the full
+    compile-then-restore check) and re-run this.
+    """
+    import json
+    import os
+
+    import modal as modal_mod
+
+    from s2_contract import deploy_identity
+
+    identity = deploy_identity(os.environ)
+    print(f"snapshot-state app={identity['S2C_APP_NAME']} (CPU /ready only)")
+    ready_fn = modal_mod.Function.from_name(identity["S2C_APP_NAME"], "ready")
+    body = ready_fn.remote()
+    # `ready` returns a payload with `ready` and `warm_containers`. It may be a
+    # dict or a JSONResponse-like object depending on the client.
+    payload = body if isinstance(body, dict) else getattr(body, "body", None)
+    if payload is None and isinstance(body, (bytes, bytearray)):
+        payload = body
+    if isinstance(payload, (bytes, bytearray)):
+        payload = json.loads(payload.decode("utf-8"))
+    if not isinstance(payload, dict):
+        print(f"unexpected /ready body: {body!r}", file=sys.stderr)
+        raise SystemExit(1)
+    warm = int(payload.get("warm_containers") or 0)
+    starting = int(payload.get("starting_containers") or 0)
+    print(
+        f"warm={warm} starting={starting} "
+        f"max={payload.get('max_containers')} build={payload.get('build')}"
+    )
+    if warm < 1:
+        print(
+            "NO WARM SNAPSHOT: a book placed now would "
+            + (
+                "wait behind the build in progress."
+                if starting > 0
+                else "build one on the customer's bill."
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    print("ready: a restored container is serving this build")
+
+
+@app.local_entrypoint()
 def prewarm(rpc_timeout: int = 90) -> None:
     """One restore-only status() call. This is not ::cover.
 

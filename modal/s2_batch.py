@@ -216,6 +216,15 @@ CODEC_TAIL_ROWS = 12
 #: so one step records nothing and two leave the shape unproven.
 WARM_STEPS_PER_SHAPE = int(os.environ.get("S2B_WARM_STEPS", "3"))
 
+#: Return the allocator's cached blocks to the driver before the snapshot.
+#:
+#: A GPU memory snapshot captures the process's whole CUDA address space, so
+#: every cached block becomes pages in the image — written on build, paged in
+#: on restore. After the warm-up and self-test those blocks are scratch, not
+#: model state. On by default in a real build; `S2B_SNAPSHOT_TRIM=0` keeps the
+#: old behaviour for an A/B of snapshot size.
+RELEASE_CACHED_ON_SNAPSHOT = os.environ.get("S2B_SNAPSHOT_TRIM", "1") != "0"
+
 APP_NAME = "echomancer-s2-batch"
 CLASS_NAME = "S2BatchWorker"
 OUT_VOLUME = "echomancer-s2-bench"
@@ -2234,6 +2243,16 @@ class _BatchEngine:
         A filled KV cache and the last decoded audio are worth hundreds of MB
         of snapshot pages that mean nothing after a restore, and the cache's
         contents are one customer's speech. Both are cheap to rebuild.
+
+        Then hand the allocator's free blocks back to the driver. A GPU memory
+        snapshot captures the process's CUDA address space, so every cached
+        block in the allocator becomes pages in a ~72 GB image that has to be
+        written (build) and paged in (restore). The weights and the captured
+        graphs are live and stay; the scratch the warm-up used is not. This
+        runs inside `@modal.enter(snap=True)`, before Modal takes the image, so
+        it is the last chance to shrink what is captured. `RELEASE_CACHED_ON_
+        SNAPSHOT` is off in tests and on CPU, where there is no allocator to
+        trim.
         """
         self._last_audio = {}
         try:
@@ -2245,6 +2264,25 @@ class _BatchEngine:
                 cache.v_cache.zero_()
         except Exception as err:  # clearing is an optimisation, not a requirement
             print(f"[S2B] cache clear skipped: {err}")
+        if RELEASE_CACHED_ON_SNAPSHOT:
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    before = torch.cuda.memory_reserved()
+                    torch.cuda.empty_cache()
+                    after = torch.cuda.memory_reserved()
+                    self.snapshot_trim = {
+                        "reserved_before_gb": round(before / 1e9, 2),
+                        "reserved_after_gb": round(after / 1e9, 2),
+                    }
+                    print(
+                        f"[S2B] snapshot trim reserved "
+                        f"{self.snapshot_trim['reserved_before_gb']}GB -> "
+                        f"{self.snapshot_trim['reserved_after_gb']}GB"
+                    )
+            except Exception as err:  # trimming is an optimisation
+                print(f"[S2B] snapshot trim skipped: {err}")
 
     def selftest(self) -> dict:
         """Exercise the allocator paths a request thread used to fail on.

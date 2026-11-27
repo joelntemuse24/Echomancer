@@ -174,6 +174,15 @@ async function main(): Promise<void> {
       const body = JSON.stringify({
         ok: true,
         service: "echomancer-takehome",
+        // This endpoint answers "the worker process is up and serving HTTP".
+        // It says nothing about the clone GPU, and on 2026-11-22 that
+        // ambiguity made a snapshot build look like a healthy idle engine:
+        // the tiny front-door containers answered this probe every ~3 s while
+        // the H100 was spending 7.5 minutes building ~72 GB of snapshot. The
+        // engine's own state is `GET /ready` on the Modal app (see below), so
+        // the two are named separately here rather than bundled into `ok`.
+        scope: "front-door",
+        engine: "see the Modal app's /ready (warm, starting, or building)",
         inflight: loop.inflightCount,
         concurrency: loop.concurrency,
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),

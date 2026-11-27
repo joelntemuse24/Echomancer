@@ -163,7 +163,7 @@ def _publish(tmp_path, **overrides):
     return cache
 
 
-def test_inductor_files_without_a_mega_cache_are_a_hit_only_after_publish(tmp_path):
+def test_inductor_files_without_a_mega_cache_are_reused_only_after_publish(tmp_path):
     first = _prepare(tmp_path, engine="v10")
     with open(os.path.join(first.inductor_dir, "graph.bin"), "wb") as handle:
         handle.write(b"kernel")
@@ -173,11 +173,15 @@ def test_inductor_files_without_a_mega_cache_are_a_hit_only_after_publish(tmp_pa
         engine="v10",
         load_mega=lambda _path: (_ for _ in ()).throw(AssertionError("no mega file")),
     )
-    assert second.hit == "hit"
-    assert second.fallback == ""
+    # No mega-cache was installed, so this is not a hit. The published
+    # Inductor/Triton tree is still read, which is what saves the compile.
+    assert second.hit == "miss"
+    assert second.reuse is True
+    assert second.fallback == "mega-absent"
     assert second.key == first.key
     assert second.inductor_dir == first.inductor_dir
     assert second.persist is False
+    assert "hit=hit" not in second.log_line()
 
 
 def test_unpublished_files_are_not_a_hit(tmp_path):
@@ -204,6 +208,12 @@ def test_corrupt_published_mega_reuses_inductor_files(tmp_path):
     so Inductor and Triton compiled from empty dirs and ``compile_s`` stayed
     a full compile. The published run is the cache a later H100 worker reads
     when the device name and compute capability match.
+
+    It is **not a hit**. The 2026-11-22 book `f452bc31` logged
+    ``hit=hit compile_s=na`` after ``TypeError: a bytes-like object is
+    required, not 'str'``, and nothing in that line said the load had
+    failed. The tree is reused (``reuse=yes``) and the loader failure is
+    named in ``fallback``.
     """
     cache = _publish(tmp_path)
     with open(cache.mega_path, "wb") as handle:
@@ -213,7 +223,8 @@ def test_corrupt_published_mega_reuses_inductor_files(tmp_path):
         raise ValueError("bad magic")
 
     fresh = _prepare(tmp_path, load_mega=boom)
-    assert fresh.hit == "hit"
+    assert fresh.hit == "miss"
+    assert fresh.reuse is True
     assert fresh.persist is False
     assert fresh.fallback == "mega-corrupt"
     assert fresh.root == cache.root
@@ -221,7 +232,11 @@ def test_corrupt_published_mega_reuses_inductor_files(tmp_path):
     assert fresh.key == cache.key
     assert os.path.isfile(os.path.join(fresh.inductor_dir, "graph.bin"))
     assert os.path.isfile(cache.mega_path)
-    assert "fallback=mega-corrupt" in fresh.log_line()
+    line = fresh.log_line()
+    assert "hit=miss" in line
+    assert "fallback=mega-corrupt" in line
+    assert "reuse=yes" in line
+    assert "hit=hit" not in line
 
 
 def test_corrupt_mega_without_artifacts_compiles_a_new_run(tmp_path):
@@ -241,6 +256,48 @@ def test_corrupt_mega_without_artifacts_compiles_a_new_run(tmp_path):
     assert os.path.isdir(cache.root)
     assert not os.path.exists(os.path.join(fresh.inductor_dir, "graph.bin"))
     assert "fallback=corrupt" in fresh.log_line()
+
+
+def test_incident_2026_11_22_bytes_type_error_is_never_logged_as_a_hit(tmp_path, monkeypatch):
+    """Book `f452bc31`: the loader raised the exact TypeError from the log.
+
+    The container printed ``compile_cache hit=hit compile_s=na``, loaded
+    weights the long way, and then compiled Inductor for ~8 minutes while
+    the book polled `pending`. Nothing on that line said a load had failed.
+    The published tree is still reused (it holds real kernels), but the line
+    must report `hit=miss` and name the failure.
+    """
+    cache = _publish(tmp_path)
+
+    def loader(_path: str) -> None:
+        # The literal failure from the 02:22:49 log line.
+        raise TypeError("a bytes-like object is required, not 'str'")
+
+    monkeypatch.setattr("s2_compile_cache.default_load_mega", loader)
+    fresh = prepare_compile_cache(str(tmp_path), environ={}, **_fields())
+    line = fresh.log_line()
+    assert fresh.hit == "miss"
+    assert fresh.reuse is True
+    assert fresh.fallback == "mega-corrupt"
+    assert "hit=hit" not in line
+    assert "fallback=mega-corrupt" in line
+    assert "reuse=yes" in line
+    # The reused directory is the published one, so the kernels beside the
+    # bad mega-cache are what the next compile reads.
+    assert fresh.inductor_dir == cache.inductor_dir
+
+
+def test_published_run_that_lost_its_mega_file_names_the_reason(tmp_path):
+    """A published tree whose mega-cache file is gone is reused, not a hit."""
+    cache = _publish(tmp_path)
+    os.remove(cache.mega_path)
+    fresh = _prepare(tmp_path)
+    assert fresh.hit == "miss"
+    assert fresh.reuse is True
+    assert fresh.fallback == "mega-absent"
+    line = fresh.log_line()
+    assert "fallback=mega-absent" in line
+    assert "hit=hit" not in line
 
 
 def test_a_loaded_mega_cache_is_a_hit(tmp_path):
@@ -266,7 +323,8 @@ def test_unsupported_mega_api_keeps_inductor_files(tmp_path):
         raise CompileCacheUnsupported("no mega-cache")
 
     loaded = _prepare(tmp_path, load_mega=unsupported)
-    assert loaded.hit == "hit"
+    assert loaded.hit == "miss"
+    assert loaded.reuse is True
     assert loaded.fallback == "unsupported"
     assert os.path.isfile(os.path.join(loaded.triton_dir, "kernel.cubin"))
     assert loaded.root == cache.root
@@ -485,7 +543,8 @@ def test_torch_none_is_a_corrupt_mega_and_reuses_inductor_files(tmp_path, monkey
         lambda name: load if name == "load_cache_artifacts" else None,
     )
     fresh = prepare_compile_cache(str(tmp_path), environ={}, **_fields())
-    assert fresh.hit == "hit"
+    assert fresh.hit == "miss"
+    assert fresh.reuse is True
     assert fresh.fallback == "mega-corrupt"
     assert fresh.persist is False
     assert fresh.root == cache.root
@@ -727,6 +786,12 @@ def test_startup_log_line_reports_hit_and_compile_seconds():
         {"hit": "hit", "key": "k", "compile_s": 4, "fallback": ""}
     )
     assert line == "[S2C] compile_cache hit=hit key=k compile_s=4.00 fallback=-"
+    # The reuse column is only printed when it was recorded, so an older
+    # report shape stays readable.
+    with_reuse = format_compile_cache_log(
+        {"hit": "miss", "key": "k", "compile_s": None, "fallback": "mega-corrupt", "reuse": True}
+    )
+    assert with_reuse.endswith("fallback=mega-corrupt reuse=yes")
     missing = format_compile_cache_log(None)
     assert missing.startswith("[S2C] compile_cache hit=miss ")
     assert "compile_s=na" in missing

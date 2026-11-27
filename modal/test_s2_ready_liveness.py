@@ -282,3 +282,55 @@ def test_ready_does_not_report_more_than_max_containers_after_scale_down(
     assert len(live) == 1
     assert live[0]["build"] == build
     assert live[0]["at"] >= now
+
+
+# ── starting vs warm ──────────────────────────────────────────────────────
+
+
+def test_ready_distinguishes_starting_containers_from_warm_ones(
+    service, fake_heartbeats, monkeypatch
+):
+    """A container that is starting up is not warm, but it is not nothing.
+
+    The 2026-11-22 confusion was a snapshot **build**: ta-...XGSR existed for
+    ~7.5 minutes and never published a heartbeat, so `/ready` said cold while
+    an H100 was billed. `warm_containers` is still the only thing that may
+    authorise serving, but `starting_containers` has to be visible so an
+    operator can tell a capacity queue from a build.
+    """
+    import s2_clone_service
+
+    build = service._BUILD_ENV["S2C_BUILD"]
+    # One live container publishes a heartbeat; a second exists but is still
+    # starting (no heartbeat yet).
+    warm = _worker(service, container_id="c-warm")
+    warm._heartbeat(force=True)
+    monkeypatch.setattr(s2_clone_service, "_running_count", lambda: 2)
+
+    live = _live(build, fake_heartbeats)
+    assert len(live) == 1
+    assert s2_clone_service._running_count() - len(live) == 1
+
+
+def test_starting_count_never_goes_negative(service, fake_heartbeats, monkeypatch):
+    """A registry entry can outlive the stats read; the floor is zero."""
+    import s2_clone_service
+
+    build = service._BUILD_ENV["S2C_BUILD"]
+    for index in range(2):
+        _worker(service, container_id=f"c-{index}")._heartbeat(force=True)
+    # Stats briefly read one while two heartbeats are still live.
+    monkeypatch.setattr(s2_clone_service, "_running_count", lambda: 1)
+    assert max(0, s2_clone_service._running_count() - len(_live(build, fake_heartbeats))) == 0
+
+
+def test_a_failed_running_count_does_not_break_ready(service, monkeypatch):
+    """`/ready` must keep answering when the stats read throws."""
+    import s2_clone_service
+
+    monkeypatch.setattr(
+        s2_clone_service,
+        "_running_now",
+        lambda: (_ for _ in ()).throw(RuntimeError("stats unavailable")),
+    )
+    assert isinstance(s2_clone_service._running_count(), int)

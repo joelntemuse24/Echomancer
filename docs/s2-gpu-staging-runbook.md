@@ -373,6 +373,47 @@ bash scripts/s2/post-deploy-cover.sh
 bash scripts/s2/cover-max1.sh
 ```
 
+### Snapshot preflight — run this before taking traffic
+
+A deploy **invalidates every GPU memory snapshot** of the app, and Modal can
+evict one later. If no snapshot exists when a book arrives, that book waits
+for a **build**: on 2026-11-22, `ta-01M80H03GZTB0KX9RYYN37XGSR` spent ~7.5
+minutes capturing ~72 GB of GPU memory, billed **9.70 GPU-minutes** (~$0.70),
+and never served the book. Time to first audio went from ~124 s to ~9–10 min.
+
+The worker no longer lets a book pay for that (§ below), so the failure mode
+is now "the book parks and may take the Fish fallback" — still not something
+to leave in place. Check first:
+
+```bash
+# Read-only. CPU /ready only: starts no container, writes no autoscaler,
+# runs no GPU function. Exit 0 = a restored container is serving this build.
+python3 -m modal run modal/s2_clone_warm.py::snapshot_state
+```
+
+Read `warm` and `starting`:
+- `warm >= 1` — serving. A book's first call restores from a snapshot.
+- `warm = 0, starting = 0` — **no snapshot**. A book placed now would build
+  one. Run the warm step below and re-check.
+- `warm = 0, starting >= 1` — a build is already in progress. Wait, then
+  re-check. Do not start a second one: `max_containers` is 1.
+
+The owner warm step (it *does* spend a GPU-minute; it is not an agent
+command and is never run from a test):
+
+```bash
+# One restore-only status() call on the GPU class. This is the smallest
+# thing that produces a snapshot for this build.
+python3 -m modal run modal/s2_clone_warm.py::prewarm
+# Or the full compile-then-cold-restore proof:
+bash scripts/s2/post-deploy-cover.sh
+```
+
+`::prewarm` is what a snapshot build costs when it is done deliberately and
+without a customer waiting. `::restore_check` is the proof that the resulting
+snapshot restores with captured graphs. `snapshot_state` then confirms it
+from the outside.
+
 `::cover --containers 3 --rounds 6` is still in `s2_clone_warm.py` for an
 operator who wants to prebuild several worker variants. It is not the
 post-deploy step: each extra variant was another full H100 compile.

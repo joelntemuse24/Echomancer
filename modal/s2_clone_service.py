@@ -110,6 +110,7 @@ import base64
 import hashlib
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -952,6 +953,12 @@ class S2CloneWorker:
                 "at": int(now),
                 "snapshot_age_s": getattr(self, "snapshot_age_s", None),
                 "calls": self.calls,
+                # Present only while a render is inside the body. `/ready` and
+                # `status()` report it, so "container restored" (restore done,
+                # no render) is not mistaken for "container is rendering this
+                # book". The 2026-11-22 stall had a fresh heartbeat and no
+                # way to tell those apart.
+                "rendering": (getattr(self, "_render_mark", None) or {}).get("at"),
             }
         except Exception as err:  # a heartbeat must never fail a synthesis
             print(f"[S2C] heartbeat write failed: {err}")
@@ -991,6 +998,17 @@ class S2CloneWorker:
             # How many rows one call may carry. The worker reads this to decide
             # whether a 32-row page is safe; a build without the field is 24.
             "max_batch_items": max_batch_items(),
+            # Unix seconds while a render is inside the body, else null. Lets
+            # an operator see "restored but never started rendering" instead
+            # of inferring it from a missing log line.
+            "rendering_since": (getattr(self, "_render_mark", None) or {}).get("at"),
+            # What the snapshot's build actually reserved, and what trimming
+            # before capture gave back. This is the measurement that answers
+            # "can the 72 GB image be smaller?" — do not guess at it.
+            "snapshot_trim": getattr(self, "snapshot_trim", None),
+            "selftest_vram_reserved_gb": (
+                getattr(self.engine, "selftest_stats", None) or {}
+            ).get("vram_reserved_gb"),
         }
 
     def _resolve_reference(
@@ -1237,6 +1255,26 @@ class S2CloneWorker:
         )
         sampling_text = f"{sampling[0]},{sampling[1]}"
         self.calls += 1
+        # Say when a render actually starts, not only when it finishes.
+        #
+        # On 2026-11-22 book `f452bc31` the container logged "Creating GPU
+        # memory snapshot" and then nothing: `/ready` heartbeat was fresh and
+        # every control poll answered 200, but no `render entered` line
+        # existed to say whether the body had begun. An operator could only
+        # time the 200s. One line per call, before any GPU work, is the
+        # difference between "the model loaded and the render started late"
+        # and "the render never started".
+        self._render_mark = {
+            "at": int(time.time()),
+            "sections": len(slots),
+            "chars": sum(len(u["text"]) for units in slots for u in units),
+        }
+        self._heartbeat(force=True)
+        print(
+            f"[S2C] render entered container={self.container_id} "
+            f"sections={len(slots)} keys={','.join(keys)[:120]} "
+            f"boot={getattr(self, 'boot_kind', BOOT_UNKNOWN)}"
+        )
 
         # ── the pipeline ───────────────────────────────────────────────────
         #
@@ -1456,7 +1494,15 @@ class S2CloneWorker:
             rows.append({"key": item_key, "error": message, "error_code": code})
         rows.sort(key=lambda row: keys.index(row["key"]))
         t_done = time.time()
-        self._heartbeat()
+        mark = getattr(self, "_render_mark", None) or {}
+        entered = int(mark.get("at") or 0)
+        print(
+            f"[S2C] render done container={self.container_id} "
+            f"call_s={t_done - t0:.1f}"
+            + (f" entered_to_done_s={t_done - entered:.1f}" if entered else "")
+        )
+        self._render_mark = None
+        self._heartbeat(force=True)
 
         return {
             "items": rows,
@@ -1718,6 +1764,21 @@ def _running_now() -> tuple[int, str]:
     return len(_live_containers(_BUILD_ENV["S2C_BUILD"])), "heartbeats"
 
 
+def _running_count() -> int:
+    """How many containers of this class exist at all, warm or starting.
+
+    `_running_now` opens a GPU-class handle for Modal stats, which a `GET
+    /ready` should not need to do on every probe. This reads the heartbeat
+    registry and adds the container being counted by the stats call when one
+    is cheap; a registry read alone is enough to answer "is one starting".
+    """
+    try:
+        return int(_running_now()[0])
+    except Exception as err:
+        print(f"[S2C] container count unavailable: {err}", file=sys.stderr)
+        return len(_live_containers(_BUILD_ENV["S2C_BUILD"]))
+
+
 def _fleet(body: dict) -> dict:
     """Read, brake, restore, or count. This process's deployed app only.
 
@@ -1950,6 +2011,15 @@ def ready(request: Request):
     payload = {
         "ready": bool(live),
         "warm_containers": len(live),
+        # A container that exists but has not published a heartbeat is starting
+        # up: either restoring a snapshot or **building a new one**. Neither is
+        # "warm", and a build is minutes of billed H100 time. Reporting the
+        # count is what lets an operator tell "nothing placed" (a capacity
+        # queue) from "an H100 is building a snapshot" (the 2026-11-22 shape,
+        # where /ready said cold while ta-01M80H03GZTB0KX9RYYN37XGSR built for
+        # ~7.5 min and billed 9.70 GPU-minutes for a book it never served).
+        "starting_containers": max(0, _running_count() - len(live)),
+        "snapshot_build_possible": True,
         "max_containers": _max_containers(),
         "lanes": _LIMITS["lanes"],
         "cpu": _BUILD_ENV["S2C_CPU"],
@@ -1977,6 +2047,9 @@ def ready(request: Request):
                 "boot": row.get("boot"),
                 "snapshot_age_s": row.get("snapshot_age_s"),
                 "calls": row.get("calls"),
+                # A restored container with no render is idle, not stuck.
+                # A container rendering for minutes is the book's call.
+                "rendering_since": row.get("rendering"),
             }
             for row in live[:8]
         ],
