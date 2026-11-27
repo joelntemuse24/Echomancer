@@ -429,9 +429,10 @@ ceiling is `sowellCallCap()` — not the 32-slot clamp the other providers
 keep. On torch that cap is `SOWELL_MAX_CONTAINERS` (one call per container).
 On ONNX (`KOKORO_RUNTIME=onnx`) each container serves 4 calls, so the cap is
 containers × 4: 48 at 12 containers and 64 at 16. A book that already holds
-Kokoro slots does not end its wave when the table is full; it claims again
-when one of its own calls releases a slot, instead of waiting out the drain
-interval with nothing in flight. A 429 from a busy container is retried with backoff,
+Kokoro slots does not end its wave when the table is full. The lanes share
+one reclaim scan and that scan waits 500ms after a miss, including when the
+count itself ran longer, then claims again when one of its own calls
+releases a slot. A full table is one count, not an insert per slot id. A 429 from a busy container is retried with backoff,
 never failed. The 16-lane / 5 s-idle default is measured: on a 15.7k-char
 text, 16 lanes x 700-char sections finished in 47 s against 74 s for 6 lanes
 x 1.4k, and the idle tail dominated cost. A Kokoro warm is held for 25 s

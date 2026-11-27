@@ -123,6 +123,20 @@ export async function tryAcquireProviderSlot(
   await ensureProviderSlotTable(db);
   const cap = clampCap(opts.cap, opts.provider);
   const ttl = clampTtl(opts.ttlSeconds);
+  // A full table is one count. Walking every slot id is an INSERT each,
+  // and on Kokoro that is 64 round trips per lane. A miss here is retried
+  // by the book's single reclaim gate.
+  try {
+    const row = await db.queryOne<{ n: number | bigint | null }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = ? AND slot_id < ? AND expires_at > unixepoch()`,
+      [opts.provider, cap]
+    );
+    const live = Number(row?.n ?? 0);
+    if (Number.isFinite(live) && live >= cap) return null;
+  } catch {
+    // A failed count still tries the insert walk.
+  }
   for (let slot = 0; slot < cap; slot++) {
     const result = await db.execute(
       `INSERT INTO provider_slots (provider, slot_id, owner_token, job_id, expires_at)
@@ -298,6 +312,68 @@ export async function holdNamedProviderSlot(
  * bounded, so a genuinely full fleet still defers promptly.
  */
 export const KOKORO_SLOT_WAIT_MS = 3_000;
+
+/**
+ * Backoff before a book that already holds Kokoro slots scans again.
+ * The scan is one count (and, when a row is free, the insert walk). On a
+ * remote table that count can take longer than this interval. The reclaim
+ * gate sleeps this long anyway, plus a little jitter, so a slow scan cannot
+ * start the next one immediately.
+ */
+export const KOKORO_RECLAIM_MS = 500;
+
+export type KokoroReclaimGate = {
+  /** The next scan waits {@link KOKORO_RECLAIM_MS} plus jitter. */
+  armSleep: () => void;
+  /**
+   * Run `scan` one book at a time. After a miss, the following scan sleeps
+   * the full reclaim interval even if this scan ran longer than that.
+   * `shouldStop` is checked before the sleep and again before the scan.
+   */
+  run: <T>(
+    shouldStop: () => boolean,
+    scan: () => Promise<T | null>
+  ) => Promise<T | null | "stop">;
+};
+
+export function createKokoroReclaimGate(deps?: {
+  sleep?: (ms: number) => Promise<void>;
+  jitterMs?: () => number;
+}): KokoroReclaimGate {
+  const sleep =
+    deps?.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const jitterMs = deps?.jitterMs ?? (() => Math.floor(Math.random() * 50));
+  let chain: Promise<void> = Promise.resolve();
+  let sleepBeforeNext = false;
+  return {
+    armSleep() {
+      sleepBeforeNext = true;
+    },
+    run(shouldStop, scan) {
+      const run = chain.then(async () => {
+        if (shouldStop()) return "stop" as const;
+        if (sleepBeforeNext) {
+          sleepBeforeNext = false;
+          await sleep(KOKORO_RECLAIM_MS + Math.max(0, Math.floor(jitterMs())));
+          if (shouldStop()) return "stop" as const;
+        }
+        const held = await scan();
+        // A scan that already took a slot (or finished a section) is returned
+        // even when the deadline passed while it ran. A miss does not start
+        // another sleep once the caller is stopping.
+        sleepBeforeNext = held == null && !shouldStop();
+        if (held == null && shouldStop()) return "stop" as const;
+        return held;
+      });
+      chain = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    },
+  };
+}
 
 /**
  * Edge section cap after a shared 429. A missing or expired row means the

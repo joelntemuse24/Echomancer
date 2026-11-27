@@ -231,6 +231,7 @@ import {
 } from "@/lib/jobs/takehome-fairness";
 import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
 import {
+  createKokoroReclaimGate,
   holdEdgeSectionSlot,
   holdNamedProviderSlot,
   KOKORO_SLOT_WAIT_MS,
@@ -2208,7 +2209,7 @@ async function runClaimedTick(
     const renderSection = async (
       index: number,
       nextWriteIndex: () => number,
-      sectionOpts?: { skipSectionQa?: boolean }
+      sectionOpts?: { skipSectionQa?: boolean; kokoroSlotWaitMs?: number }
     ): Promise<{
       result: SynthesisSuccess | SynthesisFailure;
       /** Mastering + the segment row. No-op for a failed take. */
@@ -2227,9 +2228,11 @@ async function runClaimedTick(
                   "kokoro",
                   kokoroFleetCap,
                   // The first wait is long enough for another book to take a
-                  // slot that frees. Once this book holds permits, poll
-                  // briefly: its own calls are what will free the next one.
-                  kokoroSlotsHeld > 0 ? 500 : KOKORO_SLOT_WAIT_MS
+                  // slot that frees. A retry while this book already holds
+                  // slots passes 0: the reclaim gate owns the 500ms backoff,
+                  // and a slow scan must not skip that sleep.
+                  sectionOpts?.kokoroSlotWaitMs ??
+                    (kokoroSlotsHeld > 0 ? 500 : KOKORO_SLOT_WAIT_MS)
                 )
             : providerId === "fish"
               ? null
@@ -3283,11 +3286,13 @@ async function runClaimedTick(
           `book_cap=${sowellCap} fair_share=${fanout} rank=${kokoroRank} ` +
           `claims_per_tick=${Number.isFinite(claimsPerTick) ? claimsPerTick : "deadline"}`
       );
+      const kokoroReclaim = createKokoroReclaimGate();
+      const kokoroStopped = () =>
+        providerCapFull || Boolean(stopAt && Date.now() >= stopAt);
       await runRollingRenderPool({
         lanes: maxClaim,
         laneBudget: kokoroLaneBudget,
-        shouldStop: () =>
-          providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
+        shouldStop: kokoroStopped,
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
           // Reserve before the lease read. The pool has one lane per
@@ -3318,22 +3323,43 @@ async function runClaimedTick(
             result: { ok: false, error: "kokoro capacity is in use" },
             store: async () => {},
           });
+          const nextWrite = () =>
+            lowestUnclaimedAfter(segments, total, [...claimedSet]);
+          const stopReclaim = () => {
+            if (kokoroSlotsHeld <= 0) providerCapFull = true;
+            return giveUp();
+          };
+          try {
+            return await renderSection(index, nextWrite);
+          } catch (err) {
+            if (!(err instanceof ProviderSlotBusyError)) throw err;
+            // No permit of our own: end the wave so another book can take
+            // the next free slot. Holding one means a later call of this
+            // book will free a slot, and deferring here is the drain gap.
+            if (kokoroSlotsHeld <= 0 || kokoroStopped()) return stopReclaim();
+          }
+          // Every lane that missed shares one scan. The gate sleeps the
+          // full 500ms after a miss, including when the count itself ran
+          // longer than that, and it checks the deadline before scanning.
+          kokoroReclaim.armSleep();
           for (;;) {
-            try {
-              return await renderSection(index, () =>
-                lowestUnclaimedAfter(segments, total, [...claimedSet])
-              );
-            } catch (err) {
-              if (!(err instanceof ProviderSlotBusyError)) throw err;
-              const deadlinePassed = Boolean(stopAt && Date.now() >= stopAt);
-              // This book already holds permits. Stay on this section until
-              // one of those calls releases a slot. Deferring the wave here
-              // drops the lease and waits out the drain interval with
-              // nothing claimed.
-              if (kokoroSlotsHeld > 0 && !deadlinePassed) continue;
-              if (kokoroSlotsHeld <= 0) providerCapFull = true;
-              return giveUp();
+            if (kokoroStopped()) return stopReclaim();
+            const outcome = await kokoroReclaim.run(kokoroStopped, async () => {
+              if (kokoroStopped()) return null;
+              try {
+                return await renderSection(index, nextWrite, {
+                  kokoroSlotWaitMs: 0,
+                });
+              } catch (err) {
+                if (err instanceof ProviderSlotBusyError) return null;
+                throw err;
+              }
+            });
+            if (outcome === "stop" || (outcome == null && kokoroStopped())) {
+              return stopReclaim();
             }
+            if (outcome == null) continue;
+            return outcome;
           }
         },
         afterRender: async (_index, rendered) => {
