@@ -40,28 +40,23 @@ export interface GenerationView {
 }
 
 /**
- * Ready sections from index 0 until the first hole. Later ready sections
- * are not playable yet, so the header counts the same span the time bar does.
+ * Sections that are stored. A hole still blocks playback of everything
+ * after it; the count is the work that has finished, not that prefix.
  */
 function readySections(
   segments: GenerationInput["segments"]
 ): number | null {
   if (!Array.isArray(segments) || segments.length === 0) return null;
-  const byIndex = new Map<number, { status?: string | null; path?: string | null }>();
+  const ready = new Set<number>();
   segments.forEach((segment, position) => {
+    if (!segment || segment.status !== "ready" || !segment.path) return;
     const index =
       typeof segment.index === "number" && Number.isInteger(segment.index) && segment.index >= 0
         ? segment.index
         : position;
-    byIndex.set(index, segment);
+    ready.add(index);
   });
-  let count = 0;
-  for (let index = 0; ; index++) {
-    const row = byIndex.get(index);
-    if (!row || row.status !== "ready" || !row.path) break;
-    count += 1;
-  }
-  return count;
+  return ready.size;
 }
 
 function etaBit(input: GenerationInput): string {
@@ -73,11 +68,11 @@ function etaBit(input: GenerationInput): string {
 /**
  * One view of a generating book for the player (main and focus) and the library.
  *
- * Percent is the contiguous ready prefix over the stored outline — the
- * same span the time bar can play. A later ready section behind a hole
- * does not move the count. When every section is stored and the job is
- * still open, the line says the book is finishing — it does not print 99%
- * because audio exists. Stop is shown only while the job is still open.
+ * Percent is stored sections over the outline. A later section behind a
+ * hole moves the count; the player still only streams the contiguous
+ * prefix. When every section is stored and the job is still open, the
+ * line says the book is finishing — it does not print 99% because audio
+ * exists. Stop is shown only while the job is still open.
  */
 export function generationStatus(input: GenerationInput): GenerationView {
   const status = input.status;

@@ -40,8 +40,8 @@ import {
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { advanceAfterSection } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
-import { seekTargetIfCovered } from "@/lib/player/live-playlist";
-import { liveSessionAttached, syncLivePlayback } from "@/lib/player/live-session";
+import { chooseLivePart, liveAttachResumeAt, liveChapterSeek, liveReadyTransition, seekTargetIfCovered } from "@/lib/player/live-playlist";
+import { liveAttachToken, liveSessionAttached, releaseLiveSession, retargetLiveResume, setLivePlayIntent, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
@@ -379,6 +379,8 @@ function PlayerPageInner({ id }: { id: string }) {
    * not move that element: the stored row is behind a listen that never stopped.
    */
   const adoptedLiveRef = useRef(false);
+  /** True only after the listener pauses. Running off the buffer leaves it false. */
+  const listenerPausedRef = useRef(false);
 
   // Reset the page chrome when the book id changes. The playhead itself is
   // restored by the layout effect, which runs before this and before paint.
@@ -1216,7 +1218,15 @@ function PlayerPageInner({ id }: { id: string }) {
     const onTimeUpdate = () => {
       if (audio.currentTime > 0.5) {
         restoreLandedRef.current = true;
-        if (!droppedSeekHoldRef.current) confirmedPlayheadRef.current = audio.currentTime;
+        if (!droppedSeekHoldRef.current) {
+          const onSection = Boolean(audioUrlRef.current?.includes("/sections/"));
+          confirmedPlayheadRef.current = bookTimeFromElement({
+            mode: onSection ? "section" : "full",
+            elementSeconds: audio.currentTime,
+            sectionIndex: onSection ? segmentIndexRef.current : null,
+            spans: spansRef.current,
+          }).seconds;
+        }
       }
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
       // The requested seek landed once playback has moved on from it.
@@ -1431,9 +1441,13 @@ function PlayerPageInner({ id }: { id: string }) {
     if (!audio || !audioUrl) return;
 
     if (elementIsPlaying(audio)) {
+      listenerPausedRef.current = true;
+      setLivePlayIntent(audio, false);
       stopAudio();
       return;
     }
+    listenerPausedRef.current = false;
+    setLivePlayIntent(audio, true);
     startAudio(audio);
   };
 
@@ -1510,6 +1524,48 @@ function PlayerPageInner({ id }: { id: string }) {
 
   const seekAbsolute = (bookSeconds: number) => {
     if (isStreamMode || !Number.isFinite(bookSeconds)) return;
+    const liveAudio = audioRef.current;
+    if (liveAudio && liveSessionAttached(liveAudio)) {
+      const covered =
+        Number.isFinite(liveAudio.duration) && liveAudio.duration > 0 ? liveAudio.duration : 0;
+      const wasPlaying = elementIsPlaying(liveAudio);
+      const place = placeOnTimeline({ bookSeconds, spans });
+      const seg = place ? readyByIndex(job?.segments).get(place.sectionIndex) : undefined;
+      const sectionUrl = seg
+        ? playbackUrlForStatus(job?.status, `/api/storage/${seg.path}`)
+        : null;
+      const choice = chooseLivePart({
+        attached: true,
+        target: bookSeconds,
+        covered,
+        sectionUrl: sectionUrl ?? "",
+        playing: wasPlaying,
+      });
+      rememberBookRef.current(bookSeconds, "seek", null);
+      if (choice.action === "seek") {
+        liveAudio.currentTime = choice.at;
+        retargetLiveResume(liveAudio, choice.at, true);
+        setCurrentTime(choice.at);
+        confirmedPlayheadRef.current = choice.at;
+        if (choice.play) void liveAudio.play().catch(() => {});
+        return;
+      }
+      if (sectionUrl && seg && place) {
+        releaseLiveSession(liveAudio, bookSeconds);
+        listenerPausedRef.current = !choice.play;
+        armPendingSeekRef.current({
+          seconds: place.localSeconds,
+          fraction: 0,
+          bookSeconds: place.bookSeconds,
+          sectionIndex: place.sectionIndex,
+        });
+        playAfterLoadRef.current = choice.play;
+        setSegmentIndex(place.sectionIndex);
+        setCurrentTime(place.localSeconds);
+        setAudioUrl(sectionUrl);
+        return;
+      }
+    }
     if (!bookClock) return;
     const place = placeOnTimeline({ bookSeconds, spans });
     if (!place) return;
@@ -1597,11 +1653,13 @@ function PlayerPageInner({ id }: { id: string }) {
         bookSeconds: seconds,
         sectionIndex: null,
       });
+      if (liveSessionAttached(audio)) retargetLiveResume(audio, seconds, false);
       return;
     }
     clearPendingSeekRef.current();
     lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
+    if (liveSessionAttached(audio)) retargetLiveResume(audio, seconds, true);
     if (wasPlaying) {
       audio.play().catch(() => {});
     }
@@ -1643,6 +1701,10 @@ function PlayerPageInner({ id }: { id: string }) {
       playAfterLoadRef.current = true;
       setSegmentIndex(seek.sectionIndex);
       setCurrentTime(0);
+      releaseLiveSession(
+        audio,
+        span ? span.startSeconds + sectionFraction * span.durationSeconds : undefined
+      );
       setAudioUrl(`/api/storage/${seg.path}`);
       return;
     }
@@ -1681,6 +1743,7 @@ function PlayerPageInner({ id }: { id: string }) {
           "seek",
           placed.absolute ? null : onSection ? segmentIndex : null
         );
+        if (liveSessionAttached(audio)) retargetLiveResume(audio, placed.seconds, false);
       }
       if (audio) audio.play().catch(() => { audio.load(); });
       return;
@@ -1688,6 +1751,15 @@ function PlayerPageInner({ id }: { id: string }) {
     clearPendingSeekRef.current();
     lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
+    if (liveSessionAttached(audio)) {
+      const held = bookTimeFromElement({
+        mode: onSection ? "section" : "full",
+        elementSeconds: seconds,
+        sectionIndex: onSection ? segmentIndex : null,
+        spans,
+      });
+      retargetLiveResume(audio, held.seconds, true);
+    }
     setCurrentTime(seconds);
     const placed = bookTimeFromElement({
       mode: onSection ? "section" : "full",
@@ -1729,6 +1801,31 @@ function PlayerPageInner({ id }: { id: string }) {
       clearPendingSeekRef.current();
       return;
     }
+    if (
+      audio &&
+      liveSessionAttached(audio) &&
+      targetSeconds != null &&
+      full
+    ) {
+      const covered =
+        Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const decision = liveChapterSeek({
+        target: targetSeconds,
+        covered,
+        fullUrl: full,
+        playing: elementIsPlaying(audio),
+      });
+      if (decision?.action === "handoff") {
+        releaseLiveSession(audio, decision.at);
+        listenerPausedRef.current = !decision.play;
+        armPendingSeekRef.current(pending);
+        playAfterLoadRef.current = decision.play;
+        setCurrentTime(decision.at);
+        const next = versionedAudioUrl(full, job?.updated_at);
+        if (next) setAudioUrl(next);
+        return;
+      }
+    }
     if (full && audioUrl?.split("?")[0] !== full && !liveSessionAttached(audio)) {
       armPendingSeekRef.current(pending);
       playAfterLoadRef.current = true;
@@ -1741,6 +1838,9 @@ function PlayerPageInner({ id }: { id: string }) {
       playAfterLoadRef.current = true;
       if (targetSeconds != null) setCurrentTime(targetSeconds);
       if (audio) {
+        if (liveSessionAttached(audio) && targetSeconds != null) {
+          retargetLiveResume(audio, targetSeconds, false);
+        }
         audio.play().catch(() => { audio.load(); });
       }
       return;
@@ -1748,6 +1848,7 @@ function PlayerPageInner({ id }: { id: string }) {
     clearPendingSeekRef.current();
     lastRequestedSeekRef.current = targetSeconds;
     audio.currentTime = targetSeconds;
+    if (liveSessionAttached(audio)) retargetLiveResume(audio, targetSeconds, true);
     setCurrentTime(targetSeconds);
     if (!audio.error) setNotice(null);
     if (audio.paused) {
@@ -1768,6 +1869,7 @@ function PlayerPageInner({ id }: { id: string }) {
       seekableDuration(audioRef.current.duration, fileDuration)
     );
     audioRef.current.currentTime = next;
+    if (liveSessionAttached(audioRef.current)) retargetLiveResume(audioRef.current, next, true);
     setCurrentTime(next);
     const placed = bookTimeFromElement({
       mode: onSectionFile ? "section" : "full",
@@ -1859,12 +1961,13 @@ function PlayerPageInner({ id }: { id: string }) {
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }, [showTranscript, focusTranscript, revision, transcriptResource, transcriptRetry]);
 
+  const liveAttached = !isStreamMode && liveSessionAttached(audioRef.current);
   const onRollingFile =
     !isStreamMode &&
     Boolean(audioUrl) &&
     !audioUrl!.includes("/sections/") &&
     job?.status !== "ready";
-  const playDuration = onRollingFile
+  const playDuration = onRollingFile || liveAttached
     ? growingFileDuration(duration, job?.duration_seconds)
     : duration > 0
       ? duration
@@ -1884,14 +1987,56 @@ function PlayerPageInner({ id }: { id: string }) {
       return;
     }
     let stopped = false;
-    const resumeAt = playbackResume.savedRef.current?.positionSeconds ?? 0;
+    const onSection = Boolean(
+      (audio.getAttribute("src") || audioUrlRef.current || "").includes("/sections/")
+    );
+    const elementSeconds = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const saved = playbackResume.savedRef.current;
+    const bookAt = liveAttachResumeAt({
+      elementSeconds,
+      onSection,
+      sectionStart: onSection ? elementClockOffset(spansRef.current, segmentIndexRef.current) : 0,
+      saved,
+      savedSectionStart:
+        saved?.sectionIndex != null ? elementClockOffset(spansRef.current, saved.sectionIndex) : 0,
+    });
+    const playing = elementIsPlaying(audio);
+    const token = liveAttachToken(audio);
     void syncLivePlayback({
       audio,
       playlistUrl: `/api/storage/audiobooks/${job.id}/live.m3u8`,
       jobId: job.id,
-      resumeAt,
+      resumeAt: bookAt,
+      play: playing && !listenerPausedRef.current,
+      listenerPaused: listenerPausedRef.current,
     }).then((result) => {
-      if (stopped || !result.attached || !result.url) return;
+      if (stopped || liveAttachToken(audio) !== token || !liveSessionAttached(audio)) return;
+      if (!result.attached || !result.url) return;
+      const decision = liveReadyTransition({
+        transport: result.transport,
+        complete: result.complete,
+        ready: job.status === "ready",
+        fullUrl: job.audio_url ?? null,
+        currentSrc: audio.getAttribute("src"),
+        currentTime: bookAt,
+        confirmedAt: confirmedPlayheadRef.current,
+        playing,
+        listenerPaused: listenerPausedRef.current,
+      });
+      if (decision.action === "handoff") {
+        releaseLiveSession(audio);
+        listenerPausedRef.current = !decision.play;
+        armPendingSeekRef.current({
+          seconds: decision.at,
+          fraction: 0,
+          bookSeconds: decision.at,
+        });
+        playAfterLoadRef.current = decision.play;
+        setCurrentTime(decision.at);
+        const next = versionedAudioUrl(decision.url, job.updated_at);
+        if (next) setAudioUrl(next);
+        return;
+      }
       if (audioUrlRef.current !== result.url) setAudioUrl(result.url);
     }).catch(() => undefined);
     return () => {
@@ -1991,6 +2136,7 @@ function PlayerPageInner({ id }: { id: string }) {
       pause: () => {
         // stop clears the start watchdog. A raw pause leaves that timer armed,
         // and it reloads the file after the listener has already stopped.
+        listenerPausedRef.current = true;
         stopAudio();
       },
       seek: bookClock ? seekAbsolute : handleScrubCommit,
@@ -2402,16 +2548,26 @@ function PlayerPageInner({ id }: { id: string }) {
                   .find((s) => s.index === index);
                 const isReady = Boolean(seg && seg.status === "ready");
                 const canPlayRow = partRowCanPlay(job.status, isReady);
-                const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
+                const span = spans.find((item) => item.index === index);
+                const isCurrent = liveAttached
+                  ? Boolean(
+                      span &&
+                        currentTime + 0.05 >= span.startSeconds &&
+                        currentTime < span.startSeconds + Math.max(span.durationSeconds, 0.05)
+                    )
+                  : Boolean(seg && audioUrl?.includes(seg.path));
                 return (
                     <button
                       key={index}
                       onClick={() => {
                         if (!canPlayRow || !seg) return;
-                        const span = spans.find((item) => item.index === seg.index);
+                        const rowSpan = spans.find((item) => item.index === seg.index);
+                        const audio = audioRef.current;
+                        const playingNow = true;
+                        const target = rowSpan ? rowSpan.startSeconds : 0;
                         playbackResume.remember(
-                          span
-                            ? { positionSeconds: span.startSeconds, sectionIndex: null }
+                          rowSpan
+                            ? { positionSeconds: rowSpan.startSeconds, sectionIndex: null }
                             : { positionSeconds: 0, sectionIndex: seg.index },
                           "track"
                         );
@@ -2420,19 +2576,47 @@ function PlayerPageInner({ id }: { id: string }) {
                           `/api/storage/${seg.path}`
                         );
                         if (!nextUrl) return;
+                        if (audio && liveSessionAttached(audio)) {
+                          const covered =
+                            Number.isFinite(audio.duration) && audio.duration > 0
+                              ? audio.duration
+                              : 0;
+                          const choice = rowSpan
+                            ? chooseLivePart({
+                                attached: true,
+                                target,
+                                covered,
+                                sectionUrl: nextUrl,
+                                playing: playingNow,
+                              })
+                            : { action: "section" as const, url: nextUrl, release: true, play: playingNow };
+                          if (choice.action === "seek") {
+                            audio.currentTime = choice.at;
+                            retargetLiveResume(audio, choice.at, true);
+                            confirmedPlayheadRef.current = choice.at;
+                            waitingForNextRef.current = false;
+                            setSegmentIndex(index);
+                            setCurrentTime(choice.at);
+                            listenerPausedRef.current = false;
+                            if (choice.play) void audio.play().catch(() => {});
+                            return;
+                          }
+                          releaseLiveSession(audio, rowSpan ? target : undefined);
+                          listenerPausedRef.current = false;
+                        }
                         armPendingSeekRef.current({
                           seconds: 0,
                           fraction: 0,
-                          bookSeconds: span ? span.startSeconds : null,
+                          bookSeconds: rowSpan ? rowSpan.startSeconds : null,
                           sectionIndex: seg.index,
                         });
                         waitingForNextRef.current = false;
                         setSegmentIndex(index);
                         setCurrentTime(0);
                         playAfterLoadRef.current = true;
-                        if (audioUrl === nextUrl && audioRef.current) {
-                          audioRef.current.currentTime = 0;
-                          audioRef.current.play().catch(() => {});
+                        if (audioUrl === nextUrl && audio) {
+                          audio.currentTime = 0;
+                          if (playingNow) audio.play().catch(() => {});
                         } else {
                           setAudioUrl(nextUrl);
                         }

@@ -95,6 +95,77 @@ export function seekTargetIfCovered(target: number, coveredSeconds: number): num
   return target;
 }
 
+/** Sum of the playlist's own durations. The element duration is not known yet. */
+export function playlistDurationSeconds(segments: readonly { seconds: number }[]): number {
+  return segments.reduce(
+    (sum, segment) => sum + (Number.isFinite(segment.seconds) ? Math.max(0, segment.seconds) : 0),
+    0
+  );
+}
+
+/**
+ * A first attach replaces whatever the element is playing. Wait until the
+ * published playlist reaches the listener, so a later section is not swapped
+ * for the start of a short buffer.
+ */
+export function liveAttachAllowed(resumeAt: number, coveredSeconds: number): boolean {
+  const at = Number.isFinite(resumeAt) ? Math.max(0, resumeAt) : 0;
+  const covered = Number.isFinite(coveredSeconds) ? coveredSeconds : 0;
+  return at <= covered + 0.25;
+}
+
+/**
+ * Book time for the live handoff. Once the element has moved, that time is
+ * the section offset plus `currentTime` (a full file is already on the book
+ * clock). Before it has landed, a stored part-local time uses the same
+ * offset. A stored book time has no section index.
+ */
+export function liveAttachResumeAt(input: {
+  elementSeconds: number;
+  onSection: boolean;
+  sectionStart: number;
+  saved: { positionSeconds: number; sectionIndex: number | null } | null;
+  savedSectionStart: number;
+}): number {
+  const element = Number.isFinite(input.elementSeconds) ? Math.max(0, input.elementSeconds) : 0;
+  const start =
+    input.onSection && Number.isFinite(input.sectionStart) ? Math.max(0, input.sectionStart) : 0;
+  if (element > 0.5) return start + element;
+  const saved = input.saved;
+  if (saved && Number.isFinite(saved.positionSeconds) && saved.positionSeconds > 0.05) {
+    if (saved.sectionIndex == null) return Math.max(0, saved.positionSeconds);
+    const savedStart = Number.isFinite(input.savedSectionStart)
+      ? Math.max(0, input.savedSectionStart)
+      : 0;
+    return savedStart + Math.max(0, saved.positionSeconds);
+  }
+  return start + element;
+}
+
+/**
+ * A Parts row stays on the live element when that part is already buffered.
+ * Past the buffer, the section file is loaded only after the session is released.
+ */
+export function chooseLivePart(input: {
+  attached: boolean;
+  target: number;
+  covered: number;
+  sectionUrl: string;
+  playing: boolean;
+}): { action: "seek"; at: number; play: boolean } | { action: "section"; url: string; release: boolean; play: boolean } {
+  const target = Number.isFinite(input.target) ? Math.max(0, input.target) : 0;
+  const covered = Number.isFinite(input.covered) ? input.covered : 0;
+  if (input.attached && target <= covered + 0.05) {
+    return { action: "seek", at: target, play: input.playing };
+  }
+  return {
+    action: "section",
+    url: input.sectionUrl,
+    release: input.attached,
+    play: input.playing,
+  };
+}
+
 /** Seconds of already-played media to leave in the SourceBuffer. */
 export const LIVE_BACK_BUFFER_SECONDS = 30;
 
@@ -129,4 +200,112 @@ export function chooseLiveTransport(support: {
 /** An open live session stays on its source when the book becomes ready. */
 export function keepLiveSource(attached: boolean): boolean {
   return attached;
+}
+
+export interface LiveReadyStay {
+  action: "stay";
+}
+
+export interface LiveReadyHandoff {
+  action: "handoff";
+  url: string;
+  at: number;
+  play: boolean;
+}
+
+/**
+ * A Media Source keeps the bytes it already appended. Native HLS reloads a
+ * playlist when ENDLIST arrives, which restarts at the first segment, so
+ * that transport moves once onto the finished file at the same playhead.
+ */
+/**
+ * Where to land on full.mp3. Native HLS applies ENDLIST on its own reload
+ * and can already be at 0:00 and paused, so a backward jump uses the last
+ * position confirmed before that reload and keeps playing unless the
+ * listener paused.
+ */
+export function liveHandoffPlayhead(input: {
+  currentTime: number;
+  confirmedAt: number | null | undefined;
+  playing: boolean;
+  listenerPaused: boolean;
+}): { at: number; play: boolean } {
+  const current =
+    Number.isFinite(input.currentTime) && input.currentTime > 0 ? input.currentTime : 0;
+  const confirmed =
+    typeof input.confirmedAt === "number" &&
+    Number.isFinite(input.confirmedAt) &&
+    input.confirmedAt > 0
+      ? input.confirmedAt
+      : 0;
+  const reset = confirmed > 0 && current + 0.5 < confirmed;
+  return {
+    at: reset ? confirmed : Math.max(current, confirmed),
+    play: !input.listenerPaused && (input.playing || reset),
+  };
+}
+
+export function liveReadyTransition(input: {
+  transport: LiveTransport | null;
+  complete: boolean;
+  ready: boolean;
+  fullUrl: string | null;
+  currentSrc?: string | null;
+  currentTime: number;
+  confirmedAt?: number | null;
+  playing: boolean;
+  listenerPaused?: boolean;
+}): LiveReadyStay | LiveReadyHandoff {
+  if (input.transport !== "hls" || !input.complete || !input.ready || !input.fullUrl) {
+    return { action: "stay" };
+  }
+  const current = input.currentSrc?.split("?")[0] ?? "";
+  const next = input.fullUrl.split("?")[0];
+  if (current && current === next) return { action: "stay" };
+  const head = liveHandoffPlayhead({
+    currentTime: input.currentTime,
+    confirmedAt: input.confirmedAt,
+    playing: input.playing,
+    listenerPaused: input.listenerPaused === true,
+  });
+  return { action: "handoff", url: input.fullUrl, at: head.at, play: head.play };
+}
+
+/**
+ * A chapter seek stays on the live element when that time is already
+ * buffered. Past the buffer, the finished file is the one source that has it.
+ */
+export function liveChapterSeek(input: {
+  target: number;
+  covered: number;
+  fullUrl: string | null;
+  playing: boolean;
+}): { action: "seek"; at: number } | LiveReadyHandoff | null {
+  if (!Number.isFinite(input.target) || input.target < 0 || !input.fullUrl) return null;
+  const covered = Number.isFinite(input.covered) && input.covered > 0 ? input.covered : 0;
+  if (input.target <= covered + 0.05) return { action: "seek", at: input.target };
+  return { action: "handoff", url: input.fullUrl, at: input.target, play: input.playing };
+}
+
+/**
+ * The playhead ran off the end of the bytes appended so far. Resume when
+ * the next segment arrives. A pause the listener chose, and the end of a
+ * finished playlist, stay paused.
+ */
+export function shouldResumeLive(input: {
+  listenerPaused: boolean;
+  complete: boolean;
+  paused: boolean;
+  ended: boolean;
+  currentTime: number;
+  covered: number;
+}): boolean {
+  if (input.listenerPaused || input.complete) return false;
+  if (!input.paused && !input.ended) return false;
+  const covered = Number.isFinite(input.covered) ? input.covered : 0;
+  const at = Number.isFinite(input.currentTime) ? input.currentTime : 0;
+  // A book the listener has not started stays paused.
+  if (!(at > 0.5)) return false;
+  if (covered > at + 0.05) return true;
+  return input.paused && covered > 0 && at >= covered - 0.4;
 }
