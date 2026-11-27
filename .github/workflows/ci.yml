@@ -15,6 +15,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # The suite probes voice samples and masters synthetic audio. Both need
+      # ffmpeg, and the LUFS check imports numpy.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
