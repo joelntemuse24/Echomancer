@@ -231,13 +231,17 @@ import {
 } from "@/lib/jobs/takehome-fairness";
 import { effectiveOrchestratorConcurrency } from "@/worker/concurrency";
 import {
+  createKokoroReclaimGate,
   holdEdgeSectionSlot,
   holdNamedProviderSlot,
   KOKORO_SLOT_WAIT_MS,
   paradeeSharedCap,
+  providerSlotsHeldByOthers,
   ProviderSlotBusyError,
+  type HeldProviderSlot,
   readProviderThrottle,
   releaseProviderSlotsForOwner,
+  releaseStaleProviderSlots,
   renewTakehomeProviderSlots,
 } from "@/lib/tts/provider-slots";
 import { takehomeLeaseContext } from "@/lib/tts/takehome-lease-context";
@@ -1553,6 +1557,17 @@ export async function processTakehomeTick(
   } finally {
     heartbeat.stop();
     dropInFlightTakehomeLease(jobId, lease);
+    // Every exit, including a deferral, an error, and a finished book.
+    // The heartbeat stopped above, so it cannot renew a row this deletes.
+    // A section that already released is a no-op; a claim that never reached
+    // release would otherwise fill the table for the rest of the TTL and the
+    // next wave would defer on this book's own rows.
+    await releaseProviderSlotsForOwner(lease).catch((err) => {
+      console.warn(
+        `[Job ${jobId}] provider slot release skipped`,
+        err instanceof Error ? err.message : err
+      );
+    });
     // The GPU row covers this tick's call. A dead process stops heartbeating
     // and the row expires; a finished tick frees it for the next book.
     await releaseModalGpuLease({ jobId, ownerToken: lease }).catch((err) => {
@@ -2175,6 +2190,66 @@ async function runClaimedTick(
     // slot finish and write before the tick returns the book to the queue.
     let providerCapFull = false;
     /**
+     * Kokoro permits this tick is holding. A full table is not a reason to
+     * end the wave while this number is above zero: those calls free a slot
+     * when they finish speaking, and the next section should take it here.
+     * Ending the wave is what left book cf04e126 idle for the drain interval
+     * (about 10s) every time the 32-slot clamp filled.
+     */
+    let kokoroSlotsHeld = 0;
+    /**
+     * Slot ids this tick has acquired and not yet released. A Kokoro row for
+     * this lease that is not in the set is stale: the section exited without
+     * a delete, or a claim never reached `release`. The heartbeat would renew
+     * it for the whole wave, and the same book would then read a full table.
+     */
+    const kokoroLiveSlots = new Set<number>();
+    let kokoroSlotChain: Promise<unknown> = Promise.resolve();
+    const withKokoroSlots = <T>(fn: () => Promise<T>): Promise<T> => {
+      const run = kokoroSlotChain.then(fn, fn);
+      kokoroSlotChain = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    };
+    /**
+     * One Kokoro permit. The sweep and the insert share the lock so a sibling
+     * lane cannot delete a slot that has been inserted but not yet recorded
+     * as live. The sleep stays outside the lock.
+     */
+    const acquireKokoroPermit = async (waitMs: number): Promise<HeldProviderSlot> => {
+      const tryOnce = () =>
+        withKokoroSlots(async () => {
+          await releaseStaleProviderSlots({
+            provider: "kokoro",
+            ownerToken: lease,
+            liveSlotIds: [...kokoroLiveSlots],
+          });
+          try {
+            const slot = await holdNamedProviderSlot("kokoro", kokoroFleetCap, 0);
+            kokoroLiveSlots.add(slot.slotId);
+            kokoroSlotsHeld += 1;
+            return slot;
+          } catch (err) {
+            if (err instanceof ProviderSlotBusyError) return null;
+            throw err;
+          }
+        });
+      const first = await tryOnce();
+      if (first) return first;
+      const deadline = Date.now() + Math.max(0, waitMs);
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.min(500, Math.max(0, remaining)))
+        );
+        const held = await tryOnce();
+        if (held) return held;
+      }
+      throw new ProviderSlotBusyError("kokoro");
+    };
+    /**
      * The last hard provider fault (a non-cold 5xx / unusable audio) seen in
      * this tick, if any. Presence means the Modal engine answered and its
      * answer was an error, so the tick should follow the defer → fallback path
@@ -2200,7 +2275,7 @@ async function runClaimedTick(
     const renderSection = async (
       index: number,
       nextWriteIndex: () => number,
-      sectionOpts?: { skipSectionQa?: boolean }
+      sectionOpts?: { skipSectionQa?: boolean; kokoroSlotWaitMs?: number }
     ): Promise<{
       result: SynthesisSuccess | SynthesisFailure;
       /** Mastering + the segment row. No-op for a failed take. */
@@ -2215,10 +2290,13 @@ async function runClaimedTick(
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
             : kokoroBook
-              ? await holdNamedProviderSlot(
-                  "kokoro",
-                  kokoroFleetCap,
-                  KOKORO_SLOT_WAIT_MS
+              ? await acquireKokoroPermit(
+                  // 0 is a single try: the rolling pool's reclaim gate owns
+                  // the backoff. A positive wait is the hole-retry path,
+                  // which has no gate. Either way a stale row of this lease
+                  // is deleted before the insert, under the same lock.
+                  sectionOpts?.kokoroSlotWaitMs ??
+                    (kokoroSlotsHeld > 0 ? 500 : KOKORO_SLOT_WAIT_MS)
                 )
             : providerId === "fish"
               ? null
@@ -2226,21 +2304,28 @@ async function runClaimedTick(
                   providerId,
                   FISH_ACCOUNT_CONCURRENCY
                 );
-      const life = openSectionLifecycle(
-        jobId,
-        provider.id,
-        sections[index]!
-      );
       let slotReleased = false;
       const releaseSlot = async () => {
         if (slotReleased) return;
         slotReleased = true;
+        if (kokoroBook && capacitySlot) {
+          await withKokoroSlots(async () => {
+            kokoroLiveSlots.delete(capacitySlot.slotId);
+            kokoroSlotsHeld = Math.max(0, kokoroSlotsHeld - 1);
+            await capacitySlot.release();
+          });
+          return;
+        }
         await capacitySlot?.release();
       };
       // True when the mastering half now owns the lease cover and the
       // segment write. The caller must run `store` or the cover leaks.
       let handedOff = false;
+      let endLife: (() => void) | null = null;
       try {
+        // Inside the try so a throw here still releases the permit.
+        const life = openSectionLifecycle(jobId, provider.id, sections[index]!);
+        endLife = () => life.end();
         const synthesized = await synthesizeChecked(
           {
             jobId,
@@ -2355,7 +2440,7 @@ async function runClaimedTick(
         };
       } finally {
         await releaseSlot();
-        if (!handedOff) life.end();
+        if (!handedOff) endLife?.();
       }
     };
 
@@ -3268,11 +3353,13 @@ async function runClaimedTick(
           `book_cap=${sowellCap} fair_share=${fanout} rank=${kokoroRank} ` +
           `claims_per_tick=${Number.isFinite(claimsPerTick) ? claimsPerTick : "deadline"}`
       );
+      const kokoroReclaim = createKokoroReclaimGate();
+      const kokoroStopped = () =>
+        providerCapFull || Boolean(stopAt && Date.now() >= stopAt);
       await runRollingRenderPool({
         lanes: maxClaim,
         laneBudget: kokoroLaneBudget,
-        shouldStop: () =>
-          providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
+        shouldStop: kokoroStopped,
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
           // Reserve before the lease read. The pool has one lane per
@@ -3296,20 +3383,74 @@ async function runClaimedTick(
           return index;
         },
         render: async (index) => {
-          try {
-            return await renderSection(index, () =>
-              lowestUnclaimedAfter(segments, total, [...claimedSet])
-            );
-          } catch (err) {
-            if (!(err instanceof ProviderSlotBusyError)) throw err;
-            // Another process holds the last Kokoro container. Sections that
-            // already hold a permit finish and write; the book is deferred
-            // rather than failed.
-            providerCapFull = true;
-            return {
-              result: { ok: false as const, error: err.message },
-              store: async () => {},
-            };
+          const giveUp = (): {
+            result: SynthesisFailure;
+            store: () => Promise<void>;
+          } => ({
+            result: { ok: false, error: "kokoro capacity is in use" },
+            store: async () => {},
+          });
+          const nextWrite = () =>
+            lowestUnclaimedAfter(segments, total, [...claimedSet]);
+          // A table full of this lease's own rows is not a full fleet.
+          // Those rows were swept before the miss. Defer only when another
+          // owner still holds a permit, and do it now: waiting here until
+          // the 900s wave budget is the plateau on a single book.
+          const stopReclaim = async () => {
+            if (kokoroSlotsHeld <= 0) {
+              const others = await providerSlotsHeldByOthers({
+                provider: "kokoro",
+                ownerToken: lease,
+              });
+              if (others > 0) providerCapFull = true;
+            }
+            return giveUp();
+          };
+          const attempt = async () => {
+            try {
+              return await renderSection(index, nextWrite, {
+                kokoroSlotWaitMs: 0,
+              });
+            } catch (err) {
+              if (err instanceof ProviderSlotBusyError) return null;
+              throw err;
+            }
+          };
+          const first = await attempt();
+          if (first) return first;
+          if (kokoroStopped()) return stopReclaim();
+          // No live permit of ours: another book's slots can free within
+          // the short inter-book wait. Our own stale rows were already
+          // deleted, so this does not sit until the wave deadline.
+          if (kokoroSlotsHeld <= 0) {
+            const waitUntil = Date.now() + KOKORO_SLOT_WAIT_MS;
+            kokoroReclaim.armSleep();
+            while (Date.now() < waitUntil && !kokoroStopped()) {
+              const outcome = await kokoroReclaim.run(
+                () => kokoroStopped() || Date.now() >= waitUntil,
+                attempt
+              );
+              if (outcome && outcome !== "stop") return outcome;
+              if (outcome === "stop") break;
+            }
+            return stopReclaim();
+          }
+          // A section of this book is still speaking. Take the permit it
+          // releases. The gate is one scan per book, and it stops when
+          // that permit is gone or the tick deadline has passed.
+          kokoroReclaim.armSleep();
+          for (;;) {
+            if (kokoroStopped()) return stopReclaim();
+            if (kokoroSlotsHeld <= 0) {
+              // The permit we were waiting on is gone. Sweep once more so
+              // a row it left behind does not defer this book, then speak.
+              const outcome = await attempt();
+              if (outcome) return outcome;
+              return stopReclaim();
+            }
+            const outcome = await kokoroReclaim.run(kokoroStopped, attempt);
+            if (outcome && outcome !== "stop") return outcome;
+            if (outcome === "stop" || kokoroStopped()) return stopReclaim();
           }
         },
         afterRender: async (_index, rendered) => {

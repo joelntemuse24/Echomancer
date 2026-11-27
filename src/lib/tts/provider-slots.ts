@@ -82,9 +82,22 @@ export function resetProviderSlotTableCache(): void {
   tableReady = false;
 }
 
-function clampCap(cap: number): number {
+/**
+ * Fish, Edge, Paradee, and the other named providers stay at 32.
+ * Kokoro is the fleet call cap (`sowellCallCap`: 16 on torch, 64 on a
+ * 16×4 ONNX fleet). A hard 32 here is what held book cf04e126 at 32
+ * calls while the pool had already planned 59.
+ */
+export const PROVIDER_SLOT_CAP_CEILING = 32;
+
+function slotCapCeiling(provider: string): number {
+  if (provider === "kokoro") return sowellCallCap();
+  return PROVIDER_SLOT_CAP_CEILING;
+}
+
+function clampCap(cap: number, provider: string): number {
   if (!Number.isFinite(cap) || cap < 1) return 1;
-  return Math.min(32, Math.floor(cap));
+  return Math.min(slotCapCeiling(provider), Math.floor(cap));
 }
 
 function clampTtl(ttlSeconds: number): number {
@@ -108,8 +121,22 @@ export async function tryAcquireProviderSlot(
   }
 ): Promise<number | null> {
   await ensureProviderSlotTable(db);
-  const cap = clampCap(opts.cap);
+  const cap = clampCap(opts.cap, opts.provider);
   const ttl = clampTtl(opts.ttlSeconds);
+  // A full table is one count. Walking every slot id is an INSERT each,
+  // and on Kokoro that is 64 round trips per lane. A miss here is retried
+  // by the book's single reclaim gate.
+  try {
+    const row = await db.queryOne<{ n: number | bigint | null }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = ? AND slot_id < ? AND expires_at > unixepoch()`,
+      [opts.provider, cap]
+    );
+    const live = Number(row?.n ?? 0);
+    if (Number.isFinite(live) && live >= cap) return null;
+  } catch {
+    // A failed count still tries the insert walk.
+  }
   for (let slot = 0; slot < cap; slot++) {
     const result = await db.execute(
       `INSERT INTO provider_slots (provider, slot_id, owner_token, job_id, expires_at)
@@ -151,6 +178,63 @@ export async function renewProviderSlots(
     [clampTtl(opts.ttlSeconds), opts.ownerToken]
   );
   return result.rowsAffected;
+}
+
+/**
+ * Drop this owner's Kokoro rows that are not a section still speaking.
+ *
+ * A section that exited on an error or an abort, or a claim that never
+ * reached `release`, leaves a row the lease heartbeat keeps renewing. The
+ * table then looks full to the same book. Live slot ids are the ones this
+ * tick has acquired and not released; everything else of this owner is stale.
+ * An empty live set deletes every Kokoro row for the token.
+ */
+export async function releaseStaleProviderSlots(
+  opts: {
+    provider: string;
+    ownerToken: string;
+    liveSlotIds: readonly number[];
+  },
+  db: SlotSql = appSql
+): Promise<number> {
+  await ensureProviderSlotTable(db);
+  if (opts.liveSlotIds.length === 0) {
+    const result = await db.execute(
+      `DELETE FROM provider_slots
+       WHERE provider = ? AND owner_token = ?`,
+      [opts.provider, opts.ownerToken]
+    );
+    return result.rowsAffected;
+  }
+  const placeholders = opts.liveSlotIds.map(() => "?").join(", ");
+  const result = await db.execute(
+    `DELETE FROM provider_slots
+     WHERE provider = ? AND owner_token = ?
+       AND slot_id NOT IN (${placeholders})`,
+    [opts.provider, opts.ownerToken, ...opts.liveSlotIds]
+  );
+  return result.rowsAffected;
+}
+
+/** Unexpired rows of this provider held by any other token. */
+export async function providerSlotsHeldByOthers(
+  opts: { provider: string; ownerToken: string },
+  db: SlotSql = appSql
+): Promise<number> {
+  try {
+    await ensureProviderSlotTable(db);
+    const row = await db.queryOne<{ n: number | bigint | null }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = ? AND owner_token != ? AND expires_at > unixepoch()`,
+      [opts.provider, opts.ownerToken]
+    );
+    const n = Number(row?.n ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    // A failed read must not look like an empty table and keep the book
+    // spinning. The caller defers; the next claim tries again.
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /** Milliseconds until the soonest live slot of this provider expires. */
@@ -285,6 +369,68 @@ export async function holdNamedProviderSlot(
  * bounded, so a genuinely full fleet still defers promptly.
  */
 export const KOKORO_SLOT_WAIT_MS = 3_000;
+
+/**
+ * Backoff before a book that already holds Kokoro slots scans again.
+ * The scan is one count (and, when a row is free, the insert walk). On a
+ * remote table that count can take longer than this interval. The reclaim
+ * gate sleeps this long anyway, plus a little jitter, so a slow scan cannot
+ * start the next one immediately.
+ */
+export const KOKORO_RECLAIM_MS = 500;
+
+export type KokoroReclaimGate = {
+  /** The next scan waits {@link KOKORO_RECLAIM_MS} plus jitter. */
+  armSleep: () => void;
+  /**
+   * Run `scan` one book at a time. After a miss, the following scan sleeps
+   * the full reclaim interval even if this scan ran longer than that.
+   * `shouldStop` is checked before the sleep and again before the scan.
+   */
+  run: <T>(
+    shouldStop: () => boolean,
+    scan: () => Promise<T | null>
+  ) => Promise<T | null | "stop">;
+};
+
+export function createKokoroReclaimGate(deps?: {
+  sleep?: (ms: number) => Promise<void>;
+  jitterMs?: () => number;
+}): KokoroReclaimGate {
+  const sleep =
+    deps?.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const jitterMs = deps?.jitterMs ?? (() => Math.floor(Math.random() * 50));
+  let chain: Promise<void> = Promise.resolve();
+  let sleepBeforeNext = false;
+  return {
+    armSleep() {
+      sleepBeforeNext = true;
+    },
+    run(shouldStop, scan) {
+      const run = chain.then(async () => {
+        if (shouldStop()) return "stop" as const;
+        if (sleepBeforeNext) {
+          sleepBeforeNext = false;
+          await sleep(KOKORO_RECLAIM_MS + Math.max(0, Math.floor(jitterMs())));
+          if (shouldStop()) return "stop" as const;
+        }
+        const held = await scan();
+        // A scan that already took a slot (or finished a section) is returned
+        // even when the deadline passed while it ran. A miss does not start
+        // another sleep once the caller is stopping.
+        sleepBeforeNext = held == null && !shouldStop();
+        if (held == null && shouldStop()) return "stop" as const;
+        return held;
+      });
+      chain = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    },
+  };
+}
 
 /**
  * Edge section cap after a shared 429. A missing or expired row means the

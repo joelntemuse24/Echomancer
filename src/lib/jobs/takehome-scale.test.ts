@@ -34,8 +34,11 @@ import {
   takehomeIdemKey,
 } from "@/lib/jobs/takehome-identity";
 import {
+  createKokoroReclaimGate,
+  ensureProviderSlotTable,
   releaseProviderSlot,
   releaseProviderSlotsForOwner,
+  releaseStaleProviderSlots,
   tryAcquireProviderSlot,
   type SlotSql,
 } from "@/lib/tts/provider-slots";
@@ -364,6 +367,54 @@ describe("provider slots across connections", () => {
     ).toBeNull();
   });
 
+  it("drops this owner's Kokoro rows that are not still speaking", async () => {
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: (sql, args) => queryOne(sql, args),
+    };
+    for (const token of ["lease-a", "lease-b"]) {
+      expect(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 4,
+          ownerToken: token,
+          jobId: token,
+          ttlSeconds: 90,
+        })
+      ).not.toBeNull();
+    }
+    // lease-a holds 0 and then takes 2 and 3. Slot 0 is the one still speaking.
+    await tryAcquireProviderSlot(db, {
+      provider: "kokoro",
+      cap: 4,
+      ownerToken: "lease-a",
+      jobId: "lease-a",
+      ttlSeconds: 90,
+    });
+    await tryAcquireProviderSlot(db, {
+      provider: "kokoro",
+      cap: 4,
+      ownerToken: "lease-a",
+      jobId: "lease-a",
+      ttlSeconds: 90,
+    });
+    const removed = await releaseStaleProviderSlots(
+      { provider: "kokoro", ownerToken: "lease-a", liveSlotIds: [0] },
+      db
+    );
+    expect(removed).toBe(2);
+    const left = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots WHERE provider = 'kokoro'`
+    );
+    // Slot 0 (still speaking) and lease-b's row stay.
+    expect(Number(left?.n ?? 0)).toBe(2);
+    const ours = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = 'kokoro' AND owner_token = 'lease-a'`
+    );
+    expect(Number(ours?.n ?? 0)).toBe(1);
+  });
+
   it("lets only one of two connections take the last slot", async () => {
     pair = clients();
     const [left, right] = await Promise.all([
@@ -385,6 +436,211 @@ describe("provider slots across connections", () => {
     const won = [left, right].filter((slot) => slot === 0);
     expect(won).toHaveLength(1);
     expect([left, right].filter((slot) => slot === null)).toHaveLength(1);
+  });
+
+  it("sizes Kokoro slots from the fleet call cap and keeps other providers at 32", async () => {
+    process.env.KOKORO_RUNTIME = "onnx";
+    delete process.env.SOWELL_MAX_CONTAINERS;
+    delete process.env.KOKORO_STREAMS_PER_CONTAINER;
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    await ensureProviderSlotTable(db);
+    await execute(`DELETE FROM provider_slots WHERE provider IN ('kokoro', 'fish')`);
+    const kokoro: Array<number | null> = [];
+    for (let i = 0; i < 64; i++) {
+      kokoro.push(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 64,
+          ownerToken: `kokoro-${i}`,
+          ttlSeconds: 90,
+        })
+      );
+    }
+    expect(kokoro.every((slot) => slot !== null)).toBe(true);
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "kokoro",
+        cap: 64,
+        ownerToken: "kokoro-overflow",
+        ttlSeconds: 90,
+      })
+    ).toBeNull();
+    const fish: Array<number | null> = [];
+    for (let i = 0; i < 40; i++) {
+      fish.push(
+        await tryAcquireProviderSlot(db, {
+          provider: "fish",
+          cap: 40,
+          ownerToken: `fish-${i}`,
+          ttlSeconds: 90,
+        })
+      );
+    }
+    expect(fish.filter((slot) => slot !== null)).toHaveLength(32);
+    expect(fish[32]).toBeNull();
+    delete process.env.KOKORO_RUNTIME;
+  });
+
+  it("counts a full Kokoro table once instead of inserting every slot id", async () => {
+    process.env.KOKORO_RUNTIME = "onnx";
+    delete process.env.SOWELL_MAX_CONTAINERS;
+    delete process.env.KOKORO_STREAMS_PER_CONTAINER;
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: (sql, args) => queryOne(sql, args),
+    };
+    await ensureProviderSlotTable(db);
+    await execute(`DELETE FROM provider_slots WHERE provider = 'kokoro'`);
+    for (let i = 0; i < 64; i++) {
+      expect(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 64,
+          ownerToken: `held-${i}`,
+          ttlSeconds: 90,
+        })
+      ).not.toBeNull();
+    }
+    let inserts = 0;
+    const counting: SlotSql = {
+      execute: async (sql, args) => {
+        if (sql.includes("INSERT INTO provider_slots")) inserts += 1;
+        return execute(sql, args);
+      },
+      queryOne: (sql, args) => queryOne(sql, args),
+    };
+    expect(
+      await tryAcquireProviderSlot(counting, {
+        provider: "kokoro",
+        cap: 64,
+        ownerToken: "overflow",
+        ttlSeconds: 90,
+      })
+    ).toBeNull();
+    expect(inserts).toBe(0);
+    delete process.env.KOKORO_RUNTIME;
+  });
+
+  it("bounds reclaim scans on a full table and sleeps through a slow scan", async () => {
+    const sleeps: number[] = [];
+    const gate = createKokoroReclaimGate({
+      jitterMs: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      },
+    });
+    const starts: number[] = [];
+    let scans = 0;
+    const stopAt = Date.now() + 2_200;
+    gate.armSleep();
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        for (;;) {
+          const outcome = await gate.run(
+            () => Date.now() >= stopAt,
+            async () => {
+              starts.push(Date.now());
+              scans += 1;
+              await new Promise((resolve) => setTimeout(resolve, 600));
+              return null;
+            }
+          );
+          if (outcome === "stop") return;
+        }
+      })
+    );
+    // Eight lanes and a 600ms scan. Without one shared sleep this is a
+    // tight loop: dozens of scans in 2.2s. One scan per 500ms backoff
+    // stays in the single digits, and each gap includes the overrun.
+    expect(scans).toBeGreaterThanOrEqual(1);
+    expect(scans).toBeLessThanOrEqual(4);
+    expect(sleeps.length).toBeGreaterThan(0);
+    expect(sleeps.every((ms) => ms >= 500)).toBe(true);
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i]! - starts[i - 1]!).toBeGreaterThanOrEqual(1_000);
+    }
+  });
+
+  it("bounds acquire calls per second while a slot is already held", async () => {
+    process.env.KOKORO_RUNTIME = "onnx";
+    delete process.env.SOWELL_MAX_CONTAINERS;
+    delete process.env.KOKORO_STREAMS_PER_CONTAINER;
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: (sql, args) => queryOne(sql, args),
+    };
+    await ensureProviderSlotTable(db);
+    await execute(`DELETE FROM provider_slots WHERE provider = 'kokoro'`);
+    for (let i = 0; i < 64; i++) {
+      expect(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 64,
+          ownerToken: `other-${i}`,
+          ttlSeconds: 90,
+        })
+      ).not.toBeNull();
+    }
+    let acquires = 0;
+    const counting: SlotSql = {
+      execute: async (sql, args) => {
+        if (sql.includes("provider_slots")) acquires += 1;
+        return execute(sql, args);
+      },
+      queryOne: async (sql, args) => {
+        if (sql.includes("provider_slots")) acquires += 1;
+        return queryOne(sql, args);
+      },
+    };
+    const gate = createKokoroReclaimGate({ jitterMs: () => 0 });
+    const started = Date.now();
+    const stopAt = started + 1_100;
+    gate.armSleep();
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        for (;;) {
+          const outcome = await gate.run(
+            () => Date.now() >= stopAt,
+            () =>
+              tryAcquireProviderSlot(counting, {
+                provider: "kokoro",
+                cap: 64,
+                ownerToken: "this-book",
+                jobId: "book",
+                ttlSeconds: 90,
+              })
+          );
+          if (outcome === "stop" || outcome) return;
+        }
+      })
+    );
+    const seconds = Math.max(0.1, (Date.now() - started) / 1000);
+    // One count per reclaim, not 8 lanes times 64 inserts. Two scans in
+    // this window is about 2 calls a second.
+    expect(acquires / seconds).toBeLessThanOrEqual(6);
+    expect(acquires).toBeGreaterThan(0);
+    expect(acquires).toBeLessThanOrEqual(4);
+    delete process.env.KOKORO_RUNTIME;
+  });
+
+  it("does not scan again once the reclaim deadline has passed", async () => {
+    const gate = createKokoroReclaimGate({ jitterMs: () => 0 });
+    let scans = 0;
+    const stopAt = Date.now() + 200;
+    gate.armSleep();
+    const outcome = await gate.run(
+      () => Date.now() >= stopAt,
+      async () => {
+        scans += 1;
+        return null;
+      }
+    );
+    expect(outcome).toBe("stop");
+    expect(scans).toBe(0);
   });
 });
 

@@ -22,7 +22,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { execute, queryOne } from "@/lib/turso";
 
 const JOB_ID = "dddddddd-0000-4000-8000-000000000001";
 const OTHER_JOB_ID = "dddddddd-0000-4000-8000-000000000002";
@@ -35,12 +35,13 @@ const BOOK_TEXT = Array.from({ length: 5 }, (_, i) =>
 async function seedKokoroJob(
   id = JOB_ID,
   userId = USER_A,
-  provider: "drew" | "sowell" | "george" = "drew"
+  provider: "drew" | "sowell" | "george" = "drew",
+  text = BOOK_TEXT
 ) {
   const pdfPath = await seedUpload({
     id,
     userId,
-    text: BOOK_TEXT,
+    text,
   });
   await seedJob({
     id,
@@ -104,6 +105,7 @@ afterEach(() => {
   delete process.env.SOWELL_MAX_CONTAINERS;
   delete process.env.KOKORO_RUNTIME;
   delete process.env.TTS_LIVE_JOIN;
+  delete process.env.LISTEN_PREP_CHUNK_TIMEOUT_MS;
 });
 
 describe("Kokoro rolling pool", () => {
@@ -436,6 +438,214 @@ describe("Kokoro rolling pool", () => {
     expect(row?.status).toBe("queued");
     expect(row?.processing_lease_token).toBeNull();
   });
+
+  it("keeps claiming when this book already holds the full Kokoro table", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "4";
+    const text = Array.from(
+      { length: 4 },
+      (_, i) => `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(20)}`
+    ).join("\n\n");
+    await seedKokoroJob(JOB_ID, USER_A, "drew", text);
+    const slots = await import("@/lib/tts/provider-slots");
+    const db = {
+      execute: (sql: string, args?: (string | number | null)[]) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    const held: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const slot = await slots.tryAcquireProviderSlot(db, {
+        provider: "kokoro",
+        cap: 4,
+        ownerToken: "another-worker",
+        ttlSeconds: 90,
+      });
+      expect(slot).not.toBeNull();
+      held.push(slot!);
+    }
+    const fake = await installKokoroProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3_400));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: Date.now() + 60_000,
+    });
+    const row = await jobRow(JOB_ID);
+    const ready = segmentsOf(row).filter((section) => section.status === "ready");
+    // Two foreign slots leave two permits. A 3.4s take outlasts the 3s
+    // wait, so the old path ended the wave after the first pair. Staying
+    // in the tick lets the freed permits speak the next pair.
+    expect(result.deferred).not.toBe(true);
+    expect(ready.length).toBeGreaterThanOrEqual(4);
+    expect(fake.calls.length).toBeGreaterThanOrEqual(4);
+    expect(Number(row?.total_sections ?? 0)).toBeGreaterThan(2);
+    await Promise.all(
+      held.map((slotId) =>
+        slots.releaseProviderSlot(db, {
+          provider: "kokoro",
+          slotId,
+          ownerToken: "another-worker",
+        })
+      )
+    );
+  }, 20_000);
+
+  it("splits a full Kokoro table across two books without spinning", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "4";
+    const text = Array.from(
+      { length: 4 },
+      (_, i) => `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(20)}`
+    ).join("\n\n");
+    await seedKokoroJob(JOB_ID, USER_A, "drew", text);
+    await seedKokoroJob(OTHER_JOB_ID, USER_B, "george", text);
+    let active = 0;
+    let peak = 0;
+    const fake = await installKokoroProvider(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active -= 1;
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const turso = await import("@/lib/turso");
+    let slotOps = 0;
+    const realExecute = turso.execute;
+    const realQueryOne = turso.queryOne;
+    vi.spyOn(turso, "execute").mockImplementation(async (sql, args) => {
+      if (String(sql).includes("provider_slots")) slotOps += 1;
+      return realExecute(sql, args);
+    });
+    vi.spyOn(turso, "queryOne").mockImplementation(async (sql, args) => {
+      if (String(sql).includes("provider_slots")) slotOps += 1;
+      return realQueryOne(sql, args);
+    });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await Promise.all([
+      processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 30_000 }),
+      processTakehomeTick(OTHER_JOB_ID, { deadlineMs: Date.now() + 30_000 }),
+    ]);
+    const left = await jobRow(JOB_ID);
+    const right = await jobRow(OTHER_JOB_ID);
+    const leftReady = segmentsOf(left).filter((section) => section.status === "ready");
+    const rightReady = segmentsOf(right).filter((section) => section.status === "ready");
+    const byJob = (id: string) =>
+      fake.calls.filter((call) => call.jobId === id).length;
+    expect(leftReady.length).toBeGreaterThan(0);
+    expect(rightReady.length).toBeGreaterThan(0);
+    expect(byJob(JOB_ID)).toBeGreaterThan(0);
+    expect(byJob(OTHER_JOB_ID)).toBeGreaterThan(0);
+    // Fleet of 4, split across the two books. A spin would be hundreds of
+    // slot statements for these ten sections.
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);
+    expect(slotOps).toBeGreaterThan(0);
+    expect(slotOps).toBeLessThan(80);
+  }, 30_000);
+
+  it("finishes a book whose own stale Kokoro claims fill the table", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "4";
+    await seedKokoroJob();
+    const turso = await import("@/lib/turso");
+    const realExecute = turso.execute;
+    let skippedReleases = 0;
+    // The first wave's releases report success and leave the row. That is
+    // the production leak: the in-memory count drops, the heartbeat would
+    // renew the row, and the same book then reads a full table.
+    vi.spyOn(turso, "execute").mockImplementation(async (sql, args) => {
+      const text = String(sql);
+      if (
+        skippedReleases < 4 &&
+        text.includes("DELETE FROM provider_slots") &&
+        text.includes("slot_id = ?")
+      ) {
+        skippedReleases += 1;
+        return { rowsAffected: 1 };
+      }
+      return realExecute(sql, args);
+    });
+    const fake = await installKokoroProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const started = Date.now();
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: started + 60_000,
+    });
+    const elapsed = Date.now() - started;
+    const row = await jobRow(JOB_ID);
+    const ready = segmentsOf(row).filter((section) => section.status === "ready");
+    const total = Number(row?.total_sections ?? 0);
+    const left = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots WHERE provider = 'kokoro'`
+    );
+    // More sections than the cap, so a leaked first wave cannot be the
+    // whole book. The tick must speak the rest in this call, not defer
+    // and sit until the wave budget.
+    expect(skippedReleases).toBe(4);
+    expect(total).toBeGreaterThan(4);
+    expect(ready).toHaveLength(total);
+    expect(fake.calls.length).toBeGreaterThanOrEqual(total);
+    expect(result.deferred).not.toBe(true);
+    expect(row?.status).toBe("ready");
+    expect(elapsed).toBeLessThan(8_000);
+    expect(Number(left?.n ?? 0)).toBe(0);
+  }, 15_000);
+
+  it("stops reclaiming when the tick deadline passes", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "2";
+    // The default prep budget is 20s, which would defer this short deadline
+    // before any section is claimed. The pass itself is a no-op without a key.
+    process.env.LISTEN_PREP_CHUNK_TIMEOUT_MS = "1000";
+    const text = Array.from(
+      { length: 4 },
+      (_, i) => `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(20)}`
+    ).join("\n\n");
+    await seedKokoroJob(JOB_ID, USER_A, "drew", text);
+    const slots = await import("@/lib/tts/provider-slots");
+    const db = {
+      execute: (sql: string, args?: (string | number | null)[]) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    const foreign = await slots.tryAcquireProviderSlot(db, {
+      provider: "kokoro",
+      cap: 2,
+      ownerToken: "another-worker",
+      ttlSeconds: 90,
+    });
+    expect(foreign).not.toBeNull();
+    const fake = await installKokoroProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const started = Date.now();
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: started + 4_000,
+    });
+    const elapsed = Date.now() - started;
+    const row = await jobRow(JOB_ID);
+    const ready = segmentsOf(row).filter((section) => section.status === "ready");
+    // One section is already speaking and finishes. The lane that found
+    // the table full leaves at the deadline instead of taking the slot
+    // that section frees and speaking the rest of the book.
+    expect(elapsed).toBeLessThan(8_000);
+    expect(Number(row?.total_sections ?? 0)).toBeGreaterThan(1);
+    expect(ready.length).toBeLessThanOrEqual(1);
+    expect(fake.calls.length).toBeLessThanOrEqual(1);
+    expect(result.deferred).not.toBe(true);
+    expect(row?.status).not.toBe("failed");
+    await slots.releaseProviderSlot(db, {
+      provider: "kokoro",
+      slotId: foreign!,
+      ownerToken: "another-worker",
+    });
+    delete process.env.LISTEN_PREP_CHUNK_TIMEOUT_MS;
+  }, 15_000);
 
   it("takes a shared kokoro permit for a preview so it cannot outrun the fleet", async () => {
     const slots = await import("@/lib/tts/provider-slots");

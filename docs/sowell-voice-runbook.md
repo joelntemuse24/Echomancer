@@ -92,11 +92,11 @@ Several books from different users share the fleet. The worker measures how
 many books are speaking right now (the `kokoro` provider-slot rows) and
 divides the fleet **exactly**, oldest book first (`planKokoroBookLanes`):
 
-- one book alone gets all of it (16 by default);
-- two books get 8 + 8;
-- three books get 6 + 5 + 5 — the remainder goes to the older books, so the
-  quotas always sum to the fleet and a container never sits idle while a book
-  waits;
+- one book alone gets the whole call cap (16 on torch, 64 on a 16×4 ONNX fleet);
+- two books split it in half (8+8 on torch, 32+32 on that ONNX fleet);
+- three books split the remainder to the older books (6+5+5 on torch,
+  22+21+21 on that ONNX fleet), so the quotas always sum to the fleet and a
+  container never sits idle while a book waits;
 - a book ranked past the fleet still gets one lane, so nobody is starved.
 
 The budget is re-read before every claim, not once per tick: a book that
@@ -104,7 +104,12 @@ starts mid-wave gets lanes as another book's sections finish, and a running
 book shrinks to its new share instead of holding the fleet for its whole
 book. The `kokoro` provider-slot rows remain the hard cross-process cap, so
 the total concurrent Kokoro calls across books never exceeds
-`SOWELL_MAX_CONTAINERS` even if a budget read is stale or fails. A 429 from a
+`sowellCallCap()` (containers on torch, containers × streams on ONNX;
+64 at 16×4) even if a budget read is stale or fails. The table does not
+clamp Kokoro at 32. A book that already holds slots shares one reclaim
+scan and waits 500ms after a miss. Before that scan it deletes its own
+rows that are not still speaking, and the tick drops every remaining row
+for the lease on the way out, so one book cannot defer itself. A 429 from a
 busy container is retried in place with backoff, never failed.
 
 The warm path starts **one** container (`KOKORO_WARM_CONTAINERS`), never the
