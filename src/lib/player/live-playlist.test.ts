@@ -159,6 +159,7 @@ describe("live playlist", () => {
         managedMpeg: false,
         mediaSource: true,
         mediaSourceMpeg: false,
+        nativeHls: false,
       })
     ).toBeNull();
     expect(
@@ -167,6 +168,7 @@ describe("live playlist", () => {
         managedMpeg: true,
         mediaSource: true,
         mediaSourceMpeg: true,
+        nativeHls: true,
       })
     ).toBe("mms");
     expect(
@@ -175,8 +177,18 @@ describe("live playlist", () => {
         managedMpeg: false,
         mediaSource: true,
         mediaSourceMpeg: true,
+        nativeHls: false,
       })
     ).toBe("mse");
+    expect(
+      chooseLiveTransport({
+        managed: false,
+        managedMpeg: false,
+        mediaSource: true,
+        mediaSourceMpeg: false,
+        nativeHls: true,
+      })
+    ).toBe("hls");
   });
 });
 

@@ -764,6 +764,47 @@ describe("syncLivePlayback", () => {
     expect(audio.src).toBe(section);
   });
 
+  it("plays the playlist on Safari once it lists a segment", async () => {
+    const audio = fakeAudio();
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0000.mp3";
+    audio.src = section;
+    audio.canPlayType = (type: string) =>
+      type === "application/vnd.apple.mpegurl" ? "maybe" : "";
+    vi.stubGlobal("MediaSource", undefined);
+    vi.stubGlobal("ManagedMediaSource", undefined);
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 22 }], 100, false);
+    vi.stubGlobal("fetch", async () => new Response(playlist, { status: 200 }));
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-safari",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(result.attached).toBe(true);
+    expect(result.transport).toBe("hls");
+    expect(audio.src).toBe("https://app.test/api/storage/audiobooks/job/live.m3u8");
+  });
+
+  it("leaves the section file when Safari's playlist has no segment yet", async () => {
+    const audio = fakeAudio();
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0000.mp3";
+    audio.src = section;
+    audio.canPlayType = () => "maybe";
+    vi.stubGlobal("MediaSource", undefined);
+    vi.stubGlobal("ManagedMediaSource", undefined);
+    vi.stubGlobal("fetch", async () => new Response("#EXTM3U\n", { status: 200 }));
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-safari-empty",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(result.attached).toBe(false);
+    expect(audio.src).toBe(section);
+  });
+
   it("keeps the section file when MPEG cannot be appended", async () => {
     const audio = fakeAudio();
     const section = "https://app.test/api/storage/audiobooks/job/sections/0000.mp3";

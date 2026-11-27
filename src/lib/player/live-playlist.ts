@@ -191,12 +191,15 @@ export function chooseLiveTransport(support: {
   managedMpeg: boolean;
   mediaSource: boolean;
   mediaSourceMpeg: boolean;
+  /** `canPlayType("application/vnd.apple.mpegurl")` was non-empty. Safari. */
+  nativeHls: boolean;
 }): LiveTransport | null {
   if (support.managed && support.managedMpeg) return "mms";
   if (support.mediaSource && support.mediaSourceMpeg) return "mse";
-  // Desktop Chrome reports MediaSource and still refuses audio/mpeg, and it
-  // cannot play an MPEG playlist in <audio> either. Pointing the element at
-  // live.m3u8 replaces the section file and the listen stays at 0:00.
+  // Safari plays an MPEG playlist in <audio>. Chrome and Firefox report an
+  // empty canPlayType, and assigning live.m3u8 there replaces the section
+  // file with a source that stays at 0:00.
+  if (support.nativeHls) return "hls";
   return null;
 }
 

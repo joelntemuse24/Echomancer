@@ -38,7 +38,7 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
-import { advanceAfterSection } from "@/lib/player/section-advance";
+import { advanceAfterSection, continuePastPublishedPrefix, readySnapshotHandoff } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
 import { chooseLivePart, liveAttachResumeAt, liveChapterSeek, liveReadyTransition, seekTargetIfCovered } from "@/lib/player/live-playlist";
 import { liveAttachToken, liveSessionAttached, releaseLiveSession, retargetLiveResume, setLivePlayIntent, syncLivePlayback } from "@/lib/player/live-session";
@@ -1023,12 +1023,34 @@ function PlayerPageInner({ id }: { id: string }) {
 
   useEffect(() => {
     if (forceStream || forceSegments || jobStatus !== "ready" ||
-        jobKind === "stream" || !job?.audio_url || !audioUrl?.includes("/sections/")) return;
+        jobKind === "stream" || !job?.audio_url || !audioUrl) return;
     if (liveSessionAttached(audioRef.current)) return;
+    const fullUrl = versionedAudioUrl(job.audio_url, job.updated_at);
+    if (!fullUrl) return;
+    const playingNow = audioRef.current;
+    const snapshot = readySnapshotHandoff({
+      status: jobStatus,
+      src: audioUrl,
+      fullUrl,
+      currentTime: playingNow?.currentTime ?? 0,
+      playing: Boolean(playingNow && (!playingNow.paused || playingNow.ended)),
+    });
+    if (snapshot.action === "handoff") {
+      armPendingSeekRef.current({
+        seconds: snapshot.at,
+        fraction: 0,
+        bookSeconds: snapshot.at,
+      });
+      playAfterLoadRef.current = snapshot.play;
+      waitingForNextRef.current = false;
+      setCurrentTime(snapshot.at);
+      setAudioUrl(snapshot.url);
+      return;
+    }
+    if (!audioUrl.includes("/sections/")) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
-    const fullUrl = versionedAudioUrl(job.audio_url, job.updated_at)!;
     const handoff = async () => {
       try {
         const doc = await transcriptResource.load(revision);
@@ -1328,6 +1350,34 @@ function PlayerPageInner({ id }: { id: string }) {
           setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, jobRef.current.playback_grant));
         } else if (step.action === "wait") {
           waitingForNextRef.current = true;
+        }
+      } else {
+        const endedAt =
+          Number.isFinite(audio.currentTime) && audio.currentTime > 0
+            ? audio.currentTime
+            : audio.duration;
+        const step = continuePastPublishedPrefix({
+          src: audioUrlRef.current,
+          endedAt,
+          spans: spansRef.current,
+          segments: jobRef.current?.segments,
+          status: jobRef.current?.status,
+        });
+        if (step.action === "play") {
+          waitingForNextRef.current = false;
+          const span = spansRef.current.find((item) => item.index === step.index);
+          armPendingSeekRef.current({
+            seconds: step.localSeconds,
+            fraction: 0,
+            bookSeconds: span ? span.startSeconds + step.localSeconds : null,
+            sectionIndex: step.index,
+          });
+          setSegmentIndex(step.index);
+          playAfterLoadRef.current = true;
+          setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, jobRef.current?.playback_grant));
+        } else if (step.action === "wait") {
+          waitingForNextRef.current = true;
+          setSegmentIndex(step.index);
         }
       }
     };

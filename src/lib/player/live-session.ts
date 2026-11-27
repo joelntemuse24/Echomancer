@@ -497,14 +497,58 @@ async function syncOnce(
     if (staleAttach(opts.audio, token)) return missed();
     const play = opts.play === true;
     const available = constructors();
+    const nativeHls =
+      typeof opts.audio.canPlayType === "function" &&
+      opts.audio.canPlayType("application/vnd.apple.mpegurl") !== "";
     const transport = chooseLiveTransport({
       managed: Boolean(available.managed),
       managedMpeg: available.managed?.isTypeSupported?.("audio/mpeg") === true,
       mediaSource: Boolean(available.media),
       mediaSourceMpeg: available.media?.isTypeSupported?.("audio/mpeg") === true,
+      nativeHls,
     });
-    // No MPEG SourceBuffer. Leave whatever section or full file is already
-    // loaded. A native playlist URL is not a playable source here.
+    // Safari can play the playlist once it exists and lists a segment.
+    // This call is already past that check. Chrome and Firefox stay on the
+    // file they have.
+    if (transport === "hls") {
+      const previousSrc = opts.audio.src;
+      opts.audio.src = opts.playlistUrl;
+      if (staleAttach(opts.audio, token)) {
+        opts.audio.src = previousSrc;
+        return missed();
+      }
+      session = {
+        jobId: opts.jobId,
+        url: opts.playlistUrl,
+        transport,
+        appended: [],
+        reserved: [],
+        chain: Promise.resolve(),
+        resumeAt,
+        play,
+        hold: false,
+        resumed: false,
+        watching: false,
+        complete: playlist.complete,
+        closed: false,
+        revoked: false,
+        previousSrc,
+      };
+      sessions.set(opts.audio, session);
+      if (staleAttach(opts.audio, token)) {
+        abandonStaleAttach(opts.audio, session, opts.playlistUrl, previousSrc);
+        return missed();
+      }
+      clearDeparture(opts.audio, opts.jobId);
+      watchResume(opts.audio, session);
+      maybeResume(opts.audio, session);
+      return {
+        attached: true,
+        url: session.url,
+        complete: playlist.complete,
+        transport: session.transport,
+      };
+    }
     if (transport !== "mms" && transport !== "mse") return missed();
     const Ctor = (transport === "mms" ? available.managed : available.media) as SourceCtor;
     const media = new Ctor();
