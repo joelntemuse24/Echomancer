@@ -82,9 +82,22 @@ export function resetProviderSlotTableCache(): void {
   tableReady = false;
 }
 
-function clampCap(cap: number): number {
+/**
+ * Fish, Edge, Paradee, and the other named providers stay at 32.
+ * Kokoro is the fleet call cap (`sowellCallCap`: 16 on torch, 64 on a
+ * 16×4 ONNX fleet). A hard 32 here is what held book cf04e126 at 32
+ * calls while the pool had already planned 59.
+ */
+export const PROVIDER_SLOT_CAP_CEILING = 32;
+
+function slotCapCeiling(provider: string): number {
+  if (provider === "kokoro") return sowellCallCap();
+  return PROVIDER_SLOT_CAP_CEILING;
+}
+
+function clampCap(cap: number, provider: string): number {
   if (!Number.isFinite(cap) || cap < 1) return 1;
-  return Math.min(32, Math.floor(cap));
+  return Math.min(slotCapCeiling(provider), Math.floor(cap));
 }
 
 function clampTtl(ttlSeconds: number): number {
@@ -108,7 +121,7 @@ export async function tryAcquireProviderSlot(
   }
 ): Promise<number | null> {
   await ensureProviderSlotTable(db);
-  const cap = clampCap(opts.cap);
+  const cap = clampCap(opts.cap, opts.provider);
   const ttl = clampTtl(opts.ttlSeconds);
   for (let slot = 0; slot < cap; slot++) {
     const result = await db.execute(

@@ -2285,7 +2285,9 @@ books or doubling provider calls:
 - **Shared permits.** `provider_slots` (`src/lib/tts/provider-slots.ts`) caps
   Fish take-home calls at 5, Edge sections at `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`
   (default 8), and Modal clone HTTP lanes at `MODAL_S2_SECTION_CONCURRENCY`
-  (default 4). A clone book wave does not take one of those lanes. Its cap is
+  (default 4). Kokoro's ceiling is `sowellCallCap()` (64 on a 16×4 ONNX fleet).
+  Every other provider stays clamped at 32. A Kokoro book that already holds
+  slots keeps claiming in the same wave when the table is momentarily full. A clone book wave does not take one of those lanes. Its cap is
   `modal_gpu_leases` (`src/lib/tts/providers/modal-gpu-lease.ts`): one row
   per book, `MODAL_S2_MAX_GPUS` (default 20) globally and
   `MODAL_S2_MAX_GPUS_PER_USER` (default 5) per user. Those counters do not

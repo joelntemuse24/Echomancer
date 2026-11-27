@@ -34,6 +34,7 @@ import {
   takehomeIdemKey,
 } from "@/lib/jobs/takehome-identity";
 import {
+  ensureProviderSlotTable,
   releaseProviderSlot,
   releaseProviderSlotsForOwner,
   tryAcquireProviderSlot,
@@ -385,6 +386,52 @@ describe("provider slots across connections", () => {
     const won = [left, right].filter((slot) => slot === 0);
     expect(won).toHaveLength(1);
     expect([left, right].filter((slot) => slot === null)).toHaveLength(1);
+  });
+
+  it("sizes Kokoro slots from the fleet call cap and keeps other providers at 32", async () => {
+    process.env.KOKORO_RUNTIME = "onnx";
+    delete process.env.SOWELL_MAX_CONTAINERS;
+    delete process.env.KOKORO_STREAMS_PER_CONTAINER;
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    await ensureProviderSlotTable(db);
+    await execute(`DELETE FROM provider_slots WHERE provider IN ('kokoro', 'fish')`);
+    const kokoro: Array<number | null> = [];
+    for (let i = 0; i < 64; i++) {
+      kokoro.push(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 64,
+          ownerToken: `kokoro-${i}`,
+          ttlSeconds: 90,
+        })
+      );
+    }
+    expect(kokoro.every((slot) => slot !== null)).toBe(true);
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "kokoro",
+        cap: 64,
+        ownerToken: "kokoro-overflow",
+        ttlSeconds: 90,
+      })
+    ).toBeNull();
+    const fish: Array<number | null> = [];
+    for (let i = 0; i < 40; i++) {
+      fish.push(
+        await tryAcquireProviderSlot(db, {
+          provider: "fish",
+          cap: 40,
+          ownerToken: `fish-${i}`,
+          ttlSeconds: 90,
+        })
+      );
+    }
+    expect(fish.filter((slot) => slot !== null)).toHaveLength(32);
+    expect(fish[32]).toBeNull();
+    delete process.env.KOKORO_RUNTIME;
   });
 });
 

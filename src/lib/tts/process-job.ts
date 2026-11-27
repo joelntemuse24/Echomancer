@@ -2175,6 +2175,14 @@ async function runClaimedTick(
     // slot finish and write before the tick returns the book to the queue.
     let providerCapFull = false;
     /**
+     * Kokoro permits this tick is holding. A full table is not a reason to
+     * end the wave while this number is above zero: those calls free a slot
+     * when they finish speaking, and the next section should take it here.
+     * Ending the wave is what left book cf04e126 idle for the drain interval
+     * (about 10s) every time the 32-slot clamp filled.
+     */
+    let kokoroSlotsHeld = 0;
+    /**
      * The last hard provider fault (a non-cold 5xx / unusable audio) seen in
      * this tick, if any. Presence means the Modal engine answered and its
      * answer was an error, so the tick should follow the defer → fallback path
@@ -2218,7 +2226,10 @@ async function runClaimedTick(
               ? await holdNamedProviderSlot(
                   "kokoro",
                   kokoroFleetCap,
-                  KOKORO_SLOT_WAIT_MS
+                  // The first wait is long enough for another book to take a
+                  // slot that frees. Once this book holds permits, poll
+                  // briefly: its own calls are what will free the next one.
+                  kokoroSlotsHeld > 0 ? 500 : KOKORO_SLOT_WAIT_MS
                 )
             : providerId === "fish"
               ? null
@@ -2235,12 +2246,16 @@ async function runClaimedTick(
       const releaseSlot = async () => {
         if (slotReleased) return;
         slotReleased = true;
+        if (kokoroBook && capacitySlot) {
+          kokoroSlotsHeld = Math.max(0, kokoroSlotsHeld - 1);
+        }
         await capacitySlot?.release();
       };
       // True when the mastering half now owns the lease cover and the
       // segment write. The caller must run `store` or the cover leaks.
       let handedOff = false;
       try {
+        if (kokoroBook && capacitySlot) kokoroSlotsHeld += 1;
         const synthesized = await synthesizeChecked(
           {
             jobId,
@@ -3296,20 +3311,29 @@ async function runClaimedTick(
           return index;
         },
         render: async (index) => {
-          try {
-            return await renderSection(index, () =>
-              lowestUnclaimedAfter(segments, total, [...claimedSet])
-            );
-          } catch (err) {
-            if (!(err instanceof ProviderSlotBusyError)) throw err;
-            // Another process holds the last Kokoro container. Sections that
-            // already hold a permit finish and write; the book is deferred
-            // rather than failed.
-            providerCapFull = true;
-            return {
-              result: { ok: false as const, error: err.message },
-              store: async () => {},
-            };
+          const giveUp = (): {
+            result: SynthesisFailure;
+            store: () => Promise<void>;
+          } => ({
+            result: { ok: false, error: "kokoro capacity is in use" },
+            store: async () => {},
+          });
+          for (;;) {
+            try {
+              return await renderSection(index, () =>
+                lowestUnclaimedAfter(segments, total, [...claimedSet])
+              );
+            } catch (err) {
+              if (!(err instanceof ProviderSlotBusyError)) throw err;
+              const deadlinePassed = Boolean(stopAt && Date.now() >= stopAt);
+              // This book already holds permits. Stay on this section until
+              // one of those calls releases a slot. Deferring the wave here
+              // drops the lease and waits out the drain interval with
+              // nothing claimed.
+              if (kokoroSlotsHeld > 0 && !deadlinePassed) continue;
+              if (kokoroSlotsHeld <= 0) providerCapFull = true;
+              return giveUp();
+            }
           }
         },
         afterRender: async (_index, rendered) => {

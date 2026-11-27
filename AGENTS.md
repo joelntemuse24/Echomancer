@@ -409,10 +409,10 @@ clamped 1..16 at deploy) containers at 2 CPU and 6 GB each,
 Modal's 2..1200). One book asks for `SOWELL_BOOK_LANES` lanes. Unset, torch asks for 16
 and ONNX asks for the call cap (containers × streams, 64 at 16×4). An
 explicit value is clamped to that cap. `TTS_SECTIONS_PER_TICK` is the
-Edge wave size and does not cap these lanes. `planKokoroBookLanes` divides the fleet
-**exactly** among the running Kokoro books, oldest first: alone, a book gets
-all of it; two books get 8+8; three books get 6+5+5, so
-the fair shares sum to the fleet. Each book then uses the fewest of those
+Edge wave size and does not cap these lanes. `planKokoroBookLanes` divides the call cap
+**exactly** among the running Kokoro books, oldest first. On the torch fleet
+of 16 that is 16, then 8+8, then 6+5+5. On a 16×4 ONNX fleet of 64 it is 64,
+then 32+32, then 22+21+21. The fair shares sum to the fleet. Each book then uses the fewest of those
 lanes that keep the same wave count (`lanesForSameWaves`): 22 sections on
 a quota of 16 is two waves at 11 lanes, and the containers that would have
 spoken once and idled are not started. A long book that already fills every
@@ -424,10 +424,14 @@ enter after restore. A snapshot's cold-start saving is not measured until
 the app is redeployed. The budget is re-read
 before every claim (`laneBudget`), so a book that starts mid-wave takes lanes
 as another book's sections finish, and a running book shrinks to its new
-share. The `kokoro` provider-slot rows are the hard cross-process cap. On torch
-that cap is `SOWELL_MAX_CONTAINERS` (one call per container). On ONNX
-(`KOKORO_RUNTIME=onnx`) each container serves 4 calls, so the cap is
-containers × 4: 48 at 12 containers and 64 at 16. A 429 from a busy container is retried with backoff,
+share. The `kokoro` provider-slot rows are the hard cross-process cap, and that
+ceiling is `sowellCallCap()` — not the 32-slot clamp the other providers
+keep. On torch that cap is `SOWELL_MAX_CONTAINERS` (one call per container).
+On ONNX (`KOKORO_RUNTIME=onnx`) each container serves 4 calls, so the cap is
+containers × 4: 48 at 12 containers and 64 at 16. A book that already holds
+Kokoro slots does not end its wave when the table is full; it claims again
+when one of its own calls releases a slot, instead of waiting out the drain
+interval with nothing in flight. A 429 from a busy container is retried with backoff,
 never failed. The 16-lane / 5 s-idle default is measured: on a 15.7k-char
 text, 16 lanes x 700-char sections finished in 47 s against 74 s for 6 lanes
 x 1.4k, and the idle tail dominated cost. A Kokoro warm is held for 25 s

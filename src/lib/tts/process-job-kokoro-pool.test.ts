@@ -35,12 +35,13 @@ const BOOK_TEXT = Array.from({ length: 5 }, (_, i) =>
 async function seedKokoroJob(
   id = JOB_ID,
   userId = USER_A,
-  provider: "drew" | "sowell" | "george" = "drew"
+  provider: "drew" | "sowell" | "george" = "drew",
+  text = BOOK_TEXT
 ) {
   const pdfPath = await seedUpload({
     id,
     userId,
-    text: BOOK_TEXT,
+    text,
   });
   await seedJob({
     id,
@@ -436,6 +437,58 @@ describe("Kokoro rolling pool", () => {
     expect(row?.status).toBe("queued");
     expect(row?.processing_lease_token).toBeNull();
   });
+
+  it("keeps claiming when this book already holds the full Kokoro table", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "4";
+    const text = Array.from(
+      { length: 4 },
+      (_, i) => `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(20)}`
+    ).join("\n\n");
+    await seedKokoroJob(JOB_ID, USER_A, "drew", text);
+    const slots = await import("@/lib/tts/provider-slots");
+    const db = {
+      execute: (sql: string, args?: (string | number | null)[]) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    const held: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const slot = await slots.tryAcquireProviderSlot(db, {
+        provider: "kokoro",
+        cap: 4,
+        ownerToken: "another-worker",
+        ttlSeconds: 90,
+      });
+      expect(slot).not.toBeNull();
+      held.push(slot!);
+    }
+    const fake = await installKokoroProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3_400));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: Date.now() + 60_000,
+    });
+    const row = await jobRow(JOB_ID);
+    const ready = segmentsOf(row).filter((section) => section.status === "ready");
+    // Two foreign slots leave two permits. A 3.4s take outlasts the 3s
+    // wait, so the old path ended the wave after the first pair. Staying
+    // in the tick lets the freed permits speak the next pair.
+    expect(result.deferred).not.toBe(true);
+    expect(ready.length).toBeGreaterThanOrEqual(4);
+    expect(fake.calls.length).toBeGreaterThanOrEqual(4);
+    expect(Number(row?.total_sections ?? 0)).toBeGreaterThan(2);
+    await Promise.all(
+      held.map((slotId) =>
+        slots.releaseProviderSlot(db, {
+          provider: "kokoro",
+          slotId,
+          ownerToken: "another-worker",
+        })
+      )
+    );
+  }, 20_000);
 
   it("takes a shared kokoro permit for a preview so it cannot outrun the fleet", async () => {
     const slots = await import("@/lib/tts/provider-slots");

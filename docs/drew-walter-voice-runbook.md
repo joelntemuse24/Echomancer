@@ -113,7 +113,8 @@ The quotas sum to the fleet, so a container never sits idle while a book
 waits, and every book keeps at least one lane. The budget is re-read before
 every claim, so a book that starts mid-wave takes lanes as another book's
 sections finish. The `kokoro` provider-slot rows are the hard cross-process
-cap; a 429 from a busy container is retried with backoff, never a failed
+cap (`sowellCallCap()`, 64 on a 16×4 ONNX fleet; other providers stay at 32).
+A 429 from a busy container is retried with backoff, never a failed
 take.
 
 ## Deploy
