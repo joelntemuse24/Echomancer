@@ -3044,9 +3044,11 @@ be appended (Managed Media Source on iOS, else MediaSource). Safari, whose
 and Firefox stay on the section files and walk each ready part as it
 ends. If the element is already the rolling snapshot, the end of that
 file maps the playhead onto the section that continues past the prefix
-and keeps playing. A playlist that 404s, or a segment that does not
-append, leaves the section source in place, and the next poll tries the
-live element again. When the book is ready, a section listen and a
+and keeps playing. The playlist URL is a page path. Segment fetches resolve it against the
+document; a path is not a URL base, and the throw used to reload the
+section from 0:00 on every poll. A playlist that 404s, or a segment that
+does not append, puts that section back at the same playhead and keeps
+playing, and the next poll tries the live element again. When the book is ready, a section listen and a
 snapshot listen both move onto the finished file at the same book time
 and keep playing. A listener already playing a section is
 handed over at that section's offset plus the element's current time, and

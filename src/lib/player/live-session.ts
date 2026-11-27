@@ -58,6 +58,9 @@ type Session = {
   revoked: boolean;
   /** Element src before this session replaced it. Restored when no audio lands. */
   previousSrc?: string;
+  /** Playhead and play state from before that replacement. A reload starts at 0. */
+  previousTime?: number;
+  keepPlaying?: boolean;
   onGrow?: () => void;
   onEnd?: () => void;
 };
@@ -304,6 +307,55 @@ function unwatch(audio: HTMLAudioElement, session: Session): void {
   audio.removeEventListener("progress", session.onGrow);
   session.onGrow = undefined;
   session.watching = false;
+}
+
+/**
+ * The page asks for `/api/storage/.../live.m3u8`. `fetch` accepts that path.
+ * `new URL(segment, playlist)` does not: a path is not a base, so every
+ * segment fetch threw and the failed attach reloaded the section.
+ */
+export function absoluteFromPlaylist(
+  resource: string,
+  playlistUrl: string,
+  documentHref: string
+): string {
+  const playlist = new URL(playlistUrl, documentHref);
+  return new URL(resource, playlist).toString();
+}
+
+function segmentFetchUrl(resource: string, playlistUrl: string): string {
+  const href =
+    typeof location !== "undefined" && location.href && !location.href.startsWith("about:")
+      ? location.href
+      : "http://localhost/";
+  return absoluteFromPlaylist(resource, playlistUrl, href);
+}
+
+/**
+ * Putting the section URL back loads it again. Chrome starts that load at
+ * 0:00 and paused, which is the playhead jump the listener hears.
+ */
+function putSectionBack(audio: HTMLAudioElement, session: Session): void {
+  const previous = session.previousSrc;
+  const liveUrl = session.url;
+  const at = session.previousTime ?? 0;
+  const play = session.keepPlaying === true;
+  dropSession(audio, session);
+  if (!(previous && audio.src === liveUrl)) return;
+  const apply = () => {
+    if (at > 0.05) {
+      try {
+        if (Math.abs(audio.currentTime - at) > 0.25) audio.currentTime = at;
+      } catch {
+        /* the range is not seekable until metadata */
+      }
+    }
+    if (play && audio.paused) void audio.play().catch(() => undefined);
+  };
+  audio.addEventListener("loadedmetadata", apply, { once: true });
+  audio.addEventListener("canplay", apply, { once: true });
+  audio.src = previous;
+  if (audio.readyState >= 1) apply();
 }
 
 function dropSession(audio: HTMLAudioElement, session: Session): void {
@@ -555,6 +607,8 @@ async function syncOnce(
     const url = URL.createObjectURL(media as unknown as MediaSource);
     if (staleAttach(opts.audio, token)) return missed();
     const previousSrc = opts.audio.src;
+    const previousTime = Number.isFinite(opts.audio.currentTime) ? opts.audio.currentTime : 0;
+    const keepPlaying = !opts.audio.paused && !opts.audio.ended;
     opts.audio.src = url;
     await waitOpen(media);
     if (staleAttach(opts.audio, token)) {
@@ -590,6 +644,8 @@ async function syncOnce(
       closed: false,
       revoked: false,
       previousSrc,
+      previousTime,
+      keepPlaying,
     };
     sessions.set(opts.audio, session);
     if (staleAttach(opts.audio, token)) {
@@ -637,7 +693,7 @@ async function syncOnce(
         for (const uri of next) {
           if (target.appended.includes(uri)) continue;
           try {
-            const absolute = new URL(uri, opts.playlistUrl).toString();
+            const absolute = segmentFetchUrl(uri, opts.playlistUrl);
             const part = await fetch(absolute, { credentials: "same-origin" });
             if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return;
             if (!part.ok) {
@@ -663,10 +719,7 @@ async function syncOnce(
     if (target.appended.length === 0) {
       // The playlist answered and the segment did not. Leave the section
       // file in place. The next poll can try the segment again.
-      const previous = target.previousSrc;
-      const liveUrl = target.url;
-      if (previous && opts.audio.src === liveUrl) opts.audio.src = previous;
-      dropSession(opts.audio, target);
+      putSectionBack(opts.audio, target);
       return missed();
     }
   } else if (playlist.complete) {

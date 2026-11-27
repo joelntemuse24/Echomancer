@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chooseLivePart, hlsEventPlaylist, liveAttachResumeAt } from "@/lib/player/live-playlist";
 import {
+  absoluteFromPlaylist,
   liveAttachToken,
   releaseLiveSession,
   retargetLiveResume,
@@ -143,7 +144,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("playlist segment URLs", () => {
+  it("resolves a page path against the document", () => {
+    expect(
+      absoluteFromPlaylist(
+        "live/0000.mp3",
+        "/api/storage/audiobooks/job/live.m3u8",
+        "https://echomancer.xyz/dashboard/player/job"
+      )
+    ).toBe("https://echomancer.xyz/api/storage/audiobooks/job/live/0000.mp3");
+  });
+});
+
 describe("syncLivePlayback", () => {
+  it("fetches a segment when the playlist URL is a page path", async () => {
+    const audio = fakeAudio();
+    const buffer = new FakeBuffer(audio);
+    installSource(buffer);
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 12 }], 10, false);
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      fetched.push(String(url));
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-relative",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(result.attached).toBe(true);
+    expect(fetched.some((url) => url.startsWith("http") && url.endsWith("/live/0000.mp3"))).toBe(true);
+    expect(buffer.appends).toHaveLength(1);
+  });
+
   it("appends each segment once when two polls overlap", async () => {
     const audio = fakeAudio();
     const buffer = new FakeBuffer(audio);
