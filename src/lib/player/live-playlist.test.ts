@@ -152,21 +152,23 @@ describe("live playlist", () => {
     expect(shouldResumeLive({ ...edge, currentTime: 117, covered: 400 })).toBe(true);
   });
 
-  it("uses HLS where MPEG SourceBuffers are unavailable", () => {
+  it("leaves the section file where MPEG SourceBuffers are unavailable", () => {
     expect(
       chooseLiveTransport({
         managed: true,
         managedMpeg: false,
         mediaSource: true,
         mediaSourceMpeg: false,
+        nativeHls: false,
       })
-    ).toBe("hls");
+    ).toBeNull();
     expect(
       chooseLiveTransport({
         managed: true,
         managedMpeg: true,
         mediaSource: true,
         mediaSourceMpeg: true,
+        nativeHls: true,
       })
     ).toBe("mms");
     expect(
@@ -175,8 +177,18 @@ describe("live playlist", () => {
         managedMpeg: false,
         mediaSource: true,
         mediaSourceMpeg: true,
+        nativeHls: false,
       })
     ).toBe("mse");
+    expect(
+      chooseLiveTransport({
+        managed: false,
+        managedMpeg: false,
+        mediaSource: true,
+        mediaSourceMpeg: false,
+        nativeHls: true,
+      })
+    ).toBe("hls");
   });
 });
 

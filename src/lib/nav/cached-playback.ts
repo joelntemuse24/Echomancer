@@ -43,11 +43,12 @@ export function seededTakehomePlayback(
   for (const segment of job.segments ?? []) {
     if (segment.status === "ready" && segment.path) ready.set(segment.index, segment);
   }
-  if (job.audio_url && !opts.forceSegments) {
-    const url = versionedAudioUrl(
-      job.audio_url,
-      job.status === "ready" ? job.updated_at : null
-    );
+  // full.mp3 while the book is still generating is only the published
+  // prefix. It ends, and a browser that cannot append MPEG never leaves
+  // it. Section files keep going. The finished file is the source once
+  // the book is ready.
+  if (job.audio_url && !opts.forceSegments && job.status === "ready") {
+    const url = versionedAudioUrl(job.audio_url, job.updated_at);
     return url ? { url, segmentIndex: null } : null;
   }
   const first = ready.get(0);

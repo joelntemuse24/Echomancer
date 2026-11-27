@@ -56,6 +56,8 @@ type Session = {
   complete: boolean;
   closed: boolean;
   revoked: boolean;
+  /** Element src before this session replaced it. Restored when no audio lands. */
+  previousSrc?: string;
   onGrow?: () => void;
   onEnd?: () => void;
 };
@@ -495,31 +497,42 @@ async function syncOnce(
     if (staleAttach(opts.audio, token)) return missed();
     const play = opts.play === true;
     const available = constructors();
+    const nativeHls =
+      typeof opts.audio.canPlayType === "function" &&
+      opts.audio.canPlayType("application/vnd.apple.mpegurl") !== "";
     const transport = chooseLiveTransport({
       managed: Boolean(available.managed),
       managedMpeg: available.managed?.isTypeSupported?.("audio/mpeg") === true,
       mediaSource: Boolean(available.media),
       mediaSourceMpeg: available.media?.isTypeSupported?.("audio/mpeg") === true,
+      nativeHls,
     });
+    // Safari can play the playlist once it exists and lists a segment.
+    // This call is already past that check. Chrome and Firefox stay on the
+    // file they have.
     if (transport === "hls") {
-      if (staleAttach(opts.audio, token)) return missed();
       const previousSrc = opts.audio.src;
       opts.audio.src = opts.playlistUrl;
+      if (staleAttach(opts.audio, token)) {
+        opts.audio.src = previousSrc;
+        return missed();
+      }
       session = {
         jobId: opts.jobId,
         url: opts.playlistUrl,
         transport,
-        appended: playlist.segments.map((segment) => segment.uri),
-        reserved: playlist.segments.map((segment) => segment.uri),
+        appended: [],
+        reserved: [],
         chain: Promise.resolve(),
         resumeAt,
         play,
         hold: false,
         resumed: false,
         watching: false,
-        complete: false,
+        complete: playlist.complete,
         closed: false,
         revoked: false,
+        previousSrc,
       };
       sessions.set(opts.audio, session);
       if (staleAttach(opts.audio, token)) {
@@ -528,16 +541,15 @@ async function syncOnce(
       }
       clearDeparture(opts.audio, opts.jobId);
       watchResume(opts.audio, session);
-      if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
-        resumeIfStalled(opts.audio, listenerPaused, false);
-      }
+      maybeResume(opts.audio, session);
       return {
         attached: true,
         url: session.url,
         complete: playlist.complete,
-        transport,
+        transport: session.transport,
       };
     }
+    if (transport !== "mms" && transport !== "mse") return missed();
     const Ctor = (transport === "mms" ? available.managed : available.media) as SourceCtor;
     const media = new Ctor();
     const url = URL.createObjectURL(media as unknown as MediaSource);
@@ -577,6 +589,7 @@ async function syncOnce(
       complete: false,
       closed: false,
       revoked: false,
+      previousSrc,
     };
     sessions.set(opts.audio, session);
     if (staleAttach(opts.audio, token)) {
@@ -647,6 +660,15 @@ async function syncOnce(
       .catch(() => undefined);
     await target.chain;
     if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
+    if (target.appended.length === 0) {
+      // The playlist answered and the segment did not. Leave the section
+      // file in place. The next poll can try the segment again.
+      const previous = target.previousSrc;
+      const liveUrl = target.url;
+      if (previous && opts.audio.src === liveUrl) opts.audio.src = previous;
+      dropSession(opts.audio, target);
+      return missed();
+    }
   } else if (playlist.complete) {
     if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
     markComplete(target, opts.audio);

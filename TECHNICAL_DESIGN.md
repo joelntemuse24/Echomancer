@@ -3035,9 +3035,20 @@ that is not a preset is snapped to the nearest one
 ### Playback shell — `src/components/playback-provider.tsx`
 
 One `<audio>` in the root layout. While a take-home book is still being
-read, the page points it once at a Media Source (Managed Media Source on
-iOS when `audio/mpeg` is supported, otherwise the `live.m3u8` playlist) and
-appends each new segment once. A listener already playing a section is
+read, a cold open uses `sections/NNNN.mp3` even after the worker has
+published `full.mp3`. That file is the published prefix and it ends.
+The page points the element at a Media Source only when `audio/mpeg` can
+be appended (Managed Media Source on iOS, else MediaSource). Safari, whose
+`canPlayType("application/vnd.apple.mpegurl")` is non-empty, is assigned
+`live.m3u8` only after that playlist exists and lists a segment. Chrome
+and Firefox stay on the section files and walk each ready part as it
+ends. If the element is already the rolling snapshot, the end of that
+file maps the playhead onto the section that continues past the prefix
+and keeps playing. A playlist that 404s, or a segment that does not
+append, leaves the section source in place, and the next poll tries the
+live element again. When the book is ready, a section listen and a
+snapshot listen both move onto the finished file at the same book time
+and keep playing. A listener already playing a section is
 handed over at that section's offset plus the element's current time, and
 stays playing. A Parts tap seeks inside the buffer or releases the session
 before loading that section. A second poll does not append a segment

@@ -19,7 +19,7 @@ describe("seeded take-home playback", () => {
     expect(seeded?.url).toContain("v=2026-11-10T00%3A00%3A00.000Z");
   });
 
-  it("plays the rolling file while the book is still generating", () => {
+  it("opens section 0 after the rolling file is published, while the book is still generating", () => {
     const seeded = seededTakehomePlayback(
       {
         job_kind: "takehome",
@@ -30,9 +30,10 @@ describe("seeded take-home playback", () => {
       },
       { forceStream: false, forceSegments: false }
     );
-    expect(seeded?.segmentIndex).toBeNull();
-    expect(seeded?.url).toContain("/api/storage/audiobooks/job-a/full.mp3");
-    expect(seeded?.url).not.toContain("v=");
+    expect(seeded).toEqual({
+      url: "/api/storage/audiobooks/job-a/sections/0000.mp3",
+      segmentIndex: 0,
+    });
   });
 
   it("starts section 0 while the rolling file is not written yet", () => {
@@ -76,6 +77,27 @@ describe("playback for a stored position", () => {
     { index: 1, path: "audiobooks/job-a/sections/0001.mp3", status: "ready", durationSeconds: 80 },
     { index: 2, path: "audiobooks/job-a/sections/0002.mp3", status: "ready", durationSeconds: 40 },
   ];
+
+  it("opens the part that holds the book clock after the rolling file is published", () => {
+    const seeded = playbackForResume(
+      {
+        job_kind: "takehome",
+        status: "processing",
+        audio_url: "/api/storage/audiobooks/job-a/full.mp3",
+        duration_seconds: 180,
+        segments,
+      },
+      { positionSeconds: 120, sectionIndex: null },
+      { forceStream: false, forceSegments: false }
+    );
+    expect(seeded).toMatchObject({
+      url: "/api/storage/audiobooks/job-a/sections/0001.mp3",
+      segmentIndex: 1,
+      localSeconds: 20,
+      restart: false,
+    });
+    expect(seeded?.url).not.toContain("full.mp3");
+  });
 
   it("opens the part that holds the book clock while the book is still generating", () => {
     const seeded = playbackForResume(
