@@ -12,6 +12,7 @@ import { open as openFile, readFile } from "fs/promises";
 import path from "path";
 import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
+import { isLivePlaybackObject } from "@/lib/player/live-playlist";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { ownsStoragePath } from "@/lib/auth/guard";
 import { playbackRowAllows, readPlaybackGrant } from "@/lib/auth/playback-grant";
@@ -78,7 +79,7 @@ function contentTypeForPath(storagePath: string, fallback?: string): string {
   if (storagePath.endsWith(".wav")) return "audio/wav";
   if (storagePath.endsWith(".mp3")) return "audio/mpeg";
   if (storagePath.endsWith(".ogg")) return "audio/ogg";
-  if (storagePath.endsWith(".m3u8")) return "audio/mpegurl";
+  if (storagePath.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
   const lookedUp = mime.lookup(storagePath);
   return lookedUp || fallback || "application/octet-stream";
 }
@@ -87,6 +88,10 @@ function contentTypeForPath(storagePath: string, fallback?: string): string {
  * A named download must not be `audio/*`. iOS Safari plays those inline and
  * never offers Save, even when Content-Disposition says attachment.
  */
+function playbackCacheControl(storagePath: string): string | undefined {
+  return isLivePlaybackObject(storagePath) ? "no-store" : undefined;
+}
+
 function contentTypeForDelivery(
   storagePath: string,
   fallback: string | undefined,
@@ -287,7 +292,10 @@ export async function GET(
     const playbackRange = downloadName ? null : cappedPlaybackRange(rangeHeader);
     const effectiveRange = playbackRange ?? rangeHeader;
 
-    if (!playbackRange && !storagePath.endsWith(".pcm")) {
+    // The live playlist uses relative segment URIs. A 302 to R2 would make
+    // those resolve on the bucket, which iOS Safari will not play. The
+    // playlist and its `live/NNNN.mp3` files stay on this origin.
+    if (!playbackRange && !storagePath.endsWith(".pcm") && !isLivePlaybackObject(storagePath)) {
       try {
         const direct = await directObjectUrl(storagePath, {
           downloadName: downloadName ? sanitizeFilename(downloadName) : undefined,
@@ -356,6 +364,7 @@ export async function GET(
                 ),
                 contentLength: shifted.contentLength,
                 contentRange: shifted.contentRange,
+                cacheControl: playbackCacheControl(storagePath),
               }),
             });
           }
@@ -375,6 +384,7 @@ export async function GET(
             contentLength: opened.contentLength,
             contentRange: opened.contentRange,
             contentDisposition,
+            cacheControl: playbackCacheControl(storagePath),
           }),
         });
       } catch (r2Err: unknown) {
@@ -459,6 +469,7 @@ export async function GET(
               contentType,
               contentLength: metadata.size,
               contentDisposition,
+              cacheControl: playbackCacheControl(storagePath),
             }),
           });
         }
@@ -478,6 +489,7 @@ export async function GET(
           contentLength,
           contentRange,
           contentDisposition,
+          cacheControl: playbackCacheControl(storagePath),
         }),
       });
     }
@@ -488,6 +500,7 @@ export async function GET(
         contentType,
         contentLength: metadata.size,
         contentDisposition,
+        cacheControl: playbackCacheControl(storagePath),
       }),
     });
   } catch (error) {

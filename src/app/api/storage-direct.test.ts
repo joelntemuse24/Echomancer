@@ -167,6 +167,41 @@ describe("GET /api/storage direct R2", () => {
     expect(directObjectUrl).not.toHaveBeenCalled();
   });
 
+  it("serves the live playlist and its segments from this origin", async () => {
+    const { uploadFile } = await import("@/lib/storage");
+    const { hlsEventPlaylist } = await import("@/lib/player/live-playlist");
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 1 }], 4, false);
+    await uploadFile(
+      `audiobooks/${JOB_A}`,
+      "live.m3u8",
+      Buffer.from(playlist),
+      "application/vnd.apple.mpegurl"
+    );
+    await uploadFile(`audiobooks/${JOB_A}/live`, "0000.mp3", fakeMp3(32), "audio/mpeg");
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    await seedOwnedJob();
+    const response = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/live.m3u8`, { userId: USER_A }),
+      routeParams({ path: ["audiobooks", JOB_A, "live.m3u8"] })
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/vnd.apple.mpegurl");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const text = await response.text();
+    expect(text).toContain("#EXTM3U");
+    expect(text).toContain("live/0000.mp3");
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    const segment = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/live/0000.mp3`, { userId: USER_A }),
+      routeParams({ path: ["audiobooks", JOB_A, "live", "0000.mp3"] })
+    );
+    expect(segment.status).toBe(200);
+    expect(segment.headers.get("content-type")).toBe("audio/mpeg");
+    expect(segment.headers.get("cache-control")).toBe("no-store");
+    expect(directObjectUrl).not.toHaveBeenCalled();
+  });
+
   it("redirects a request with no range to R2", async () => {
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     await seedOwnedJob();

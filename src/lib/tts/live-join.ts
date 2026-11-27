@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { downloadFile, downloadFileToPath, fileExists, uploadFile } from "@/lib/storage";
+import { downloadFile, downloadFileToPath, fileExists, listFiles, uploadFile } from "@/lib/storage";
 import { jobScratchDir } from "@/lib/tts/job-scratch";
 import { muxChaptersIntoMp3, type Id3Chapter } from "@/lib/tts/id3-chapters";
 import { loadFrozenSectionOutline, PLAYBACK_CHAPTERS_NAME } from "@/lib/tts/frozen-script";
@@ -9,9 +9,15 @@ import {
   playbackChaptersWithTimes,
   type PlaybackChapter,
 } from "@/lib/player/playback-chapters";
-import { hlsEventPlaylist, readHlsPlaylist, type LiveSegment } from "@/lib/player/live-playlist";
+import {
+  HLS_PLAYLIST_CONTENT_TYPE,
+  hlsEventPlaylist,
+  readHlsPlaylist,
+  type LiveSegment,
+} from "@/lib/player/live-playlist";
 import {
   commitLiveUpload,
+  planLiveSegments,
   reconcilePublished,
   remoteIsFinishedBook,
 } from "@/lib/tts/live-publish";
@@ -123,6 +129,44 @@ async function remoteFull(jobId: string): Promise<Buffer> {
   const key = `audiobooks/${jobId}/full.mp3`;
   if (!(await fileExists(key))) return Buffer.alloc(0);
   return downloadFile(key);
+}
+
+/** One start per section inside a copy-concatenated fold. */
+export function foldSectionStarts(pieceStart: number, durations: readonly number[]): number[] {
+  const starts: number[] = [];
+  let at = pieceStart;
+  for (const duration of durations) {
+    starts.push(at);
+    at += duration;
+  }
+  return starts;
+}
+
+/**
+ * Replace the single start recorded for a folded piece with one start per
+ * section in that piece. The piece start itself stays the first of them.
+ */
+export function cursorAfterFold(starts: readonly number[], durations: readonly number[]): number[] {
+  if (durations.length <= 1) return [...starts];
+  const pieceStart = starts[starts.length - 1] ?? 0;
+  return [...starts.slice(0, -1), ...foldSectionStarts(pieceStart, durations)];
+}
+
+/** Append a start for each section that begins at `firstStart`. */
+export function appendFoldStarts(
+  starts: readonly number[],
+  firstStart: number,
+  durations: readonly number[]
+): number[] {
+  return [...starts, ...foldSectionStarts(firstStart, durations)];
+}
+
+async function fileDurations(files: readonly string[]): Promise<number[]> {
+  const durations: number[] = [];
+  for (const file of files) {
+    durations.push(mp3IndexedDuration(await indexMp3Packets(await readFile(file))));
+  }
+  return durations;
 }
 
 async function forwardFold(files: string[], workDir: string): Promise<string> {
@@ -258,6 +302,38 @@ function leaseLost(): Error {
   return err;
 }
 
+function liveObjectUri(key: string, jobId: string): string | null {
+  const prefix = `audiobooks/${jobId}/live/`;
+  if (!key.startsWith(prefix)) return null;
+  const name = key.slice(prefix.length);
+  return /^\d{4}\.mp3$/.test(name) ? `live/${name}` : null;
+}
+
+async function loadLiveFiles(jobId: string): Promise<Map<string, Buffer>> {
+  const files = new Map<string, Buffer>();
+  let keys: string[] = [];
+  try {
+    keys = await listFiles(`audiobooks/${jobId}/live`);
+  } catch {
+    return files;
+  }
+  for (const key of keys) {
+    const uri = liveObjectUri(key, jobId);
+    if (!uri) continue;
+    files.set(uri, await downloadFile(key));
+  }
+  return files;
+}
+
+async function segmentSeconds(bytes: Buffer): Promise<number> {
+  return mp3IndexedDuration(await indexMp3Packets(bytes));
+}
+
+/**
+ * Write the new published slice and a playlist that names it. A segment
+ * object that is already the right bytes is kept. A mismatch or a missing
+ * playlist is rebuilt from the objects that match `full.mp3`.
+ */
 async function publishSegment(
   jobId: string,
   remote: Buffer,
@@ -265,26 +341,41 @@ async function publishSegment(
   signal: AbortSignal
 ): Promise<void> {
   const existing = await readPlaylist(jobId);
-  if (existing && existing.bytes !== remote.length) {
-    console.warn(`[Job ${jobId}] live playlist does not match stored audio; leaving segments in place`);
+  const nextIndex = existing?.segments.length ?? 0;
+  const nextName = `live/${String(nextIndex).padStart(4, "0")}.mp3`;
+  const aligned = existing != null && existing.bytes === remote.length;
+  if (aligned && !(await fileExists(`audiobooks/${jobId}/${nextName}`))) {
+    await uploadFile(`audiobooks/${jobId}`, nextName, delta, "audio/mpeg", { abortSignal: signal });
+    const segments = [
+      ...existing.segments,
+      { uri: nextName, seconds: await segmentSeconds(delta) },
+    ];
+    await writePlaylist(jobId, segments, remote.length + delta.length, false, signal);
     return;
   }
-  let segments: LiveSegment[] = existing ? [...existing.segments] : [];
-  if (!existing && remote.length > 0) {
-    const remotePackets = await indexMp3Packets(remote);
-    const name = "live/0000.mp3";
-    if (await fileExists(`audiobooks/${jobId}/${name}`)) return;
-    await uploadFile(`audiobooks/${jobId}`, name, remote, "audio/mpeg", { abortSignal: signal });
-    segments = [{ uri: name, seconds: mp3IndexedDuration(remotePackets) }];
+  const files = await loadLiveFiles(jobId);
+  const planned = planLiveSegments(remote, delta, files);
+  const segments: LiveSegment[] = [];
+  for (const segment of planned) {
+    if (segment.write) {
+      await uploadFile(`audiobooks/${jobId}`, segment.uri, segment.bytes, "audio/mpeg", {
+        abortSignal: signal,
+      });
+    }
+    segments.push({ uri: segment.uri, seconds: await segmentSeconds(segment.bytes) });
   }
-  const packets = await indexMp3Packets(delta);
-  const preferred = `live/${String(segments.length).padStart(4, "0")}.mp3`;
-  if (await fileExists(`audiobooks/${jobId}/${preferred}`)) return;
-  const name = preferred;
-  await uploadFile(`audiobooks/${jobId}`, name, delta, "audio/mpeg", { abortSignal: signal });
-  segments.push({ uri: name, seconds: mp3IndexedDuration(packets) });
-  const body = hlsEventPlaylist(segments, remote.length + delta.length, false);
-  await uploadFile(`audiobooks/${jobId}`, PLAYLIST_FILE, Buffer.from(body), "audio/mpegurl", {
+  await writePlaylist(jobId, segments, remote.length + delta.length, false, signal);
+}
+
+async function writePlaylist(
+  jobId: string,
+  segments: readonly LiveSegment[],
+  bytes: number,
+  complete: boolean,
+  signal: AbortSignal
+): Promise<void> {
+  const body = hlsEventPlaylist(segments, bytes, complete);
+  await uploadFile(`audiobooks/${jobId}`, PLAYLIST_FILE, Buffer.from(body), HLS_PLAYLIST_CONTENT_TYPE, {
     abortSignal: signal,
   });
 }
@@ -292,10 +383,7 @@ async function publishSegment(
 async function writePlaylistEnd(jobId: string, signal: AbortSignal): Promise<void> {
   const existing = await readPlaylist(jobId);
   if (!existing) return;
-  const body = hlsEventPlaylist(existing.segments, existing.bytes ?? 0, true);
-  await uploadFile(`audiobooks/${jobId}`, PLAYLIST_FILE, Buffer.from(body), "audio/mpegurl", {
-    abortSignal: signal,
-  });
+  await writePlaylist(jobId, existing.segments, existing.bytes ?? 0, true, signal);
 }
 
 async function readPlaylist(jobId: string) {
@@ -341,8 +429,15 @@ async function joinPrefix(
     });
     if ("rebuild" in step) continue;
     if (!audio && step.cursor.totalSeconds < COPY_JOIN_MIN_SECONDS) continue;
+    const folded = [...pending];
     audio = step.audio;
     cursor = step.cursor;
+    if (folded.length > 1) {
+      cursor = {
+        ...cursor,
+        sectionStarts: cursorAfterFold(cursor.sectionStarts, await fileDurations(folded)),
+      };
+    }
     lastPiece = combined;
     pending = [];
   }
@@ -353,17 +448,25 @@ async function joinPrefix(
     audio = Buffer.concat([stable, tail]);
     const tailPackets = await indexMp3Packets(tail);
     const startAt = stable.length === 0 ? 0 : mp3IndexedDuration(await indexMp3Packets(stable));
-    const starts = cursor.sectionStarts.slice();
-    while (starts.length < prefix.length) starts.push(startAt);
+    const heldSeconds = held.length === 0 ? 0 : mp3IndexedDuration(await indexMp3Packets(held));
+    const durations = await fileDurations(pending);
+    const tailSeconds = mp3IndexedDuration(tailPackets);
+    const raw = heldSeconds + durations.reduce((sum, value) => sum + value, 0);
+    const scale = raw > 0 ? tailSeconds / raw : 1;
     cursor = {
       ...cursor,
-      sectionStarts: starts,
-      totalSeconds: startAt + mp3IndexedDuration(tailPackets),
+      sectionStarts: appendFoldStarts(
+        cursor.sectionStarts,
+        startAt + heldSeconds * scale,
+        durations.map((value) => value * scale)
+      ),
+      totalSeconds: startAt + tailSeconds,
     };
     pending = [];
   }
   if (flush && !audio && pending.length > 0) {
     const work = path.join(jobScratchDir(jobId), "flush-all");
+    const durations = await fileDurations(pending);
     const combined = pending.length === 1 ? pending[0]! : await forwardFold(pending, work);
     const joined = await joinMasteredMp3s({
       files: [combined],
@@ -375,8 +478,15 @@ async function joinPrefix(
       timeoutMs: 120_000,
     });
     audio = await readFile(path.join(work, "full.mp3"));
+    const scale =
+      durations.reduce((sum, value) => sum + value, 0) > 0
+        ? joined.totalSeconds / durations.reduce((sum, value) => sum + value, 0)
+        : 1;
     cursor = {
-      sectionStarts: joined.sectionStarts,
+      sectionStarts: foldSectionStarts(
+        0,
+        durations.map((value) => value * scale)
+      ),
       totalSeconds: joined.totalSeconds,
       lastBodyByte: 0,
       lastHeadSeconds: 0,

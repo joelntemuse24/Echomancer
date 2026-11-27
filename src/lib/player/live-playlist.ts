@@ -1,3 +1,10 @@
+export const HLS_PLAYLIST_CONTENT_TYPE = "application/vnd.apple.mpegurl";
+
+/** The rolling playlist and its segment files. These stay on the app origin. */
+export function isLivePlaybackObject(storagePath: string): boolean {
+  return storagePath.endsWith("/live.m3u8") || /\/live\/\d{4}\.mp3$/.test(storagePath);
+}
+
 export type LiveSegment = { uri: string; seconds: number };
 
 export type LivePlaylist = {
@@ -70,6 +77,31 @@ export function pendingSegmentUris(
     if (playlist[index] !== already[index]) return [];
   }
   return playlist.slice(already.length);
+}
+
+/** Seek only once the buffered media reaches the saved position. */
+export function seekTargetIfCovered(target: number, coveredSeconds: number): number | null {
+  if (!(target > 0.05)) return null;
+  if (!(coveredSeconds + 0.05 >= target)) return null;
+  return target;
+}
+
+/** Seconds of already-played media to leave in the SourceBuffer. */
+export const LIVE_BACK_BUFFER_SECONDS = 30;
+
+/**
+ * End of the range to remove when the buffer is full. Keeps a back-buffer
+ * behind the playhead, or one second when the playhead is still inside it.
+ */
+export function evictionEnd(
+  currentTime: number,
+  backBuffer = LIVE_BACK_BUFFER_SECONDS
+): number | null {
+  if (!(currentTime > 1)) return null;
+  const kept = currentTime - backBuffer;
+  if (kept > 0.25) return kept;
+  const tight = currentTime - 1;
+  return tight > 0.25 ? tight : null;
 }
 
 export type LiveTransport = "mms" | "mse" | "hls";

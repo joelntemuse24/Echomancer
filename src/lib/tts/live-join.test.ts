@@ -5,10 +5,13 @@ import { describe, expect, it } from "vitest";
 import { playbackChaptersWithTimes } from "@/lib/player/playback-chapters";
 import {
   appendMasteredSection,
+  indexMp3Packets,
   joinMasteredMp3s,
+  mp3IndexedDuration,
   publishedPrefix,
   type LiveJoinCursor,
 } from "@/lib/tts/section-master";
+import { cursorAfterFold, foldSectionStarts } from "@/lib/tts/live-join";
 import { spawnFfmpeg } from "@/lib/tts/stream-finalize";
 
 async function sine(file: string, frequency: number): Promise<void> {
@@ -202,6 +205,14 @@ describe("incremental mastered join", () => {
       expect("rebuild" in second).toBe(false);
       if ("rebuild" in second) return;
       expect(second.audio.subarray(0, published.length).equals(published)).toBe(true);
+      const shortDur = mp3IndexedDuration(await indexMp3Packets(await readFile(short)));
+      const longDur = mp3IndexedDuration(await indexMp3Packets(await readFile(longB)));
+      const expanded = cursorAfterFold(second.cursor.sectionStarts, [shortDur, longDur]);
+      expect(expanded).toHaveLength(3);
+      expect(expanded[0]).toBe(0);
+      expect(expanded[2]! - expanded[1]!).toBeCloseTo(shortDur, 1);
+      expect(new Set(expanded.map((start) => start.toFixed(3))).size).toBe(3);
+      expect(foldSectionStarts(expanded[1]!, [shortDur, longDur])[1]).toBeCloseTo(expanded[2]!, 2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

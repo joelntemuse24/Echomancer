@@ -40,6 +40,7 @@ import {
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { advanceAfterSection } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
+import { seekTargetIfCovered } from "@/lib/player/live-playlist";
 import { liveSessionAttached, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
@@ -1232,12 +1233,18 @@ function PlayerPageInner({ id }: { id: string }) {
     const consumePending = () => {
       const pending = pendingChapterSeekRef.current;
       if (!pending) return;
-      const total = effectiveDuration(audio.duration);
+      const live = liveSessionAttached(audio);
+      const elementDuration =
+        Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const total = live ? elementDuration : effectiveDuration(audio.duration);
       if (!(total > 0 || pending.seconds != null)) return;
-      clearPendingSeekRef.current();
       const raw = pending.charIndex != null && pending.document
         ? sectionSeekSeconds(pending.document, pending.charIndex, total) ?? 0
         : pending.seconds ?? pending.fraction * total;
+      // A growing Media Source reports the buffered length as duration.
+      // Clamping a later resume onto the first segment would drop it.
+      if (live && raw > 0.05 && seekTargetIfCovered(raw, elementDuration) == null) return;
+      clearPendingSeekRef.current();
       const seconds =
         total > 0 ? Math.min(raw, Math.max(0, total - 0.05)) : raw;
       lastRequestedSeekRef.current = seconds;
