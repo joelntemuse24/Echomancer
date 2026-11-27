@@ -67,6 +67,10 @@ import {
   planModalCloneLanes,
   pageLane,
 } from "@/lib/tts/providers/modal-clone-lanes";
+import {
+  logDispatchSummary,
+  logPageCall,
+} from "@/lib/tts/providers/modal-clone-timing";
 import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
 import { holdModalCloneLaneSlot } from "@/lib/tts/provider-slots";
 
@@ -218,6 +222,8 @@ export interface LaneDispatchResult {
   builds: string[];
   /** Sum of the server's measured generation seconds, for the tick log. */
   generateSeconds: number;
+  /** Units the container had to cut at the frame cap across this dispatch. */
+  truncatedUnits: number;
   /** What the containers said about their boot: `restored` or `unknown`. */
   boot: string[];
   /**
@@ -279,6 +285,10 @@ interface WaveOutcome {
   builds: string[];
   boot: string[];
   generateSeconds: number;
+  /** Units the container cut at the frame cap, summed over this wave. */
+  truncatedUnits: number;
+  /** GPU page calls this wave posted. */
+  pages: number;
   /** True when `render` returned a body, including one whose rows all failed. */
   parsed: boolean;
   /**
@@ -316,6 +326,10 @@ interface DispatchTally {
   builds: string[];
   boot: string[];
   generateSeconds: number;
+  /** Frame-cap cuts across every wave, for the dispatch summary. */
+  truncatedUnits: number;
+  /** GPU page calls posted by this dispatch. */
+  pages: number;
   /** A client timeout happened in some wave of this dispatch. */
   aborted: boolean;
   abortedIndexes: number[];
@@ -343,6 +357,8 @@ function emptyTally(): DispatchTally {
     builds: [],
     boot: [],
     generateSeconds: 0,
+    truncatedUnits: 0,
+    pages: 0,
     aborted: false,
     abortedIndexes: [],
     unconfirmedIndexes: [],
@@ -374,6 +390,8 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   tally.builds.push(...wave.builds);
   tally.boot.push(...wave.boot);
   tally.generateSeconds += wave.generateSeconds;
+  tally.truncatedUnits += wave.truncatedUnits;
+  tally.pages += wave.pages;
   if (wave.poolCold) {
     tally.poolCold = true;
     tally.poolReason = wave.poolReason;
@@ -415,6 +433,7 @@ export async function dispatchModalCloneLanes(
   opts: LaneDispatchOptions
 ): Promise<LaneDispatchResult> {
   if (opts.bookWave) return dispatchBookWave(opts);
+  const dispatchStartedAt = Date.now();
   const log = opts.log ?? (() => {});
   const tally = emptyTally();
   let remaining = opts.indexes;
@@ -494,7 +513,15 @@ export async function dispatchModalCloneLanes(
       }
     }
   }
-  return finishDispatch(tally, firstLight, publishing, publishState, log, opts.jobId);
+  return finishDispatch(
+    tally,
+    firstLight,
+    publishing,
+    publishState,
+    log,
+    opts.jobId,
+    dispatchStartedAt
+  );
 }
 
 /**
@@ -508,6 +535,7 @@ export async function dispatchModalCloneLanes(
  */
 async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});
+  const dispatchStartedAt = Date.now();
   const backingOff = opts.jobId ? modalCloneJobBackoffRemainingMs(opts.jobId) > 0 : false;
   if (!backingOff) await refreshModalCloneAudioTransport();
   const tally = emptyTally();
@@ -753,7 +781,8 @@ async function dispatchBookWave(opts: LaneDispatchOptions): Promise<LaneDispatch
     publishChain,
     publishState,
     log,
-    opts.jobId
+    opts.jobId,
+    dispatchStartedAt
   );
   return handedOff ? { ...result, handedOff: true } : result;
 }
@@ -764,7 +793,8 @@ async function finishDispatch(
   publishing: Promise<void> | null,
   publishState: { error: unknown },
   log: (message: string) => void,
-  jobId?: string
+  jobId?: string,
+  startedAt?: number
 ): Promise<LaneDispatchResult> {
   if (tally.compile.length > 0) {
     // Only a restore-budget miss kicks the compile RPC. A warm wait that
@@ -797,6 +827,25 @@ async function finishDispatch(
   }
   if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
 
+  // One line per dispatch: the wall the book paid against the generation the
+  // container measured. A page-level line says where a slow call went; this
+  // says what the whole book got for its GPU time.
+  if (startedAt != null) {
+    logDispatchSummary(
+      {
+        jobId,
+        pages: tally.pages,
+        rows: tally.attempted.length,
+        staged: tally.staged.size,
+        generateSeconds: tally.generateSeconds,
+        wallMs: Date.now() - startedAt,
+        truncatedUnits: tally.truncatedUnits,
+        containers: [...new Set(tally.containers)],
+      },
+      log
+    );
+  }
+
   return {
     staged: tally.staged.size,
     missing: tally.attempted.filter((index) => !tally.staged.has(index)),
@@ -808,6 +857,7 @@ async function finishDispatch(
     builds: [...new Set(tally.builds)],
     boot: [...new Set(tally.boot)],
     generateSeconds: Math.round(tally.generateSeconds * 10) / 10,
+    truncatedUnits: tally.truncatedUnits,
     abortedIndexes: [...tally.abortedIndexes],
     unconfirmedIndexes: [...tally.unconfirmedIndexes],
     settledNotFoundIndexes: [...tally.settledNotFoundIndexes],
@@ -854,6 +904,8 @@ async function runWave(
   const builds: string[] = [];
   const boot: string[] = [];
   let generateSeconds = 0;
+  let truncatedUnits = 0;
+  let pages = 0;
   let poolCold = false;
   let poolReason = "";
   let busy = 0;
@@ -888,6 +940,8 @@ async function runWave(
       builds,
       boot,
       generateSeconds,
+      truncatedUnits,
+      pages,
       parsed,
       transport,
       aborted: false,
@@ -922,7 +976,9 @@ async function runWave(
       }
       let laneParsed = false;
       try {
+        let paged = 0;
         for (const page of pageLane(lane, rowsPerPage)) {
+          paged += 1;
           // A race is only meaningful for the call that carries section 0.
           const races = raceForFirstAudio && page.includes(0);
           // Give this exact pack the time it is planned to need. A call's wall
@@ -958,6 +1014,7 @@ async function runWave(
               break;
             }
           }
+          const postedAt = Date.now();
           const outcome = await opts.render(
             page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
             opts.seedEpoch,
@@ -980,6 +1037,8 @@ async function runWave(
           if (perf && typeof perf.generate_s === "number") {
             generateSeconds += perf.generate_s;
           }
+          truncatedUnits += Math.max(0, Number(outcome.truncatedUnits) || 0);
+          pages += 1;
           let rendered = 0;
           for (const [key, hit] of outcome.audio) {
             const index = Number(key);
@@ -994,6 +1053,24 @@ async function runWave(
           log(
             `[S2 lanes] ${wave?.warmBatch ? "warm" : "cold"} page of ${page.length} rendered ${rendered}/${page.length}`
           );
+          // Every number the container measured for this page, plus the wall
+          // the book waited. This is the only place that can say whether a
+          // slow page was generation, codec, encode, or placement.
+          logPageCall({
+            jobId: opts.jobId ?? null,
+            page: paged,
+            pageRows: page.length,
+            renderedRows: rendered,
+            chars: pageChars,
+            wallMs: Date.now() - postedAt,
+            containerId: outcome.containerId,
+            build: outcome.build,
+            boot: outcome.boot,
+            truncatedUnits: outcome.truncatedUnits ?? 0,
+            waitKind: null,
+            warmBatch: warm,
+            performance: outcome.performance,
+          }, log);
           if (rendered < page.length) break;
         }
         return { lane, error: null as unknown, parsed: laneParsed, transport: false };
@@ -1120,6 +1197,8 @@ async function runWave(
     builds,
     boot,
     generateSeconds,
+    truncatedUnits,
+    pages,
     parsed,
     transport,
     aborted,

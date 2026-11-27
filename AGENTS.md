@@ -1728,6 +1728,12 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # MODAL_S2_NARROW_FPS=60 # 1-wide codec fps (~2.8×, ~44 chars/s). Wide batches interpolate up to MODAL_S2_WIDE_FPS.
 # MODAL_S2_WIDE_FPS=190 # 4-row codec fps (~8.8×). Production 4-wide on e745d067 was 197 fps / 9.2×. A 24-row call uses the 528 chars/s smoke, not this fps.
 # MODAL_S2_BATCH_SIZE= # Explicit rows per call, 1–32. Unset: 32 only after /ready reports r2 AND max_batch_items >= 32, else 24.
+# MODAL_S2_PAGE_LOG= # $0 timing. Unset = one `[S2 page]` line per GPU call plus one `[S2 dispatch]`
+ # line per tick: the container's own prepare/generate/codec/encode/call split, batch
+ # width, section count, truncated_units, container id, boot and snapshot_age_s, beside
+ # the wall the book actually paid. `=0` / `off` / `false` / `no` silences it. Set the same
+ # name on the Modal app to control the container's `[S2C] page` line and its boot
+ # `[S2C] host …` line (CPU model, GPU, driver). Costs one JSON.stringify per page.
 
 # ── Clone engine on the Modal app (deploy-time; baked into S2C_BUILD) ──────
 # S2C_ENGINE=v9 # v9 (default) is the deployed behaviour. v10 is the staged speedup path.

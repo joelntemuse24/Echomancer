@@ -571,6 +571,13 @@ export interface CloneBatchOutcome {
    * report `restored` is a compile, which is what the off-path warm is for.
    */
   boot: string | null;
+  /**
+   * Units the container cut at the model's frame cap, summed over rows.
+   * Non-zero means a section was spoken shorter than its text, so its row was
+   * dropped and the per-section path retries it. Carried on the outcome so a
+   * page log can report it without re-reading every row.
+   */
+  truncatedUnits?: number;
 }
 
 /**
@@ -698,6 +705,7 @@ async function renderModalCloneBatchBody(
       seed: null,
       performance: null,
       boot: null,
+      truncatedUnits: 0,
     };
   }
   const userId = reference.userId || "anonymous";
@@ -765,6 +773,7 @@ async function renderModalCloneBatchBody(
     loadBatchAudio(row, jobId)
   );
   const undecodable: string[] = [];
+  let truncatedUnits = 0;
   rows.forEach((row, index) => {
     const take = decoded[index];
     if (!take) {
@@ -776,7 +785,12 @@ async function renderModalCloneBatchBody(
       durationSeconds: Number(row.duration_s),
       truncatedUnits: Number(row.truncated_units) || 0,
     });
-    if (verdict.truncated) return;
+    if (verdict.truncated) {
+      // Counted even when the duration check is what caught it, so the page
+      // log shows a page that shipped fewer rows than it planned.
+      truncatedUnits += Math.max(1, Number(row.truncated_units) || 0);
+      return;
+    }
     out.set(row.key, take);
     // The decoded buffer is what the next stage reads. Drop the base64
     // copy before the following call allocates another batch.
@@ -802,6 +816,7 @@ async function renderModalCloneBatchBody(
     seed: typeof body.seed === "number" ? body.seed : null,
     performance: body.performance ?? null,
     boot: typeof body.boot === "string" ? body.boot : null,
+    truncatedUnits,
   };
 }
 

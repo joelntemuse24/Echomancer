@@ -177,6 +177,7 @@ from s2_contract import (
     warm_reference_wav,
 )
 from s2_audio_store import R2, KeepAlivePool, UploadPool, transport_name
+from s2_hostinfo import host_report, host_report_line
 from s2_compile_cache import (
     COMPILE_CACHE_MOUNT,
     COMPILE_CACHE_VOLUME_NAME,
@@ -449,6 +450,7 @@ web_image = (
         "s2_contract",
         "s2_audio_store",
         "s2_compile_cache",
+        "s2_hostinfo",
         copy=True,
     )
 )
@@ -757,6 +759,14 @@ class S2CloneWorker:
         executes while the marks it compares against were captured.
         """
         self.ready_at = time.time()
+        # Which machine this actually is. A page that renders at 8.8x on one
+        # container and 32x on another is otherwise indistinguishable from a
+        # page that was simply wider or whose codec did not overlap; the CPU
+        # model and driver are what separate those. Captured here (not in the
+        # snapshot hook) so the report describes the host that is serving, and
+        # logged once so it is greppable in Modal's log for this container.
+        self.host = host_report()
+        print(host_report_line(self.host))
         # One TLS pool for the container's whole life. Consecutive pages then
         # reuse warm sockets instead of paying a handshake per object, which is
         # the entire point of `KeepAlivePool` and was wasted when each request
@@ -1321,7 +1331,9 @@ class S2CloneWorker:
             generation for a section that has already finished, which is the
             overlap that removes the ~10 s codec phase from the call's wall.
             """
+            t_ref_start = time.time()
             ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
+            ref_cached = ref_key in self.ref_cache
             calls_seed = _apply_seed(seed_value)
             stats_all = {"frames": 0, "steps": 0, "truncated_units": 0}
             codes: list = []
@@ -1390,11 +1402,13 @@ class S2CloneWorker:
             decoded_at = time.time()
             return {
                 "ref_key": ref_key,
+                "ref_cached": ref_cached,
                 "ref_stats": ref_stats,
                 "seed": calls_seed,
                 "stats": stats_all,
                 "truncated_by_slot": truncated_by_slot,
                 "sample_rate": sample_rate,
+                "t_ref_start": t_ref_start,
                 "t_prepare": prepared_at,
                 "t_gen": generated_at,
                 "t_codec": decoded_at,
@@ -1458,6 +1472,32 @@ class S2CloneWorker:
         t_done = time.time()
         self._heartbeat()
 
+        # One line per page call in Modal's own log, alongside the host report
+        # printed at boot. A worker log can say the page took 294 s; this says
+        # which of prepare/generate/codec/encode it went to, on which machine.
+        # `MODAL_S2_PAGE_LOG=0` silences it without a redeploy of the worker.
+        if (os.environ.get("MODAL_S2_PAGE_LOG", "1").strip().lower()
+                not in ("0", "off", "false", "no")):
+            print(
+                "[S2C] page "
+                f"job={job_id or '-'} rows={len(items)}/{len(slots)} "
+                f"chars={sum(len(item.get('text') or '') for item in items)} "
+                f"audio={sum(r.get('duration_s', 0) for r in rows):.1f}s "
+                f"prepare={done['t_prepare'] - t0:.1f}s "
+                f"generate={float(done['stats'].get('generate_loop_s') or 0):.1f}s "
+                f"codec={done['t_codec'] - done['t_gen']:.1f}s "
+                f"encode={t_done - done['t_codec']:.1f}s "
+                f"call={t_done - t0:.1f}s "
+                f"width={int(done['stats'].get('batch_width') or 0)} "
+                f"streamed={int(done['stats'].get('sections_streamed') or 0)} "
+                f"truncated={done['stats']['truncated_units']} "
+                f"errored={len(errors)} "
+                f"ref_cached={int(bool(done.get('ref_cached')))} "
+                f"container={self.container_id} "
+                f"snapshot_age={getattr(self, 'snapshot_age_s', None)}s",
+                flush=True,
+            )
+
         return {
             "items": rows,
             "build": _BUILD_ENV["S2C_BUILD"],
@@ -1473,6 +1513,8 @@ class S2CloneWorker:
             "performance": {
                 "sections": len(slots),
                 "audio_s": round(sum(r.get("duration_s", 0) for r in rows), 1),
+                "page_rows": len(items),
+                "call_id": call_id,
                 "prepare_s": round(done["t_prepare"] - t0, 2),
                 # AR only. The codec's wall is a separate column, and on a v10
                 # call it largely overlaps generation, so folding it in here
@@ -1500,6 +1542,17 @@ class S2CloneWorker:
                 "upload_handshakes": upload_pool.handshakes,
                 "truncated_units": done["stats"]["truncated_units"],
                 "snapshot_age_s": getattr(self, "snapshot_age_s", None),
+                "host": getattr(self, "host", None),
+                # Wall time the container can see for itself, split so a page
+                # that is slow before any GPU work shows up as `ref_encode_s`
+                # rather than hiding inside `prepare_s`. `prepare_s` also
+                # covers base64 decode and text validation.
+                "reference_cached": bool(done.get("ref_cached")),
+                "ref_encode_s": round(
+                    float(done["t_prepare"]) - float(done["t_ref_start"]), 2
+                ),
+                "rows_errored": len(errors),
+                "page_rows": len(items),
                 **{
                     k: done["stats"][k]
                     for k in ("frames", "frames_per_s", "generated_realtime_x")
@@ -1648,6 +1701,9 @@ ready_image = (
         "s2_audio_store",
         "s2_compile_cache",
         "s2_remote_call",
+        # Imported by this module at top level for the boot host report, so a
+        # CPU probe container must have it too or the module fails to import.
+        "s2_hostinfo",
     )
 )
 
