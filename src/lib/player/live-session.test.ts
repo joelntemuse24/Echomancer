@@ -747,6 +747,78 @@ describe("syncLivePlayback", () => {
     expect(audio.src.startsWith("blob:")).toBe(true);
   });
 
+  it("keeps the section file when the playlist is missing", async () => {
+    const audio = fakeAudio();
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0000.mp3";
+    audio.src = section;
+    installSource(new FakeBuffer(audio));
+    vi.stubGlobal("fetch", async () => new Response("missing", { status: 404 }));
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-missing",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(result.attached).toBe(false);
+    expect(audio.src).toBe(section);
+  });
+
+  it("keeps the section file when MPEG cannot be appended", async () => {
+    const audio = fakeAudio();
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0000.mp3";
+    audio.src = section;
+    class MediaSource {
+      static isTypeSupported(): boolean {
+        return false;
+      }
+    }
+    vi.stubGlobal("MediaSource", MediaSource);
+    vi.stubGlobal("ManagedMediaSource", undefined);
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 22 }], 100, false);
+    vi.stubGlobal("fetch", async () => new Response(playlist, { status: 200 }));
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-chrome",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(result.attached).toBe(false);
+    expect(result.transport).toBeNull();
+    expect(audio.src).toBe(section);
+  });
+
+  it("restores the section file when the live segment never arrives", async () => {
+    const audio = fakeAudio();
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0033.mp3";
+    audio.src = section;
+    installSource(new FakeBuffer(audio));
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 22 }], 100, false);
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response("missing", { status: 404 });
+    });
+    const first = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-segment",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(first.attached).toBe(false);
+    expect(audio.src).toBe(section);
+    const second = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-segment",
+      resumeAt: 0,
+      play: true,
+    });
+    expect(second.attached).toBe(false);
+    expect(audio.src).toBe(section);
+  });
+
   it("restores a refresh from a part-local save without starting playback", async () => {
     const audio = fakeAudio();
     audio.paused = true;

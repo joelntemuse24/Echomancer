@@ -3035,9 +3035,15 @@ that is not a preset is snapped to the nearest one
 ### Playback shell — `src/components/playback-provider.tsx`
 
 One `<audio>` in the root layout. While a take-home book is still being
-read, the page points it once at a Media Source (Managed Media Source on
-iOS when `audio/mpeg` is supported, otherwise the `live.m3u8` playlist) and
-appends each new segment once. A listener already playing a section is
+read, the page keeps the section file until the worker has published
+`full.mp3`. It then points the element at a Media Source only when
+`audio/mpeg` can be appended (Managed Media Source on iOS, else
+MediaSource). A browser that cannot append MPEG, including desktop Chrome,
+stays on `sections/NNNN.mp3`. The playlist URL is not assigned: that
+browser cannot play it, and the assignment was what left the clock at
+0:00. A playlist that 404s, or a segment that does not append, leaves the
+section source in place and does not try the live element again for that
+book. A listener already playing a section is
 handed over at that section's offset plus the element's current time, and
 stays playing. A Parts tap seeks inside the buffer or releases the session
 before loading that section. A second poll does not append a segment

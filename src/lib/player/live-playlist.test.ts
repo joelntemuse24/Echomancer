@@ -152,7 +152,7 @@ describe("live playlist", () => {
     expect(shouldResumeLive({ ...edge, currentTime: 117, covered: 400 })).toBe(true);
   });
 
-  it("uses HLS where MPEG SourceBuffers are unavailable", () => {
+  it("leaves the section file where MPEG SourceBuffers are unavailable", () => {
     expect(
       chooseLiveTransport({
         managed: true,
@@ -160,7 +160,7 @@ describe("live playlist", () => {
         mediaSource: true,
         mediaSourceMpeg: false,
       })
-    ).toBe("hls");
+    ).toBeNull();
     expect(
       chooseLiveTransport({
         managed: true,

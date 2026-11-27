@@ -56,6 +56,8 @@ type Session = {
   complete: boolean;
   closed: boolean;
   revoked: boolean;
+  /** Element src before this session replaced it. Restored when no audio lands. */
+  previousSrc?: string;
   onGrow?: () => void;
   onEnd?: () => void;
 };
@@ -501,43 +503,9 @@ async function syncOnce(
       mediaSource: Boolean(available.media),
       mediaSourceMpeg: available.media?.isTypeSupported?.("audio/mpeg") === true,
     });
-    if (transport === "hls") {
-      if (staleAttach(opts.audio, token)) return missed();
-      const previousSrc = opts.audio.src;
-      opts.audio.src = opts.playlistUrl;
-      session = {
-        jobId: opts.jobId,
-        url: opts.playlistUrl,
-        transport,
-        appended: playlist.segments.map((segment) => segment.uri),
-        reserved: playlist.segments.map((segment) => segment.uri),
-        chain: Promise.resolve(),
-        resumeAt,
-        play,
-        hold: false,
-        resumed: false,
-        watching: false,
-        complete: false,
-        closed: false,
-        revoked: false,
-      };
-      sessions.set(opts.audio, session);
-      if (staleAttach(opts.audio, token)) {
-        abandonStaleAttach(opts.audio, session, opts.playlistUrl, previousSrc);
-        return missed();
-      }
-      clearDeparture(opts.audio, opts.jobId);
-      watchResume(opts.audio, session);
-      if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
-        resumeIfStalled(opts.audio, listenerPaused, false);
-      }
-      return {
-        attached: true,
-        url: session.url,
-        complete: playlist.complete,
-        transport,
-      };
-    }
+    // No MPEG SourceBuffer. Leave whatever section or full file is already
+    // loaded. A native playlist URL is not a playable source here.
+    if (transport !== "mms" && transport !== "mse") return missed();
     const Ctor = (transport === "mms" ? available.managed : available.media) as SourceCtor;
     const media = new Ctor();
     const url = URL.createObjectURL(media as unknown as MediaSource);
@@ -577,6 +545,7 @@ async function syncOnce(
       complete: false,
       closed: false,
       revoked: false,
+      previousSrc,
     };
     sessions.set(opts.audio, session);
     if (staleAttach(opts.audio, token)) {
@@ -647,6 +616,15 @@ async function syncOnce(
       .catch(() => undefined);
     await target.chain;
     if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
+    if (target.appended.length === 0) {
+      // The playlist answered and the segment did not. Leave the section
+      // file in place. The next poll can try the segment again.
+      const previous = target.previousSrc;
+      const liveUrl = target.url;
+      if (previous && opts.audio.src === liveUrl) opts.audio.src = previous;
+      dropSession(opts.audio, target);
+      return missed();
+    }
   } else if (playlist.complete) {
     if (staleAttach(opts.audio, token) || sessions.get(opts.audio) !== target) return missed();
     markComplete(target, opts.audio);

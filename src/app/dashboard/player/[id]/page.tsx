@@ -1986,6 +1986,13 @@ function PlayerPageInner({ id }: { id: string }) {
     ) {
       return;
     }
+    // The worker writes live.m3u8 only once a stable prefix of full.mp3 is
+    // uploaded. Asking before that is a 404, and the section file is the
+    // source until then.
+    const livePublished =
+      Boolean(job.audio_url) ||
+      (typeof job.duration_seconds === "number" && job.duration_seconds > 0);
+    if (!attached && !livePublished) return;
     let stopped = false;
     const onSection = Boolean(
       (audio.getAttribute("src") || audioUrlRef.current || "").includes("/sections/")
