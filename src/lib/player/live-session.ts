@@ -86,7 +86,10 @@ const activeJob = new WeakMap<HTMLAudioElement, string>();
  * A later poll of the same job must not attach at an older playhead, and
  * must not attach until the playlist covers this time.
  */
-const departedAt = new WeakMap<HTMLAudioElement, { jobId: string; at: number }>();
+const departedAt = new WeakMap<
+  HTMLAudioElement,
+  { jobId: string; at: number; bufferedEnd: number }
+>();
 
 export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
   return Boolean(audio && sessions.has(audio));
@@ -136,9 +139,9 @@ function mayRestart(session: Session, listenerPaused: boolean, requested: boolea
 }
 
 /**
- * The listener left the live element. `leftAt` is the book time they moved
- * to. An in-flight poll stops, and a later one waits until the playlist
- * covers that time instead of reattaching at the playhead it started with.
+ * The listener left the live element for a section. `leftAt` is the book
+ * time they moved to. An in-flight poll stops. A later poll keeps that
+ * section, including when the book time is inside the first 90 seconds.
  */
 export function releaseLiveSession(audio: HTMLAudioElement | null, leftAt?: number): void {
   if (!audio) return;
@@ -146,7 +149,11 @@ export function releaseLiveSession(audio: HTMLAudioElement | null, leftAt?: numb
   const session = sessions.get(audio);
   const jobId = session?.jobId ?? activeJob.get(audio);
   if (typeof leftAt === "number" && Number.isFinite(leftAt) && jobId) {
-    departedAt.set(audio, { jobId, at: Math.max(0, leftAt) });
+    departedAt.set(audio, {
+      jobId,
+      at: Math.max(0, leftAt),
+      bufferedEnd: liveBufferedSeconds(audio),
+    });
   }
   if (!session) return;
   dropSession(audio, session);
@@ -609,13 +616,16 @@ async function syncOnce(
   const body = await response.text();
   if (staleAttach(opts.audio, token)) return missed();
   const playlist = readHlsPlaylist(body);
+  const left = departedAt.get(opts.audio);
+  const chosen = left != null && left.jobId === opts.jobId;
   if (
     !current &&
     liveSectionHold({
       src: opts.audio.currentSrc || opts.audio.src || "",
-      paused: opts.audio.paused,
       ended: opts.audio.ended,
       resumeAt: Number.isFinite(opts.resumeAt) ? opts.resumeAt : 0,
+      chosen,
+      bufferedEnd: chosen ? left.bufferedEnd : 0,
     })
   ) {
     return { attached: false, url: null, complete: playlist.complete, transport: null };

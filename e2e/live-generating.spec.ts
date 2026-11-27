@@ -12,8 +12,20 @@ async function bookTime(page: Page): Promise<{ t: number; paused: boolean }> {
   }, LIVE_SECTION_SECONDS);
 }
 
-/** The clock moves for `ms` and does not jump back to the start. */
-async function playsOn(page: Page, ms: number, from: number) {
+async function elementSrc(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const audio = document.querySelector("audio");
+    return audio?.currentSrc || audio?.getAttribute("src") || "";
+  });
+}
+
+/**
+ * The clock moves for `ms` and does not jump back to the start. When
+ * `holdSection` is set, a job poll that opens a Media Source fails even
+ * if that source then seeks inside its own buffer. The next section file
+ * is the part ending, not a reattach.
+ */
+async function playsOn(page: Page, ms: number, from: number, holdSection = false) {
   let previous = from;
   let advanced = from;
   const started = Date.now();
@@ -28,6 +40,11 @@ async function playsOn(page: Page, ms: number, from: number) {
     expect(row.t + 1, `playhead rewound from ${previous.toFixed(2)} to ${row.t.toFixed(2)}`).toBeGreaterThanOrEqual(
       previous
     );
+    if (holdSection) {
+      const src = await elementSrc(page);
+      expect(src, "live source reattached").not.toMatch(/^blob:/);
+      expect(src, "left the section file").toContain("/sections/");
+    }
     if (row.t > advanced) advanced = row.t;
     previous = row.t;
   }
@@ -109,11 +126,40 @@ test("a parts tap past the appended audio plays on, and the job poll keeps movin
     await page.getByRole("button", { name: "09Ready" }).click();
     await expect.poll(() => bookTime(page).then((row) => row.t)).toBeGreaterThan(100);
     const landed = await bookTime(page);
-    await playsOn(page, 30_000, landed.t);
+    const held = await elementSrc(page);
+    expect(held).toContain("/sections/0008.mp3");
+    expect(held.startsWith("blob:")).toBe(false);
+    await playsOn(page, 30_000, landed.t, true);
     const after = await statusMark(page);
     expect(before).not.toBeNull();
     expect(after).not.toBeNull();
     expect(after!).toBeGreaterThan(before!);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a parts tap to 60 seconds, inside 45 to 90, stays on that section", async ({ page }) => {
+  test.setTimeout(90_000);
+  const server = await startLiveGeneratingServer({ initialReady: 12, total: 12, growMs: 0 });
+  try {
+    await page.goto(server.url);
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await expect.poll(() => bookTime(page).then((row) => row.t)).toBeGreaterThan(0.4);
+    const before = await elementSrc(page);
+    expect(before.startsWith("blob:")).toBe(true);
+    await page.getByRole("button", { name: "Parts" }).click();
+    // Part 04 starts at 45s, which this harness has already appended. Part 05
+    // starts at 60s, still inside 45–90 and past that window.
+    await page.getByRole("button", { name: "05Ready" }).click();
+    await expect.poll(() => bookTime(page).then((row) => row.t)).toBeGreaterThan(55);
+    const landed = await bookTime(page);
+    expect(landed.t).toBeLessThan(90);
+    const held = await elementSrc(page);
+    expect(held).toContain("/sections/0004.mp3");
+    expect(held.startsWith("blob:")).toBe(false);
+    expect(held).not.toBe(before);
+    await playsOn(page, 30_000, landed.t, true);
   } finally {
     await server.close();
   }
@@ -129,7 +175,10 @@ test("a scrub past the appended audio plays on", async ({ page }) => {
     await scrubTo(page, 0.62);
     await expect.poll(() => bookTime(page).then((row) => row.t), { timeout: 10_000 }).toBeGreaterThan(90);
     const landed = await bookTime(page);
-    await playsOn(page, 30_000, landed.t);
+    const held = await elementSrc(page);
+    expect(held).toContain("/sections/");
+    expect(held.startsWith("blob:")).toBe(false);
+    await playsOn(page, 30_000, landed.t, true);
   } finally {
     await server.close();
   }
@@ -162,7 +211,10 @@ test("a reload mid-generation resumes at the saved point and plays for a minute"
     const resumed = await bookTime(page);
     expect(resumed.t).toBeLessThan(saved + 20);
     if (resumed.paused) await page.getByRole("button", { name: "Play", exact: true }).click();
-    await playsOn(page, 60_000, (await bookTime(page)).t);
+    const held = await elementSrc(page);
+    expect(held).toContain("/sections/");
+    expect(held.startsWith("blob:")).toBe(false);
+    await playsOn(page, 60_000, (await bookTime(page)).t, true);
   } finally {
     await server.close();
   }
