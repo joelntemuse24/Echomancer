@@ -29,7 +29,7 @@
  * is capped at the CPU count.
  */
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import path from "node:path";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
@@ -1145,6 +1145,9 @@ export async function joinMasteredMp3s(opts: {
   env?: NodeJS.ProcessEnv;
 }): Promise<JoinedMp3> {
   const { timeoutMs, workDir } = opts;
+  // A one-file append does not go through the concat fold, which is the
+  // only other path that created this directory. The pair writes body_0.mp3 here.
+  await mkdir(workDir, { recursive: true });
   // Full-section loudnorm uses the CPU gate. These calls are a couple of
   // seconds each, and holding them to one-per-core turned a 38-section
   // finish into a few minutes. The pools below are the cap.

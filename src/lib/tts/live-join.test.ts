@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,8 +11,11 @@ import {
   publishedPrefix,
   type LiveJoinCursor,
 } from "@/lib/tts/section-master";
-import { cursorAfterFold, foldSectionStarts, repairPublishedPlaylist } from "@/lib/tts/live-join";
+import { cursorAfterFold, extendLiveJoin, finalizeLiveJoin, foldSectionStarts, repairPublishedPlaylist } from "@/lib/tts/live-join";
+import { jobScratchDir, removeJobScratch } from "@/lib/tts/job-scratch";
+import { downloadFile, uploadFile } from "@/lib/storage";
 import { spawnFfmpeg } from "@/lib/tts/stream-finalize";
+import type { JobSegment } from "@/lib/tts/types";
 
 async function sine(file: string, frequency: number): Promise<void> {
   await spawnFfmpeg(
@@ -218,6 +221,69 @@ describe("incremental mastered join", () => {
       expect(new Set(expanded.map((start) => start.toFixed(3))).size).toBe(3);
       expect(foldSectionStarts(expanded[1]!, [shortDur, longDur])[1]).toBeCloseTo(expanded[2]!, 2);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("rolls several sections, including one folded forward, into a file that covers the book", async () => {
+    const jobId = "live-fold-cover";
+    const root = await mkdtemp(path.join(tmpdir(), "live-fold-"));
+    try {
+      const lengths = [6, 6, 1.2, 6];
+      const segments: JobSegment[] = [];
+      for (let index = 0; index < lengths.length; index++) {
+        const file = path.join(root, `s${index}.mp3`);
+        await spawnFfmpeg(
+          [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            `sine=frequency=${220 + index * 110}:duration=${lengths[index]}`,
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            "-write_xing",
+            "0",
+            "-id3v2_version",
+            "0",
+            "-write_id3v1",
+            "0",
+            file,
+          ],
+          20_000
+        );
+        const name = `${String(index).padStart(4, "0")}.mp3`;
+        const storagePath = `audiobooks/${jobId}/sections/${name}`;
+        await uploadFile(`audiobooks/${jobId}/sections`, name, await readFile(file), "audio/mpeg");
+        segments.push({ index, path: storagePath, status: "ready", mastered: true });
+      }
+      const joins = ["chapter", "paragraph", "paragraph", "paragraph"] as const;
+      for (let count = 1; count <= segments.length; count++) {
+        await extendLiveJoin({
+          jobId,
+          segments: segments.slice(0, count),
+          joinKinds: joins.slice(0, count),
+          crossfadeMs: 120,
+          flush: count === segments.length,
+        });
+      }
+      await stat(path.join(jobScratchDir(jobId), "fold-1", "body_0.mp3"));
+      const covered = await finalizeLiveJoin({ jobId, total: segments.length });
+      expect(covered).not.toBeNull();
+      expect(covered!.joined).toBe(segments.length);
+      const full = await downloadFile(`audiobooks/${jobId}/full.mp3`);
+      const duration = mp3IndexedDuration(await indexMp3Packets(full));
+      const first = mp3IndexedDuration(await indexMp3Packets(await readFile(path.join(root, "s0.mp3"))));
+      expect(duration).toBeGreaterThan(first + 10);
+      expect(duration).toBeGreaterThan(lengths.reduce((sum, value) => sum + value, 0) - 2);
+    } finally {
+      await removeJobScratch(jobId).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   }, 180_000);
