@@ -147,6 +147,33 @@ export interface LiveReadyHandoff {
  * playlist when ENDLIST arrives, which restarts at the first segment, so
  * that transport moves once onto the finished file at the same playhead.
  */
+/**
+ * Where to land on full.mp3. Native HLS applies ENDLIST on its own reload
+ * and can already be at 0:00 and paused, so a backward jump uses the last
+ * position confirmed before that reload and keeps playing unless the
+ * listener paused.
+ */
+export function liveHandoffPlayhead(input: {
+  currentTime: number;
+  confirmedAt: number | null | undefined;
+  playing: boolean;
+  listenerPaused: boolean;
+}): { at: number; play: boolean } {
+  const current =
+    Number.isFinite(input.currentTime) && input.currentTime > 0 ? input.currentTime : 0;
+  const confirmed =
+    typeof input.confirmedAt === "number" &&
+    Number.isFinite(input.confirmedAt) &&
+    input.confirmedAt > 0
+      ? input.confirmedAt
+      : 0;
+  const reset = confirmed > 0 && current + 0.5 < confirmed;
+  return {
+    at: reset ? confirmed : Math.max(current, confirmed),
+    play: !input.listenerPaused && (input.playing || reset),
+  };
+}
+
 export function liveReadyTransition(input: {
   transport: LiveTransport | null;
   complete: boolean;
@@ -154,7 +181,9 @@ export function liveReadyTransition(input: {
   fullUrl: string | null;
   currentSrc?: string | null;
   currentTime: number;
+  confirmedAt?: number | null;
   playing: boolean;
+  listenerPaused?: boolean;
 }): LiveReadyStay | LiveReadyHandoff {
   if (input.transport !== "hls" || !input.complete || !input.ready || !input.fullUrl) {
     return { action: "stay" };
@@ -162,8 +191,13 @@ export function liveReadyTransition(input: {
   const current = input.currentSrc?.split("?")[0] ?? "";
   const next = input.fullUrl.split("?")[0];
   if (current && current === next) return { action: "stay" };
-  const at = Number.isFinite(input.currentTime) ? Math.max(0, input.currentTime) : 0;
-  return { action: "handoff", url: input.fullUrl, at, play: input.playing };
+  const head = liveHandoffPlayhead({
+    currentTime: input.currentTime,
+    confirmedAt: input.confirmedAt,
+    playing: input.playing,
+    listenerPaused: input.listenerPaused === true,
+  });
+  return { action: "handoff", url: input.fullUrl, at: head.at, play: head.play };
 }
 
 /**

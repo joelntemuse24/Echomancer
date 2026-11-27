@@ -5,6 +5,7 @@ import {
   hlsEventPlaylist,
   keepLiveSource,
   liveChapterSeek,
+  liveHandoffPlayhead,
   liveReadyTransition,
   pendingSegmentUris,
   readHlsPlaylist,
@@ -72,6 +73,38 @@ describe("live playlist", () => {
       }).action
     ).toBe("stay");
     expect(liveReadyTransition({ ...playing, transport: "hls", ready: false }).action).toBe("stay");
+    expect(
+      liveReadyTransition({
+        ...playing,
+        transport: "hls",
+        currentSrc: "https://app.test/live.m3u8",
+        currentTime: 0,
+        confirmedAt: 158,
+        playing: false,
+        listenerPaused: false,
+      })
+    ).toEqual({
+      action: "handoff",
+      url: "/api/storage/audiobooks/job/full.mp3",
+      at: 158,
+      play: true,
+    });
+    expect(
+      liveHandoffPlayhead({
+        currentTime: 0,
+        confirmedAt: 158,
+        playing: false,
+        listenerPaused: true,
+      })
+    ).toEqual({ at: 158, play: false });
+    expect(
+      liveHandoffPlayhead({
+        currentTime: 160,
+        confirmedAt: 158,
+        playing: true,
+        listenerPaused: false,
+      })
+    ).toEqual({ at: 160, play: true });
   });
 
   it("seeks a chapter inside the buffer and hands the rest to the finished file", () => {

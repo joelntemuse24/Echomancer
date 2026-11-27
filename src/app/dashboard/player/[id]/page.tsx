@@ -1932,7 +1932,9 @@ function PlayerPageInner({ id }: { id: string }) {
         fullUrl: job.audio_url ?? null,
         currentSrc: audio.getAttribute("src"),
         currentTime: at,
+        confirmedAt: confirmedPlayheadRef.current,
         playing,
+        listenerPaused: listenerPausedRef.current,
       });
       if (decision.action === "handoff") {
         releaseLiveSession(audio);

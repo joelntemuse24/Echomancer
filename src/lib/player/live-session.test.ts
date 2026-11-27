@@ -20,7 +20,9 @@ function fakeAudio(): FakeAudio {
       set.add(fn);
       listeners.set(type, set);
     },
-    removeEventListener() {},
+    removeEventListener(type: string, fn: () => void) {
+      listeners.get(type)?.delete(fn);
+    },
     play: async () => {
       state.plays += 1;
       audio.paused = false;
@@ -55,7 +57,7 @@ class FakeBuffer {
   quota = false;
   private listeners = new Map<string, Array<() => void>>();
 
-  constructor(private readonly audio: FakeAudio) {}
+  constructor(readonly element: FakeAudio) {}
 
   addEventListener(type: string, listener: () => void): void {
     const list = this.listeners.get(type) ?? [];
@@ -77,8 +79,8 @@ class FakeBuffer {
       throw err;
     }
     this.appends.push(data);
-    this.audio.duration = this.appends.length === 1 ? 12 : 90;
-    this.audio.dispatch("durationchange");
+    this.element.duration = this.appends.length === 1 ? 12 : 90;
+    this.element.dispatch("durationchange");
     queueMicrotask(() => this.fire("updateend"));
   }
 
@@ -97,6 +99,9 @@ function installSource(buffer: FakeBuffer, ended?: { count: number }): void {
     endOfStream(): void {
       if (ended) ended.count += 1;
       this.readyState = "ended";
+      // The platform fires ended once the playhead is at a closed source.
+      buffer.element.ended = true;
+      buffer.element.dispatch("ended");
     }
     addEventListener(type: string, fn: () => void): void {
       if (type === "sourceopen") fn();
@@ -115,12 +120,18 @@ function installSource(buffer: FakeBuffer, ended?: { count: number }): void {
 }
 
 const nativeCreateObjectURL = URL.createObjectURL.bind(URL);
+const nativeRevokeObjectURL = URL.revokeObjectURL.bind(URL);
 
 afterEach(() => {
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
     writable: true,
     value: nativeCreateObjectURL,
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: nativeRevokeObjectURL,
   });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -275,6 +286,53 @@ describe("syncLivePlayback", () => {
     expect(audio.state.currentTime).toBe(40);
     expect(audio.state.plays).toBe(0);
     expect(audio.src).toBe("blob:live");
+  });
+
+  it("ends the source when the playhead reaches the buffer after ready", async () => {
+    const audio = fakeAudio();
+    audio.state.currentTime = 40;
+    const buffer = new FakeBuffer(audio);
+    const ended = { count: 0 };
+    const revoked: string[] = [];
+    installSource(buffer, ended);
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: (url: string) => {
+        revoked.push(url);
+        nativeRevokeObjectURL(url);
+      },
+    });
+    const playlist = hlsEventPlaylist(
+      [
+        { uri: "live/0000.mp3", seconds: 25 },
+        { uri: "live/0001.mp3", seconds: 65 },
+      ],
+      900_000,
+      true
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-end",
+      resumeAt: 0,
+    });
+    expect(ended.count).toBe(0);
+    expect(revoked).toEqual([]);
+    let endedEvent = false;
+    audio.addEventListener("ended", () => {
+      endedEvent = true;
+    });
+    audio.currentTime = audio.duration;
+    audio.dispatch("timeupdate");
+    expect(ended.count).toBe(1);
+    expect(endedEvent).toBe(true);
+    expect(audio.ended).toBe(true);
+    expect(revoked).toEqual(["blob:live"]);
   });
 
   it("resumes when the playhead ran off the buffer and the listener did not pause", async () => {

@@ -46,6 +46,11 @@ type Session = {
   resumeAt: number;
   resumed: boolean;
   watching: boolean;
+  /** The playlist has ENDLIST. The source stays open until the playhead arrives. */
+  complete: boolean;
+  closed: boolean;
+  revoked: boolean;
+  onEnd?: () => void;
 };
 
 const sessions = new WeakMap<HTMLAudioElement, Session>();
@@ -57,7 +62,12 @@ export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
 
 /** Drop the session so a later ready poll does not treat the element as live. */
 export function releaseLiveSession(audio: HTMLAudioElement | null): void {
-  if (audio) sessions.delete(audio);
+  if (!audio) return;
+  const session = sessions.get(audio);
+  if (!session) return;
+  sessions.delete(audio);
+  detachEnd(audio, session);
+  revokeBlob(session);
 }
 
 function serial<T>(audio: HTMLAudioElement, fn: () => Promise<T>): Promise<T> {
@@ -165,12 +175,48 @@ function watchResume(audio: HTMLAudioElement, session: Session): void {
   onGrow();
 }
 
-function finish(session: Session, audio: HTMLAudioElement): void {
+function detachEnd(audio: HTMLAudioElement, session: Session): void {
+  if (!session.onEnd) return;
+  audio.removeEventListener("timeupdate", session.onEnd);
+  audio.removeEventListener("waiting", session.onEnd);
+  session.onEnd = undefined;
+}
+
+function revokeBlob(session: Session): void {
+  if (session.revoked || !session.url.startsWith("blob:")) return;
+  session.revoked = true;
+  try {
+    URL.revokeObjectURL(session.url);
+  } catch {
+    /* already revoked */
+  }
+}
+
+/**
+ * The playlist is finished. Leave the source open while the playhead is
+ * still inside the buffer. The element closes it: a job poll does not run
+ * after Ready, so timeupdate and waiting are what reach the last byte.
+ */
+function markComplete(session: Session, audio: HTMLAudioElement): void {
+  session.complete = true;
+  if (session.onEnd) {
+    closeIfHeard(session, audio);
+    return;
+  }
+  const onEnd = () => closeIfHeard(session, audio);
+  session.onEnd = onEnd;
+  audio.addEventListener("timeupdate", onEnd);
+  audio.addEventListener("waiting", onEnd);
+  onEnd();
+}
+
+function closeIfHeard(session: Session, audio: HTMLAudioElement): void {
+  if (!session.complete || session.closed) return;
   const covered = coveredSeconds(audio);
   const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
-  // Closing the source while the playhead is inside the buffer restarts
-  // playback at the first segment and pauses it.
-  if (covered > 0 && at + 1 < covered) return;
+  if (!(covered > 0) || at + 1 < covered) return;
+  session.closed = true;
+  detachEnd(audio, session);
   if (session.mediaSource?.readyState === "open") {
     try {
       session.mediaSource.endOfStream();
@@ -178,6 +224,7 @@ function finish(session: Session, audio: HTMLAudioElement): void {
       /* already closed */
     }
   }
+  revokeBlob(session);
 }
 
 function resumeIfStalled(
@@ -286,6 +333,9 @@ async function syncOnce(opts: {
         resumeAt: opts.resumeAt,
         resumed: false,
         watching: false,
+        complete: false,
+        closed: false,
+        revoked: false,
       };
       sessions.set(opts.audio, session);
       watchResume(opts.audio, session);
@@ -320,6 +370,9 @@ async function syncOnce(opts: {
       resumeAt: opts.resumeAt,
       resumed: false,
       watching: false,
+      complete: false,
+      closed: false,
+      revoked: false,
     };
     sessions.set(opts.audio, session);
     watchResume(opts.audio, session);
@@ -371,12 +424,12 @@ async function syncOnce(opts: {
             return;
           }
         }
-        if (playlist.complete) finish(target, opts.audio);
+        if (playlist.complete) markComplete(target, opts.audio);
       })
       .catch(() => undefined);
     await target.chain;
   } else if (playlist.complete) {
-    finish(target, opts.audio);
+    markComplete(target, opts.audio);
   }
   if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
   maybeResume(opts.audio, target);
