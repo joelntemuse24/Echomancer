@@ -423,7 +423,7 @@ describe("player resume", () => {
     await settle();
     expect(element.currentTime).toBe(0);
     expect(puts.some((body) => body.positionSeconds === 0 && body.sectionIndex == null)).toBe(false);
-    expect(puts.some((body) => body.positionSeconds === 200)).toBe(true);
+    expect(puts.some((body) => body.positionSeconds === 0 && body.sectionIndex === 1)).toBe(true);
   });
 
   it("does not write until the server row is merged", async () => {
@@ -730,7 +730,9 @@ describe("player resume", () => {
     });
     await settle();
     expect(puts.some((body) => Number(body.positionSeconds) < 10)).toBe(false);
-    expect(puts.some((body) => Number(body.positionSeconds) >= 250)).toBe(true);
+    expect(
+      puts.some((body) => body.sectionIndex === 1 && Number(body.positionSeconds) >= 50)
+    ).toBe(true);
   });
 
   it("does not rewind when the server row has the same timestamp", async () => {

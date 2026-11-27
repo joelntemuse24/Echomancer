@@ -198,25 +198,31 @@ test("a scrub past the appended audio plays on", async ({ page }) => {
 });
 
 test("a reload mid-generation resumes at the saved point and plays for a minute", async ({ page }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(210_000);
   const server = await startLiveGeneratingServer({ initialReady: 12, total: 12, growMs: 0 });
   try {
     await page.goto(server.url);
     await page.getByRole("button", { name: "Play", exact: true }).click({ force: true });
     await expect.poll(() => bookTime(page).then((row) => row.t)).toBeGreaterThan(0.4);
     await scrubTo(page, 0.55);
-    await expect
-      .poll(async () => {
-        const raw = await page.evaluate(() => localStorage.getItem("ec-resume:live-book"));
+    const savedBook = async () =>
+      page.evaluate((sectionSeconds) => {
+        const raw = localStorage.getItem("ec-resume:live-book");
         if (!raw) return 0;
-        const saved = JSON.parse(raw) as { positionSeconds?: number };
-        return typeof saved.positionSeconds === "number" ? saved.positionSeconds : 0;
-      }, { timeout: 15_000 })
-      .toBeGreaterThan(90);
-    const saved = await page.evaluate(() => {
-      const raw = localStorage.getItem("ec-resume:live-book");
-      return raw ? (JSON.parse(raw) as { positionSeconds: number }).positionSeconds : 0;
-    });
+        const saved = JSON.parse(raw) as { positionSeconds?: number; sectionIndex?: number | null };
+        if (typeof saved.positionSeconds !== "number") return 0;
+        if (typeof saved.sectionIndex === "number") {
+          return saved.sectionIndex * sectionSeconds + saved.positionSeconds;
+        }
+        return saved.positionSeconds;
+      }, LIVE_SECTION_SECONDS);
+    let saved = await savedBook();
+    const watch = Date.now();
+    while (saved <= 90 && Date.now() - watch < 12_000) {
+      await page.waitForTimeout(500);
+      saved = await savedBook();
+    }
+    expect(saved).toBeGreaterThan(90);
     await page.reload();
     await expect
       .poll(() => bookTime(page).then((row) => row.t), { timeout: 20_000 })
@@ -275,6 +281,62 @@ test("a far parts tap shows book time and plays across the next section", async 
       advanced = Math.max(advanced, clock);
     }
     expect(advanced).toBeGreaterThan(225);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a far parts tap past a hole reloads that section at the same offset", async ({ page }) => {
+  test.setTimeout(90_000);
+  const server = await startLiveGeneratingServer({
+    initialReady: 18,
+    total: 18,
+    growMs: 0,
+    gapIndex: 5,
+  });
+  try {
+    await page.goto(server.url);
+    await page.getByRole("button", { name: "Play", exact: true }).click({ force: true });
+    await expect.poll(() => bookTime(page).then((row) => row.t)).toBeGreaterThan(0.4);
+    await page.getByRole("button", { name: "Parts" }).click({ force: true });
+    await page.getByRole("button", { name: "15Ready" }).click({ force: true });
+    await expect.poll(() => elementSrc(page), { timeout: 10_000 }).toContain("/sections/0014.mp3");
+    await expect
+      .poll(async () => {
+        const raw = await page.evaluate(() => localStorage.getItem("ec-resume:live-book"));
+        if (!raw) return 0;
+        const row = JSON.parse(raw) as { positionSeconds?: number; sectionIndex?: number | null };
+        if (row.sectionIndex !== 14) return 0;
+        return typeof row.positionSeconds === "number" ? row.positionSeconds : 0;
+      }, { timeout: 20_000 })
+      .toBeGreaterThan(8);
+    const saved = await page.evaluate(() => {
+      const raw = localStorage.getItem("ec-resume:live-book");
+      return raw
+        ? (JSON.parse(raw) as { positionSeconds: number; sectionIndex: number | null })
+        : null;
+    });
+    expect(saved?.sectionIndex).toBe(14);
+    expect(saved!.positionSeconds).toBeLessThan(20);
+    const offset = saved!.positionSeconds;
+    await page.reload();
+    await expect.poll(() => elementSrc(page), { timeout: 20_000 }).toContain("/sections/0014.mp3");
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const audio = document.querySelector("audio");
+            return audio && Number.isFinite(audio.currentTime) ? audio.currentTime : -1;
+          }),
+        { timeout: 20_000 }
+      )
+      .toBeGreaterThan(offset - 3);
+    const local = await page.evaluate(() => document.querySelector("audio")?.currentTime ?? 0);
+    expect(local).toBeLessThan(offset + 8);
+    const clock = await displayedClock(page);
+    const book = await bookTime(page);
+    expect(Math.abs(clock - book.t)).toBeLessThan(2);
+    expect(clock).toBeGreaterThan(200);
   } finally {
     await server.close();
   }

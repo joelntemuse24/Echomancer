@@ -2987,12 +2987,15 @@ current row. The tab takes that `updated_at` as its new base. If it is
 playing, or the listener has seeked since the last confirmed write, it
 retries the live playhead once. If it is idle, it seeks to the returned
 row. A rejected position is not stored as the winner. A timestamp a 200
-has confirmed is never replaced by an older one. The stored number is the
-book clock for every section file. A ready part after a hole uses the
-average length of the parts already measured, so its offset is book time
-and not the file's own 0:00. That start stays pinned while the part plays,
-so a later measurement does not move the clock. Skip, the scrubber, focus
-mode, and the lock screen use the same clock. A finished book within 10
+has confirmed is never replaced by an older one. A section file stores
+the part index and the offset inside that file. Library and a reload
+turn that pair into book time from the lengths measured then, so filling
+a hole does not move the saved audio. A ready part after a hole uses the
+average length of the parts already measured for the on-screen clock, so
+the clock is book time and not the file's own 0:00. That start stays
+pinned only while the part plays. The pin is not what is stored. An older
+save with no part index is still a book-clock second. Skip, the scrubber,
+focus mode, and the lock screen use the same on-screen clock. A finished book within 10
 seconds of the end is stored as 0. A book still generating clamps to the
 audio that exists. A failed book does not restore. Reopening seeks to that
 time and does not press play. An explicit seek is kept. The library line

@@ -833,13 +833,14 @@ function PlayerPageInner({ id }: { id: string }) {
     if (bookSeconds > 0.5) restoreLandedRef.current = true;
     confirmedPlayheadRef.current = bookSeconds;
     droppedSeekHoldRef.current = false;
-    playbackResume.remember(
-      {
-        positionSeconds: stored.positionSeconds,
-        sectionIndex: stored.finished ? null : sectionIndex,
-      },
-      reason
-    );
+    const index = stored.finished ? null : sectionIndex;
+    let positionSeconds = stored.positionSeconds;
+    if (index != null) {
+      const span = spansRef.current.find((item) => item.index === index);
+      const local = span ? bookSeconds - span.startSeconds : 0;
+      positionSeconds = Math.max(0, local);
+    }
+    playbackResume.remember({ positionSeconds, sectionIndex: index }, reason);
   };
 
   useEffect(() => {
@@ -1427,10 +1428,10 @@ function PlayerPageInner({ id }: { id: string }) {
         });
         // A poll that is already in flight must not attach somewhere else.
         releaseLiveSession(audio, bookEnd);
-        rememberBookRef.current(bookEnd, "track", null);
         if (step.action === "play") {
           waitingForNextRef.current = false;
           pinSection(step.index, bookEnd);
+          rememberBookRef.current(bookEnd, "track", step.index);
           armPendingSeekRef.current({
             seconds: 0,
             fraction: 0,
@@ -1443,7 +1444,10 @@ function PlayerPageInner({ id }: { id: string }) {
           setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, jobRef.current.playback_grant));
         } else if (step.action === "wait") {
           waitingForNextRef.current = true;
+          rememberBookRef.current(bookEnd, "track", current);
           setCurrentTime(local);
+        } else {
+          rememberBookRef.current(bookEnd, "track", current);
         }
       } else {
         captureRef.current("track");
@@ -1715,8 +1719,8 @@ function PlayerPageInner({ id }: { id: string }) {
         sectionUrl: sectionUrl ?? "",
         playing: wasPlaying,
       });
-      rememberBookRef.current(bookSeconds, "seek", null);
       if (choice.action === "seek") {
+        rememberBookRef.current(bookSeconds, "seek", null);
         liveAudio.currentTime = choice.at;
         retargetLiveResume(liveAudio, choice.at, true);
         setCurrentTime(choice.at);
@@ -1727,6 +1731,7 @@ function PlayerPageInner({ id }: { id: string }) {
       if (sectionUrl && seg && place) {
         const span = spans.find((item) => item.index === place.sectionIndex);
         if (span) pinSection(span.index, span.startSeconds);
+        rememberBookRef.current(place.bookSeconds, "seek", place.sectionIndex);
         releaseLiveSession(liveAudio, bookSeconds);
         listenerPausedRef.current = !choice.play;
         armPendingSeekRef.current({
@@ -1755,7 +1760,7 @@ function PlayerPageInner({ id }: { id: string }) {
     const wasPlaying = elementIsPlaying(audioRef.current);
     const span = spans.find((item) => item.index === place.sectionIndex);
     if (span) pinSection(span.index, span.startSeconds);
-    rememberBookRef.current(place.bookSeconds, "seek", null);
+    rememberBookRef.current(place.bookSeconds, "seek", place.sectionIndex);
     const same =
       audioUrl != null &&
       samePlaybackSource(audioUrl, nextUrl) &&
@@ -2065,11 +2070,7 @@ function PlayerPageInner({ id }: { id: string }) {
       sectionIndex: onSectionFile ? segmentIndex : null,
       spans,
     });
-    rememberBookRef.current(
-      placed.seconds,
-      "seek",
-      placed.absolute ? null : onSectionFile ? segmentIndex : null
-    );
+    rememberBookRef.current(placed.seconds, "seek", onSectionFile ? segmentIndex : null);
     if (wasPlaying) {
       audioRef.current.play().catch(() => {});
     }
@@ -2764,9 +2765,7 @@ function PlayerPageInner({ id }: { id: string }) {
                         const target = rowSpan ? rowSpan.startSeconds : 0;
                         if (rowSpan) pinSection(rowSpan.index, rowSpan.startSeconds);
                         playbackResume.remember(
-                          rowSpan
-                            ? { positionSeconds: rowSpan.startSeconds, sectionIndex: null }
-                            : { positionSeconds: 0, sectionIndex: seg.index },
+                          { positionSeconds: 0, sectionIndex: seg.index },
                           "track"
                         );
                         confirmedPlayheadRef.current = target;

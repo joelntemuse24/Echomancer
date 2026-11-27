@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { playbackForResume, seededTakehomePlayback } from "./cached-playback";
+import { libraryResumeLabel, snapshotForPersist } from "@/lib/player/playback-position";
 
 const section = { index: 0, path: "audiobooks/job-a/sections/0000.mp3", status: "ready" };
 
@@ -136,6 +137,72 @@ describe("playback for a stored position", () => {
         { forceStream: false, forceSegments: false }
       )?.restart
     ).toBe(true);
+  });
+
+  it("keeps a part past a hole on the same audio after the hole is measured", () => {
+    const guessed = [
+      { index: 0, status: "ready", path: "audiobooks/job-a/sections/0000.mp3", durationSeconds: 100 },
+      { index: 1, status: "pending", path: "audiobooks/job-a/sections/0001.mp3", durationSeconds: null },
+      { index: 2, status: "ready", path: "audiobooks/job-a/sections/0002.mp3", durationSeconds: 80 },
+    ];
+    const saved = snapshotForPersist({
+      reason: "tick",
+      currentTime: 20,
+      readyState: 4,
+      ended: false,
+      pendingActive: false,
+      pendingBookSeconds: null,
+      restoreLanded: true,
+      onSection: true,
+      sectionIndex: 2,
+      spans: [
+        { index: 0, startSeconds: 0, durationSeconds: 100 },
+        { index: 2, startSeconds: 190, durationSeconds: 80 },
+      ],
+      complete: false,
+      durationSeconds: null,
+      hasNextSection: false,
+    });
+    expect(saved).toEqual({ positionSeconds: 20, sectionIndex: 2 });
+    const job = { job_kind: "takehome", status: "processing", segments: guessed };
+    const opts = { forceStream: false, forceSegments: false };
+    const before = playbackForResume(job, saved, opts);
+    expect(before).toMatchObject({
+      url: "/api/storage/audiobooks/job-a/sections/0002.mp3",
+      segmentIndex: 2,
+      localSeconds: 20,
+    });
+    expect(
+      libraryResumeLabel({
+        status: "processing",
+        positionSeconds: saved?.positionSeconds,
+        sectionIndex: saved?.sectionIndex,
+        segments: guessed,
+      })
+    ).toBe("Resume at 3:30");
+    const measured = [
+      guessed[0]!,
+      { index: 1, status: "ready", path: "audiobooks/job-a/sections/0001.mp3", durationSeconds: 40 },
+      guessed[2]!,
+    ];
+    const after = playbackForResume(
+      { job_kind: "takehome", status: "processing", segments: measured },
+      saved,
+      opts
+    );
+    expect(after).toMatchObject({
+      url: before?.url,
+      segmentIndex: 2,
+      localSeconds: 20,
+    });
+    expect(
+      libraryResumeLabel({
+        status: "processing",
+        positionSeconds: saved?.positionSeconds,
+        sectionIndex: saved?.sectionIndex,
+        segments: measured,
+      })
+    ).toBe("Resume at 2:40");
   });
 
   it("does not restore a failed book", () => {

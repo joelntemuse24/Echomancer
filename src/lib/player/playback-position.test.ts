@@ -294,7 +294,7 @@ describe("bookmark clock", () => {
       durationSeconds: null,
       hasNextSection: true,
     });
-    expect(swapped).toEqual({ positionSeconds: 120, sectionIndex: null });
+    expect(swapped).toEqual({ positionSeconds: 20, sectionIndex: 1 });
     const reset = snapshotForPersist({
       reason: "pause",
       currentTime: 0,
@@ -331,7 +331,7 @@ describe("bookmark clock", () => {
         durationSeconds: null,
         hasNextSection: true,
       })
-    ).toEqual({ positionSeconds: 120, sectionIndex: null });
+    ).toEqual({ positionSeconds: 20, sectionIndex: 1 });
   });
 
   it("keeps an explicit seek and still takes a newer server row while playing", () => {
@@ -488,7 +488,7 @@ describe("bookmark clock", () => {
         durationSeconds: null,
         hasNextSection: true,
       })
-    ).toEqual({ positionSeconds: 140, sectionIndex: null });
+    ).toEqual({ positionSeconds: 40, sectionIndex: 1 });
   });
 
   it("ticks only while playing and visible", () => {

@@ -436,7 +436,45 @@ export function snapshotForPersist(input: {
     };
   };
 
+  /**
+   * A section file stores the part and the offset inside that file. Book
+   * time is computed again from the lengths measured at read time, so a
+   * hole that is filled later does not move the saved audio.
+   */
+  const commitSection = (localSeconds: number, sectionIndex: number) => {
+    const local = Number.isFinite(localSeconds) ? Math.max(0, localSeconds) : 0;
+    const mapped = bookTimeFromElement({
+      mode: "section",
+      elementSeconds: local,
+      sectionIndex,
+      spans: input.spans,
+    });
+    const bookEnded = input.ended && input.complete && !input.hasNextSection;
+    const stored = positionToPersist({
+      bookSeconds: mapped.absolute ? mapped.seconds : local,
+      durationSeconds: input.durationSeconds,
+      complete: input.complete,
+      ended: bookEnded,
+    });
+    if (stored.finished) return { positionSeconds: 0, sectionIndex: null };
+    return { positionSeconds: local, sectionIndex };
+  };
+
+  const offsetInSection = (bookSeconds: number, sectionIndex: number): number | null => {
+    const span = input.spans.find((item) => item.index === sectionIndex);
+    if (!span) return null;
+    const local = bookSeconds - span.startSeconds;
+    if (local < -0.05 || local > span.durationSeconds + 0.5) return null;
+    return Math.min(span.durationSeconds, Math.max(0, local));
+  };
+
   if (!userAct && (input.pendingActive || loading)) {
+    if (input.onSection && input.sectionIndex != null) {
+      if (pendingTime != null) {
+        const local = offsetInSection(pendingTime, input.sectionIndex);
+        if (local != null) return commitSection(local, input.sectionIndex);
+      }
+    }
     if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
     return null;
   }
@@ -449,10 +487,18 @@ export function snapshotForPersist(input: {
       confirmedSeconds: input.confirmedSeconds ?? null,
     })
   ) {
+    if (input.onSection && input.sectionIndex != null && pendingTime != null) {
+      const local = offsetInSection(pendingTime, input.sectionIndex);
+      if (local != null) return commitSection(local, input.sectionIndex);
+    }
     if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
     return null;
   }
   if (!userAct && !input.restoreLanded && element < 0.5) {
+    if (input.onSection && input.sectionIndex != null && pendingTime != null) {
+      const local = offsetInSection(pendingTime, input.sectionIndex);
+      if (local != null) return commitSection(local, input.sectionIndex);
+    }
     if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
     return null;
   }
@@ -469,8 +515,15 @@ export function snapshotForPersist(input: {
     Number.isFinite(confirmedBook) &&
     mapped.seconds + 2 < confirmedBook
   ) {
+    if (input.onSection && input.sectionIndex != null && pendingTime != null) {
+      const local = offsetInSection(pendingTime, input.sectionIndex);
+      if (local != null) return commitSection(local, input.sectionIndex);
+    }
     if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
     return null;
+  }
+  if (input.onSection && input.sectionIndex != null) {
+    return commitSection(element, input.sectionIndex);
   }
   return commit(mapped.seconds, mapped.absolute);
 }
