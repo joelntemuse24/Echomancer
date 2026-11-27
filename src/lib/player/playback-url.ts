@@ -43,6 +43,25 @@ export function playbackRecoveryCount(url: string | null | undefined): number {
  * A new query so the next load misses a cached 206 or 302.
  * The element keeps the same object; only the cache key moves.
  */
+/**
+ * What makes the element load again. A grant (`g`) can rotate without
+ * restarting playback. A cache-bust (`r`) or a finished-file version (`v`) does.
+ */
+export function playbackSourceKey(url: string | null | undefined): string {
+  if (!url) return "";
+  const { path, params } = splitUrl(url);
+  return `${path}\0${params.get("r") ?? ""}\0${params.get("v") ?? ""}`;
+}
+
+/** Attach the session-bound playback grant. Other URLs are unchanged. */
+export function withPlaybackGrant(url: string, grant: string | null | undefined): string {
+  if (!grant || !url.startsWith("/api/storage/")) return url;
+  const { path, params, hash } = splitUrl(url);
+  params.set("g", grant);
+  const q = params.toString();
+  return q ? `${path}?${q}${hash}` : `${path}${hash}`;
+}
+
 export function cacheBustPlaybackUrl(url: string): string {
   const { path, params, hash } = splitUrl(url);
   const n = Number(params.get("r") || "0");

@@ -67,6 +67,25 @@ describe("generationStatus", () => {
     expect(outlined.percent).toBe(0);
   });
 
+  it("counts only the contiguous ready prefix when a later section is already stored", () => {
+    const segments = [
+      { index: 0, status: "ready", path: "audiobooks/j/sections/0000.mp3" },
+      { index: 1, status: "ready", path: "audiobooks/j/sections/0001.mp3" },
+      { index: 2, status: "retry", path: "" },
+      { index: 3, status: "ready", path: "audiobooks/j/sections/0003.mp3" },
+    ];
+    const view = generationStatus({
+      status: "processing",
+      currentSection: 3,
+      totalSections: 120,
+      etaLabel: "~40 min",
+      etaState: "live",
+      segments,
+    });
+    expect(view.line).toBe("2 of 120 · 2% · ~40 min left");
+    expect(view.percent).toBe(2);
+  });
+
   it("hides Stop on a terminal book and says Stopped after cancel", () => {
     for (const status of ["ready", "failed", "cancelled"] as const) {
       const view = generationStatus({ status, totalSections: 8, currentSection: 3 });

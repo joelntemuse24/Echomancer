@@ -2110,7 +2110,7 @@ appended in completion order. `next_section_index` = lowest index not yet
 claimed. Ready-count (progress / `current_section`) is a different number.
 Concat walks `0..N-1`. A bad section is `retry`/`failed` for that index — it
 does not `failJob` the whole book on the first miss. After the last index,
-hole-retry runs once. Assembly then requires **every** index
+A failed section is claimed again immediately, lowest index first, ahead of later sections. The same-tick hole-retry pass only remains for retries the claim cap left behind. Assembly then requires **every** index
 (`allIndexesReady`). A book with holes is published `failed`, not `ready`.
 `error_message` is
 `"${missing} of ${total} sections could not be narrated. Only ${done} … so it is not a complete audiobook. Retry to generate the rest."`
@@ -2240,7 +2240,7 @@ Env knobs (defaults):
 | `releaseLease` | Clear token; set queued/failed |
 | `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
-| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → hole-retry → assemble only when nothing is still claimable. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
+| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set (a retry hole before any later section) → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → assemble only when nothing is still claimable. Each contiguous mastered section is appended to `full.mp3` on the worker with the same crossfade as the final join. When that file covers every section, finalize writes ID3 chapters, duration, and section timing and skips the Modal concat. A book without that file still uses `materializeFullAudiobook`. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |

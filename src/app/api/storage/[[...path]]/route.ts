@@ -15,6 +15,11 @@ import { pcmToWav } from "@/lib/tts/pcm-wav";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { ownsStoragePath } from "@/lib/auth/guard";
 import {
+  playbackAuthFresh,
+  playbackGrantAllows,
+  rememberPlaybackAuth,
+} from "@/lib/auth/playback-grant";
+import {
   clientIp,
   createRateLimiter,
   rateLimitIdentity,
@@ -233,23 +238,30 @@ export async function GET(
     const userId = await resolveSessionUserId(request);
     if (!userId) return notFound();
 
-    if (!(await storageRateLimit(
-      await rateLimitIdentity({
-        userId,
-        ip: clientIp(request),
-      })
-    ))) {
-      return NextResponse.json(
-        { error: "Too fast. Wait a minute." },
-        { status: 429 }
-      );
-    }
+    const grant = request.nextUrl.searchParams.get("g");
+    const known =
+      playbackGrantAllows(userId, storagePath, grant) ||
+      playbackAuthFresh(userId, storagePath);
+    if (!known) {
+      if (!(await storageRateLimit(
+        await rateLimitIdentity({
+          userId,
+          ip: clientIp(request),
+        })
+      ))) {
+        return NextResponse.json(
+          { error: "Too fast. Wait a minute." },
+          { status: 429 }
+        );
+      }
 
-    if (!(await ownsStoragePath(userId, storagePath))) {
-      console.warn(
-        `[Storage API] denied ${storagePath} for ${userId}`
-      );
-      return notFound();
+      if (!(await ownsStoragePath(userId, storagePath))) {
+        console.warn(
+          `[Storage API] denied ${storagePath} for ${userId}`
+        );
+        return notFound();
+      }
+      rememberPlaybackAuth(userId, storagePath);
     }
 
     const rangeHeader = request.headers.get("range");

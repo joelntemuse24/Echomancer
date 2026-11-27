@@ -43,13 +43,16 @@ export function seededTakehomePlayback(
   for (const segment of job.segments ?? []) {
     if (segment.status === "ready" && segment.path) ready.set(segment.index, segment);
   }
+  if (job.audio_url && !opts.forceSegments) {
+    const url = versionedAudioUrl(
+      job.audio_url,
+      job.status === "ready" ? job.updated_at : null
+    );
+    return url ? { url, segmentIndex: null } : null;
+  }
   const first = ready.get(0);
   if (first && (opts.forceSegments || job.status === "processing" || !job.audio_url)) {
     return { url: `/api/storage/${first.path}`, segmentIndex: 0 };
-  }
-  if (job.audio_url) {
-    const url = versionedAudioUrl(job.audio_url, job.updated_at);
-    return url ? { url, segmentIndex: null } : null;
   }
   if (first) return { url: `/api/storage/${first.path}`, segmentIndex: 0 };
   return null;
@@ -114,18 +117,19 @@ export function playbackForResume(
     };
   }
 
+  const fullFile = base.segmentIndex == null && !base.url.includes("/sections/");
   const decision = decideResume({
     playbackAllowed: true,
     positionSeconds: bookSeconds,
     durationSeconds: duration,
-    availableSeconds: availableBookSeconds(spans, duration, complete),
+    availableSeconds:
+      fullFile && duration ? duration : availableBookSeconds(spans, duration, complete),
     complete,
   });
   if (decision.kind === "ignore") return null;
   if (decision.kind === "restart") return { ...opened, restart: true };
   if (decision.kind !== "restore") return opened;
 
-  const fullFile = base.segmentIndex == null && !base.url.includes("/sections/");
   if (fullFile) {
     return { ...opened, localSeconds: decision.seconds };
   }
