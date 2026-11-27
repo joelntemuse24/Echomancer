@@ -6,6 +6,7 @@ import {
   contiguousSpans,
   decideResume,
   placeOnTimeline,
+  sectionBookSpans,
 } from "@/lib/player/playback-position";
 
 type Segment = {
@@ -82,7 +83,29 @@ export function playbackForResume(
   const opened: ResumeSeed = { ...base, localSeconds: 0, restart: false };
   if (!saved) return opened;
 
-  const spans = contiguousSpans(job?.segments ?? []);
+  // The stored offset belongs to that section file. Open it while the book
+  // is still generating, including when a hole still sits in front of it.
+  // A finished book recomputes book time from the measured lengths below.
+  if (saved.sectionIndex != null && job?.status !== "ready") {
+    const ready = new Map<number, Segment>();
+    for (const segment of job?.segments ?? []) {
+      if (segment.status === "ready" && segment.path) ready.set(segment.index, segment);
+    }
+    const section = ready.get(saved.sectionIndex);
+    if (section) {
+      return {
+        url: `/api/storage/${section.path}`,
+        segmentIndex: saved.sectionIndex,
+        localSeconds: Math.max(0, saved.positionSeconds),
+        restart: false,
+      };
+    }
+  }
+
+  const spans =
+    saved.sectionIndex != null
+      ? sectionBookSpans(job?.segments ?? [])
+      : contiguousSpans(job?.segments ?? []);
   const complete = job?.status === "ready";
   const duration =
     typeof job?.duration_seconds === "number" && job.duration_seconds > 0

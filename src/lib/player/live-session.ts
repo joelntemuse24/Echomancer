@@ -6,6 +6,7 @@ import {
   liveSectionHold,
   pendingSegmentUris,
   playlistDurationSeconds,
+  sectionEndedJoinsLive,
   readHlsPlaylist,
   segmentUrisAhead,
   seekTargetIfCovered,
@@ -618,12 +619,21 @@ async function syncOnce(
   const playlist = readHlsPlaylist(body);
   const left = departedAt.get(opts.audio);
   const chosen = left != null && left.jobId === opts.jobId;
+  const resumeAt = Number.isFinite(opts.resumeAt) ? opts.resumeAt : 0;
+  const src = opts.audio.currentSrc || opts.audio.src || "";
+  const joinLive = sectionEndedJoinsLive({
+    src,
+    ended: opts.audio.ended,
+    resumeAt,
+    playlistSeconds: playlistDurationSeconds(playlist.segments),
+  });
   if (
     !current &&
+    !joinLive &&
     liveSectionHold({
-      src: opts.audio.currentSrc || opts.audio.src || "",
+      src,
       ended: opts.audio.ended,
-      resumeAt: Number.isFinite(opts.resumeAt) ? opts.resumeAt : 0,
+      resumeAt,
       chosen,
       bufferedEnd: chosen ? left.bufferedEnd : 0,
     })

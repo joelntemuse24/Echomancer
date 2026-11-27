@@ -7,6 +7,9 @@ import {
   keepLiveSource,
   liveAttachAllowed,
   liveAttachResumeAt,
+  liveEdgeSeconds,
+  restoreLiveEdge,
+  sectionEndedJoinsLive,
   liveChapterSeek,
   liveHandoffPlayhead,
   liveReadyTransition,
@@ -132,6 +135,37 @@ describe("live playlist", () => {
       at: 400,
       play: true,
     });
+  });
+
+  it("keeps play at the generated edge and joins a finished section there", () => {
+    expect(liveEdgeSeconds(33 * 60 + 12, 33 * 60 + 12)).toBeCloseTo(33 * 60 + 12 - 0.05, 2);
+    expect(liveEdgeSeconds(32 * 60 + 53, 33 * 60 + 12)).toBeNull();
+    expect(restoreLiveEdge(33 * 60 + 12, 32 * 60 + 53)).toBe(33 * 60 + 12);
+    expect(restoreLiveEdge(33 * 60 + 12, 33 * 60 + 11)).toBeNull();
+    expect(
+      sectionEndedJoinsLive({
+        src: "/api/storage/audiobooks/job/sections/0014.mp3",
+        ended: true,
+        resumeAt: 5 * 60 + 4,
+        playlistSeconds: 7 * 60 + 27,
+      })
+    ).toBe(true);
+    expect(
+      sectionEndedJoinsLive({
+        src: "/api/storage/audiobooks/job/sections/0014.mp3",
+        ended: false,
+        resumeAt: 5 * 60 + 4,
+        playlistSeconds: 7 * 60 + 27,
+      })
+    ).toBe(false);
+    expect(
+      sectionEndedJoinsLive({
+        src: "/api/storage/audiobooks/job/sections/0014.mp3",
+        ended: true,
+        resumeAt: 8 * 60,
+        playlistSeconds: 7 * 60 + 27,
+      })
+    ).toBe(false);
   });
 
   it("resumes after the buffer runs out and leaves a chosen pause alone", () => {

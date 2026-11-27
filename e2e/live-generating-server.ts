@@ -28,10 +28,13 @@ export async function startLiveGeneratingServer(options?: {
   total?: number;
   /** How often another section becomes ready. 0 keeps the initial count. */
   growMs?: number;
+  /** One index stays pending so a later ready part sits past a hole. */
+  gapIndex?: number;
 }) {
   const total = options?.total ?? 12;
   const initialReady = options?.initialReady ?? 8;
   const growMs = options?.growMs ?? 2000;
+  const gapIndex = options?.gapIndex;
   ensureAudio(total);
   const started = Date.now();
   const readyCount = () =>
@@ -42,11 +45,13 @@ export async function startLiveGeneratingServer(options?: {
     const n = readyCount();
     const segments = [];
     for (let i = 0; i < total; i++) {
+      const gapped = gapIndex === i;
+      const ready = !gapped && i < n;
       segments.push({
         index: i,
-        status: i < n ? "ready" : "pending",
+        status: ready ? "ready" : "pending",
         path: `audiobooks/${JOB}/sections/${String(i).padStart(4, "0")}.mp3`,
-        durationSeconds: i < n ? LIVE_SECTION_SECONDS : null,
+        durationSeconds: ready ? LIVE_SECTION_SECONDS : null,
       });
     }
     return {
@@ -60,7 +65,7 @@ export async function startLiveGeneratingServer(options?: {
       eta_label: `mark ${Math.floor((Date.now() - started) / 2000)}`,
       eta_state: "scheduled",
       audio_url: `/api/storage/audiobooks/${JOB}/full.mp3`,
-      duration_seconds: n * LIVE_SECTION_SECONDS,
+      duration_seconds: (gapIndex == null ? n : Math.min(n, gapIndex)) * LIVE_SECTION_SECONDS,
       error_message: null,
       created_at: "2026-11-27T08:00:00.000Z",
       updated_at: "2026-11-27T08:45:00.000Z",
@@ -76,7 +81,8 @@ export async function startLiveGeneratingServer(options?: {
     };
   };
   const playlist = () => {
-    const n = readyCount();
+    const published = readyCount();
+    const n = gapIndex == null ? published : Math.min(published, gapIndex);
     const lines = [
       "#EXTM3U",
       "#EXT-X-VERSION:3",

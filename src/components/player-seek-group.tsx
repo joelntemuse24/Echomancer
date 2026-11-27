@@ -142,8 +142,8 @@ export function PlayerSeekGroup({
         />
       </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
-        <span>{formatPlayClock(currentTime)}</span>
-        <span>{disabled ? "—" : formatPlayClock(length)}</span>
+        <span data-testid="play-clock">{formatPlayClock(currentTime)}</span>
+        <span data-testid="play-duration">{disabled ? "—" : formatPlayClock(length)}</span>
       </div>
       {onFineVisibleChange && !disabled ? (
         <div className="flex justify-center">
