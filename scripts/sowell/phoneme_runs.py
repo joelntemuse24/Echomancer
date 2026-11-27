@@ -75,6 +75,31 @@ def words(text: str) -> list[str]:
     return _WORDS.findall(text)
 
 
+def _token_surface(tokens) -> str:
+    """Token text plus each token's own trailing whitespace. Nothing added."""
+    return "".join(f"{token.text}{token.whitespace or ''}" for token in tokens)
+
+
+def spoken_words_match(pipeline, tokens) -> bool:
+    """True when every word the tokenizer kept was placed in a spoken chunk.
+
+    ``en_tokenize`` strips each chunk, and ``" ".join`` of those strings
+    inserts a space at the cut. A 510-phoneme cut that falls between two
+    tokens with no whitespace (``don't`` as ``don`` + ``'t``, ``Holmes's``
+    as ``Holmes`` + ``'s``, ``221B`` as ``221`` + ``B``) then fails
+    ``words(request) == words(joined)`` even though both tokens were
+    spoken. Coverage concatenates each token's own whitespace, so that
+    cut still matches, and a chunk skipped for empty phonemes does not.
+    """
+    given = words(tokens_to_text(tokens))
+    parts: list[str] = []
+    for _graphemes, phonemes, chunk_tokens in pipeline.en_tokenize(tokens):
+        if not phonemes:
+            continue
+        parts.append(_token_surface(chunk_tokens))
+    return given == words("".join(parts))
+
+
 def iter_phoneme_runs(pipeline, tokens):
     """Yield ``(graphemes, phonemes)`` with each phoneme string at most 510.
 
