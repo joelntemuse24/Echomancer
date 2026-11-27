@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  chooseLivePart,
   chooseLiveTransport,
   evictionEnd,
   hlsEventPlaylist,
   keepLiveSource,
+  liveAttachAllowed,
+  liveAttachResumeAt,
   liveChapterSeek,
   liveHandoffPlayhead,
   liveReadyTransition,
@@ -174,6 +177,91 @@ describe("live playlist", () => {
         mediaSourceMpeg: true,
       })
     ).toBe("mse");
+  });
+});
+
+describe("section walk handoff", () => {
+  it("uses the section offset plus the element's time, not a stored part-local time", () => {
+    expect(
+      liveAttachResumeAt({
+        elementSeconds: 40,
+        onSection: true,
+        sectionStart: 80,
+        saved: { positionSeconds: 40, sectionIndex: 3 },
+        savedSectionStart: 80,
+      })
+    ).toBe(120);
+    expect(
+      liveAttachResumeAt({
+        elementSeconds: 90,
+        onSection: false,
+        sectionStart: 0,
+        saved: { positionSeconds: 12, sectionIndex: null },
+        savedSectionStart: 0,
+      })
+    ).toBe(90);
+  });
+
+  it("places a stored part-local time on the book clock before the element has landed", () => {
+    expect(
+      liveAttachResumeAt({
+        elementSeconds: 0,
+        onSection: false,
+        sectionStart: 0,
+        saved: { positionSeconds: 40, sectionIndex: 3 },
+        savedSectionStart: 80,
+      })
+    ).toBe(120);
+    expect(
+      liveAttachResumeAt({
+        elementSeconds: 0,
+        onSection: false,
+        sectionStart: 0,
+        saved: { positionSeconds: 0, sectionIndex: null },
+        savedSectionStart: 0,
+      })
+    ).toBe(0);
+  });
+
+  it("waits to attach until the playlist reaches the listener", () => {
+    expect(liveAttachAllowed(120, 90)).toBe(false);
+    expect(liveAttachAllowed(40, 90)).toBe(true);
+    expect(liveAttachAllowed(0, 12)).toBe(true);
+  });
+
+  it("seeks a buffered part and releases the session past the buffer", () => {
+    expect(
+      chooseLivePart({
+        attached: true,
+        target: 80,
+        covered: 200,
+        sectionUrl: "/api/storage/audiobooks/job/sections/0003.mp3",
+        playing: true,
+      })
+    ).toEqual({ action: "seek", at: 80, play: true });
+    expect(
+      chooseLivePart({
+        attached: true,
+        target: 300,
+        covered: 200,
+        sectionUrl: "/api/storage/audiobooks/job/sections/0005.mp3",
+        playing: true,
+      })
+    ).toEqual({
+      action: "section",
+      url: "/api/storage/audiobooks/job/sections/0005.mp3",
+      release: true,
+      play: true,
+    });
+    expect(
+      chooseLivePart({
+        attached: false,
+        target: 80,
+        covered: 0,
+        sectionUrl: "/api/storage/audiobooks/job/sections/0003.mp3",
+        playing: false,
+      }).action
+    ).toBe("section");
   });
 });
 

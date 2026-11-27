@@ -95,6 +95,77 @@ export function seekTargetIfCovered(target: number, coveredSeconds: number): num
   return target;
 }
 
+/** Sum of the playlist's own durations. The element duration is not known yet. */
+export function playlistDurationSeconds(segments: readonly { seconds: number }[]): number {
+  return segments.reduce(
+    (sum, segment) => sum + (Number.isFinite(segment.seconds) ? Math.max(0, segment.seconds) : 0),
+    0
+  );
+}
+
+/**
+ * A first attach replaces whatever the element is playing. Wait until the
+ * published playlist reaches the listener, so a later section is not swapped
+ * for the start of a short buffer.
+ */
+export function liveAttachAllowed(resumeAt: number, coveredSeconds: number): boolean {
+  const at = Number.isFinite(resumeAt) ? Math.max(0, resumeAt) : 0;
+  const covered = Number.isFinite(coveredSeconds) ? coveredSeconds : 0;
+  return at <= covered + 0.25;
+}
+
+/**
+ * Book time for the live handoff. Once the element has moved, that time is
+ * the section offset plus `currentTime` (a full file is already on the book
+ * clock). Before it has landed, a stored part-local time uses the same
+ * offset. A stored book time has no section index.
+ */
+export function liveAttachResumeAt(input: {
+  elementSeconds: number;
+  onSection: boolean;
+  sectionStart: number;
+  saved: { positionSeconds: number; sectionIndex: number | null } | null;
+  savedSectionStart: number;
+}): number {
+  const element = Number.isFinite(input.elementSeconds) ? Math.max(0, input.elementSeconds) : 0;
+  const start =
+    input.onSection && Number.isFinite(input.sectionStart) ? Math.max(0, input.sectionStart) : 0;
+  if (element > 0.5) return start + element;
+  const saved = input.saved;
+  if (saved && Number.isFinite(saved.positionSeconds) && saved.positionSeconds > 0.05) {
+    if (saved.sectionIndex == null) return Math.max(0, saved.positionSeconds);
+    const savedStart = Number.isFinite(input.savedSectionStart)
+      ? Math.max(0, input.savedSectionStart)
+      : 0;
+    return savedStart + Math.max(0, saved.positionSeconds);
+  }
+  return start + element;
+}
+
+/**
+ * A Parts row stays on the live element when that part is already buffered.
+ * Past the buffer, the section file is loaded only after the session is released.
+ */
+export function chooseLivePart(input: {
+  attached: boolean;
+  target: number;
+  covered: number;
+  sectionUrl: string;
+  playing: boolean;
+}): { action: "seek"; at: number; play: boolean } | { action: "section"; url: string; release: boolean; play: boolean } {
+  const target = Number.isFinite(input.target) ? Math.max(0, input.target) : 0;
+  const covered = Number.isFinite(input.covered) ? input.covered : 0;
+  if (input.attached && target <= covered + 0.05) {
+    return { action: "seek", at: target, play: input.playing };
+  }
+  return {
+    action: "section",
+    url: input.sectionUrl,
+    release: input.attached,
+    play: input.playing,
+  };
+}
+
 /** Seconds of already-played media to leave in the SourceBuffer. */
 export const LIVE_BACK_BUFFER_SECONDS = 30;
 

@@ -1,7 +1,9 @@
 import {
   chooseLiveTransport,
   evictionEnd,
+  liveAttachAllowed,
   pendingSegmentUris,
+  playlistDurationSeconds,
   readHlsPlaylist,
   seekTargetIfCovered,
   shouldResumeLive,
@@ -44,6 +46,10 @@ type Session = {
   buffer?: SourceBufferLike;
   chain: Promise<void>;
   resumeAt: number;
+  /** Seek, then play. A pause before that seek lands clears this. */
+  play: boolean;
+  /** The listener paused. An underrun must not press play. */
+  hold: boolean;
   resumed: boolean;
   watching: boolean;
   /** The playlist has ENDLIST. The source stays open until the playhead arrives. */
@@ -58,6 +64,40 @@ const turns = new WeakMap<HTMLAudioElement, Promise<unknown>>();
 
 export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
   return Boolean(audio && sessions.has(audio));
+}
+
+/**
+ * The listener moved on the live element. A later append must not seek back
+ * to the position from the first attach. `placed` is false when the target
+ * is still past the buffer: the landing seek then uses this time.
+ */
+export function retargetLiveResume(
+  audio: HTMLAudioElement | null,
+  at: number,
+  placed: boolean
+): void {
+  if (!audio) return;
+  const session = sessions.get(audio);
+  if (!session) return;
+  session.resumeAt = Number.isFinite(at) ? Math.max(0, at) : 0;
+  if (placed) {
+    session.resumed = true;
+    session.play = false;
+  }
+}
+
+/** A pause or play that happens before the handoff seek lands. */
+export function setLivePlayIntent(audio: HTMLAudioElement | null, play: boolean): void {
+  if (!audio) return;
+  const session = sessions.get(audio);
+  if (!session) return;
+  session.play = play;
+  session.hold = !play;
+}
+
+function mayRestart(session: Session, listenerPaused: boolean, requested: boolean | undefined): boolean {
+  if (listenerPaused || session.hold) return false;
+  return requested !== false;
 }
 
 /** Drop the session so a later ready poll does not treat the element as live. */
@@ -152,16 +192,32 @@ function coveredSeconds(audio: HTMLAudioElement): number {
   return Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
 }
 
+function startKeptPlayback(audio: HTMLAudioElement, session: Session): void {
+  if (!session.play) return;
+  session.play = false;
+  void audio.play().catch(() => undefined);
+}
+
 function maybeResume(audio: HTMLAudioElement, session: Session): void {
   if (session.resumed) return;
-  const at = seekTargetIfCovered(session.resumeAt, coveredSeconds(audio));
-  if (at == null) return;
+  const covered = coveredSeconds(audio);
+  const at = seekTargetIfCovered(session.resumeAt, covered);
+  if (at == null) {
+    // The listener was already at the start. Play once the buffer has audio.
+    if (session.play && !(session.resumeAt > 0.05) && covered > 0.05) {
+      session.resumed = true;
+      startKeptPlayback(audio, session);
+    }
+    return;
+  }
   session.resumed = true;
   try {
     audio.currentTime = at;
   } catch {
     session.resumed = false;
+    return;
   }
+  startKeptPlayback(audio, session);
 }
 
 function watchResume(audio: HTMLAudioElement, session: Session): void {
@@ -265,6 +321,8 @@ export function syncLivePlayback(opts: {
   playlistUrl: string;
   jobId: string;
   resumeAt: number;
+  /** The listener was playing. The seek starts playback; a cold element stays paused. */
+  play?: boolean;
   /** Set when the listener paused. An underrun leaves this false. */
   listenerPaused?: boolean;
 }): Promise<{
@@ -281,6 +339,7 @@ async function syncOnce(opts: {
   playlistUrl: string;
   jobId: string;
   resumeAt: number;
+  play?: boolean;
   listenerPaused?: boolean;
 }): Promise<{
   attached: boolean;
@@ -314,6 +373,11 @@ async function syncOnce(opts: {
     session = undefined;
   }
   if (!session) {
+    const resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
+    if (!liveAttachAllowed(resumeAt, playlistDurationSeconds(playlist.segments))) {
+      return { attached: false, url: null, complete: playlist.complete, transport: null };
+    }
+    const play = opts.play === true;
     const available = constructors();
     const transport = chooseLiveTransport({
       managed: Boolean(available.managed),
@@ -330,7 +394,9 @@ async function syncOnce(opts: {
         appended: playlist.segments.map((segment) => segment.uri),
         reserved: playlist.segments.map((segment) => segment.uri),
         chain: Promise.resolve(),
-        resumeAt: opts.resumeAt,
+        resumeAt,
+        play,
+        hold: false,
         resumed: false,
         watching: false,
         complete: false,
@@ -339,7 +405,9 @@ async function syncOnce(opts: {
       };
       sessions.set(opts.audio, session);
       watchResume(opts.audio, session);
-      if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
+      if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
+        resumeIfStalled(opts.audio, listenerPaused, false);
+      }
       return {
         attached: true,
         url: session.url,
@@ -367,7 +435,9 @@ async function syncOnce(opts: {
       mediaSource: media,
       buffer,
       chain: Promise.resolve(),
-      resumeAt: opts.resumeAt,
+      resumeAt,
+      play,
+      hold: false,
       resumed: false,
       watching: false,
       complete: false,
@@ -376,12 +446,15 @@ async function syncOnce(opts: {
     };
     sessions.set(opts.audio, session);
     watchResume(opts.audio, session);
-  } else {
-    session.resumeAt = session.resumed ? session.resumeAt : opts.resumeAt;
+  } else if (!session.resumed) {
+    session.resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
+    session.play = opts.play === true;
   }
   if (session.transport === "hls") {
     maybeResume(opts.audio, session);
-    if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
+    if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
+      resumeIfStalled(opts.audio, listenerPaused, false);
+    }
     return {
       attached: true,
       url: session.url,
@@ -431,7 +504,9 @@ async function syncOnce(opts: {
   } else if (playlist.complete) {
     markComplete(target, opts.audio);
   }
-  if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
+  if (!playlist.complete && mayRestart(target, listenerPaused, opts.play)) {
+    resumeIfStalled(opts.audio, listenerPaused, false);
+  }
   maybeResume(opts.audio, target);
   return {
     attached: true,
