@@ -74,9 +74,17 @@ export function relocatePageStarts(
 
     let offset: number | null = null;
     if (anchor.length >= 16) {
-      const start = strippedIndexAt(from, stripped.text, stripped.map);
-      const at = stripped.text.indexOf(anchor, start);
+      const at = stripped.text.indexOf(anchor, strippedIndexAt(from, stripped.text, stripped.map));
       if (at >= 0) offset = stripped.map[at] ?? null;
+      else {
+        // The page may have moved far enough that the window above starts past
+        // it — dropping a whole page of boilerplate shortens the text more than
+        // SEARCH_SLACK covers. Retry from the monotone floor, which is the
+        // earliest place this page can legally start.
+        const floor = strippedIndexAt(cursor, stripped.text, stripped.map);
+        const retried = stripped.text.indexOf(anchor, floor);
+        if (retried >= 0) offset = stripped.map[retried] ?? null;
+      }
     }
     // Never behind the previous page, and always inside the text.
     const resolved = Math.min(Math.max(offset ?? anchored, cursor), text.length);

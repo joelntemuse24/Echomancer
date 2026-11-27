@@ -124,6 +124,32 @@ Heading detection from layout stays conservative on purpose: a bare-title rule
 was tried and turned a 5-entry outline into 27 on an arXiv paper, because table
 cells and figure labels look like titles.
 
+Two defects made a complete outline unusable, both fixed:
+
+- **The block outline never reached production.** `extractDocument` returned it
+  as a sibling of `hint`, and the upload path forwarded only `hint`, so the block
+  path was dead for PDF, EPUB, and DOCX while the corpus script (which passed the
+  siblings explicitly) measured it. The markers now travel on the hint.
+- **`pageStarts` was relocated twice**, once against the normalized text and
+  again against the speakable text, so a page's offset drifted past its own text
+  (83 of 506 pages on Pro Git, worst 80,381 characters). The array now stays in
+  the one coordinate space it was measured in, and `structureForText` relocates
+  it once. `relocatePageStarts` also retries from the monotone floor, because a
+  page that moved earlier than the search window can now be found.
+
+An outline entry whose title cannot be matched in the prose is placed at its
+destination page instead of being dropped (`alignTitles`), which is the rule the
+pypdf recipe uses. Measured on real books:
+
+| book | before | after |
+|---|---|---|
+| `progit` (123 outline entries) | `heading-lines`, 28 chapters — printed contents rows (`8 Getting`, `55 Git Aliases`) | `pdf-outline`, 13 roots / 39 markers |
+| `sicp` (140 entries) | `heading-lines`, 50 — `Chapter dx`, `Section 3.5.3.` | unchanged; page offsets for this scan are still too poor to trust |
+| `gpt3` | `pdf-outline`, 17 roots / 34 | `pdf-outline`, 18 roots / 35 |
+| `se-pride-prejudice.epub` (62) | `heading-lines`, 58 — `I`, `Chapter II`, `Chapter III` | `epub-spine`, 61 — `I`…`LXI` |
+| `se-moby-dick.epub` (143) | `epub-spine`, 136 | `epub-spine`, 141 |
+| DOCX with `Heading 2` | 3 roots / 3, subsections lost | 3 roots / 5, subsections kept |
+
 ### Running heads and side-margin text
 
 `measureBody` skipped drawing rules, so a rule can no longer join a header into

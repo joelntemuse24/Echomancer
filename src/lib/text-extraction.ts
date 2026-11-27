@@ -19,7 +19,6 @@ import { headingBlocks, stripGutenbergFurniture, type BookBlock } from "@/lib/bl
 import { assembleEpub } from "@/lib/epub-blocks";
 import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
 import { htmlRegionToBlocks } from "@/lib/html-blocks";
-import { relocatePageStarts } from "@/lib/page-offsets";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
   isGoogleAppsDocumentEntry,
@@ -32,7 +31,7 @@ import {
   unwrapPdfPagesDetailed,
 } from "@/lib/pdf-line-unwrap";
 import { normalizeSourceText } from "@/lib/source-text";
-import { blockForPdfPage, pdfBlocksFromPages } from "@/lib/pdf-blocks";
+import { blockForPdfPage, pdfBlocksFromParagraphs } from "@/lib/pdf-blocks";
 import { locateBlockStarts } from "@/lib/block-projection";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
@@ -200,15 +199,16 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
-    // The body text and the chapter blocks read the same laid-out pages, so an
-    // outline destination resolves to a block instead of a page offset that has
-    // to be re-searched in the prose. `blocksForPdfPages` only reads text and
-    // line heights; the heavy item records are already gone.
-    blocks = pdfBlocksFromPages(laid);
+    // Furniture is marked first, then the paragraphs are decided once. The
+    // chapter blocks are built from that same paragraph list, so a block's text
+    // is a slice of the narration string rather than a second reading of the
+    // page. Building them from the raw lines put running heads in blocks the
+    // flat pass had dropped, and almost every block offset then missed.
     const pageTexts = bodyTextByPage(markFurniture(laid));
     const unwrappedPages = unwrapPdfPagesDetailed(pageTexts);
     unwrapped = unwrappedPages.text;
     exactPageStarts = unwrappedPages.pageStarts;
+    blocks = pdfBlocksFromParagraphs(unwrappedPages.paras);
     outline = await pdfOutlineTitles(pdf as unknown as PdfOutlineProxy).catch(() => []);
     pageProbes = pageTexts.map((page) => page.replace(/\s+/g, " ").trim());
     tocLines = contentsLinesFromPages(pageTexts);
@@ -234,15 +234,15 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     outline.length >= 2
       ? { source: "pdf-outline", titles: outline }
       : headingLinesHint();
-  // Page boundaries are measured exactly while unwrapping. The normalize pass
-  // can move them, so relocate instead of re-searching a short probe.
+  // `pageStarts` stays in the coordinate space of the string it was measured
+  // against — the unwrapped text — because that is the only string the offsets
+  // are true for. `relocatePageStarts` then moves them once, against whatever
+  // text the caller actually stored. Relocating here as well moved them twice,
+  // and the second pass searched from an offset that already belonged to the
+  // speakable string, so 83 of 506 pages on Pro Git drifted past their own text.
   if (exactPageStarts && exactPageStarts.length > 0) {
     hint.pageProbes = pageProbes;
-    hint.pageStarts = relocatePageStarts(
-      text,
-      pageProbes ?? [],
-      exactPageStarts
-    );
+    hint.pageStarts = exactPageStarts;
   }
   if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
 
@@ -263,7 +263,17 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
       resolved.push({ title: entry.title, level: entry.level, blockIndex });
     }
     if (resolved.length >= 2) {
-      return { text, hint, blocks, outline: resolved, blockStart };
+      return {
+        text,
+        // The hint carries the block outline too, because that is the shape
+        // `ChapterHint` documents and what every intake path forwards. Returning
+        // it only as a sibling field is how the block path came to be dead: the
+        // caller copied `hint` and the markers were left behind.
+        hint: { ...hint, blockOutline: resolved },
+        blocks,
+        outline: resolved,
+        blockStart,
+      };
     }
   }
   return { text, hint };
@@ -628,7 +638,8 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     // hint (the paste route, `outline.json`, a legacy re-align). Each entry
     // carries the text printed at its block as an anchor, so the old
     // alignment path still finds it when the block list is not available.
-    // The chapter markers themselves travel as block indexes.
+    // The chapter markers travel as block indexes, and they travel on the hint
+    // so a caller that forwards only `hint` keeps them.
     hint: {
       source: "epub-spine",
       titles: outline.map((entry) => {
@@ -638,6 +649,7 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
         const anchors = printed && printed !== entry.title ? [printed, entry.title] : [entry.title];
         return { title: entry.title, level: entry.level, anchors };
       }),
+      blockOutline: outline,
     },
   };
 }
@@ -736,22 +748,25 @@ async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {
       const text = normalizeExtractedText(blocksToSourceText(boldBlocks));
       if (text.trim()) {
         const projection = speakableFromBlocks(boldBlocks);
+        const outline = headingBlocks(boldBlocks).map((heading) => ({
+          title: heading.title,
+          level: heading.level,
+          blockIndex: heading.blockIndex,
+        }));
         return {
           text,
           blocks: boldBlocks,
-          outline: headingBlocks(boldBlocks).map((heading) => ({
-            title: heading.title,
-            level: heading.level,
-            blockIndex: heading.blockIndex,
-          })),
+          outline,
           blockStart: projection.blockStart,
           // `titles` stays the human-readable outline for a caller that only
-          // reads the hint; the markers themselves are block indexes.
+          // reads the hint; the markers themselves are block indexes, and they
+          // travel on the hint so a caller that forwards `hint` keeps them.
           hint: {
             source: "docx-heading",
             titles: boldBlocks
               .filter((block) => block.kind === "heading")
               .map((block) => ({ title: block.text, level: block.level ?? 1 })),
+            blockOutline: outline,
           },
         };
       }

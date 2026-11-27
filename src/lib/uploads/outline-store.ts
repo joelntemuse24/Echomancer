@@ -12,6 +12,7 @@
  * falls back to the old behaviour.
  */
 
+import type { BookBlock } from "@/lib/blocks";
 import type { ChapterHint, ChapterSource } from "@/lib/book-chapters";
 
 export const OUTLINE_JSON_NAME = "outline.json";
@@ -32,6 +33,12 @@ const SOURCES: readonly ChapterSource[] = [
 export interface StoredOutline {
   version: typeof OUTLINE_VERSION;
   hint: ChapterHint;
+  /**
+   * The source's block list, when the hint's `blockOutline` points into it.
+   * Without this a re-align has markers but no blocks to resolve, so it has to
+   * re-parse the source file. Advisory, like the hint itself.
+   */
+  blocks?: BookBlock[];
 }
 
 export function outlineObjectKey(uploadId: string): string {
@@ -51,6 +58,18 @@ function isStringArray(value: unknown): value is string[] {
 
 /** Narrow untrusted JSON into a hint. Returns null on anything unexpected. */
 export function parseOutline(raw: string): ChapterHint | null {
+  return parseStoredOutline(raw)?.hint ?? null;
+}
+
+/**
+ * The stored outline, hint and blocks together.
+ *
+ * `blocks` is what a block-indexed `blockOutline` points into, and `blockStart`
+ * is each block's offset in the stored `content.txt`. Both are optional: an
+ * older `outline.json` has neither, and the caller then falls back to the
+ * title/page path.
+ */
+export function parseStoredOutline(raw: string): StoredOutline | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -58,7 +77,7 @@ export function parseOutline(raw: string): ChapterHint | null {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const record = parsed as { version?: unknown; hint?: unknown };
+  const record = parsed as { version?: unknown; hint?: unknown; blocks?: unknown };
   if (record.version !== OUTLINE_VERSION) return null;
   const hint = record.hint;
   if (!hint || typeof hint !== "object") return null;
@@ -84,11 +103,46 @@ export function parseOutline(raw: string): ChapterHint | null {
     }
   }
 
+  const outline: ChapterHint["blockOutline"] = [];
+  if (Array.isArray(h.blockOutline)) {
+    for (const entry of h.blockOutline) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      if (
+        typeof e.title !== "string" ||
+        typeof e.level !== "number" ||
+        typeof e.blockIndex !== "number"
+      ) {
+        continue;
+      }
+      outline.push({ title: e.title, level: e.level, blockIndex: e.blockIndex });
+    }
+  }
+
   return {
-    source: source as ChapterSource,
-    titles,
-    ...(isNumberArray(h.pageStarts) ? { pageStarts: h.pageStarts } : {}),
-    ...(isStringArray(h.tocLines) ? { tocLines: h.tocLines } : {}),
-    ...(isStringArray(h.pageProbes) ? { pageProbes: h.pageProbes } : {}),
+    version: OUTLINE_VERSION,
+    hint: {
+      source: source as ChapterSource,
+      titles,
+      ...(isNumberArray(h.pageStarts) ? { pageStarts: h.pageStarts } : {}),
+      ...(isStringArray(h.tocLines) ? { tocLines: h.tocLines } : {}),
+      ...(isStringArray(h.pageProbes) ? { pageProbes: h.pageProbes } : {}),
+      ...(outline.length > 0 ? { blockOutline: outline } : {}),
+      ...(isNumberArray(h.blockStart) ? { blockStart: h.blockStart } : {}),
+    },
+    ...(isBookBlocks(record.blocks) ? { blocks: record.blocks } : {}),
   };
+}
+
+/** Blocks are only kept when every entry has the shape the resolver reads. */
+function isBookBlocks(value: unknown): value is BookBlock[] {
+  if (!Array.isArray(value)) return false;
+  return value.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const b = entry as Record<string, unknown>;
+    if (typeof b.text !== "string") return false;
+    if (typeof b.kind !== "string") return false;
+    if (b.level !== undefined && typeof b.level !== "number") return false;
+    return true;
+  });
 }

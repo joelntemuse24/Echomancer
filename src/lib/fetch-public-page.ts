@@ -29,6 +29,8 @@ import type { ChapterHint } from "@/lib/book-chapters";
 import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 import { extractDocument } from "@/lib/text-extraction";
 import { normalizeSourceText } from "@/lib/source-text";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { structureForText } from "@/lib/uploads/extract-structure";
 import {
   findFullTextLink,
   isFrontendChrome,
@@ -372,12 +374,18 @@ async function textFromResponse(
     if (extracted.text.length > URL_MAX_CHARS) {
       throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
     }
-    // Same cleanup the paste and upload paths run. The outline hint travels
-    // with it for chapter detection only; it never changes the text.
+    // Same cleanup the paste and upload paths run. A document link carries the
+    // outline its extract found — including the block list — so chapters can be
+    // placed by block instead of re-found in the prose.
+    const text = normalizeSourceText(extracted.text);
     return {
-      text: normalizeSourceText(extracted.text),
+      text,
       title: null,
-      chapterHint: extracted.hint,
+      chapterHint: structureForText(
+        extracted.hint,
+        toSpeakableText(text, { normalizeTitles: false }),
+        extracted.blocks
+      ),
       html: null,
     };
   }

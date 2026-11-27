@@ -773,6 +773,8 @@ export function alignTitles(
   const blocks = spans.map((span) => paragraphText(span));
   const validatedDest = new Map<number, number>();
   const inlineStart = new Map<number, number>();
+  /** Destinations whose own text was not found, kept as a position to trust. */
+  const fallbackDest = new Map<number, number>();
   let cursor = 0;
   for (let j = 0; j < wanted.length; j++) {
     const dest = wanted[j]!.charStart;
@@ -788,7 +790,19 @@ export function alignTitles(
         wanted[j]!.title,
         contentsEnd
       ).find((candidate) => candidate.charStart >= cursor);
-      if (!found) continue;
+      if (!found) {
+        // The bookmark's page is the extractor's own evidence, and it stays
+        // right when the title cannot be matched — a bare numeral ("II"), a
+        // title the cleanup rewrote, a heading split across a line break.
+        // Dropping the entry instead is what turned a complete outline into a
+        // contents page: Pro Git resolved 6 of 123. Record where that page
+        // starts and let the paragraph walk place the marker there.
+        const at = spanIndexAt(spans, Math.max(dest, cursor));
+        if (at >= 0 && at < spans.length && spans[at]!.start >= contentsEnd) {
+          fallbackDest.set(j, at);
+        }
+        continue;
+      }
       validatedDest.set(j, found.span);
       if (found.charStart !== spans[found.span]!.start) inlineStart.set(j, found.charStart);
       cursor = found.charStart + 1;
@@ -796,6 +810,12 @@ export function alignTitles(
     }
     const at = destSpanIndex(spans, dest, wanted[j]!.keys, contentsEnd);
     if (at != null) validatedDest.set(j, at);
+    else {
+      const near = spanIndexAt(spans, Math.max(dest, cursor));
+      if (near >= 0 && near < spans.length && spans[near]!.start >= contentsEnd) {
+        fallbackDest.set(j, near);
+      }
+    }
   }
   const matchesOutline = (para: string) => {
     const key = normAnchor(para);
@@ -831,6 +851,13 @@ export function alignTitles(
         }
         if (i < destSpan) continue;
       }
+      // A destination whose title was not found still names where this chapter
+      // starts. When the walk reaches that paragraph, the entry opens here even
+      // though its words are not the ones printed.
+      if (fallbackDest.get(j) === i) {
+        hit = j;
+        break;
+      }
       if (paragraphMatchesTitle(para, wanted[j]!.keys)) {
         hit = j;
         break;
@@ -855,6 +882,38 @@ export function alignTitles(
     });
     titleIdx = hit + 1;
   }
+
+  /**
+   * The bookmark's page is the extractor's own evidence, so an entry the title
+   * walk could not place is still a chapter. pypdf places every outline entry by
+   * `get_destination_page_number` and never asks whether the prose repeats the
+   * title; this walk asks, and a bare numeral ("II"), a rewritten heading, or a
+   * title set across a line break makes it say no.
+   *
+   * Dropping those entries is what turned a complete outline into a contents
+   * page: Pro Git resolved 6 of 123 destinations and SICP 24 of 140, so both
+   * fell back to heading lines and published their printed contents rows
+   * ("8 Getting", "55 Git Aliases") as the chapter list.
+   *
+   * Placed entries are merged back in reading order, so the walk's inline
+   * placements and these page placements end up in one outline.
+   */
+  for (const [j, spanIndex] of fallbackDest) {
+    const hint = wanted[j]!;
+    if (chapters.some((chapter) => chapter.charStart === spans[spanIndex]!.start)) continue;
+    const para = blocks[spanIndex] ?? "";
+    if (!para || isContentsEntryLine(para)) continue;
+    chapters.push({
+      index: chapters.length,
+      title: chapterDisplayTitle(hint.title),
+      level: hint.level > 0 ? hint.level : 1,
+      charStart: spans[spanIndex]!.start,
+      charEnd: spoken.length,
+      match: para,
+    });
+  }
+  chapters.sort((a, b) => a.charStart - b.charStart || a.level - b.level);
+
   const narrated = withPartContext(
     chaptersForNarration(dropRepeated(chapters, spoken.length), spoken, { trusted: true })
   );

@@ -16,8 +16,7 @@ import {
   safeResolveChapters,
   type ChapterHint,
 } from "@/lib/book-chapters";
-import { relocatePageStarts } from "@/lib/page-offsets";
-import { locateBlockStarts } from "@/lib/block-projection";
+import { structureForText } from "@/lib/uploads/extract-structure";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { normalizeSourceText } from "@/lib/source-text";
@@ -199,27 +198,11 @@ export async function POST(request: NextRequest) {
 
     // Same chapter outline a document gets from extraction: heading lines in
     // the stored speakable text, refined by an outline or page map when the
-    // source was a document link. Detection failure stores an empty outline,
-    // never a failed upload.
-    if (chapterHint?.pageProbes?.length && chapterHint.pageStarts?.length) {
-      chapterHint = {
-        ...chapterHint,
-        pageStarts: relocatePageStarts(
-          text,
-          chapterHint.pageProbes,
-          chapterHint.pageStarts
-        ),
-      };
-    }
-    // A page's own `<h1>`–`<h6>` blocks were measured against the raw region.
-    // The shared cleanup pass above can move words, so re-locate them against
-    // the string that is actually stored.
-    if (chapterHint?.blocks?.length) {
-      chapterHint = {
-        ...chapterHint,
-        blockStart: locateBlockStarts(text, chapterHint.blocks),
-      };
-    }
+    // source was a document link. `structureForText` re-anchors page offsets and
+    // re-locates block offsets against `text` — the string actually stored —
+    // and drops the block outline when too few blocks could be found. Detection
+    // failure stores an empty outline, never a failed upload.
+    chapterHint = chapterHint ? structureForText(chapterHint, text) : null;
     const chapters = safeResolveChapters(text, chapterHint ?? {
       source: "heading-lines",
       titles: [],

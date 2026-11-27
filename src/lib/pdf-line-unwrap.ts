@@ -187,23 +187,33 @@ function keepsItsOwnLine(line: string): boolean {
 export function unwrapPdfPagesDetailed(pages: string[]): {
   text: string;
   pageStarts: number[];
+  /** The decided paragraphs, in order, with the page each one starts on. */
+  paras: PdfParagraph[];
 } {
   const paras: string[] = [];
+  const paraPages: number[] = [];
   const pageStarts: number[] = [];
+  let length = 0;
   let contents = false;
+  const push = (text: string, page: number) => {
+    if (paras.length > 0) length += 2;
+    paras.push(text);
+    paraPages.push(page);
+    length += text.length;
+  };
   for (let p = 0; p < pages.length; p++) {
     const lines = String(pages[p] ?? "").split("\n");
     const onContents = isContentsPage(lines, contents);
     const pageParas = onContents ? contentsParagraphs(lines) : unwrapPdfLines(lines);
     contents = onContents;
-    const before = paras.join("\n\n");
     if (pageParas.length === 0) {
-      pageStarts[p] = before.length;
+      pageStarts[p] = length;
       continue;
     }
-    if (paras.length === 0 || onContents) {
-      pageStarts[p] = before.length === 0 ? 0 : before.length + 2;
-      paras.push(...pageParas);
+    const firstIsNew = paras.length === 0 || onContents;
+    if (firstIsNew) {
+      pageStarts[p] = paras.length === 0 ? 0 : length + 2;
+      for (const para of pageParas) push(para, p);
       continue;
     }
     const prev = paras[paras.length - 1]!;
@@ -214,16 +224,24 @@ export function unwrapPdfPagesDetailed(pages: string[]): {
       !keepsItsOwnLine(next);
     if (cross) {
       const joined = joinWrappedLine(prev, next);
-      pageStarts[p] = before.length - prev.length + (joined.length - next.length);
+      length += joined.length - prev.length;
+      pageStarts[p] = length - next.length;
       paras[paras.length - 1] = joined;
-      paras.push(...pageParas.slice(1));
+      for (const para of pageParas.slice(1)) push(para, p);
     } else {
-      pageStarts[p] = before.length + 2;
-      paras.push(...pageParas);
+      pageStarts[p] = length + 2;
+      for (const para of pageParas) push(para, p);
     }
   }
-  return { text: paras.join("\n\n"), pageStarts };
+  return {
+    text: paras.join("\n\n"),
+    pageStarts,
+    paras: paras.map((text, i) => ({ text, page: paraPages[i]! })),
+  };
 }
+
+/** One decided paragraph and the PDF page its first line came from. */
+export type PdfParagraph = { text: string; page: number };
 
 /** Unwrap each page, then join a sentence that crosses the page boundary. */
 export function unwrapPdfPages(pages: string[]): string {

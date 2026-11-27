@@ -693,13 +693,25 @@ title.
 | `block-projection.ts` | **the one place a block's char offset is decided.** The narration string stays the shared `normalizeSourceText` + `toSpeakableText` pass, so `content.txt` is byte-identical to before; only offsets are derived, by locating each block in order |
 | `block-chapters.ts` | block indexes to `chapters.json`: furniture filtering, source-level nesting, a distinct-position gate for a per-paragraph NCX, a contents-table drop, and `chooseOutline` |
 | `epub-blocks.ts` | spine into blocks, and each TOC href resolved to the block carrying its `#fragment` id (else a heading whose text is the label, else the file's first block once) |
-| `pdf-blocks.ts` | laid-out PDF lines into heading/paragraph blocks tagged with their page, and an outline destination resolved to the block on its page whose heading matches |
+| `pdf-blocks.ts` | the decided PDF paragraphs into heading/paragraph blocks tagged with their page, and an outline destination resolved to the block on its page whose heading matches. The paragraphs come from the same `unwrapPdfPagesDetailed` pass that produces `content.txt`, so a block is a slice of the narration string, not a second reading of the page |
 | `length-parts.ts` | labelled length-based parts for a book with no chapter markers, and `outlineLooksUnmarked` |
 | `chapter-classifier.ts` | the optional local zero-shot model (see `docs/chapter-corpus-results.md`) |
 
 `compactPage` in `pdf-furniture.ts` now keeps the visual line records (minus
 their per-glyph items), so the block pass reads the same lines the furniture
 pass used instead of parsing every page a second time.
+
+`extract-structure.ts` (`structureForText`) is the one place an intake path
+attaches a document's structure to the string it is about to store. It re-anchors
+`pageStarts` and re-locates `blockStart` against that text, and it passes the
+block outline through only when at least `MIN_BLOCK_LOCATE_RATE` (0.9) of the
+blocks can be found — EPUB locates ~1.00, a PDF that cleanup rewrote lands near
+0.65. Below the threshold the markers are dropped rather than half-placed, and
+`alignTitles` places chapters from the outline's own page destinations. Before
+this existed the block outline travelled as a sibling of `hint`, so every caller
+that forwarded `hint` lost it, and `pageStarts` was relocated once against the
+normalized text and again against the speakable text — 83 of 506 pages on a
+506-page PDF ended up past their own text.
 
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 `chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
