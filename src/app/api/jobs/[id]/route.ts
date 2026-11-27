@@ -6,6 +6,7 @@ import {
   requireOwnedJob,
   requireOwnedJobIncludingDeleted,
 } from "@/lib/auth/guard";
+import { signPlaybackGrant } from "@/lib/auth/playback-grant";
 import {
   scheduleDeletedJobPurge,
   softDeleteJob,
@@ -114,12 +115,23 @@ export async function GET(
     } catch (error) {
       console.error("resume position unavailable:", error);
     }
+    const ownerId = typeof current.user_id === "string" ? current.user_id : "";
     return NextResponse.json({
       job: {
         ...serialized,
         ...resumeFields(resume),
         ...(chapters.length > 0 ? { chapters } : {}),
         ...(wait.waitingForText ? { waiting_for_text: true } : {}),
+        ...(ownerId
+          ? {
+              playback_grant: signPlaybackGrant(
+                ownerId,
+                `audiobooks/${id}`,
+                Date.now(),
+                Number(current.playback_nonce ?? 0) || 0
+              ),
+            }
+          : {}),
       },
     });
   } catch (error) {

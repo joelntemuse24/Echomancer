@@ -7,7 +7,12 @@ vi.mock("@/lib/storage", async (importOriginal) => ({
   directObjectUrl,
 }));
 
-import { downloadFilename, isSectionPath, withDirectDownloadUrl } from "./direct-download";
+import {
+  downloadFilename,
+  isSectionPath,
+  prebuiltDownloadPath,
+  withDirectDownloadUrl,
+} from "./direct-download";
 
 beforeEach(() => {
   directObjectUrl.mockReset();
@@ -24,6 +29,12 @@ describe("withDirectDownloadUrl", () => {
     expect(directObjectUrl).toHaveBeenCalledWith("audiobooks/j/full.mp3", {
       downloadName: "war_peace.mp3",
     });
+  });
+
+  it("does not treat a rolling file as the finished download", () => {
+    expect(prebuiltDownloadPath("processing", "audiobooks/j/full.mp3")).toBeNull();
+    expect(prebuiltDownloadPath("ready", "audiobooks/j/full.mp3")).toBe("audiobooks/j/full.mp3");
+    expect(prebuiltDownloadPath("ready", "audiobooks/j/sections/0000.mp3")).toBeNull();
   });
 
   it.each([

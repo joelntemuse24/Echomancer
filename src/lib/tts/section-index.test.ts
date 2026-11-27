@@ -127,17 +127,19 @@ describe("index-bound fan-out", () => {
 });
 
 describe("nextClaimableIndex", () => {
-  it("skips indexes the tick has already claimed, then hands out retry holes", () => {
+  it("claims the lowest retry before any later section", () => {
     const segments = [
       ready(0),
       { index: 1, path: "", status: "retry" as const },
       ready(2),
     ];
-    // Index 1 not yet ready — but this tick already claimed it, so 3 comes next.
-    expect(nextClaimableIndex(segments, 4, new Set([1]))).toBe(3);
-    expect(nextClaimableIndex(segments, 4, new Set())).toBe(3);
-    // Unattempted indexes claimed already → retry holes resurface.
-    expect(nextClaimableIndex(segments, 4, new Set([1, 3]))).toBeNull();
+    expect(nextClaimableIndex(segments, 6, new Set())).toBe(1);
+    expect(
+      claimIndexSet({ segments, total: 6, fanout: 4 })
+    ).toEqual([1, 3, 4, 5]);
+    // Already claimed this tick, so the next unattempted index follows.
+    expect(nextClaimableIndex(segments, 6, new Set([1]))).toBe(3);
+    expect(nextClaimableIndex(segments, 6, new Set([1, 3, 4, 5]))).toBeNull();
   });
 
   it("never hands out ready or permanently failed indexes", () => {

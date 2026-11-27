@@ -32,7 +32,11 @@ export function nextJobPollDelay(input: {
   hasPlayableAudio: boolean;
   /** Join still running after the last section. Stay brisk so Stop leaves with the job. */
   urgent?: boolean;
+  /** Playhead is at a hole or the end of audio that is still growing. */
+  waitingAtGap?: boolean;
 }): number {
-  if (input.changed || !input.hasPlayableAudio || input.urgent) return JOB_POLL_MIN_MS;
+  if (input.changed || !input.hasPlayableAudio || input.urgent || input.waitingAtGap) {
+    return JOB_POLL_MIN_MS;
+  }
   return Math.min(JOB_POLL_MAX_MS, Math.round(input.delay * JOB_POLL_BACKOFF));
 }

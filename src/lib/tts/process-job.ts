@@ -170,6 +170,7 @@ import {
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
+import { awaitLiveJoin, extendLiveJoin, finalizeLiveJoin } from "@/lib/tts/live-join";
 import { commitSectionAudio, promoteFinishedSections, recoverOrphanRawSections } from "@/lib/cpu/section-publish";
 import { requeueExpiredCpuTasks } from "@/lib/cpu/tasks";
 import { runInsideCpuTask } from "@/lib/cpu/task-slot";
@@ -846,6 +847,14 @@ async function heartbeatLease(
   return result.rowsAffected > 0;
 }
 
+async function liveJoinHoldsLease(jobId: string, lease: string): Promise<boolean> {
+  const row = await queryOne<{
+    processing_lease_token: string | null;
+    deleted_at: number | null;
+  }>(`SELECT processing_lease_token, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+  return row?.processing_lease_token === lease && row.deleted_at == null;
+}
+
 /** Hand the job back so the next worker can claim it immediately. */
 async function releaseLease(
   jobId: string,
@@ -865,6 +874,7 @@ async function releaseLease(
     sealLease?: boolean;
   }
 ): Promise<void> {
+  await awaitLiveJoin(jobId);
   const delay = patch.notBeforeSec && patch.notBeforeSec > 0 ? patch.notBeforeSec : 0;
   if (delay > 0 && patch.sealLease) {
     await execute(
@@ -1052,10 +1062,9 @@ export function cloneDropLedger(prev: JobSegment | undefined): {
 /**
  * Indexes a clone tick may still render, in playback order.
  *
- * `claimableIndexes` finishes every never-attempted section before it
- * touches a retry. A dropped early row would then wait until the rest of
- * the book had been spoken, and the next tick would keep the same seed.
- * Retries are in this list as soon as they are written.
+ * A dropped early row is in this list as soon as it is written, ahead of
+ * any later section, so the next take does not wait out the rest of the
+ * book on the same seed.
  */
 export function clonePendingIndexes(
   segments: JobSegment[],
@@ -2021,6 +2030,8 @@ async function runClaimedTick(
     };
   }
   let cpuBacklog = promoted.waiting;
+  const liveJoinOn = !process.env.VITEST || process.env.TTS_LIVE_JOIN === "1";
+  let liveJoinTail: Promise<unknown> = Promise.resolve();
 
   const provider = resolveStockAdapter({
     provider: providerId,
@@ -2452,6 +2463,35 @@ async function runClaimedTick(
           // switch the book to Fish after audio has already published.
           job.clone_wait_started_at = null;
         });
+        if (liveJoinOn && stored.mastered && stored.path.endsWith(".mp3")) {
+          const snapshot = segments;
+          const crossfadeMs =
+            typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
+          liveJoinTail = extendLiveJoin({
+            jobId,
+            segments: snapshot,
+            joinKinds: packed.map((section) => section.joinKind),
+            crossfadeMs,
+            holdsLease: () => liveJoinHoldsLease(jobId, lease),
+          })
+            .then(async (joined) => {
+              if (!joined) return;
+              await writeWithLease(
+                jobId,
+                lease,
+                `UPDATE jobs SET audio_storage_path = ?, duration_seconds = ?
+                 WHERE id = ? AND processing_lease_token = ? AND status = 'processing'`,
+                [joined.path, joined.durationSeconds]
+              );
+            })
+            .catch((err) => {
+              console.warn(
+                `[Job ${jobId}] live join:`,
+                err instanceof Error ? err.message : err
+              );
+            });
+          await liveJoinTail;
+        }
       } finally {
         endLife();
       }
@@ -3314,7 +3354,8 @@ async function runClaimedTick(
     // Hand the book back without opening another wave of provider calls.
     if (providerCapFull) throw new ProviderSlotBusyError("provider");
 
-    // After the last first-pass index, retry remaining holes once in this tick.
+    // A retry is claimed with the first pass, lowest index first. This picks up
+    // retries the claim cap left once every remaining index is already a retry.
     const holes = claimableIndexes(segments, total);
     if (
       !modalPrefetchHandled &&
@@ -3584,9 +3625,45 @@ async function runClaimedTick(
               `not a complete audiobook (${total - doneCount} missing)`
       );
     };
-    // A whole-book concat can outlive the wave by many minutes. Keep the
-    // heartbeat renewing for as long as it runs, or the sweeper reclaims the
-    // job mid-finalize.
+    if (liveJoinOn) await liveJoinTail.catch(() => undefined);
+    let rolling: Awaited<ReturnType<typeof finalizeLiveJoin>> = null;
+    if (liveJoinOn && complete && holesLeft === 0) {
+      try {
+        const crossfadeMs =
+          typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
+        await extendLiveJoin({
+          jobId,
+          segments,
+          joinKinds: packed.map((section) => section.joinKind),
+          crossfadeMs,
+          flush: true,
+          holdsLease: () => liveJoinHoldsLease(jobId, lease),
+        });
+        rolling = await finalizeLiveJoin({
+          jobId,
+          total,
+          holdsLease: () => liveJoinHoldsLease(jobId, lease),
+        });
+      } catch (err) {
+        console.warn(
+          `[Job ${jobId}] live-join finalize:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+    if (rolling) {
+      audioPath = rolling.path;
+      uploadedPath = rolling.path;
+      await markReady(rolling.path);
+      await execute(
+        `UPDATE jobs SET duration_seconds = ? WHERE id = ? AND deleted_at IS NULL`,
+        [rolling.durationSeconds, jobId]
+      ).catch(() => undefined);
+    } else {
+    // Concat runs only when the rolling file does not already cover the book.
+    // CPU_RUNNER=modal still places that fallback and waits for it. A local
+    // join is the worker's own ffmpeg. The lease stays until it finishes.
+    // Mark the book ready before a long concat so the player leaves "generating".
     const concatHold = await holdBookConcat(jobId);
     if (concatHold.kind === "unavailable") {
       await stopBook(jobId, lease, MODAL_WORKSPACE_DISABLED_MESSAGE, null);
@@ -3601,11 +3678,6 @@ async function runClaimedTick(
       return { done: true, nextIndex, total };
     }
     if (concatHold.kind === "deferred") throw new CpuBacklogError();
-    // Sections are already playable. Mark the book ready before the join so
-    // the player does not sit on "generating" while full.mp3 is concatenated.
-    // The lease stays until the join finishes so the heartbeat can renew it.
-    // A missing full.mp3 is not a broken player: section files keep playing,
-    // and the download route concatenates them if the file is not there yet.
     if (complete && holesLeft === 0) {
       await markReady(null, { sectionsOnly: true });
     }
@@ -3651,6 +3723,7 @@ async function runClaimedTick(
       }
     } finally {
       finalizing.end();
+    }
     }
     // A delete or cancel can land while materialize runs. The lease write
     // above sees a lost token, but a row that was already deleted is worth a

@@ -420,7 +420,9 @@ function dropMp3GaplessDelay(pcm: Buffer): Buffer {
  * last half-second of the previous one. Shorter than this, that search
  * has nowhere to land, and the old code aborted the whole book.
  */
-const COPY_JOIN_MIN_SECONDS = 4;
+export const COPY_JOIN_MIN_SECONDS = 4;
+/** Tail the next join may replace. Paragraph keep is about 0.33s plus one frame. */
+export const STABLE_HOLD_SECONDS = 0.5;
 
 /** Index in `haystack` of the first sample after `needle`. */
 function indexAfter(needle: Buffer, haystack: Buffer): number {
@@ -620,6 +622,24 @@ function slicePackets(
     if (packet) end = Math.max(start, Math.min(audio.length, packet.pos));
   }
   return audio.subarray(start, end);
+}
+
+/**
+ * Bytes a listener may already have. The last `holdSeconds` stay unpublished
+ * so the next crossfade can rewrite that tail. A piece under the copy-join
+ * minimum is held entirely: a later section folds it forward.
+ */
+export async function publishedPrefix(
+  audio: Buffer,
+  holdSeconds = STABLE_HOLD_SECONDS
+): Promise<Buffer> {
+  const packets = await indexMp3Packets(audio);
+  const duration = mp3IndexedDuration(packets);
+  if (holdSeconds <= 0) return slicePackets(audio, packets, 0, null);
+  if (!(duration > holdSeconds + 0.08) || duration < COPY_JOIN_MIN_SECONDS) {
+    return Buffer.alloc(0);
+  }
+  return slicePackets(audio, packets, 0, duration - holdSeconds);
 }
 
 type CopyPiece = {
@@ -1099,6 +1119,21 @@ async function promoteShortSections(
  * copy. Throws when a splice would click, so the caller can encode the
  * book once instead.
  */
+export type JoinedMp3Part = { kind: "body" | "mix"; bytes: Buffer };
+
+export type JoinedMp3 = {
+  sectionStarts: number[];
+  totalSeconds: number;
+  /** Body and crossfade buffers in file order. Empty when a short section was folded. */
+  parts: JoinedMp3Part[];
+  /** Head cut of each input file, in seconds. */
+  headSeconds: number[];
+  /** Tail cut of each input file. Null keeps the file through its last frame. */
+  tailSeconds: Array<number | null>;
+  /** Sections re-encoded into a neighbor. A boundary append cannot reproduce that. */
+  absorbed: number;
+};
+
 export async function joinMasteredMp3s(opts: {
   files: string[];
   joins: SectionJoinKind[];
@@ -1108,7 +1143,7 @@ export async function joinMasteredMp3s(opts: {
   run: Run;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ sectionStarts: number[]; totalSeconds: number }> {
+}): Promise<JoinedMp3> {
   const { timeoutMs, workDir } = opts;
   // Full-section loudnorm uses the CPU gate. These calls are a couple of
   // seconds each, and holding them to one-per-core turned a 38-section
@@ -1142,7 +1177,15 @@ export async function joinMasteredMp3s(opts: {
   }
   if (indexedPieces.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
-    return { sectionStarts: [0], totalSeconds: indexedPieces[0]!.duration };
+    const audio = await readFile(opts.outPath);
+    return {
+      sectionStarts: [0],
+      totalSeconds: indexedPieces[0]!.duration,
+      parts: [{ kind: "body", bytes: audio }],
+      headSeconds: [0],
+      tailSeconds: [null],
+      absorbed: 0,
+    };
   }
   const promoted = await promoteShortSections(
     indexedPieces,
@@ -1163,7 +1206,15 @@ export async function joinMasteredMp3s(opts: {
     const piece = promoted.pieces[0]!;
     const sectionStarts = new Array<number>(opts.files.length).fill(0);
     for (const member of piece.members) sectionStarts[member.index] = member.offset;
-    return { sectionStarts, totalSeconds: piece.duration };
+    const audio = await readFile(opts.outPath);
+    return {
+      sectionStarts,
+      totalSeconds: piece.duration,
+      parts: [{ kind: "body", bytes: audio }],
+      headSeconds: [0],
+      tailSeconds: [null],
+      absorbed: promoted.absorbed,
+    };
   }
   const sources = promoted.pieces.map((piece) => piece.audio);
   const packets = promoted.pieces.map((piece) => piece.packets);
@@ -1467,6 +1518,9 @@ export async function joinMasteredMp3s(opts: {
   }
 
   const pieces: Buffer[] = [];
+  const parts: JoinedMp3Part[] = [];
+  const headSeconds: number[] = [];
+  const tailSeconds: Array<number | null> = [];
   const sectionStarts = new Array<number>(opts.files.length).fill(0);
   let clock = 0;
   for (let i = 0; i < files.length; i++) {
@@ -1474,7 +1528,11 @@ export async function joinMasteredMp3s(opts: {
     const tail = tailCut[i];
     const from = head && head.t > 0.001 ? head.t : 0;
     const to = tail == null ? null : head && head.t > 0.001 ? head.t + (tail - head.t) : tail;
-    pieces.push(slicePackets(sources[i]!, packets[i]!, from, to));
+    headSeconds.push(from);
+    tailSeconds.push(to);
+    const body = slicePackets(sources[i]!, packets[i]!, from, to);
+    pieces.push(body);
+    parts.push({ kind: "body", bytes: body });
     // The head of this piece (up to `from`) already played inside the
     // previous crossfade, so the piece's content zero sits `from` seconds
     // before its body bytes land.
@@ -1490,7 +1548,9 @@ export async function joinMasteredMp3s(opts: {
       const bytes = await readFile(mp3);
       const indexed = await indexMp3Packets(bytes);
       const at = cutPos ?? secondFrameOffset(bytes) ?? indexed[1]!.pos;
-      pieces.push(bytes.subarray(Math.max(indexed[0]!.pos, at)));
+      const mix = bytes.subarray(Math.max(indexed[0]!.pos, at));
+      pieces.push(mix);
+      parts.push({ kind: "mix", bytes: mix });
       clock += next.t;
     }
   }
@@ -1499,6 +1559,99 @@ export async function joinMasteredMp3s(opts: {
   console.log(
     `[section-master] copy-joined ${files.length} sections, worst splice step ${worst}`
   );
-  return { sectionStarts, totalSeconds: clock };
+  return {
+    sectionStarts,
+    totalSeconds: clock,
+    parts,
+    headSeconds,
+    tailSeconds,
+    absorbed: promoted.absorbed,
+  };
+}
+
+export type LiveJoinCursor = {
+  sectionStarts: number[];
+  totalSeconds: number;
+  /** Byte offset of the last section's packet body. Bytes before this stay put. */
+  lastBodyByte: number;
+  /** Seconds skipped at the head of that last section. */
+  lastHeadSeconds: number;
+};
+
+/**
+ * Add one mastered section to a join that already ends on the previous
+ * section. The boundary is the same pair `joinMasteredMp3s` would score,
+ * and the bytes before the last section's body are not rewritten.
+ * `rebuild` means a short section was folded and the caller joins the
+ * prefix from scratch — that fold rewrites earlier audio.
+ */
+export async function appendMasteredSection(opts: {
+  joined: Buffer | null;
+  cursor: LiveJoinCursor | null;
+  previousFile: string | null;
+  nextFile: string;
+  previousJoin: SectionJoinKind;
+  nextJoin: SectionJoinKind;
+  crossfadeMs: number;
+  workDir: string;
+  run: Run;
+  timeoutMs: number;
+}): Promise<{ audio: Buffer; cursor: LiveJoinCursor } | { rebuild: true }> {
+  if (!opts.joined || !opts.cursor || !opts.previousFile) {
+    const audio = await readFile(opts.nextFile);
+    const packets = await indexMp3Packets(audio);
+    const body = slicePackets(audio, packets, 0, null);
+    return {
+      audio: body,
+      cursor: {
+        sectionStarts: [0],
+        totalSeconds: mp3IndexedDuration(packets),
+        lastBodyByte: 0,
+        lastHeadSeconds: 0,
+      },
+    };
+  }
+
+  const pair = await joinMasteredMp3s({
+    files: [opts.previousFile, opts.nextFile],
+    joins: [opts.previousJoin, opts.nextJoin],
+    crossfadeMs: opts.crossfadeMs,
+    outPath: path.join(opts.workDir, "pair.mp3"),
+    workDir: opts.workDir,
+    run: opts.run,
+    timeoutMs: opts.timeoutMs,
+  });
+  if (pair.absorbed > 0) return { rebuild: true };
+  const bodies = pair.parts.filter((part) => part.kind === "body");
+  const mixes = pair.parts.filter((part) => part.kind === "mix");
+  const tail = pair.tailSeconds[0];
+  if (bodies.length !== 2 || mixes.length > 1 || tail == null || pair.sectionStarts.length < 2) {
+    return { rebuild: true };
+  }
+  const lastBody = opts.joined.subarray(opts.cursor.lastBodyByte);
+  const packets = await indexMp3Packets(lastBody);
+  const cutAt = tail - opts.cursor.lastHeadSeconds;
+  const truncated = slicePackets(lastBody, packets, 0, cutAt);
+  const mix = mixes[0]?.bytes ?? Buffer.alloc(0);
+  const added = bodies[1]!.bytes;
+  const audio = Buffer.concat([
+    opts.joined.subarray(0, opts.cursor.lastBodyByte),
+    truncated,
+    mix,
+    added,
+  ]);
+  const starts = opts.cursor.sectionStarts.slice();
+  const previousStart = starts[starts.length - 1] ?? 0;
+  const delta = pair.sectionStarts[1]! - pair.sectionStarts[0]!;
+  starts.push(Math.max(0, previousStart + delta));
+  return {
+    audio,
+    cursor: {
+      sectionStarts: starts,
+      totalSeconds: previousStart + pair.totalSeconds,
+      lastBodyByte: opts.cursor.lastBodyByte + truncated.length + mix.length,
+      lastHeadSeconds: pair.headSeconds[1] ?? 0,
+    },
+  };
 }
 

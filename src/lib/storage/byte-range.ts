@@ -18,6 +18,9 @@
  */
 export const PLAYBACK_CACHE_CONTROL = "private, max-age=3600";
 
+/** Live segments are written once. Chrome's media element fails on `no-store`. */
+export const LIVE_SEGMENT_CACHE_CONTROL = "private, max-age=31536000, immutable";
+
 /**
  * How much of an open-ended `Range: bytes=start-` playback may answer.
  *
@@ -156,6 +159,7 @@ export function playbackHeaders(options: {
   contentLength: number;
   contentRange?: string;
   contentDisposition?: string;
+  cacheControl?: string;
 }): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": options.contentType,
@@ -164,8 +168,9 @@ export function playbackHeaders(options: {
     // Private and reusable for this session. Chrome's media element errors
     // on `no-store` when the HTTP cache is on. Vary on Range so one window
     // is not replayed as a later slice, and on Cookie so a different
-    // session on this browser does not receive the bytes.
-    "Cache-Control": PLAYBACK_CACHE_CONTROL,
+    // session on this browser does not receive the bytes. A live playlist
+    // passes `no-store` because the file is rewritten as sections land.
+    "Cache-Control": options.cacheControl ?? PLAYBACK_CACHE_CONTROL,
     Vary: "Range, Cookie",
     "X-Accel-Buffering": "no",
   };

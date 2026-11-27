@@ -38,12 +38,17 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
+import { advanceAfterSection } from "@/lib/player/section-advance";
+import { growingFileDuration } from "@/lib/player/growing-file";
+import { seekTargetIfCovered } from "@/lib/player/live-playlist";
+import { liveSessionAttached, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import {
   cacheBustPlaybackUrl,
   playbackRecoveryCount,
+  withPlaybackGrant,
   versionedAudioUrl,
 } from "@/lib/player/playback-url";
 import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
@@ -196,6 +201,7 @@ interface Job {
   catalog_voice_id?: string | null;
   first_section_at?: number | null;
   eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
+  playback_grant?: string | null;
 }
 
 function PlayerLoadingShell() {
@@ -508,6 +514,7 @@ function PlayerPageInner({ id }: { id: string }) {
     restoreLandedRef.current = false;
     adoptedLiveRef.current = false;
     const cached = peekJob<Job>(id);
+    if (liveSessionAttached(audioRef.current)) return;
     const seeded = playbackForResume(cached, playbackResume.savedRef.current, {
       forceStream,
       forceSegments,
@@ -646,6 +653,7 @@ function PlayerPageInner({ id }: { id: string }) {
         const chosen = playbackResume.noteServer(remote);
         try {
         const next = playbackForResume(j, chosen, { forceStream, forceSegments });
+        if (liveSessionAttached(audioRef.current)) return;
         if (!next) return;
         // The shell was already on this book. A newer server row must not
         // rewind or re-point an element the listener is hearing.
@@ -903,10 +911,16 @@ function PlayerPageInner({ id }: { id: string }) {
       if (isStream) {
         streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
       } else {
+        const atEnd =
+          Boolean(media && media.duration > 0 && media.currentTime >= media.duration - 1.5) &&
+          Boolean(audioUrlRef.current) &&
+          !audioUrlRef.current!.includes("/sections/") &&
+          jobRef.current?.status !== "ready";
         delay = nextJobPollDelay({
           delay,
           changed,
           hasPlayableAudio: hasPlayableAudio(jobRef.current),
+          waitingAtGap: waitingForNextRef.current || atEnd,
           urgent:
             generationStatus({
               status: jobRef.current?.status ?? "processing",
@@ -982,7 +996,7 @@ function PlayerPageInner({ id }: { id: string }) {
           return changed;
         }
 
-        if (!audioUrlRef.current) {
+        if (!audioUrlRef.current && !liveSessionAttached(audioRef.current)) {
           const seeded = playbackForResume(next, playbackResume.savedRef.current, {
             forceStream,
             forceSegments,
@@ -1008,6 +1022,7 @@ function PlayerPageInner({ id }: { id: string }) {
   useEffect(() => {
     if (forceStream || forceSegments || jobStatus !== "ready" ||
         jobKind === "stream" || !job?.audio_url || !audioUrl?.includes("/sections/")) return;
+    if (liveSessionAttached(audioRef.current)) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
@@ -1083,17 +1098,16 @@ function PlayerPageInner({ id }: { id: string }) {
   useEffect(() => {
     if (!playbackAllowed(job?.status)) return;
     if (!waitingForNextRef.current || !job?.segments) return;
-    // A finished book with a hole can never fill it, so skip it rather than
-    // stranding the rest of the book behind a section that will not render
-    // (`job 1f0137a1` lost section 2 and everything after it was unreachable).
-    const nextIndex = nextIndexAfter(job.segments, segmentIndex, job.status);
-    if (nextIndex === null) return;
-    const next = readyByIndex(job.segments).get(nextIndex);
-    if (!next) return;
+    const step = advanceAfterSection({
+      segments: job.segments,
+      from: segmentIndex,
+      status: job.status,
+    });
+    if (step.action !== "play") return;
     waitingForNextRef.current = false;
-    setSegmentIndex(nextIndex);
+    setSegmentIndex(step.index);
     playAfterLoadRef.current = true;
-    setAudioUrl(`/api/storage/${next.path}`);
+    setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, job.playback_grant));
   }, [job, segmentIndex]);
 
   const handleSpawnTakehome = async () => {
@@ -1219,12 +1233,18 @@ function PlayerPageInner({ id }: { id: string }) {
     const consumePending = () => {
       const pending = pendingChapterSeekRef.current;
       if (!pending) return;
-      const total = effectiveDuration(audio.duration);
+      const live = liveSessionAttached(audio);
+      const elementDuration =
+        Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const total = live ? elementDuration : effectiveDuration(audio.duration);
       if (!(total > 0 || pending.seconds != null)) return;
-      clearPendingSeekRef.current();
       const raw = pending.charIndex != null && pending.document
         ? sectionSeekSeconds(pending.document, pending.charIndex, total) ?? 0
         : pending.seconds ?? pending.fraction * total;
+      // A growing Media Source reports the buffered length as duration.
+      // Clamping a later resume onto the first segment would drop it.
+      if (live && raw > 0.05 && seekTargetIfCovered(raw, elementDuration) == null) return;
+      clearPendingSeekRef.current();
       const seconds =
         total > 0 ? Math.min(raw, Math.max(0, total - 0.05)) : raw;
       lastRequestedSeekRef.current = seconds;
@@ -1249,6 +1269,7 @@ function PlayerPageInner({ id }: { id: string }) {
     };
     const onCanPlay = () => {
       clearNoticeIfHealthy();
+      consumePending();
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
         // Same guarded start as the transport: this is the reload path, and a
@@ -1278,28 +1299,24 @@ function PlayerPageInner({ id }: { id: string }) {
         jobRef.current?.segments?.length
       ) {
         const current = segmentIndexRef.current;
-        const nextIndex = nextIndexAfter(
-          jobRef.current.segments,
-          current,
-          jobRef.current.status
-        );
-        const next =
-          nextIndex === null
-            ? undefined
-            : readyByIndex(jobRef.current.segments).get(nextIndex);
-        if (next) {
+        const step = advanceAfterSection({
+          segments: jobRef.current.segments,
+          from: current,
+          status: jobRef.current.status,
+        });
+        if (step.action === "play") {
           waitingForNextRef.current = false;
-          const span = spansRef.current.find((item) => item.index === next.index);
+          const span = spansRef.current.find((item) => item.index === step.index);
           armPendingSeekRef.current({
             seconds: 0,
             fraction: 0,
             bookSeconds: span ? span.startSeconds : null,
-            sectionIndex: next.index,
+            sectionIndex: step.index,
           });
-          setSegmentIndex(next.index);
+          setSegmentIndex(step.index);
           playAfterLoadRef.current = true;
-          setAudioUrl(`/api/storage/${next.path}`);
-        } else {
+          setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, jobRef.current.playback_grant));
+        } else if (step.action === "wait") {
           waitingForNextRef.current = true;
         }
       }
@@ -1566,6 +1583,22 @@ function PlayerPageInner({ id }: { id: string }) {
       setCurrentTime(seconds);
       return;
     }
+    if (
+      job?.status !== "ready" &&
+      audioUrl &&
+      !audioUrl.includes("/sections/") &&
+      Number.isFinite(audio.duration) &&
+      audio.duration > 0 &&
+      seconds > audio.duration
+    ) {
+      armPendingSeekRef.current({
+        seconds,
+        fraction: 0,
+        bookSeconds: seconds,
+        sectionIndex: null,
+      });
+      return;
+    }
     clearPendingSeekRef.current();
     lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
@@ -1696,7 +1729,7 @@ function PlayerPageInner({ id }: { id: string }) {
       clearPendingSeekRef.current();
       return;
     }
-    if (full && audioUrl?.split("?")[0] !== full) {
+    if (full && audioUrl?.split("?")[0] !== full && !liveSessionAttached(audio)) {
       armPendingSeekRef.current(pending);
       playAfterLoadRef.current = true;
       setAudioUrl(versionedAudioUrl(full, job?.updated_at));
@@ -1826,7 +1859,45 @@ function PlayerPageInner({ id }: { id: string }) {
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }, [showTranscript, focusTranscript, revision, transcriptResource, transcriptRetry]);
 
-  const playDuration = duration > 0 ? duration : (job?.duration_seconds ?? 0);
+  const onRollingFile =
+    !isStreamMode &&
+    Boolean(audioUrl) &&
+    !audioUrl!.includes("/sections/") &&
+    job?.status !== "ready";
+  const playDuration = onRollingFile
+    ? growingFileDuration(duration, job?.duration_seconds)
+    : duration > 0
+      ? duration
+      : (job?.duration_seconds ?? 0);
+  useEffect(() => {
+    if (forceSegments || isStreamMode || !job || job.job_kind === "stream") return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const attached = liveSessionAttached(audio);
+    if (job.status === "ready" && !attached) return;
+    if (
+      job.status !== "processing" &&
+      job.status !== "queued" &&
+      job.status !== "waiting" &&
+      !attached
+    ) {
+      return;
+    }
+    let stopped = false;
+    const resumeAt = playbackResume.savedRef.current?.positionSeconds ?? 0;
+    void syncLivePlayback({
+      audio,
+      playlistUrl: `/api/storage/audiobooks/${job.id}/live.m3u8`,
+      jobId: job.id,
+      resumeAt,
+    }).then((result) => {
+      if (stopped || !result.attached || !result.url) return;
+      if (audioUrlRef.current !== result.url) setAudioUrl(result.url);
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+    };
+  }, [forceSegments, isStreamMode, job, audioRef, playbackResume]);
   const chapterSource =
     job && job.status === "ready" && !isStreamMode ? (job.chapters ?? null) : null;
   const preparedChapters = useMemo(

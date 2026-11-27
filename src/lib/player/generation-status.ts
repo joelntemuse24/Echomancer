@@ -15,7 +15,11 @@ export interface GenerationInput {
   status: string;
   currentSection?: number | null;
   totalSections?: number | null;
-  segments?: Array<{ status?: string | null; path?: string | null }> | null;
+  segments?: Array<{
+    index?: number | null;
+    status?: string | null;
+    path?: string | null;
+  }> | null;
   etaLabel?: string | null;
   etaState?: string | null;
   waitingForText?: boolean | null;
@@ -35,11 +39,29 @@ export interface GenerationView {
   meterLabel: string;
 }
 
+/**
+ * Ready sections from index 0 until the first hole. Later ready sections
+ * are not playable yet, so the header counts the same span the time bar does.
+ */
 function readySections(
   segments: GenerationInput["segments"]
 ): number | null {
   if (!Array.isArray(segments) || segments.length === 0) return null;
-  return segments.filter((segment) => segment.status === "ready" && segment.path).length;
+  const byIndex = new Map<number, { status?: string | null; path?: string | null }>();
+  segments.forEach((segment, position) => {
+    const index =
+      typeof segment.index === "number" && Number.isInteger(segment.index) && segment.index >= 0
+        ? segment.index
+        : position;
+    byIndex.set(index, segment);
+  });
+  let count = 0;
+  for (let index = 0; ; index++) {
+    const row = byIndex.get(index);
+    if (!row || row.status !== "ready" || !row.path) break;
+    count += 1;
+  }
+  return count;
 }
 
 function etaBit(input: GenerationInput): string {
@@ -51,8 +73,9 @@ function etaBit(input: GenerationInput): string {
 /**
  * One view of a generating book for the player (main and focus) and the library.
  *
- * Percent is ready sections over the stored outline. The first section of a
- * long book is a small share. When every section is stored and the job is
+ * Percent is the contiguous ready prefix over the stored outline — the
+ * same span the time bar can play. A later ready section behind a hole
+ * does not move the count. When every section is stored and the job is
  * still open, the line says the book is finishing — it does not print 99%
  * because audio exists. Stop is shown only while the job is still open.
  */

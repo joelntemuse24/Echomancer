@@ -98,16 +98,21 @@ export function retryableHoleIndexes(
 }
 
 /**
- * Claim never-attempted indexes first. After the last index has been
- * tried, claim `retry` holes once. Permanently `failed` indexes stay skipped.
+ * Lowest index that still needs a take, whether it has never been tried or
+ * is waiting on its one retry. A hole is claimed before any later section.
+ * Permanently `failed` indexes stay skipped.
  */
 export function claimableIndexes(
   segments: JobSegment[],
   total: number
 ): number[] {
-  const first = unattemptedIndexes(segments, total);
-  if (first.length > 0) return first;
-  return retryableHoleIndexes(segments, total);
+  const byIndex = segmentByIndex(segments);
+  const out: number[] = [];
+  for (let i = 0; i < total; i++) {
+    const segment = byIndex.get(i);
+    if (!segment || segment.status === "retry") out.push(i);
+  }
+  return out;
 }
 
 export function allIndexesReady(
@@ -201,8 +206,8 @@ export async function runIndexBoundFanout<T>(
  * Next index a rolling pool may claim right now. `skip` holds the indexes this
  * tick has already claimed and is still working on; an index without a stored
  * segment yet still counts as unattempted, so the skip set is what stops a
- * double claim. Unattempted indexes come before retry holes, exactly like the
- * batch `claimIndexSet` order.
+ * double claim. A retry hole is claimed before any later section, exactly
+ * like the batch `claimIndexSet` order.
  */
 export function nextClaimableIndex(
   segments: JobSegment[],

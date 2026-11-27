@@ -56,6 +56,7 @@ export async function softDeleteJob(jobId: string, userId: string): Promise<void
        processing_lease_token = NULL,
        lease_expires_at = NULL,
        processing_started_at = NULL,
+       playback_nonce = COALESCE(playback_nonce, 0) + 1,
        updated_at = unixepoch()
      WHERE id = ? AND user_id = ?`,
     [jobId, userId]

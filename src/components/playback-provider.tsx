@@ -26,6 +26,7 @@ import {
 } from "@/lib/player/playback-position";
 import { resumeAudioGraphs } from "@/lib/player/audio-graph";
 import { elementIsPlaying } from "@/lib/player/element-playback";
+import { playbackSourceKey } from "@/lib/player/playback-url";
 import {
   installMediaSessionActions,
   mediaSessionMetadata,
@@ -681,11 +682,30 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     srcRef.current = src;
     jobIdRef.current = jobId;
     setDismissed(false);
-    if (audio && audio.getAttribute("src") !== src) {
-      // A different source is a new book: the old clock is not this book's.
-      bookOffsetRef.current = 0;
-      lastPositionRef.current = 0;
+    if (audio && playbackSourceKey(audio.getAttribute("src")) !== playbackSourceKey(src)) {
+      const previous = audio.getAttribute("src") || "";
+      const samePath = playbackSourceKey(previous).split("\0")[0] === playbackSourceKey(src).split("\0")[0];
+      const at = samePath && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const wasPlaying = samePath && elementIsPlaying(audio);
+      if (!samePath) {
+        bookOffsetRef.current = 0;
+        lastPositionRef.current = 0;
+      }
       audio.src = src;
+      if (samePath && at > 0) {
+        const restore = () => {
+          if (srcRef.current !== src) return;
+          if (Math.abs(audio.currentTime - at) < 0.25) return;
+          try {
+            audio.currentTime = at;
+          } catch {
+            /* canplay retries once the range exists */
+          }
+          if (wasPlaying) void audio.play().catch(() => undefined);
+        };
+        audio.addEventListener("loadedmetadata", restore, { once: true });
+        audio.addEventListener("canplay", restore, { once: true });
+      }
     }
     setIdentity((prev) =>
       prev.jobId === jobId ? prev : { ...prev, jobId, started: false }

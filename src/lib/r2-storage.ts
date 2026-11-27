@@ -93,7 +93,7 @@ export async function uploadFile(
   key: string,
   data: Buffer | Uint8Array | string,
   contentType: string,
-  options?: { isPublic?: boolean }
+  options?: { isPublic?: boolean; abortSignal?: AbortSignal }
 ): Promise<UploadResult> {
   const client = getR2Client();
 
@@ -104,7 +104,8 @@ export async function uploadFile(
         Key: key,
         Body: data,
         ContentType: contentType,
-      })
+      }),
+      options?.abortSignal ? { abortSignal: options.abortSignal } : undefined
     );
   } catch (err: unknown) {
     console.error(`[R2] Upload failed for key=${key}:`, err instanceof Error ? err.name : err, err instanceof Error ? err.message : "");

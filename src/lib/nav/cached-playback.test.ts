@@ -19,13 +19,28 @@ describe("seeded take-home playback", () => {
     expect(seeded?.url).toContain("v=2026-11-10T00%3A00%3A00.000Z");
   });
 
-  it("starts section 0 while the book is still generating", () => {
+  it("plays the rolling file while the book is still generating", () => {
     const seeded = seededTakehomePlayback(
       {
         job_kind: "takehome",
         status: "processing",
         audio_url: "/api/storage/audiobooks/job-a/full.mp3",
+        updated_at: "2026-11-10T00:00:00.000Z",
         segments: [section, { index: 1, path: "later.mp3", status: "pending" }],
+      },
+      { forceStream: false, forceSegments: false }
+    );
+    expect(seeded?.segmentIndex).toBeNull();
+    expect(seeded?.url).toContain("/api/storage/audiobooks/job-a/full.mp3");
+    expect(seeded?.url).not.toContain("v=");
+  });
+
+  it("starts section 0 while the rolling file is not written yet", () => {
+    const seeded = seededTakehomePlayback(
+      {
+        job_kind: "takehome",
+        status: "processing",
+        segments: [section],
       },
       { forceStream: false, forceSegments: false }
     );
