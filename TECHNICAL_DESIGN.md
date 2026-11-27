@@ -1321,8 +1321,13 @@ suffix is the shared pronunciation lexicon (`scripts/sowell/pronounce.py`),
 checked before misaki `us_gold` on every Kokoro path. The container
 returns `x-kokoro-pronunciation` with that id. Drew, Esther, George, and
 Walter refuse the body when the header is missing or different, so an
-older image is not cached under the new key. Deploy steps are
-in `docs/kokoro-onnx-runbook.md`. Walter and George stay
+older image is not cached under the new key. After G2P, the spoken-text
+check compares the tokenizer's own tokens with the tokens placed in a
+spoken chunk, using each token's whitespace. Joining stripped chunk
+graphemes with a space rejects a 510-phoneme cut inside a contraction,
+a possessive, or a letter glued to a number (`221B`), and that rejection
+is the same on every retry. A chunk that was not spoken still fails.
+Deploy steps are in `docs/kokoro-onnx-runbook.md`. Walter and George stay
 on the length index: George's rows are flat across 100–510, and Walter's
 pack was not in the repo or on a volume, so `SOWELL_FIXED_STYLE_INDEX`
 stays unset and those cache keys do not move. `DREW_PROSODY_RULES` (default

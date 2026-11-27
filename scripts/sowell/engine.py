@@ -151,6 +151,7 @@ from phoneme_runs import (  # noqa: E402,F401  re-exported for callers and tests
     _token_spans,
     iter_phoneme_runs,
     split_phoneme_run,
+    spoken_words_match,
     words,
 )
 
@@ -370,6 +371,8 @@ class SowellEngine:
                     f"phoneme run is {len(phonemes)}, over {PHONEME_CAP}; refusing to drop text"
                 )
             runs.append((graphemes, phonemes))
+        if not spoken_words_match(pipeline, tokens):
+            raise PackError("spoken text does not match the request")
         plans = plan_chunks(runs) if recipe is not None else None
         pieces: list[torch.Tensor] = []
         spoken: list[str] = []
@@ -408,8 +411,6 @@ class SowellEngine:
         if not pieces:
             raise PackError("Kokoro returned no audio")
         joined = " ".join(spoken)
-        if words(cleaned) != words(joined):
-            raise PackError("spoken text does not match the request")
         audio = torch.cat(pieces)
         if audio.numel() < SAMPLE_RATE // 10 or not bool(torch.isfinite(audio).all()):
             raise PackError("audio is empty or non-finite")

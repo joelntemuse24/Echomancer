@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from phoneme_runs import PHONEME_CAP, Tokenizer, iter_phoneme_runs, words
+from phoneme_runs import PHONEME_CAP, Tokenizer, iter_phoneme_runs, spoken_words_match, words
 from pronounce import install_pronunciations, prepare_kokoro_text
 
 MAX_CHARS = 2000
@@ -262,6 +262,8 @@ class OnnxEngine:
                     f"phoneme run is {len(phonemes)}, over {PHONEME_CAP}; refusing to drop text"
                 )
             runs.append((graphemes, phonemes))
+        if not spoken_words_match(Tokenizer, tokens):
+            raise OnnxEngineError("spoken text does not match the request")
         return runs
 
     def speak(self, text: str, voice: str = SOWELL_VOICE_ID, speed: float = 1.0, prosody: str | None = None):
@@ -311,8 +313,6 @@ class OnnxEngine:
         if not pieces:
             raise OnnxEngineError("Kokoro returned no audio")
         joined = " ".join(spoken)
-        if words(cleaned) != words(joined):
-            raise OnnxEngineError("spoken text does not match the request")
         audio = np.concatenate(pieces)
         if audio.size < SAMPLE_RATE // 10 or not bool(np.isfinite(audio).all()):
             raise OnnxEngineError("audio is empty or non-finite")
