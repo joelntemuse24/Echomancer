@@ -4,6 +4,7 @@ import {
   pendingSegmentUris,
   readHlsPlaylist,
   seekTargetIfCovered,
+  shouldResumeLive,
   type LiveTransport,
 } from "@/lib/player/live-playlist";
 
@@ -52,6 +53,11 @@ const turns = new WeakMap<HTMLAudioElement, Promise<unknown>>();
 
 export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
   return Boolean(audio && sessions.has(audio));
+}
+
+/** Drop the session so a later ready poll does not treat the element as live. */
+export function releaseLiveSession(audio: HTMLAudioElement | null): void {
+  if (audio) sessions.delete(audio);
 }
 
 function serial<T>(audio: HTMLAudioElement, fn: () => Promise<T>): Promise<T> {
@@ -160,6 +166,11 @@ function watchResume(audio: HTMLAudioElement, session: Session): void {
 }
 
 function finish(session: Session, audio: HTMLAudioElement): void {
+  const covered = coveredSeconds(audio);
+  const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+  // Closing the source while the playhead is inside the buffer restarts
+  // playback at the first segment and pauses it.
+  if (covered > 0 && at + 1 < covered) return;
   if (session.mediaSource?.readyState === "open") {
     try {
       session.mediaSource.endOfStream();
@@ -167,7 +178,34 @@ function finish(session: Session, audio: HTMLAudioElement): void {
       /* already closed */
     }
   }
-  if (audio.ended) void audio.play().catch(() => undefined);
+}
+
+function resumeIfStalled(
+  audio: HTMLAudioElement,
+  listenerPaused: boolean,
+  complete: boolean
+): void {
+  if (
+    !shouldResumeLive({
+      listenerPaused,
+      complete,
+      paused: audio.paused,
+      ended: audio.ended,
+      currentTime: audio.currentTime,
+      covered: coveredSeconds(audio),
+    })
+  ) {
+    return;
+  }
+  const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+  if (audio.ended && at > 0.05) {
+    try {
+      audio.currentTime = at;
+    } catch {
+      /* the next canplay still has the position */
+    }
+  }
+  void audio.play().catch(() => undefined);
 }
 
 /**
@@ -180,7 +218,14 @@ export function syncLivePlayback(opts: {
   playlistUrl: string;
   jobId: string;
   resumeAt: number;
-}): Promise<{ attached: boolean; url: string | null }> {
+  /** Set when the listener paused. An underrun leaves this false. */
+  listenerPaused?: boolean;
+}): Promise<{
+  attached: boolean;
+  url: string | null;
+  complete: boolean;
+  transport: LiveTransport | null;
+}> {
   return serial(opts.audio, () => syncOnce(opts));
 }
 
@@ -189,13 +234,32 @@ async function syncOnce(opts: {
   playlistUrl: string;
   jobId: string;
   resumeAt: number;
-}): Promise<{ attached: boolean; url: string | null }> {
+  listenerPaused?: boolean;
+}): Promise<{
+  attached: boolean;
+  url: string | null;
+  complete: boolean;
+  transport: LiveTransport | null;
+}> {
   const response = await fetch(opts.playlistUrl, { credentials: "same-origin", cache: "no-store" });
+  const listenerPaused = opts.listenerPaused === true;
   const current = sessions.get(opts.audio);
-  if (!response.ok) return { attached: Boolean(current), url: current?.url ?? null };
+  if (!response.ok) {
+    return {
+      attached: Boolean(current),
+      url: current?.url ?? null,
+      complete: false,
+      transport: current?.transport ?? null,
+    };
+  }
   const playlist = readHlsPlaylist(await response.text());
   if (playlist.segments.length === 0) {
-    return { attached: Boolean(current), url: current?.url ?? null };
+    return {
+      attached: Boolean(current),
+      url: current?.url ?? null,
+      complete: false,
+      transport: current?.transport ?? null,
+    };
   }
   let session = current;
   if (session && session.jobId !== opts.jobId) {
@@ -225,7 +289,13 @@ async function syncOnce(opts: {
       };
       sessions.set(opts.audio, session);
       watchResume(opts.audio, session);
-      return { attached: true, url: session.url };
+      if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
+      return {
+        attached: true,
+        url: session.url,
+        complete: playlist.complete,
+        transport,
+      };
     }
     const Ctor = (transport === "mms" ? available.managed : available.media) as SourceCtor;
     const media = new Ctor();
@@ -258,7 +328,13 @@ async function syncOnce(opts: {
   }
   if (session.transport === "hls") {
     maybeResume(opts.audio, session);
-    return { attached: true, url: session.url };
+    if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
+    return {
+      attached: true,
+      url: session.url,
+      complete: playlist.complete,
+      transport: session.transport,
+    };
   }
   const next = pendingSegmentUris(
     session.reserved,
@@ -302,6 +378,12 @@ async function syncOnce(opts: {
   } else if (playlist.complete) {
     finish(target, opts.audio);
   }
+  if (!playlist.complete) resumeIfStalled(opts.audio, listenerPaused, false);
   maybeResume(opts.audio, target);
-  return { attached: true, url: target.url };
+  return {
+    attached: true,
+    url: target.url,
+    complete: playlist.complete,
+    transport: target.transport,
+  };
 }

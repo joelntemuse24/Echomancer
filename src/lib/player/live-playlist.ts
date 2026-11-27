@@ -130,3 +130,77 @@ export function chooseLiveTransport(support: {
 export function keepLiveSource(attached: boolean): boolean {
   return attached;
 }
+
+export interface LiveReadyStay {
+  action: "stay";
+}
+
+export interface LiveReadyHandoff {
+  action: "handoff";
+  url: string;
+  at: number;
+  play: boolean;
+}
+
+/**
+ * A Media Source keeps the bytes it already appended. Native HLS reloads a
+ * playlist when ENDLIST arrives, which restarts at the first segment, so
+ * that transport moves once onto the finished file at the same playhead.
+ */
+export function liveReadyTransition(input: {
+  transport: LiveTransport | null;
+  complete: boolean;
+  ready: boolean;
+  fullUrl: string | null;
+  currentSrc?: string | null;
+  currentTime: number;
+  playing: boolean;
+}): LiveReadyStay | LiveReadyHandoff {
+  if (input.transport !== "hls" || !input.complete || !input.ready || !input.fullUrl) {
+    return { action: "stay" };
+  }
+  const current = input.currentSrc?.split("?")[0] ?? "";
+  const next = input.fullUrl.split("?")[0];
+  if (current && current === next) return { action: "stay" };
+  const at = Number.isFinite(input.currentTime) ? Math.max(0, input.currentTime) : 0;
+  return { action: "handoff", url: input.fullUrl, at, play: input.playing };
+}
+
+/**
+ * A chapter seek stays on the live element when that time is already
+ * buffered. Past the buffer, the finished file is the one source that has it.
+ */
+export function liveChapterSeek(input: {
+  target: number;
+  covered: number;
+  fullUrl: string | null;
+  playing: boolean;
+}): { action: "seek"; at: number } | LiveReadyHandoff | null {
+  if (!Number.isFinite(input.target) || input.target < 0 || !input.fullUrl) return null;
+  const covered = Number.isFinite(input.covered) && input.covered > 0 ? input.covered : 0;
+  if (input.target <= covered + 0.05) return { action: "seek", at: input.target };
+  return { action: "handoff", url: input.fullUrl, at: input.target, play: input.playing };
+}
+
+/**
+ * The playhead ran off the end of the bytes appended so far. Resume when
+ * the next segment arrives. A pause the listener chose, and the end of a
+ * finished playlist, stay paused.
+ */
+export function shouldResumeLive(input: {
+  listenerPaused: boolean;
+  complete: boolean;
+  paused: boolean;
+  ended: boolean;
+  currentTime: number;
+  covered: number;
+}): boolean {
+  if (input.listenerPaused || input.complete) return false;
+  if (!input.paused && !input.ended) return false;
+  const covered = Number.isFinite(input.covered) ? input.covered : 0;
+  const at = Number.isFinite(input.currentTime) ? input.currentTime : 0;
+  // A book the listener has not started stays paused.
+  if (!(at > 0.5)) return false;
+  if (covered > at + 0.05) return true;
+  return input.paused && covered > 0 && at >= covered - 0.4;
+}

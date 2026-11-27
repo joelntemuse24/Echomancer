@@ -40,8 +40,8 @@ import {
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { advanceAfterSection } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
-import { seekTargetIfCovered } from "@/lib/player/live-playlist";
-import { liveSessionAttached, syncLivePlayback } from "@/lib/player/live-session";
+import { liveChapterSeek, liveReadyTransition, seekTargetIfCovered } from "@/lib/player/live-playlist";
+import { liveSessionAttached, releaseLiveSession, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
@@ -379,6 +379,8 @@ function PlayerPageInner({ id }: { id: string }) {
    * not move that element: the stored row is behind a listen that never stopped.
    */
   const adoptedLiveRef = useRef(false);
+  /** True only after the listener pauses. Running off the buffer leaves it false. */
+  const listenerPausedRef = useRef(false);
 
   // Reset the page chrome when the book id changes. The playhead itself is
   // restored by the layout effect, which runs before this and before paint.
@@ -1431,9 +1433,11 @@ function PlayerPageInner({ id }: { id: string }) {
     if (!audio || !audioUrl) return;
 
     if (elementIsPlaying(audio)) {
+      listenerPausedRef.current = true;
       stopAudio();
       return;
     }
+    listenerPausedRef.current = false;
     startAudio(audio);
   };
 
@@ -1729,6 +1733,31 @@ function PlayerPageInner({ id }: { id: string }) {
       clearPendingSeekRef.current();
       return;
     }
+    if (
+      audio &&
+      liveSessionAttached(audio) &&
+      targetSeconds != null &&
+      full
+    ) {
+      const covered =
+        Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      const decision = liveChapterSeek({
+        target: targetSeconds,
+        covered,
+        fullUrl: full,
+        playing: elementIsPlaying(audio),
+      });
+      if (decision?.action === "handoff") {
+        releaseLiveSession(audio);
+        listenerPausedRef.current = !decision.play;
+        armPendingSeekRef.current(pending);
+        playAfterLoadRef.current = decision.play;
+        setCurrentTime(decision.at);
+        const next = versionedAudioUrl(full, job?.updated_at);
+        if (next) setAudioUrl(next);
+        return;
+      }
+    }
     if (full && audioUrl?.split("?")[0] !== full && !liveSessionAttached(audio)) {
       armPendingSeekRef.current(pending);
       playAfterLoadRef.current = true;
@@ -1859,12 +1888,13 @@ function PlayerPageInner({ id }: { id: string }) {
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }, [showTranscript, focusTranscript, revision, transcriptResource, transcriptRetry]);
 
+  const liveAttached = !isStreamMode && liveSessionAttached(audioRef.current);
   const onRollingFile =
     !isStreamMode &&
     Boolean(audioUrl) &&
     !audioUrl!.includes("/sections/") &&
     job?.status !== "ready";
-  const playDuration = onRollingFile
+  const playDuration = onRollingFile || liveAttached
     ? growingFileDuration(duration, job?.duration_seconds)
     : duration > 0
       ? duration
@@ -1885,13 +1915,39 @@ function PlayerPageInner({ id }: { id: string }) {
     }
     let stopped = false;
     const resumeAt = playbackResume.savedRef.current?.positionSeconds ?? 0;
+    const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const playing = elementIsPlaying(audio);
     void syncLivePlayback({
       audio,
       playlistUrl: `/api/storage/audiobooks/${job.id}/live.m3u8`,
       jobId: job.id,
       resumeAt,
+      listenerPaused: listenerPausedRef.current,
     }).then((result) => {
       if (stopped || !result.attached || !result.url) return;
+      const decision = liveReadyTransition({
+        transport: result.transport,
+        complete: result.complete,
+        ready: job.status === "ready",
+        fullUrl: job.audio_url ?? null,
+        currentSrc: audio.getAttribute("src"),
+        currentTime: at,
+        playing,
+      });
+      if (decision.action === "handoff") {
+        releaseLiveSession(audio);
+        listenerPausedRef.current = !decision.play;
+        armPendingSeekRef.current({
+          seconds: decision.at,
+          fraction: 0,
+          bookSeconds: decision.at,
+        });
+        playAfterLoadRef.current = decision.play;
+        setCurrentTime(decision.at);
+        const next = versionedAudioUrl(decision.url, job.updated_at);
+        if (next) setAudioUrl(next);
+        return;
+      }
       if (audioUrlRef.current !== result.url) setAudioUrl(result.url);
     }).catch(() => undefined);
     return () => {
@@ -1991,6 +2047,7 @@ function PlayerPageInner({ id }: { id: string }) {
       pause: () => {
         // stop clears the start watchdog. A raw pause leaves that timer armed,
         // and it reloads the file after the listener has already stopped.
+        listenerPausedRef.current = true;
         stopAudio();
       },
       seek: bookClock ? seekAbsolute : handleScrubCommit,

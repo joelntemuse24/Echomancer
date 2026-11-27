@@ -4,9 +4,12 @@ import {
   evictionEnd,
   hlsEventPlaylist,
   keepLiveSource,
+  liveChapterSeek,
+  liveReadyTransition,
   pendingSegmentUris,
   readHlsPlaylist,
   seekTargetIfCovered,
+  shouldResumeLive,
 } from "@/lib/player/live-playlist";
 import { commitLiveUpload, planLiveSegments, reconcilePublished } from "@/lib/tts/live-publish";
 
@@ -42,6 +45,75 @@ describe("live playlist", () => {
     expect(pendingSegmentUris(["live/0000.mp3"], ["live/0001.mp3", "live/0000.mp3"])).toEqual([]);
     expect(keepLiveSource(true)).toBe(true);
     expect(keepLiveSource(false)).toBe(false);
+  });
+
+  it("keeps a Media Source at ready and moves native HLS onto the finished file", () => {
+    const playing = {
+      complete: true,
+      ready: true,
+      fullUrl: "/api/storage/audiobooks/job/full.mp3",
+      currentSrc: "blob:live",
+      currentTime: 158,
+      playing: true,
+    };
+    expect(liveReadyTransition({ ...playing, transport: "mse" })).toEqual({ action: "stay" });
+    expect(liveReadyTransition({ ...playing, transport: "mms" })).toEqual({ action: "stay" });
+    expect(liveReadyTransition({ ...playing, transport: "hls" })).toEqual({
+      action: "handoff",
+      url: "/api/storage/audiobooks/job/full.mp3",
+      at: 158,
+      play: true,
+    });
+    expect(
+      liveReadyTransition({
+        ...playing,
+        transport: "hls",
+        currentSrc: "/api/storage/audiobooks/job/full.mp3?v=1",
+      }).action
+    ).toBe("stay");
+    expect(liveReadyTransition({ ...playing, transport: "hls", ready: false }).action).toBe("stay");
+  });
+
+  it("seeks a chapter inside the buffer and hands the rest to the finished file", () => {
+    expect(
+      liveChapterSeek({
+        target: 40,
+        covered: 90,
+        fullUrl: "/api/storage/audiobooks/job/full.mp3",
+        playing: true,
+      })
+    ).toEqual({ action: "seek", at: 40 });
+    expect(
+      liveChapterSeek({
+        target: 400,
+        covered: 90,
+        fullUrl: "/api/storage/audiobooks/job/full.mp3",
+        playing: true,
+      })
+    ).toEqual({
+      action: "handoff",
+      url: "/api/storage/audiobooks/job/full.mp3",
+      at: 400,
+      play: true,
+    });
+  });
+
+  it("resumes after the buffer runs out and leaves a chosen pause alone", () => {
+    const edge = {
+      listenerPaused: false,
+      complete: false,
+      paused: true,
+      ended: false,
+      currentTime: 117,
+      covered: 117.2,
+    };
+    expect(shouldResumeLive(edge)).toBe(true);
+    expect(shouldResumeLive({ ...edge, listenerPaused: true })).toBe(false);
+    expect(shouldResumeLive({ ...edge, complete: true })).toBe(false);
+    expect(shouldResumeLive({ ...edge, paused: false, currentTime: 20 })).toBe(false);
+    expect(shouldResumeLive({ ...edge, ended: true, currentTime: 20, paused: true })).toBe(true);
+    expect(shouldResumeLive({ ...edge, currentTime: 0, covered: 100 })).toBe(false);
+    expect(shouldResumeLive({ ...edge, currentTime: 117, covered: 400 })).toBe(true);
   });
 
   it("uses HLS where MPEG SourceBuffers are unavailable", () => {

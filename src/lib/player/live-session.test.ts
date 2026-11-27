@@ -9,9 +9,10 @@ type FakeAudio = HTMLAudioElement & {
 
 function fakeAudio(): FakeAudio {
   const listeners = new Map<string, Set<() => void>>();
-  const state = { currentTime: 0, duration: 0, sets: [] as number[] };
+  const state = { currentTime: 0, duration: 0, sets: [] as number[], plays: 0 };
   const audio = {
     src: "",
+    paused: false,
     ended: false,
     buffered: { length: 0, end: () => 0 },
     addEventListener(type: string, fn: () => void) {
@@ -20,7 +21,11 @@ function fakeAudio(): FakeAudio {
       listeners.set(type, set);
     },
     removeEventListener() {},
-    play: async () => undefined,
+    play: async () => {
+      state.plays += 1;
+      audio.paused = false;
+      audio.ended = false;
+    },
     dispatch(type: string) {
       for (const fn of [...(listeners.get(type) ?? [])]) fn();
     },
@@ -83,13 +88,14 @@ class FakeBuffer {
   }
 }
 
-function installSource(buffer: FakeBuffer): void {
+function installSource(buffer: FakeBuffer, ended?: { count: number }): void {
   class MediaSource {
     readyState = "open";
     addSourceBuffer(): FakeBuffer {
       return buffer;
     }
     endOfStream(): void {
+      if (ended) ended.count += 1;
       this.readyState = "ended";
     }
     addEventListener(type: string, fn: () => void): void {
@@ -239,5 +245,70 @@ describe("syncLivePlayback", () => {
     expect(buffer.appends).toHaveLength(0);
     await syncLivePlayback(opts);
     expect(buffer.appends).toHaveLength(2);
+  });
+
+  it("does not close or rewind a live buffer when the playlist finishes", async () => {
+    const audio = fakeAudio();
+    audio.state.currentTime = 40;
+    const buffer = new FakeBuffer(audio);
+    const ended = { count: 0 };
+    installSource(buffer, ended);
+    const playlist = hlsEventPlaylist(
+      [
+        { uri: "live/0000.mp3", seconds: 25 },
+        { uri: "live/0001.mp3", seconds: 400 },
+      ],
+      900_000,
+      true
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-ready",
+      resumeAt: 0,
+    });
+    expect(ended.count).toBe(0);
+    expect(audio.state.currentTime).toBe(40);
+    expect(audio.state.plays).toBe(0);
+    expect(audio.src).toBe("blob:live");
+  });
+
+  it("resumes when the playhead ran off the buffer and the listener did not pause", async () => {
+    const playlist = hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 130 }], 200, false);
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const stalled = () => {
+      const audio = fakeAudio();
+      audio.paused = true;
+      audio.ended = true;
+      audio.state.currentTime = 11;
+      installSource(new FakeBuffer(audio));
+      return audio;
+    };
+    const held = stalled();
+    await syncLivePlayback({
+      audio: held,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-held",
+      resumeAt: 0,
+      listenerPaused: true,
+    });
+    expect(held.state.plays).toBe(0);
+    expect(held.state.currentTime).toBe(11);
+    const audio = stalled();
+    await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-stall",
+      resumeAt: 0,
+    });
+    expect(audio.state.plays).toBe(1);
+    expect(audio.state.currentTime).toBe(11);
   });
 });
