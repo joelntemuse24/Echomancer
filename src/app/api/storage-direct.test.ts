@@ -198,8 +198,38 @@ describe("GET /api/storage direct R2", () => {
     );
     expect(segment.status).toBe(200);
     expect(segment.headers.get("content-type")).toBe("audio/mpeg");
-    expect(segment.headers.get("cache-control")).toBe("no-store");
+    expect(segment.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
     expect(directObjectUrl).not.toHaveBeenCalled();
+  });
+
+  it("serves a whole live segment, and an exact range as a 206", async () => {
+    const { uploadFile } = await import("@/lib/storage");
+    const { PLAYBACK_OPEN_RANGE_BYTES } = await import("@/lib/storage/byte-range");
+    const body = fakeMp3(PLAYBACK_OPEN_RANGE_BYTES + 100);
+    await uploadFile(`audiobooks/${JOB_A}/live`, "0001.mp3", body, "audio/mpeg");
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    await seedOwnedJob();
+    const open = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/live/0001.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "live", "0001.mp3"] })
+    );
+    expect(open.status).toBe(206);
+    expect(Number(open.headers.get("content-length"))).toBe(body.length);
+    expect(directObjectUrl).not.toHaveBeenCalled();
+
+    const exact = await GET(
+      await buildRequest(`/api/storage/audiobooks/${JOB_A}/live/0001.mp3`, {
+        userId: USER_A,
+        headers: { range: "bytes=0-99" },
+      }),
+      routeParams({ path: ["audiobooks", JOB_A, "live", "0001.mp3"] })
+    );
+    expect(exact.status).toBe(206);
+    expect(Number(exact.headers.get("content-length"))).toBe(100);
+    expect(exact.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
   });
 
   it("redirects a request with no range to R2", async () => {

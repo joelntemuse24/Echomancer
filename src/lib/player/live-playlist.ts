@@ -2,7 +2,16 @@ export const HLS_PLAYLIST_CONTENT_TYPE = "application/vnd.apple.mpegurl";
 
 /** The rolling playlist and its segment files. These stay on the app origin. */
 export function isLivePlaybackObject(storagePath: string): boolean {
-  return storagePath.endsWith("/live.m3u8") || /\/live\/\d{4}\.mp3$/.test(storagePath);
+  return isLivePlaylist(storagePath) || isLiveSegment(storagePath);
+}
+
+export function isLivePlaylist(storagePath: string): boolean {
+  return storagePath.endsWith("/live.m3u8");
+}
+
+/** `audiobooks/<job>/live/NNNN.mp3`. Immutable once written. */
+export function isLiveSegment(storagePath: string): boolean {
+  return /\/live\/\d{4}\.mp3$/.test(storagePath);
 }
 
 export type LiveSegment = { uri: string; seconds: number };

@@ -268,7 +268,7 @@ async function extendBody(opts: {
         );
         await publishSegment(opts.jobId, remote, delta, abort.signal);
       }
-      if (opts.flush) await writePlaylistEnd(opts.jobId, abort.signal);
+      if (opts.flush) await writePlaylistEnd(opts.jobId, published, abort.signal);
     } catch (err) {
       aborted = abort.signal.aborted || (err instanceof Error && err.name === "AbortError");
       if (aborted) throw leaseLost();
@@ -380,10 +380,43 @@ async function writePlaylist(
   });
 }
 
-async function writePlaylistEnd(jobId: string, signal: AbortSignal): Promise<void> {
+/**
+ * A crash after the `full.mp3` PUT and before the playlist write leaves the
+ * object longer than `#ECH-BYTES` (or with no playlist). The next publish,
+ * including a final flush whose delta is empty, rebuilds the missing tail
+ * before `#EXT-X-ENDLIST`.
+ */
+export async function repairPublishedPlaylist(
+  jobId: string,
+  published: Buffer,
+  signal: AbortSignal = new AbortController().signal,
+  complete = false
+): Promise<void> {
+  if (published.length === 0 || remoteIsFinishedBook(published)) return;
   const existing = await readPlaylist(jobId);
-  if (!existing) return;
-  await writePlaylist(jobId, existing.segments, existing.bytes ?? 0, true, signal);
+  const aligned =
+    existing != null && existing.bytes === published.length && existing.segments.length > 0;
+  if (aligned && (!complete || existing.complete)) return;
+  let segments = existing?.segments ?? [];
+  if (!aligned) {
+    const files = await loadLiveFiles(jobId);
+    const planned = planLiveSegments(published, Buffer.alloc(0), files);
+    if (planned.length === 0) return;
+    segments = [];
+    for (const segment of planned) {
+      if (segment.write) {
+        await uploadFile(`audiobooks/${jobId}`, segment.uri, segment.bytes, "audio/mpeg", {
+          abortSignal: signal,
+        });
+      }
+      segments.push({ uri: segment.uri, seconds: await segmentSeconds(segment.bytes) });
+    }
+  }
+  await writePlaylist(jobId, segments, published.length, complete, signal);
+}
+
+async function writePlaylistEnd(jobId: string, published: Buffer, signal: AbortSignal): Promise<void> {
+  await repairPublishedPlaylist(jobId, published, signal, true);
 }
 
 async function readPlaylist(jobId: string) {

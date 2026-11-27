@@ -18,6 +18,9 @@
  */
 export const PLAYBACK_CACHE_CONTROL = "private, max-age=3600";
 
+/** Live segments are written once. Chrome's media element fails on `no-store`. */
+export const LIVE_SEGMENT_CACHE_CONTROL = "private, max-age=31536000, immutable";
+
 /**
  * How much of an open-ended `Range: bytes=start-` playback may answer.
  *

@@ -12,7 +12,7 @@ import { open as openFile, readFile } from "fs/promises";
 import path from "path";
 import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
-import { isLivePlaybackObject } from "@/lib/player/live-playlist";
+import { isLivePlaybackObject, isLivePlaylist, isLiveSegment } from "@/lib/player/live-playlist";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { ownsStoragePath } from "@/lib/auth/guard";
 import { playbackRowAllows, readPlaybackGrant } from "@/lib/auth/playback-grant";
@@ -24,6 +24,7 @@ import {
   rateLimitIdentity,
 } from "@/lib/rate-limit";
 import {
+  LIVE_SEGMENT_CACHE_CONTROL,
   PLAYBACK_CACHE_CONTROL,
   RangeNotSatisfiableError,
   isAbortError,
@@ -89,7 +90,9 @@ function contentTypeForPath(storagePath: string, fallback?: string): string {
  * never offers Save, even when Content-Disposition says attachment.
  */
 function playbackCacheControl(storagePath: string): string | undefined {
-  return isLivePlaybackObject(storagePath) ? "no-store" : undefined;
+  if (isLivePlaylist(storagePath)) return "no-store";
+  if (isLiveSegment(storagePath)) return LIVE_SEGMENT_CACHE_CONTROL;
+  return undefined;
 }
 
 function contentTypeForDelivery(
@@ -289,7 +292,13 @@ export async function GET(
     // first window is another Range on the same URL (`bytes=262144-`, a
     // closed slice, or a tail probe). Redirecting that read is a network
     // error on the element.
-    const playbackRange = downloadName ? null : cappedPlaybackRange(rangeHeader);
+    // A live segment is one short file. The 256 KiB window would cut it, and
+    // Safari's HLS loader then plays a partial segment. An exact Range is a
+    // 206 of those bytes. No Range, or an open `bytes=start-`, is the rest
+    // of the object.
+    const liveSegment = isLiveSegment(storagePath);
+    const playbackRange =
+      downloadName || liveSegment ? null : cappedPlaybackRange(rangeHeader);
     const effectiveRange = playbackRange ?? rangeHeader;
 
     // The live playlist uses relative segment URIs. A 302 to R2 would make

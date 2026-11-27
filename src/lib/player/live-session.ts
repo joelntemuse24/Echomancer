@@ -270,14 +270,30 @@ async function syncOnce(opts: {
     const buffer = target.buffer;
     target.chain = target.chain
       .then(async () => {
+        const releaseUnplayed = (uri: string) => {
+          const at = target.reserved.indexOf(uri);
+          if (at < 0) return;
+          const drop = new Set(
+            target.reserved.slice(at).filter((item) => !target.appended.includes(item))
+          );
+          target.reserved = target.reserved.filter((item) => !drop.has(item));
+        };
         for (const uri of next) {
           if (target.appended.includes(uri)) continue;
-          const absolute = new URL(uri, opts.playlistUrl).toString();
-          const part = await fetch(absolute, { credentials: "same-origin", cache: "no-store" });
-          if (!part.ok) return;
-          await appendChunk(buffer, new Uint8Array(await part.arrayBuffer()), opts.audio);
-          target.appended.push(uri);
-          maybeResume(opts.audio, target);
+          try {
+            const absolute = new URL(uri, opts.playlistUrl).toString();
+            const part = await fetch(absolute, { credentials: "same-origin" });
+            if (!part.ok) {
+              releaseUnplayed(uri);
+              return;
+            }
+            await appendChunk(buffer, new Uint8Array(await part.arrayBuffer()), opts.audio);
+            target.appended.push(uri);
+            maybeResume(opts.audio, target);
+          } catch {
+            releaseUnplayed(uri);
+            return;
+          }
         }
         if (playlist.complete) finish(target, opts.audio);
       })

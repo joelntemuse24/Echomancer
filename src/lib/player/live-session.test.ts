@@ -206,4 +206,38 @@ describe("syncLivePlayback", () => {
     expect(buffer.removes).toEqual([70]);
     expect(buffer.appends).toHaveLength(1);
   });
+
+  it("releases a segment reservation when the fetch fails, then retries it", async () => {
+    const audio = fakeAudio();
+    const buffer = new FakeBuffer(audio);
+    installSource(buffer);
+    const playlist = hlsEventPlaylist(
+      [
+        { uri: "live/0000.mp3", seconds: 4 },
+        { uri: "live/0001.mp3", seconds: 4 },
+      ],
+      40,
+      false
+    );
+    let segmentFetches = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      segmentFetches += 1;
+      if (segmentFetches === 1) return new Response(null, { status: 500 });
+      if (segmentFetches === 2) throw new Error("network");
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const opts = {
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-retry",
+      resumeAt: 0,
+    };
+    await syncLivePlayback(opts);
+    expect(buffer.appends).toHaveLength(0);
+    await syncLivePlayback(opts);
+    expect(buffer.appends).toHaveLength(0);
+    await syncLivePlayback(opts);
+    expect(buffer.appends).toHaveLength(2);
+  });
 });

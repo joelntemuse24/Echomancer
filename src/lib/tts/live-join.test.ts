@@ -11,7 +11,7 @@ import {
   publishedPrefix,
   type LiveJoinCursor,
 } from "@/lib/tts/section-master";
-import { cursorAfterFold, foldSectionStarts } from "@/lib/tts/live-join";
+import { cursorAfterFold, foldSectionStarts, repairPublishedPlaylist } from "@/lib/tts/live-join";
 import { spawnFfmpeg } from "@/lib/tts/stream-finalize";
 
 async function sine(file: string, frequency: number): Promise<void> {
@@ -31,6 +31,10 @@ async function sine(file: string, frequency: number): Promise<void> {
       "-b:a",
       "128k",
       "-write_xing",
+      "0",
+      "-id3v2_version",
+      "0",
+      "-write_id3v1",
       "0",
       file,
     ],
@@ -217,4 +221,54 @@ describe("incremental mastered join", () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 180_000);
+
+  it("repairs a playlist that lags full.mp3 before writing ENDLIST", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "live-repair-"));
+    try {
+      const firstFile = path.join(root, "a.mp3");
+      const secondFile = path.join(root, "b.mp3");
+      await sine(firstFile, 220);
+      await sine(secondFile, 440);
+      const first = await readFile(firstFile);
+      const second = await readFile(secondFile);
+      const full = Buffer.concat([first, second]);
+      const { uploadFile, downloadFile } = await import("@/lib/storage");
+      const { hlsEventPlaylist, readHlsPlaylist } = await import("@/lib/player/live-playlist");
+      const jobId = "live-repair-lag";
+      await uploadFile(`audiobooks/${jobId}/live`, "0000.mp3", first, "audio/mpeg");
+      await uploadFile(
+        `audiobooks/${jobId}`,
+        "live.m3u8",
+        Buffer.from(
+          hlsEventPlaylist([{ uri: "live/0000.mp3", seconds: 5 }], first.length, false)
+        ),
+        "application/vnd.apple.mpegurl"
+      );
+      await repairPublishedPlaylist(jobId, full, new AbortController().signal, true);
+      const playlist = readHlsPlaylist(
+        (await downloadFile(`audiobooks/${jobId}/live.m3u8`)).toString("utf8")
+      );
+      expect(playlist.complete).toBe(true);
+      expect(playlist.bytes).toBe(full.length);
+      expect(playlist.segments.map((segment) => segment.uri)).toEqual([
+        "live/0000.mp3",
+        "live/0001.mp3",
+      ]);
+      expect((await downloadFile(`audiobooks/${jobId}/live/0000.mp3`)).equals(first)).toBe(true);
+      expect((await downloadFile(`audiobooks/${jobId}/live/0001.mp3`)).equals(second)).toBe(true);
+
+      const missingId = "live-repair-missing";
+      await uploadFile(`audiobooks/${missingId}`, "full.mp3", first, "audio/mpeg");
+      await repairPublishedPlaylist(missingId, first, new AbortController().signal, true);
+      const created = readHlsPlaylist(
+        (await downloadFile(`audiobooks/${missingId}/live.m3u8`)).toString("utf8")
+      );
+      expect(created.complete).toBe(true);
+      expect(created.bytes).toBe(first.length);
+      expect(created.segments.map((segment) => segment.uri)).toEqual(["live/0000.mp3"]);
+      expect((await downloadFile(`audiobooks/${missingId}/live/0000.mp3`)).equals(first)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
