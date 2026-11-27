@@ -10,11 +10,10 @@
  * - **a validity check**, so a garbage outline can be rejected by a caller that
  *   would otherwise store it.
  *
- * There is no model call here any more. The OpenRouter chapter detector, the
- * embedding topic placer, and the candidate-index chooser all existed to guess
- * structure that the source already had — and the corpus showed them replacing a
- * correct 65-chapter outline with a 1-chapter one. A book with no markers now
- * gets labelled length parts instead.
+ * An optional OpenRouter verifier (`CHAPTER_LLM=1`) may label mid-score layout
+ * lines after the deterministic pass. It does not write titles, and a reply
+ * that drops high-confidence headings is discarded. The old detector that
+ * replaced a 65-chapter outline with one chapter is not this call.
  */
 
 import {
@@ -24,6 +23,7 @@ import {
   resolveChapters,
   resolveChaptersWithClassifier,
 } from "@/lib/book-chapters";
+import { maybeVerifyChapters } from "@/lib/chapter-llm";
 import { classifierEnabled } from "@/lib/chapter-classifier";
 import type { ExtractHost } from "@/lib/uploads/extract-route";
 
@@ -37,6 +37,7 @@ export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument):
       "docx-heading",
       "html-heading",
       "heading-lines",
+      "layout",
       "sections",
     ].includes(doc.source)
   ) {
@@ -77,8 +78,11 @@ export async function resolveChaptersForBook(
   opts?: { host?: ExtractHost }
 ): Promise<ChaptersDocument> {
   const sync = resolveChapters(spoken, hint);
-  if (!classifierEnabled()) return sync;
-  if (opts?.host !== "node") return sync;
+  const verified = await maybeVerifyChapters(spoken, hint, sync).catch(() => sync);
+  if (!classifierEnabled()) return verified;
+  if (opts?.host !== "node") return verified;
+  // The classifier only rewrites heading-line books. A layout outline stays.
+  if (verified.source !== "heading-lines") return verified;
   const refined = await resolveChaptersWithClassifier(spoken, hint).catch(() => null);
-  return refined?.doc ?? sync;
+  return refined?.doc ?? verified;
 }

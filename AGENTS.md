@@ -1468,13 +1468,34 @@ lookup is O(entries + paragraphs): `chaptersFromPrintedToc` cleans and
 heading-normalises each paragraph once and reuses the arrays, which took a
 1.2M-character book from ~3.4s to ~150ms.
 
-**There is no model in the chapter path.** The OpenRouter detector, the
-embedding topic placer, and the candidate chooser are gone: they existed to
-guess structure the source already had, and the corpus showed them replacing a
-correct 65-chapter outline with a 1-chapter one. A book with no markers gets
-labelled length parts (`source: "sections"`). The optional local classifier
-(`CHAPTER_CLASSIFIER=1`) is the only model, it runs on the CPU, and it only
-vetoes markers the rules already accepted.
+**A trusted outline is used only when it validates.** EPUB nav, a PDF outline,
+and DOCX/HTML headings must resolve into the body in page order. An outline
+whose entries all sit on page 1, or that jumps backwards, is ignored.
+`src/lib/chapter-layout.ts` then reads one pass of line features (size against
+the character-weighted body size, gaps, bold when the font name says so,
+page position). A contents page is the outline only when at least 90% of its
+entries land on body lines, and the title stored is that body line. Otherwise
+a layout score and the existing heading patterns decide, including a search
+for a missing number in a run such as 1–6 and 8. Subsections nest under the
+top tier. Front and back matter (contents, copyright, dedication, notes,
+bibliography, index, about the author) is not listed as a chapter. Each
+chapter's `charStart` is an offset into the speakable text, found while the
+line is in hand. One unlabelled chapter on a long book — the bookmark-less
+PDF that used to be titled "Methods" — becomes length parts (`Part 1`…`N`),
+never that line's text.
+
+**The optional verifier does not write titles.** `CHAPTER_LLM=1` sends
+mid-score line ids, features, and about fifteen words of context to
+`CHAPTER_LLM_MODEL` (default `google/gemini-2.5-flash-lite`) through the
+existing OpenRouter chat helper. The reply may only label those ids
+`heading`, `not_heading`, or `unsure`. Unknown ids or broken JSON are
+discarded. If the reply rejects more than a fifth of the high-confidence
+lines, or swings the chapter count, the deterministic outline stands. The
+call is capped at 8 seconds. Off, the result is the same as the score. The
+old model that replaced a 65-chapter outline is not this call. A book with
+no markers still gets labelled length parts (`source: "sections"`). The
+optional local classifier (`CHAPTER_CLASSIFIER=1`) still only vetoes
+heading-line markers the rules already accepted.
 
 **The top level of the outline is the chapter list.** `src/lib/chapter-levels.ts`
 decides, from the source's own evidence: its nesting, else sub-section numbering
@@ -1702,6 +1723,8 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # LISTEN_PREP_GLOBAL_CONCURRENCY=20 # requests in flight across books on the worker
 # LISTEN_PREP_CHUNK_TIMEOUT_MS=20000 # per attempt, 1s–120s. One retry after ~2.5s on 429 or 5xx.
 # CHAPTER_CLASSIFIER=1 # optional local zero-shot model for borderline plain-text heading lines. CPU, ~13 ms/line. Vetoes only.
+# CHAPTER_LLM=1 # optional. Mid-score layout lines only, via OpenRouter. Titles stay the body line. Off: deterministic.
+# CHAPTER_LLM_MODEL=google/gemini-2.5-flash-lite
 # CHAPTER_CLASSIFIER_VETO_BELOW=0.22 # heading score below which an accepted marker is dropped
 # CHAPTER_CLASSIFIER_PROMOTE_ABOVE=0.72 # score above which a rejected line is added (needs CHAPTER_CLASSIFIER_PROMOTE=1)
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.

@@ -13,12 +13,14 @@
  */
 
 import type { ChapterHint, ChapterSource } from "@/lib/book-chapters";
+import type { LayoutFeatures, LayoutLine } from "@/lib/chapter-layout";
 
 export const OUTLINE_JSON_NAME = "outline.json";
 export const OUTLINE_VERSION = 1;
 
 const SOURCES: readonly ChapterSource[] = [
   "heading-lines",
+  "layout",
   "pdf-outline",
   "epub-spine",
   "docx-heading",
@@ -84,11 +86,43 @@ export function parseOutline(raw: string): ChapterHint | null {
     }
   }
 
-  return {
+  const parsedHint: ChapterHint = {
     source: source as ChapterSource,
     titles,
     ...(isNumberArray(h.pageStarts) ? { pageStarts: h.pageStarts } : {}),
     ...(isStringArray(h.tocLines) ? { tocLines: h.tocLines } : {}),
     ...(isStringArray(h.pageProbes) ? { pageProbes: h.pageProbes } : {}),
   };
+  const layout = parseLayout(h.layout);
+  if (layout) parsedHint.layout = layout;
+  return parsedHint;
+}
+
+function parseLayout(value: unknown): LayoutFeatures | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.bodySize !== "number" || typeof record.pageCount !== "number") return undefined;
+  if (!Array.isArray(record.lines)) return undefined;
+  const lines: LayoutLine[] = [];
+  for (const row of record.lines) {
+    if (!row || typeof row !== "object") continue;
+    const line = row as Record<string, unknown>;
+    if (typeof line.text !== "string" || typeof line.page !== "number" || typeof line.size !== "number") {
+      continue;
+    }
+    lines.push({
+      text: line.text,
+      page: line.page,
+      size: line.size,
+      y: typeof line.y === "number" ? line.y : 0,
+      ...(line.bold === true ? { bold: true } : {}),
+      ...(line.centered === true ? { centered: true } : {}),
+      ...(typeof line.gapAbove === "number" ? { gapAbove: line.gapAbove } : {}),
+      ...(line.first === true ? { first: true } : {}),
+      ...(typeof line.context === "string" ? { context: line.context } : {}),
+    });
+    if (lines.length >= 4000) break;
+  }
+  if (lines.length === 0) return undefined;
+  return { bodySize: record.bodySize, pageCount: record.pageCount, lines };
 }
