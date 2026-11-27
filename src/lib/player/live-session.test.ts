@@ -4,6 +4,7 @@ import {
   liveAttachToken,
   releaseLiveSession,
   retargetLiveResume,
+  setLivePlayIntent,
   syncLivePlayback,
 } from "@/lib/player/live-session";
 
@@ -653,6 +654,97 @@ describe("syncLivePlayback", () => {
     expect(landed.attached).toBe(true);
     expect(audio.state.currentTime).toBe(80);
     expect(audio.state.plays).toBe(0);
+  });
+
+  it("a departure on one book does not block the next book", async () => {
+    const audio = fakeAudio();
+    audio.paused = false;
+    installSource(new FakeBuffer(audio));
+    const playlist = hlsEventPlaylist(
+      [
+        { uri: "live/0000.mp3", seconds: 12 },
+        { uri: "live/0001.mp3", seconds: 78 },
+      ],
+      100,
+      false
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const first = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/book-a/live.m3u8",
+      jobId: "book-a",
+      resumeAt: 40,
+      play: true,
+    });
+    expect(first.attached).toBe(true);
+    setLivePlayIntent(audio, false);
+    releaseLiveSession(audio, 200);
+    audio.src = "https://app.test/api/storage/audiobooks/book-a/sections/0004.mp3";
+    audio.state.currentTime = 0;
+    const plays = audio.state.plays;
+    const next = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/book-b/live.m3u8",
+      jobId: "book-b",
+      resumeAt: 40,
+      play: true,
+    });
+    expect(next.attached).toBe(true);
+    expect(audio.state.currentTime).toBe(40);
+    expect(audio.state.plays).toBe(plays + 1);
+    expect(audio.src.startsWith("blob:")).toBe(true);
+  });
+
+  it("a book switch during a playlist fetch does not attach the book that was left", async () => {
+    const audio = fakeAudio();
+    audio.paused = true;
+    audio.src = "https://app.test/api/storage/audiobooks/book-b/sections/0000.mp3";
+    installSource(new FakeBuffer(audio));
+    let releaseFetch: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const playlist = hlsEventPlaylist(
+      [
+        { uri: "live/0000.mp3", seconds: 12 },
+        { uri: "live/0001.mp3", seconds: 78 },
+      ],
+      100,
+      false
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) {
+        await gate;
+        return new Response(playlist, { status: 200 });
+      }
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const pendingA = syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/book-a/live.m3u8",
+      jobId: "book-a",
+      resumeAt: 40,
+      play: true,
+    });
+    releaseLiveSession(audio, 200);
+    const pendingB = syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/book-b/live.m3u8",
+      jobId: "book-b",
+      resumeAt: 40,
+      play: false,
+    });
+    releaseFetch();
+    const left = await pendingA;
+    const next = await pendingB;
+    expect(left.attached).toBe(false);
+    expect(next.attached).toBe(true);
+    expect(audio.state.currentTime).toBe(40);
+    expect(audio.state.plays).toBe(0);
+    expect(audio.src.startsWith("blob:")).toBe(true);
   });
 
   it("restores a refresh from a part-local save without starting playback", async () => {

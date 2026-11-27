@@ -56,6 +56,7 @@ type Session = {
   complete: boolean;
   closed: boolean;
   revoked: boolean;
+  onGrow?: () => void;
   onEnd?: () => void;
 };
 
@@ -63,12 +64,14 @@ const sessions = new WeakMap<HTMLAudioElement, Session>();
 const turns = new WeakMap<HTMLAudioElement, Promise<unknown>>();
 /** Bumped by every release, including one that finds no session yet. */
 const attachTokens = new WeakMap<HTMLAudioElement, number>();
+/** The job the element is polling. A different job invalidates the previous poll. */
+const activeJob = new WeakMap<HTMLAudioElement, string>();
 /**
- * Book time a navigation left the live element for. A later poll must not
- * attach at an older playhead, and must not attach until the playlist
- * covers this time.
+ * Book time a navigation left the live element for, for that job only.
+ * A later poll of the same job must not attach at an older playhead, and
+ * must not attach until the playlist covers this time.
  */
-const departedAt = new WeakMap<HTMLAudioElement, number>();
+const departedAt = new WeakMap<HTMLAudioElement, { jobId: string; at: number }>();
 
 export function liveSessionAttached(audio: HTMLAudioElement | null): boolean {
   return Boolean(audio && sessions.has(audio));
@@ -125,14 +128,27 @@ function mayRestart(session: Session, listenerPaused: boolean, requested: boolea
 export function releaseLiveSession(audio: HTMLAudioElement | null, leftAt?: number): void {
   if (!audio) return;
   bumpAttachToken(audio);
-  if (typeof leftAt === "number" && Number.isFinite(leftAt)) {
-    departedAt.set(audio, Math.max(0, leftAt));
-  }
   const session = sessions.get(audio);
+  const jobId = session?.jobId ?? activeJob.get(audio);
+  if (typeof leftAt === "number" && Number.isFinite(leftAt) && jobId) {
+    departedAt.set(audio, { jobId, at: Math.max(0, leftAt) });
+  }
   if (!session) return;
-  sessions.delete(audio);
-  detachEnd(audio, session);
-  revokeBlob(session);
+  dropSession(audio, session);
+}
+
+/** The element is now playing a different book. The previous book's poll, departure, and pause do not apply. */
+function adoptJob(audio: HTMLAudioElement, jobId: string): void {
+  const previous = activeJob.get(audio);
+  if (previous === jobId) return;
+  if (previous != null) {
+    bumpAttachToken(audio);
+    const left = departedAt.get(audio);
+    if (!left || left.jobId !== jobId) departedAt.delete(audio);
+    const session = sessions.get(audio);
+    if (session && session.jobId !== jobId) dropSession(audio, session);
+  }
+  activeJob.set(audio, jobId);
 }
 
 function staleAttach(audio: HTMLAudioElement, token: number): boolean {
@@ -149,11 +165,7 @@ function abandonStaleAttach(
   assignedUrl: string | null,
   previousSrc: string
 ): void {
-  if (session && sessions.get(audio) === session) {
-    sessions.delete(audio);
-    detachEnd(audio, session);
-    revokeBlob(session);
-  }
+  if (session && sessions.get(audio) === session) dropSession(audio, session);
   if (assignedUrl && audio.src === assignedUrl) audio.src = previousSrc;
 }
 
@@ -270,12 +282,33 @@ function maybeResume(audio: HTMLAudioElement, session: Session): void {
 function watchResume(audio: HTMLAudioElement, session: Session): void {
   if (session.watching) return;
   session.watching = true;
-  const onGrow = () => maybeResume(audio, session);
+  const onGrow = () => {
+    if (sessions.get(audio) !== session) return;
+    maybeResume(audio, session);
+  };
+  session.onGrow = onGrow;
   audio.addEventListener("loadedmetadata", onGrow);
   audio.addEventListener("canplay", onGrow);
   audio.addEventListener("durationchange", onGrow);
   audio.addEventListener("progress", onGrow);
   onGrow();
+}
+
+function unwatch(audio: HTMLAudioElement, session: Session): void {
+  if (!session.onGrow) return;
+  audio.removeEventListener("loadedmetadata", session.onGrow);
+  audio.removeEventListener("canplay", session.onGrow);
+  audio.removeEventListener("durationchange", session.onGrow);
+  audio.removeEventListener("progress", session.onGrow);
+  session.onGrow = undefined;
+  session.watching = false;
+}
+
+function dropSession(audio: HTMLAudioElement, session: Session): void {
+  if (sessions.get(audio) === session) sessions.delete(audio);
+  unwatch(audio, session);
+  detachEnd(audio, session);
+  revokeBlob(session);
 }
 
 function detachEnd(audio: HTMLAudioElement, session: Session): void {
@@ -378,15 +411,27 @@ export function syncLivePlayback(opts: {
   complete: boolean;
   transport: LiveTransport | null;
 }> {
+  adoptJob(opts.audio, opts.jobId);
   const token = liveAttachToken(opts.audio);
   return serial(opts.audio, () => syncOnce(opts, token));
 }
 
-function leftBehind(audio: HTMLAudioElement, resumeAt: number, playlistSeconds: number): boolean {
+function leftBehind(
+  audio: HTMLAudioElement,
+  jobId: string,
+  resumeAt: number,
+  playlistSeconds: number
+): boolean {
   const left = departedAt.get(audio);
-  if (left != null && resumeAt + 0.25 < left) return true;
-  const gate = left != null ? Math.max(resumeAt, left) : resumeAt;
+  const same = left != null && left.jobId === jobId;
+  if (same && resumeAt + 0.25 < left.at) return true;
+  const gate = same ? Math.max(resumeAt, left.at) : resumeAt;
   return !liveAttachAllowed(gate, playlistSeconds);
+}
+
+function clearDeparture(audio: HTMLAudioElement, jobId: string): void {
+  const left = departedAt.get(audio);
+  if (left && left.jobId === jobId) departedAt.delete(audio);
 }
 
 async function syncOnce(
@@ -436,13 +481,15 @@ async function syncOnce(
   }
   let session = current;
   if (session && session.jobId !== opts.jobId) {
-    sessions.delete(opts.audio);
+    dropSession(opts.audio, session);
+    const left = departedAt.get(opts.audio);
+    if (left && left.jobId !== opts.jobId) departedAt.delete(opts.audio);
     session = undefined;
   }
   if (!session) {
     const resumeAt = Number.isFinite(opts.resumeAt) ? Math.max(0, opts.resumeAt) : 0;
     const covered = playlistDurationSeconds(playlist.segments);
-    if (leftBehind(opts.audio, resumeAt, covered)) {
+    if (leftBehind(opts.audio, opts.jobId, resumeAt, covered)) {
       return { attached: false, url: null, complete: playlist.complete, transport: null };
     }
     if (staleAttach(opts.audio, token)) return missed();
@@ -479,7 +526,7 @@ async function syncOnce(
         abandonStaleAttach(opts.audio, session, opts.playlistUrl, previousSrc);
         return missed();
       }
-      departedAt.delete(opts.audio);
+      clearDeparture(opts.audio, opts.jobId);
       watchResume(opts.audio, session);
       if (!playlist.complete && mayRestart(session, listenerPaused, opts.play)) {
         resumeIfStalled(opts.audio, listenerPaused, false);
@@ -536,7 +583,7 @@ async function syncOnce(
       abandonStaleAttach(opts.audio, session, url, previousSrc);
       return missed();
     }
-    departedAt.delete(opts.audio);
+    clearDeparture(opts.audio, opts.jobId);
     watchResume(opts.audio, session);
   } else if (staleAttach(opts.audio, token)) {
     return missed();
