@@ -185,6 +185,33 @@ describe("remote book path", () => {
     expect(kicks).toEqual([]);
   });
 
+  it("stops the book when control names another protocol", async () => {
+    const kicks: string[] = [];
+    setModalCloneWarmSpawnerForTests(() => {
+      kicks.push("cover");
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: () => "A short section.",
+      lanes: 1,
+      batch: 4,
+      maxLaneChars: 8_000,
+      seedEpoch: 0,
+      jobId: "book-protocol",
+      bookWave: true,
+      render: async () => {
+        throw new S2ProtocolMismatch("legacy-sync");
+      },
+      stage: async () => {},
+    });
+    expect(result.controlRejected).toContain("legacy-sync");
+    expect(result.staged).toBe(0);
+    expect(result.cold).toBe(false);
+    expect(result.providerFault).toBeNull();
+    expect(result.held).toBe(false);
+    expect(kicks).toEqual([]);
+  });
+
   it("cancels the stored call through POST /drain and does not brake while another book is live", async () => {
     const cancelled: string[] = [];
     let braked = false;

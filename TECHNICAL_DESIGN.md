@@ -3527,8 +3527,10 @@ answering, so nothing was spawned. Those responses retry only inside the
 `failed` and the book is `failed` with "The voice engine didn't start.
 Try again." A processing book with no section would otherwise keep
 showing "Starting the clone voice…". Reconcile and drain resolve a key that has
-no stored id the same way. The GPU post is used when the URL is unset, or
-when the control body names a different protocol. A `{text}` post stays on
+no stored id the same way. The GPU post is used only when the control URL is unset. A control body
+that names a different protocol stops the book and is not posted to the
+GPU. A `{text}` body is rejected while control is set; the caller sends
+a one-row batch. With control unset, `{text}` still posts
 `MODAL_S2_SYNTHESIZE_URL`. A body that already contains `items` inside the
 accept window is still the finished audio.
 
