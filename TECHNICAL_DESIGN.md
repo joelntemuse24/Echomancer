@@ -2988,9 +2988,11 @@ playing, or the listener has seeked since the last confirmed write, it
 retries the live playhead once. If it is idle, it seeks to the returned
 row. A rejected position is not stored as the winner. A timestamp a 200
 has confirmed is never replaced by an older one. The stored number is the
-book clock when the part on screen is inside the contiguous ready prefix.
-A ready part after a hole keeps that part's own clock for skip, the
-scrubber, focus mode, and the lock screen. A finished book within 10
+book clock for every section file. A ready part after a hole uses the
+average length of the parts already measured, so its offset is book time
+and not the file's own 0:00. That start stays pinned while the part plays,
+so a later measurement does not move the clock. Skip, the scrubber, focus
+mode, and the lock screen use the same clock. A finished book within 10
 seconds of the end is stored as 0. A book still generating clamps to the
 audio that exists. A failed book does not restore. Reopening seeks to that
 time and does not press play. An explicit seek is kept. The library line
@@ -3059,9 +3061,14 @@ and keep playing. A listener already playing a section is
 handed over at that section's offset plus the element's current time, and
 stays playing. A Parts tap or a scrub seeks inside the bytes already appended.
 Sequence mode reports `duration` as Infinity, so that check uses the
-buffered end. Past those bytes the section file plays. A later poll keeps that file
+buffered end. Past those bytes the section file plays, and the clock is
+that part's book offset plus the file's current time. A later poll keeps that file
 when the listener just chose it, at any book time, and when the book time
-is past the buffered end. The short prefix still attaches only for a
+is past the buffered end. When the file ends, the next ready part starts
+at that book time and keeps playing. If the next part is not ready and the
+live element already has that time, playback joins the live element there
+instead of pausing at 0:00. Play pressed at the end of the bytes already
+appended stays on that end. The short prefix still attaches only for a
 section they did not just choose, so the element is not put back at 0:00. The append window stays a short
 stretch ahead of the playhead and grows on `timeupdate`. A segment fetch
 or `appendBuffer` that does not finish is aborted, and one hung job poll

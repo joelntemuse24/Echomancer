@@ -40,7 +40,7 @@ import {
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { advanceAfterSection, continuePastPublishedPrefix, readySnapshotHandoff } from "@/lib/player/section-advance";
 import { growingFileDuration } from "@/lib/player/growing-file";
-import { chooseLivePart, liveAttachResumeAt, liveChapterSeek, liveReadyTransition, seekTargetIfCovered } from "@/lib/player/live-playlist";
+import { chooseLivePart, liveAttachResumeAt, liveChapterSeek, liveEdgeSeconds, liveReadyTransition, restoreLiveEdge, seekTargetIfCovered } from "@/lib/player/live-playlist";
 import { liveAttachToken, liveBufferedSeconds, liveSessionAttached, releaseLiveSession, retargetLiveResume, setLivePlayIntent, syncLivePlayback } from "@/lib/player/live-session";
 import { acceptJobPoll, commitUserStop, generationStatus } from "@/lib/player/generation-status";
 import { nextPlayableIndex } from "@/lib/tts/section-index";
@@ -97,12 +97,14 @@ import {
   elementClockOffset,
   bookmarkClockLabel,
   bookmarkOnAbsoluteClock,
-  contiguousSpans,
   placeOnTimeline,
   positionToPersist,
   resumeTickAllowed,
+  sectionBookSpans,
+  sectionFileSeconds,
   sectionOnBookClock,
   snapshotForPersist,
+  withPinnedStart,
   shouldApplyDetailSeek,
   sortBookmarksByClock,
   type ResumeSaveReason,
@@ -374,6 +376,10 @@ function PlayerPageInner({ id }: { id: string }) {
   /** Last seek this page asked for, so a reload never returns to the old spot. */
   const lastRequestedSeekRef = useRef<number | null>(null);
   const waitingForNextRef = useRef(false);
+  /** Start of the section file now playing. A later hole measurement does not move it. */
+  const [pinnedStart, setPinnedStart] = useState<{ index: number; start: number } | null>(null);
+  /** Play at the generated edge. A restart that slips backward is put back. */
+  const edgeHoldRef = useRef<number | null>(null);
   const storageReloadRef = useRef(0);
   const heardPlayingRef = useRef(false);
   /**
@@ -394,6 +400,7 @@ function PlayerPageInner({ id }: { id: string }) {
     setShowTranscript(false);
     // Focus mode is a remembered preference, so a different book keeps it.
     waitingForNextRef.current = false;
+    setPinnedStart(null);
     setStreamConn(null);
     setHeldStreamChar(null);
     setError(null);
@@ -426,7 +433,10 @@ function PlayerPageInner({ id }: { id: string }) {
   const resumeEnabled =
     playbackAllowed(job?.status) && job?.job_kind !== "stream" && !forceStream;
   const playbackResume = usePlaybackResume(id, resumeEnabled);
-  const spans = useMemo(() => contiguousSpans(job?.segments ?? []), [job?.segments]);
+  const spans = useMemo(
+    () => withPinnedStart(sectionBookSpans(job?.segments ?? []), pinnedStart),
+    [job?.segments, pinnedStart]
+  );
   const spansRef = useRef<SectionSpan[]>([]);
   spansRef.current = spans;
   const [scrubBookTime, setScrubBookTime] = useState<number | null>(null);
@@ -757,15 +767,29 @@ function PlayerPageInner({ id }: { id: string }) {
   // Polling for updates (adaptive, see below) - only re-render if data actually changed
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
+  const pinSection = (index: number, start: number) => {
+    if (!Number.isInteger(index) || index < 0 || !Number.isFinite(start)) return;
+    const pin = { index, start: Math.max(0, start) };
+    spansRef.current = withPinnedStart(sectionBookSpans(jobRef.current?.segments ?? []), pin);
+    setPinnedStart(pin);
+  };
   const readSnapshot = (reason: ResumeSaveReason) => {
     const audio = audioRef.current;
     const onSection = Boolean(audioUrlRef.current?.includes("/sections/"));
     const sectionIndex = onSection ? segmentIndexRef.current : null;
     const pending = pendingChapterSeekRef.current;
     const current = jobRef.current;
+    const rawTime = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const currentTime = onSection
+      ? sectionFileSeconds({
+          elementSeconds: rawTime,
+          elementDuration: audio && Number.isFinite(audio.duration) ? audio.duration : 0,
+          ended: Boolean(audio?.ended),
+        })
+      : rawTime;
     return snapshotForPersist({
       reason,
-      currentTime: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+      currentTime,
       readyState: audio?.readyState ?? 0,
       ended: Boolean(audio?.ended),
       pendingActive: pending != null,
@@ -1252,6 +1276,19 @@ function PlayerPageInner({ id }: { id: string }) {
       setDuration(effectiveDuration(raw));
     };
     const onTimeUpdate = () => {
+      const back = restoreLiveEdge(edgeHoldRef.current, audio.currentTime);
+      if (back != null) {
+        // One correction. Assigning currentTime can fire this listener again,
+        // and a seek the element will not take must not spin.
+        edgeHoldRef.current = null;
+        try {
+          audio.currentTime = back;
+        } catch {
+          /* the playhead stays where the element left it */
+        }
+        if (!isDraggingRef.current) setCurrentTime(back);
+        return;
+      }
       if (audio.currentTime > 0.5) {
         restoreLandedRef.current = true;
         const sought = lastRequestedSeekRef.current;
@@ -1371,33 +1408,45 @@ function PlayerPageInner({ id }: { id: string }) {
         }
         return;
       }
-      captureRef.current("track");
       if (
         audioUrlRef.current?.includes("/sections/") &&
         jobRef.current?.segments?.length
       ) {
         const current = segmentIndexRef.current;
+        const span = spansRef.current.find((item) => item.index === current);
+        const local = sectionFileSeconds({
+          elementSeconds: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+          elementDuration: Number.isFinite(audio.duration) ? audio.duration : 0,
+          ended: true,
+        });
+        const bookEnd = (span?.startSeconds ?? 0) + local;
         const step = advanceAfterSection({
           segments: jobRef.current.segments,
           from: current,
           status: jobRef.current.status,
         });
+        // A poll that is already in flight must not attach somewhere else.
+        releaseLiveSession(audio, bookEnd);
+        rememberBookRef.current(bookEnd, "track", null);
         if (step.action === "play") {
           waitingForNextRef.current = false;
-          const span = spansRef.current.find((item) => item.index === step.index);
+          pinSection(step.index, bookEnd);
           armPendingSeekRef.current({
             seconds: 0,
             fraction: 0,
-            bookSeconds: span ? span.startSeconds : null,
+            bookSeconds: bookEnd,
             sectionIndex: step.index,
           });
           setSegmentIndex(step.index);
+          setCurrentTime(0);
           playAfterLoadRef.current = true;
           setAudioUrl(withPlaybackGrant(`/api/storage/${step.path}`, jobRef.current.playback_grant));
         } else if (step.action === "wait") {
           waitingForNextRef.current = true;
+          setCurrentTime(local);
         }
       } else {
+        captureRef.current("track");
         const endedAt =
           Number.isFinite(audio.currentTime) && audio.currentTime > 0
             ? audio.currentTime
@@ -1544,8 +1593,25 @@ function PlayerPageInner({ id }: { id: string }) {
       return;
     }
     listenerPausedRef.current = false;
+    const edge = liveSessionAttached(audio)
+      ? liveEdgeSeconds(audio.currentTime, liveBufferedSeconds(audio))
+      : null;
+    edgeHoldRef.current = edge;
+    if (edge != null && (audio.ended || audio.currentTime + 0.5 < edge)) {
+      try {
+        audio.currentTime = edge;
+      } catch {
+        /* timeupdate puts a slipped playhead back */
+      }
+    }
+    if (edge != null) retargetLiveResume(audio, edge, true);
     setLivePlayIntent(audio, true);
     startAudio(audio);
+    if (edge != null) {
+      window.setTimeout(() => {
+        if (edgeHoldRef.current === edge) edgeHoldRef.current = null;
+      }, 2000);
+    }
   };
 
   const isStreamMode = forceStream || job?.job_kind === "stream";
@@ -1607,16 +1673,28 @@ function PlayerPageInner({ id }: { id: string }) {
   const onSectionFile = Boolean(audioUrl?.includes("/sections/"));
   const bookClock =
     onSectionFile && sectionOnBookClock(spans, segmentIndex) && !isStreamMode;
+  const chaining =
+    pendingChapterSeekRef.current?.seconds === 0 &&
+    pendingChapterSeekRef.current.sectionIndex != null;
+  const sectionLocal = onSectionFile
+    ? sectionFileSeconds({
+        elementSeconds: currentTime,
+        elementDuration: duration,
+        ended: Boolean(audioRef.current?.ended) && !chaining,
+      })
+    : currentTime;
   const bookNow = bookClock
     ? bookTimeFromElement({
         mode: "section",
-        elementSeconds: currentTime,
+        elementSeconds: sectionLocal,
         sectionIndex: segmentIndex,
         spans,
       }).seconds
     : currentTime;
   const fileDuration = duration > 0 ? duration : (job?.duration_seconds ?? 0);
-  const bookDuration = bookClock ? availableBookSeconds(spans, null, false) : fileDuration;
+  const bookDuration = bookClock
+    ? Math.max(availableBookSeconds(spans, null, false), bookNow)
+    : fileDuration;
   const shownTime = scrubBookTime ?? bookNow;
 
   const seekAbsolute = (bookSeconds: number) => {
@@ -1647,6 +1725,8 @@ function PlayerPageInner({ id }: { id: string }) {
         return;
       }
       if (sectionUrl && seg && place) {
+        const span = spans.find((item) => item.index === place.sectionIndex);
+        if (span) pinSection(span.index, span.startSeconds);
         releaseLiveSession(liveAudio, bookSeconds);
         listenerPausedRef.current = !choice.play;
         armPendingSeekRef.current({
@@ -1673,6 +1753,8 @@ function PlayerPageInner({ id }: { id: string }) {
     // an older render, and a seek can pause the element; the flag from that
     // render would start a book the listener had just paused.
     const wasPlaying = elementIsPlaying(audioRef.current);
+    const span = spans.find((item) => item.index === place.sectionIndex);
+    if (span) pinSection(span.index, span.startSeconds);
     rememberBookRef.current(place.bookSeconds, "seek", null);
     const same =
       audioUrl != null &&
@@ -1954,7 +2036,18 @@ function PlayerPageInner({ id }: { id: string }) {
   const handleSkip = (delta: number) => {
     if (isStreamMode || !audioRef.current) return;
     if (bookClock) {
-      seekAbsolute(clampSeekSeconds(bookNow, delta, bookDuration));
+      const elementSeconds = sectionFileSeconds({
+        elementSeconds: audioRef.current.currentTime,
+        elementDuration: Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : 0,
+        ended: audioRef.current.ended,
+      });
+      const at = bookTimeFromElement({
+        mode: "section",
+        elementSeconds,
+        sectionIndex: segmentIndex,
+        spans,
+      }).seconds;
+      seekAbsolute(clampSeekSeconds(at, delta, Math.max(bookDuration, at + Math.max(0, delta))));
       return;
     }
     const wasPlaying = elementIsPlaying(audioRef.current);
@@ -2102,7 +2195,9 @@ function PlayerPageInner({ id }: { id: string }) {
       savedSectionStart:
         saved?.sectionIndex != null ? elementClockOffset(spansRef.current, saved.sectionIndex) : 0,
     });
-    const playing = elementIsPlaying(audio);
+    const playing =
+      elementIsPlaying(audio) ||
+      (audio.ended && !listenerPausedRef.current && onSection);
     const token = liveAttachToken(audio);
     void syncLivePlayback({
       audio,
@@ -2667,6 +2762,7 @@ function PlayerPageInner({ id }: { id: string }) {
                         const audio = audioRef.current;
                         const playingNow = true;
                         const target = rowSpan ? rowSpan.startSeconds : 0;
+                        if (rowSpan) pinSection(rowSpan.index, rowSpan.startSeconds);
                         playbackResume.remember(
                           rowSpan
                             ? { positionSeconds: rowSpan.startSeconds, sectionIndex: null }

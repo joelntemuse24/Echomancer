@@ -64,8 +64,9 @@ type SpanSource = {
 };
 
 /**
- * Ready parts from index 0 with no holes. A missing duration stops the
- * clock: later parts stay on their own file until the gap is known.
+ * Ready parts from index 0 with no holes. A missing duration stops this
+ * prefix. The player clock uses {@link sectionBookSpans}, which still
+ * places a later ready part.
  */
 export function contiguousSpans(rows: readonly SpanSource[]): SectionSpan[] {
   const byIndex = new Map<number, SpanSource>();
@@ -85,6 +86,84 @@ export function contiguousSpans(rows: readonly SpanSource[]): SectionSpan[] {
     cursor += duration;
   }
   return spans;
+}
+
+/**
+ * Book time for every ready part, including one that sits past a part that
+ * is not ready yet. The missing part takes the average length of the parts
+ * already measured, so the later file shows the book's clock. A ready part
+ * with no measured length uses that same average.
+ */
+export function sectionBookSpans(rows: readonly SpanSource[]): SectionSpan[] {
+  const byIndex = new Map<number, SpanSource>();
+  for (const row of rows) {
+    if (!Number.isInteger(row.index) || row.index < 0) continue;
+    byIndex.set(row.index, row);
+  }
+  if (byIndex.size === 0) return [];
+  const measured: number[] = [];
+  for (const row of byIndex.values()) {
+    const duration = row.durationSeconds;
+    if (row.status != null && row.status !== "ready") continue;
+    if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+      measured.push(duration);
+    }
+  }
+  const estimate =
+    measured.length > 0 ? measured.reduce((sum, value) => sum + value, 0) / measured.length : 0;
+  const max = Math.max(...byIndex.keys());
+  const spans: SectionSpan[] = [];
+  let cursor = 0;
+  for (let index = 0; index <= max; index += 1) {
+    const row = byIndex.get(index);
+    const known =
+      row &&
+      (row.status == null || row.status === "ready") &&
+      typeof row.durationSeconds === "number" &&
+      Number.isFinite(row.durationSeconds) &&
+      row.durationSeconds > 0
+        ? row.durationSeconds
+        : null;
+    const ready = row != null && (row.status == null || row.status === "ready");
+    const width = known ?? estimate;
+    if (ready && width > 0) {
+      spans.push({ index, startSeconds: cursor, durationSeconds: known ?? estimate });
+    }
+    cursor += width > 0 ? width : 0;
+  }
+  return spans;
+}
+
+/**
+ * Keep the start the listener already heard. A later measurement of a hole
+ * must not move the part that is playing.
+ */
+export function withPinnedStart(
+  spans: readonly SectionSpan[],
+  pin: { index: number; start: number } | null
+): SectionSpan[] {
+  if (!pin || !Number.isFinite(pin.start)) return [...spans];
+  return spans.map((span) =>
+    span.index === pin.index ? { ...span, startSeconds: Math.max(0, pin.start) } : span
+  );
+}
+
+/**
+ * Local time on a section file. When the file ends, some engines report
+ * `currentTime` 0; the length just played is the position to keep.
+ */
+export function sectionFileSeconds(input: {
+  elementSeconds: number;
+  elementDuration: number;
+  ended: boolean;
+}): number {
+  const local = Number.isFinite(input.elementSeconds) ? Math.max(0, input.elementSeconds) : 0;
+  const duration =
+    Number.isFinite(input.elementDuration) && input.elementDuration > 0
+      ? input.elementDuration
+      : 0;
+  if (input.ended && local < 0.5 && duration > 0.5) return duration;
+  return local;
 }
 
 /**
@@ -245,8 +324,8 @@ export function resumeTickAllowed(input: { playing: boolean; hidden: boolean }):
 }
 
 /**
- * A part is on the book clock only when that part itself is in the contiguous
- * prefix. A ready part after a hole keeps its own file clock.
+ * A part is on the book clock when its start is known, including a ready
+ * part after a hole. The file's own 0:00 is not the book.
  */
 export function sectionOnBookClock(
   spans: readonly SectionSpan[],
@@ -540,7 +619,7 @@ export function libraryResumeLabel(input: {
   if (typeof input.positionSeconds !== "number" || !Number.isFinite(input.positionSeconds)) {
     return null;
   }
-  const spans = contiguousSpans(input.segments ?? []);
+  const spans = sectionBookSpans(input.segments ?? []);
   const complete = input.status === "ready";
   let position = input.positionSeconds;
   if (input.sectionIndex != null) {

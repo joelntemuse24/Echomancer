@@ -16,7 +16,10 @@ import {
   readStoredResume,
   resumeTickAllowed,
   samePlayhead,
+  sectionBookSpans,
+  sectionFileSeconds,
   sectionOnBookClock,
+  withPinnedStart,
   mayPersistAfterDroppedSeek,
   shouldApplyDetailSeek,
   shouldPersistPlayhead,
@@ -500,21 +503,39 @@ describe("bookmark clock", () => {
     expect(samePlayhead(null, { positionSeconds: 40, sectionIndex: null })).toBe(false);
   });
 
-  it("keeps a part past a hole on its own clock", () => {
-    const spans = contiguousSpans([
+  it("places a ready part past a hole on the book clock", () => {
+    const rows = [
       { index: 0, status: "ready", durationSeconds: 100 },
       { index: 1, status: "pending" },
       { index: 2, status: "ready", durationSeconds: 80 },
-    ]);
+    ];
+    expect(contiguousSpans(rows).map((span) => span.index)).toEqual([0]);
+    const spans = sectionBookSpans(rows);
     expect(sectionOnBookClock(spans, 0)).toBe(true);
-    expect(sectionOnBookClock(spans, 2)).toBe(false);
-    const off = bookTimeFromElement({
+    expect(sectionOnBookClock(spans, 2)).toBe(true);
+    expect(spans.find((span) => span.index === 2)?.startSeconds).toBe(190);
+    const onBook = bookTimeFromElement({
       mode: "section",
       elementSeconds: 20,
       sectionIndex: 2,
       spans,
     });
-    expect(off).toEqual({ seconds: 20, absolute: false });
+    expect(onBook).toEqual({ seconds: 210, absolute: true });
+    const pinned = withPinnedStart(spans, { index: 2, start: 190 });
+    const moved = sectionBookSpans([
+      { index: 0, status: "ready", durationSeconds: 100 },
+      { index: 1, status: "ready", durationSeconds: 40 },
+      { index: 2, status: "ready", durationSeconds: 80 },
+    ]);
+    expect(moved.find((span) => span.index === 2)?.startSeconds).toBe(140);
+    expect(withPinnedStart(moved, { index: 2, start: 190 }).find((span) => span.index === 2)?.startSeconds).toBe(190);
+    expect(pinned.find((span) => span.index === 2)?.startSeconds).toBe(190);
+  });
+
+  it("keeps the length of a section file that reports 0:00 when it ends", () => {
+    expect(sectionFileSeconds({ elementSeconds: 0, elementDuration: 28, ended: true })).toBe(28);
+    expect(sectionFileSeconds({ elementSeconds: 12, elementDuration: 28, ended: false })).toBe(12);
+    expect(sectionFileSeconds({ elementSeconds: 27, elementDuration: 28, ended: true })).toBe(27);
   });
 
   it("keeps a legacy part mark when its duration is still unknown", () => {

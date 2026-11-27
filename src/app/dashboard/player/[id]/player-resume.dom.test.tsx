@@ -818,7 +818,7 @@ describe("player resume", () => {
     }
   });
 
-  it("skips on a part past a hole using that part's clock", async () => {
+  it("skips ten seconds of book time inside a part past a hole", async () => {
     jobBody = baseJob({
       status: "processing",
       progress: 30,

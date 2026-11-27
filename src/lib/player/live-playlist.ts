@@ -108,6 +108,41 @@ export function playlistDurationSeconds(segments: readonly { seconds: number }[]
  * published playlist reaches the listener, so a later section is not swapped
  * for the start of a short buffer.
  */
+/**
+ * The playhead is on the last bytes already appended. Play stays there.
+ * A restart that lands a section earlier is put back.
+ */
+export function liveEdgeSeconds(currentTime: number, bufferedEnd: number): number | null {
+  const end = Number.isFinite(bufferedEnd) ? bufferedEnd : 0;
+  const at = Number.isFinite(currentTime) ? currentTime : 0;
+  if (!(end > 1) || at < end - 1.25) return null;
+  return Math.min(at, Math.max(0, end - 0.05));
+}
+
+/** A play that left the generated edge. The time to put back, or null. */
+export function restoreLiveEdge(edge: number | null, currentTime: number): number | null {
+  if (edge == null || !(edge > 1)) return null;
+  const at = Number.isFinite(currentTime) ? currentTime : 0;
+  if (at + 1 < edge) return edge;
+  return null;
+}
+
+/**
+ * A chosen section file just ended and the live element already has that
+ * book time. Join it there instead of leaving the file paused at 0:00.
+ */
+export function sectionEndedJoinsLive(input: {
+  src: string;
+  ended: boolean;
+  resumeAt: number;
+  playlistSeconds: number;
+}): boolean {
+  if (!input.ended || !input.src.includes("/sections/")) return false;
+  const at = Number.isFinite(input.resumeAt) ? Math.max(0, input.resumeAt) : 0;
+  const covered = Number.isFinite(input.playlistSeconds) ? Math.max(0, input.playlistSeconds) : 0;
+  return at > 0.5 && at <= covered + 0.25;
+}
+
 export function liveAttachAllowed(resumeAt: number, coveredSeconds: number): boolean {
   const at = Number.isFinite(resumeAt) ? Math.max(0, resumeAt) : 0;
   const covered = Number.isFinite(coveredSeconds) ? coveredSeconds : 0;
