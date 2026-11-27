@@ -545,15 +545,52 @@ function mp3FrameLength(
   return { length, samples, sampleRate };
 }
 
-function secondFrameOffset(audio: Buffer): number | null {
-  const offset = id3v2TotalBytes(audio);
-  const end = Math.min(audio.length - 4, offset + 8192);
-  for (let i = offset; i < end; i++) {
-    const frame = mp3FrameLength(audio, i);
-    if (!frame) continue;
-    if (mp3FrameLength(audio, i + frame.length)) return i + frame.length;
+/**
+ * First byte of a real frame run.
+ *
+ * Two headers that merely agree on a length are not a stream: a crossfade
+ * encode often contains that pair inside the first real frame, and cutting
+ * there writes a mix that ffmpeg 8 rejects (`Invalid data`, exit 183). A
+ * run that keeps the same sample rate and samples per frame is the stream.
+ */
+export function mp3ChainStart(audio: Buffer, minFrames = 4): number | null {
+  const origin = id3v2TotalBytes(audio);
+  const limit = audio.length - 4;
+  for (let i = origin; i < limit; i++) {
+    const first = mp3FrameLength(audio, i);
+    if (!first) continue;
+    let pos = i;
+    let count = 0;
+    while (count < minFrames && pos + 4 <= audio.length) {
+      const frame = mp3FrameLength(audio, pos);
+      if (
+        !frame ||
+        frame.sampleRate !== first.sampleRate ||
+        frame.samples !== first.samples
+      ) {
+        break;
+      }
+      count += 1;
+      pos += frame.length;
+    }
+    if (count >= minFrames) return i;
   }
   return null;
+}
+
+function secondFrameOffset(audio: Buffer): number | null {
+  const start = mp3ChainStart(audio) ?? mp3ChainStart(audio, 2);
+  if (start == null) return null;
+  const frame = mp3FrameLength(audio, start);
+  if (!frame || !mp3FrameLength(audio, start + frame.length)) return null;
+  return start + frame.length;
+}
+
+/** Byte where a copied mix starts: past the encoder-delay frame, on a real frame. */
+function mixCopyOffset(audio: Buffer, indexed: Packet[]): number {
+  if (indexed.length >= 2) return indexed[1]!.pos;
+  if (indexed.length >= 1) return indexed[0]!.pos;
+  return secondFrameOffset(audio) ?? 0;
 }
 
 /**
@@ -564,7 +601,7 @@ function secondFrameOffset(audio: Buffer): number | null {
  * lease heartbeat.
  */
 export async function indexMp3Packets(audio: Buffer): Promise<Packet[]> {
-  let offset = id3v2TotalBytes(audio);
+  let offset = mp3ChainStart(audio) ?? mp3ChainStart(audio, 2) ?? id3v2TotalBytes(audio);
   const packets: Packet[] = [];
   let time = 0;
   let steps = 0;
@@ -794,6 +831,10 @@ async function rateEncodedJoin(
   const rawWav = path.join(workDir, `short_raw_${id}.wav`);
   await writeFile(mixCut, mixBytes);
   await writeFile(rawPath, Buffer.concat([mixBytes, continuation]));
+  if (mp3ChainStart(mixBytes, 2) !== 0) {
+    return { jump: Number.POSITIVE_INFINITY, limit: 1 };
+  }
+  try {
   await run(
     [
       "-y",
@@ -825,12 +866,16 @@ async function rateEncodedJoin(
   const mixPcm = Buffer.from(stripWavHeader(await readFile(mixWav)));
   const pcm = Buffer.from(stripWavHeader(await readFile(rawWav)));
   return rateSplice(pcm, mixPcm.length / 2);
+  } catch {
+    // ffmpeg 8 exits 183 on a mix that does not start on a frame. That
+    // candidate is unusable; the next frame is still a valid cut.
+    return { jump: Number.POSITIVE_INFINITY, limit: 1 };
+  }
 }
 
 async function mixBytesAfterDelay(encoded: Buffer): Promise<Buffer> {
   const indexed = await indexMp3Packets(encoded);
-  const cutPos = secondFrameOffset(encoded) ?? indexed[1]!.pos;
-  return encoded.subarray(cutPos);
+  return encoded.subarray(mixCopyOffset(encoded, indexed));
 }
 
 type StitchHit = { jump: number; limit: number; packet: Packet; piece: Buffer };
@@ -1345,12 +1390,16 @@ export async function joinMasteredMp3s(opts: {
     );
     const encoded = await readFile(mp3);
     const indexed = await indexMp3Packets(encoded);
-    // Never start before the first audio packet, so no Info frame is copied.
-    const cutPos = Math.max(
-      indexed[0]!.pos,
-      secondFrameOffset(encoded) ?? indexed[1]!.pos
-    );
+    // Past the encoder-delay frame, and only on a frame the indexer
+    // accepted. A byte scan that stops at the first two-header coincidence
+    // lands inside the first real frame; ffmpeg 8 then exits 183
+    // (`Invalid data found when processing input`) on that mixcut and the
+    // whole book falls through to a full re-encode.
+    const cutPos = mixCopyOffset(encoded, indexed);
     const mixBytes = encoded.subarray(cutPos);
+    if (indexed.length < 1 || mp3ChainStart(mixBytes, 2) !== 0) {
+      return { packet, jump: Number.POSITIVE_INFINITY, limit: 1, cutPos };
+    }
     const snippet = slicePackets(
       sources[item.index + 1]!,
       packets[item.index + 1]!,
@@ -1366,34 +1415,38 @@ export async function joinMasteredMp3s(opts: {
     await writeFile(rawPath, Buffer.concat([mixBytes, snippet]));
     const mixWav = path.join(workDir, `mixcut_${id}.wav`);
     const rawWav = path.join(workDir, `raw_${id}.wav`);
-    await run(
-      [
-        "-y",
-        "-i",
-        mixCut,
-        "-i",
-        rawPath,
-        "-map",
-        "0:a",
-        "-ac",
-        "1",
-        "-ar",
-        String(SAMPLE_RATE),
-        "-c:a",
-        "pcm_s16le",
-        mixWav,
-        "-map",
-        "1:a",
-        "-ac",
-        "1",
-        "-ar",
-        String(SAMPLE_RATE),
-        "-c:a",
-        "pcm_s16le",
-        rawWav,
-      ],
-      timeoutMs
-    );
+    try {
+      await run(
+        [
+          "-y",
+          "-i",
+          mixCut,
+          "-i",
+          rawPath,
+          "-map",
+          "0:a",
+          "-ac",
+          "1",
+          "-ar",
+          String(SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          mixWav,
+          "-map",
+          "1:a",
+          "-ac",
+          "1",
+          "-ar",
+          String(SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          rawWav,
+        ],
+        timeoutMs
+      );
+    } catch {
+      return { packet, jump: Number.POSITIVE_INFINITY, limit: 1, cutPos };
+    }
     const mixPcm = Buffer.from(stripWavHeader(await readFile(mixWav)));
     const pcm = Buffer.from(stripWavHeader(await readFile(rawWav)));
     const rated = rateSplice(pcm, mixPcm.length / 2);
@@ -1547,8 +1600,8 @@ export async function joinMasteredMp3s(opts: {
       const cutPos = bestByJoin.get(i)?.cutPos;
       const bytes = await readFile(mp3);
       const indexed = await indexMp3Packets(bytes);
-      const at = cutPos ?? secondFrameOffset(bytes) ?? indexed[1]!.pos;
-      const mix = bytes.subarray(Math.max(indexed[0]!.pos, at));
+      const at = cutPos ?? mixCopyOffset(bytes, indexed);
+      const mix = bytes.subarray(at);
       pieces.push(mix);
       parts.push({ kind: "mix", bytes: mix });
       clock += next.t;

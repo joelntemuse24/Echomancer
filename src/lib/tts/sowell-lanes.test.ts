@@ -72,6 +72,9 @@ describe("sowell lanes", () => {
     expect(sowellFleetContainers(onnx)).toBe(16);
     expect(sowellCallCap(onnx)).toBe(SOWELL_ONNX_CALL_CEILING);
     expect(sowellBookLanes(onnx)).toBe(64);
+    // An explicit 16 is the old torch cap. ONNX does not raise it; the
+    // worker has to unset the variable (or set 64) to use the fleet.
+    expect(sowellBookLanes({ ...onnx, SOWELL_BOOK_LANES: "16" })).toBe(16);
     expect(
       sowellCallCap({ KOKORO_RUNTIME: "onnx", SOWELL_MAX_CONTAINERS: "12" } as NodeJS.ProcessEnv)
     ).toBe(48);

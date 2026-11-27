@@ -47,11 +47,12 @@ The fleet is **16 containers** by default, 2 CPU, 6 GB each
 integer `cpu` and `memory=6144` do not change with the lane count; 16
 containers is 16 containers of the same size.
 
-`SOWELL_BOOK_LANES` is how many of those containers one book may use. It
-defaults to 16, is clamped to 16, and is clamped again to the fleet. A book
-uses one lane per section still to speak and no more than that cap. A
-production deploy can lower `SOWELL_MAX_CONTAINERS` for a smaller fleet; the
-code default stays 16.
+`SOWELL_BOOK_LANES` is how many calls one book may use. Unset, it is the
+fleet call cap: 16 on torch, and containers × streams on ONNX (64 at the
+16-container fleet). An explicit value is clamped to that cap. The Edge
+knob `TTS_SECTIONS_PER_TICK` does not lower it. A book uses one lane per
+section still to speak and no more than that cap. A production deploy can
+lower `SOWELL_MAX_CONTAINERS` for a smaller fleet; the code default stays 16.
 
 Idle scale-down is **5 s** (`SOWELL_SCALEDOWN_SECONDS`, default 5, clamped
 to Modal's 2..1200). The measured book was 15.7k characters: 16 lanes ×

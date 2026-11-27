@@ -2153,7 +2153,10 @@ no longer parks the lanes behind it. Concurrency is
 `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 8, max 16). With a tick
 deadline the pool keeps claiming until the deadline (`shouldStop`); with no
 deadline the per-tick claim budget stays at the provider fan-out so a
-deadline-less worker cannot run away. Claims are in-memory; each finished
+deadline-less worker cannot run away. Kokoro's pool width is
+`sowellBookLanes()` (unset: 16 on torch, the ONNX call cap otherwise —
+64 at 16 containers × 4 streams). `TTS_SECTIONS_PER_TICK` does not size
+it. Fair share and the audio cap still do. Claims are in-memory; each finished
 section writes `segments_json`, so a restarted worker re-claims only the
 unfinished ones. Direct Fish keeps the batch barrier and uses `withFishSlot`.
 Clone calls use `withCloneBatchSlot`, not the Fish account slot. An Edge 429
@@ -2216,7 +2219,7 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set per tick; with a tick deadline, the Edge/Google rolling pool keeps claiming until the deadline instead (no deadline keeps this budget) |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Edge/Google claim budget. Kokoro lanes ignore it. With a tick deadline the Edge/Google pool keeps claiming until the deadline (no deadline keeps this budget) |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–16). Fish ignores it. Halves on 429/503. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock |
@@ -2828,8 +2831,13 @@ generating, the list under the transport is numbered synthesis sections
 titles, `GET /api/jobs/[id]` adds `chapters`. Finalize measures each
 section's real audio length while assembling `full.mp3` (frame-indexed for
 the packet-copy join, planned from the mix pieces for a full encode) and
-writes `playback-chapters.json` with `startSeconds` / `endSeconds`; the
-route prefers that file, and the player seeks those seconds directly.
+writes `playback-chapters.json` with `startSeconds` / `endSeconds`. The mix
+slice starts on a run of frames that share sample rate and samples per
+frame; a two-header coincidence inside the first real frame is not a cut,
+and a candidate whose mix ffmpeg rejects is skipped. A rolling `full.mp3`
+that already covers every section is the book: finalize does not place the
+Modal concat and does not wait `CPU_DISPATCH_ACCEPT_MS`. The
+route prefers `playback-chapters.json`, and the player seeks those seconds directly.
 A heading absorbed into a longer section is placed at that section's start
 plus the speakable fraction of the section up to the heading.
 Cue tags and stripped markup are not counted as speech. A `[long-break]`
