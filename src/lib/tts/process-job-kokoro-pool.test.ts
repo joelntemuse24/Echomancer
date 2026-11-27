@@ -22,7 +22,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { execute, queryOne } from "@/lib/turso";
 
 const JOB_ID = "dddddddd-0000-4000-8000-000000000001";
 const OTHER_JOB_ID = "dddddddd-0000-4000-8000-000000000002";
@@ -543,6 +543,57 @@ describe("Kokoro rolling pool", () => {
     expect(slotOps).toBeGreaterThan(0);
     expect(slotOps).toBeLessThan(80);
   }, 30_000);
+
+  it("finishes a book whose own stale Kokoro claims fill the table", async () => {
+    process.env.SOWELL_MAX_CONTAINERS = "4";
+    await seedKokoroJob();
+    const turso = await import("@/lib/turso");
+    const realExecute = turso.execute;
+    let skippedReleases = 0;
+    // The first wave's releases report success and leave the row. That is
+    // the production leak: the in-memory count drops, the heartbeat would
+    // renew the row, and the same book then reads a full table.
+    vi.spyOn(turso, "execute").mockImplementation(async (sql, args) => {
+      const text = String(sql);
+      if (
+        skippedReleases < 4 &&
+        text.includes("DELETE FROM provider_slots") &&
+        text.includes("slot_id = ?")
+      ) {
+        skippedReleases += 1;
+        return { rowsAffected: 1 };
+      }
+      return realExecute(sql, args);
+    });
+    const fake = await installKokoroProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const started = Date.now();
+    const result = await processTakehomeTick(JOB_ID, {
+      deadlineMs: started + 60_000,
+    });
+    const elapsed = Date.now() - started;
+    const row = await jobRow(JOB_ID);
+    const ready = segmentsOf(row).filter((section) => section.status === "ready");
+    const total = Number(row?.total_sections ?? 0);
+    const left = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots WHERE provider = 'kokoro'`
+    );
+    // More sections than the cap, so a leaked first wave cannot be the
+    // whole book. The tick must speak the rest in this call, not defer
+    // and sit until the wave budget.
+    expect(skippedReleases).toBe(4);
+    expect(total).toBeGreaterThan(4);
+    expect(ready).toHaveLength(total);
+    expect(fake.calls.length).toBeGreaterThanOrEqual(total);
+    expect(result.deferred).not.toBe(true);
+    expect(row?.status).toBe("ready");
+    expect(elapsed).toBeLessThan(8_000);
+    expect(Number(left?.n ?? 0)).toBe(0);
+  }, 15_000);
 
   it("stops reclaiming when the tick deadline passes", async () => {
     process.env.SOWELL_MAX_CONTAINERS = "2";

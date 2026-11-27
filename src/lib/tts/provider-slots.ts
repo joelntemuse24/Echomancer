@@ -180,6 +180,63 @@ export async function renewProviderSlots(
   return result.rowsAffected;
 }
 
+/**
+ * Drop this owner's Kokoro rows that are not a section still speaking.
+ *
+ * A section that exited on an error or an abort, or a claim that never
+ * reached `release`, leaves a row the lease heartbeat keeps renewing. The
+ * table then looks full to the same book. Live slot ids are the ones this
+ * tick has acquired and not released; everything else of this owner is stale.
+ * An empty live set deletes every Kokoro row for the token.
+ */
+export async function releaseStaleProviderSlots(
+  opts: {
+    provider: string;
+    ownerToken: string;
+    liveSlotIds: readonly number[];
+  },
+  db: SlotSql = appSql
+): Promise<number> {
+  await ensureProviderSlotTable(db);
+  if (opts.liveSlotIds.length === 0) {
+    const result = await db.execute(
+      `DELETE FROM provider_slots
+       WHERE provider = ? AND owner_token = ?`,
+      [opts.provider, opts.ownerToken]
+    );
+    return result.rowsAffected;
+  }
+  const placeholders = opts.liveSlotIds.map(() => "?").join(", ");
+  const result = await db.execute(
+    `DELETE FROM provider_slots
+     WHERE provider = ? AND owner_token = ?
+       AND slot_id NOT IN (${placeholders})`,
+    [opts.provider, opts.ownerToken, ...opts.liveSlotIds]
+  );
+  return result.rowsAffected;
+}
+
+/** Unexpired rows of this provider held by any other token. */
+export async function providerSlotsHeldByOthers(
+  opts: { provider: string; ownerToken: string },
+  db: SlotSql = appSql
+): Promise<number> {
+  try {
+    await ensureProviderSlotTable(db);
+    const row = await db.queryOne<{ n: number | bigint | null }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = ? AND owner_token != ? AND expires_at > unixepoch()`,
+      [opts.provider, opts.ownerToken]
+    );
+    const n = Number(row?.n ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    // A failed read must not look like an empty table and keep the book
+    // spinning. The caller defers; the next claim tries again.
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
 /** Milliseconds until the soonest live slot of this provider expires. */
 export async function providerSlotWaitMs(
   db: SlotSql,

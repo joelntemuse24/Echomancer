@@ -2288,9 +2288,15 @@ books or doubling provider calls:
   (default 4). Kokoro's ceiling is `sowellCallCap()` (64 on a 16×4 ONNX fleet).
   Every other provider stays clamped at 32. A Kokoro book that already holds
   slots keeps claiming in the same wave when the table is momentarily full.
-  Those lanes share one reclaim scan (`createKokoroReclaimGate`), which sleeps
-  500ms plus jitter after a miss even when the scan overran that interval, and
-  stops when the tick deadline passes. A full cap is a single `COUNT(*)`
+  `releaseStaleProviderSlots` deletes that lease's Kokoro rows whose slot id
+  is not in the set the tick is still speaking on, under the same lock as the
+  insert, and `processTakehomeTick`'s `finally` deletes every row for the
+  lease after the heartbeat stops. A full table of this book's own rows is
+  not a deferral. Those lanes share one reclaim scan (`createKokoroReclaimGate`),
+  which sleeps 500ms plus jitter after a miss even when the scan overran that
+  interval. The scan stops when the tick deadline passes or when this book
+  holds no live slot. Only another owner's rows set the cap-full deferral,
+  and that re-queues with `notBefore` 0. A full cap is a single `COUNT(*)`
   before any insert. A clone book wave does not take one of those lanes. Its cap is
   `modal_gpu_leases` (`src/lib/tts/providers/modal-gpu-lease.ts`): one row
   per book, `MODAL_S2_MAX_GPUS` (default 20) globally and

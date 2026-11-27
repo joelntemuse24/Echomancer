@@ -38,6 +38,7 @@ import {
   ensureProviderSlotTable,
   releaseProviderSlot,
   releaseProviderSlotsForOwner,
+  releaseStaleProviderSlots,
   tryAcquireProviderSlot,
   type SlotSql,
 } from "@/lib/tts/provider-slots";
@@ -364,6 +365,54 @@ describe("provider slots across connections", () => {
         ttlSeconds: 90,
       })
     ).toBeNull();
+  });
+
+  it("drops this owner's Kokoro rows that are not still speaking", async () => {
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: (sql, args) => queryOne(sql, args),
+    };
+    for (const token of ["lease-a", "lease-b"]) {
+      expect(
+        await tryAcquireProviderSlot(db, {
+          provider: "kokoro",
+          cap: 4,
+          ownerToken: token,
+          jobId: token,
+          ttlSeconds: 90,
+        })
+      ).not.toBeNull();
+    }
+    // lease-a holds 0 and then takes 2 and 3. Slot 0 is the one still speaking.
+    await tryAcquireProviderSlot(db, {
+      provider: "kokoro",
+      cap: 4,
+      ownerToken: "lease-a",
+      jobId: "lease-a",
+      ttlSeconds: 90,
+    });
+    await tryAcquireProviderSlot(db, {
+      provider: "kokoro",
+      cap: 4,
+      ownerToken: "lease-a",
+      jobId: "lease-a",
+      ttlSeconds: 90,
+    });
+    const removed = await releaseStaleProviderSlots(
+      { provider: "kokoro", ownerToken: "lease-a", liveSlotIds: [0] },
+      db
+    );
+    expect(removed).toBe(2);
+    const left = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots WHERE provider = 'kokoro'`
+    );
+    // Slot 0 (still speaking) and lease-b's row stay.
+    expect(Number(left?.n ?? 0)).toBe(2);
+    const ours = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM provider_slots
+       WHERE provider = 'kokoro' AND owner_token = 'lease-a'`
+    );
+    expect(Number(ours?.n ?? 0)).toBe(1);
   });
 
   it("lets only one of two connections take the last slot", async () => {

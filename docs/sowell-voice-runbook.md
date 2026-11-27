@@ -107,7 +107,9 @@ the total concurrent Kokoro calls across books never exceeds
 `sowellCallCap()` (containers on torch, containers × streams on ONNX;
 64 at 16×4) even if a budget read is stale or fails. The table does not
 clamp Kokoro at 32. A book that already holds slots shares one reclaim
-scan and waits 500ms after a miss. A 429 from a
+scan and waits 500ms after a miss. Before that scan it deletes its own
+rows that are not still speaking, and the tick drops every remaining row
+for the lease on the way out, so one book cannot defer itself. A 429 from a
 busy container is retried in place with backoff, never failed.
 
 The warm path starts **one** container (`KOKORO_WARM_CONTAINERS`), never the
