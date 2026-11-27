@@ -91,6 +91,8 @@ beforeEach(async () => {
   delete process.env.TTS_SECTIONS_PER_TICK;
   delete process.env.SOWELL_BOOK_LANES;
   delete process.env.SOWELL_MAX_CONTAINERS;
+  delete process.env.KOKORO_RUNTIME;
+  delete process.env.TTS_LIVE_JOIN;
   delete process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY;
 });
 
@@ -100,6 +102,8 @@ afterEach(() => {
   delete process.env.TTS_SECTIONS_PER_TICK;
   delete process.env.SOWELL_BOOK_LANES;
   delete process.env.SOWELL_MAX_CONTAINERS;
+  delete process.env.KOKORO_RUNTIME;
+  delete process.env.TTS_LIVE_JOIN;
 });
 
 describe("Kokoro rolling pool", () => {
@@ -151,6 +155,74 @@ describe("Kokoro rolling pool", () => {
     expect(startedAt[3]!).toBeLessThan(endedAt[0]!);
     expect(result.done).toBe(true);
     expect(row?.status).toBe("ready");
+  });
+
+  it("does not let TTS_SECTIONS_PER_TICK cap an ONNX book's lanes", async () => {
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    process.env.KOKORO_RUNTIME = "onnx";
+    delete process.env.SOWELL_BOOK_LANES;
+    await seedKokoroJob();
+    let active = 0;
+    let peak = 0;
+    await installKokoroProvider(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      active -= 1;
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    await stubConcat();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 60_000 });
+    const row = await jobRow(JOB_ID);
+    const total = Number(row?.total_sections ?? 0);
+    const { planKokoroBookLanes } = await import("@/lib/tts/kokoro-pool");
+    const { sowellBookLanes, sowellCallCap } = await import("@/lib/tts/sowell-voice");
+    const planned = planKokoroBookLanes({
+      configured: sowellBookLanes(),
+      fleet: sowellCallCap(),
+      activeBooks: 1,
+      remainingSections: total,
+      remainingChars: Number(row?.char_count ?? 0),
+      streamsPerContainer: 4,
+      rank: 0,
+    });
+    expect(sowellCallCap()).toBe(64);
+    expect(planned).toBeGreaterThan(16);
+    // The old caps were the Edge tick (8) and an explicit book lane of 16.
+    // Peak can sit under the wave-rounded plan when sections finish as the
+    // last lanes are still claiming; it must clear both of those caps.
+    expect(peak).toBeGreaterThan(16);
+    expect(row?.status).toBe("ready");
+  });
+
+  it("skips the concat placement when the rolling file already covers the book", async () => {
+    process.env.TTS_LIVE_JOIN = "1";
+    await seedKokoroJob();
+    await installKokoroProvider(async () => ({
+      audio: fakeMp3(),
+      contentType: "audio/mpeg",
+    }));
+    const live = await import("@/lib/tts/live-join");
+    vi.spyOn(live, "finalizeLiveJoin").mockResolvedValue({
+      path: `audiobooks/${JOB_ID}/full.mp3`,
+      joined: 40,
+      totalSeconds: 120,
+      sectionStarts: [0],
+      durationSeconds: 120,
+      chapters: [],
+    });
+    const runner = await import("@/lib/cpu/runner");
+    const hold = vi.spyOn(runner, "holdBookConcat");
+    const concat = await import("@/lib/tts/concat-audio");
+    const materialize = vi.spyOn(concat, "materializeFullAudiobook");
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 60_000 });
+    expect(hold).not.toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("ready");
+    expect(row?.audio_storage_path).toBe(`audiobooks/${JOB_ID}/full.mp3`);
   });
 
   it("claims section 0 first so first audio is still early", async () => {

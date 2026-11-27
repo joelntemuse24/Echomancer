@@ -36,8 +36,9 @@ time per container, because the model is not reentrant. A second request
 gets 429 so the caller can use another container in the fleet.
 
 Fleet. ``SOWELL_MAX_CONTAINERS`` (default 16, clamped to 1..16) is the cap.
-The worker's ``SOWELL_BOOK_LANES`` (also default 16, clamped to 16 and to the
-fleet) is how many of those one book may hold; the ``kokoro`` provider-slot
+The worker's ``SOWELL_BOOK_LANES`` (unset: 16 on torch, the ONNX call cap
+otherwise, clamped to that cap) is how many calls one book may hold. The
+worker does not apply ``TTS_SECTIONS_PER_TICK`` to that count. The ``kokoro`` provider-slot
 rows are the cross-process share, so several books cannot open more calls than
 the fleet. A book alone gets the whole fleet; concurrent books split it so the
 quotas sum to the fleet and a new book takes lanes as other books' sections

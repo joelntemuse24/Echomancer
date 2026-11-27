@@ -70,6 +70,39 @@ export function finalizeTiming(input: {
 }
 
 describe("incremental mastered join", () => {
+  it("finishes the copy-join when one mixcut decode is invalid", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "live-join-mixcut-"));
+    try {
+      const files = [220, 330].map((frequency, index) => path.join(root, `s${index}.mp3`));
+      await sine(files[0]!, 220);
+      await sine(files[1]!, 330);
+      await mkdir(path.join(root, "work"), { recursive: true });
+      let rejected = false;
+      const run: typeof spawnFfmpeg = async (args, timeoutMs) => {
+        if (!rejected && args.some((arg) => arg.includes("mixcut_"))) {
+          rejected = true;
+          throw new Error(
+            "ffmpeg exit 183: mixcut_0_180.mp3: Invalid data found when processing input"
+          );
+        }
+        await spawnFfmpeg(args, timeoutMs);
+      };
+      const joined = await joinMasteredMp3s({
+        files,
+        joins: ["paragraph", "paragraph"],
+        crossfadeMs: 120,
+        outPath: path.join(root, "out.mp3"),
+        workDir: path.join(root, "work"),
+        run,
+        timeoutMs: 60_000,
+      });
+      expect(rejected).toBe(true);
+      expect(joined.totalSeconds).toBeGreaterThan(8);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("matches a final join's bytes, duration, and chapter times", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "live-join-"));
     try {

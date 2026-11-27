@@ -100,7 +100,7 @@ One Modal fleet serves all three narrators. These numbers decide concurrency:
 | Env | Default | Meaning |
 |--|--|--|
 | `SOWELL_MAX_CONTAINERS` | 16 | Fleet cap, clamped 1..16 at deploy. Also read by the worker as its cross-process cap, so several books cannot open more concurrent Kokoro calls than the fleet. |
-| `SOWELL_BOOK_LANES` | 16 | Lanes one book may ask for. Clamped to 16 and to the fleet. |
+| `SOWELL_BOOK_LANES` | fleet | Lanes one book may ask for. Unset: 16 on torch, the ONNX call cap (64 at 16 containers × 4 streams) otherwise. Clamped to that cap. `TTS_SECTIONS_PER_TICK` does not lower it. |
 | `KOKORO_CPU_SECTION_CHARS` | 700 | Section target for the three Kokoro-CPU voices, clamped 300..2000. Read by the worker, so no redeploy. |
 | `SOWELL_SCALEDOWN_SECONDS` | 5 | Idle time before a container goes away, clamped to Modal's 2..1200. |
 | `SOWELL_TORCH_THREADS` | 4 | Torch intra-op threads, applied in `@modal.enter`. Benchmarked ~1.5× faster than 2 on cpu=2. |

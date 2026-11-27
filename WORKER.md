@@ -230,7 +230,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 |----------|---------|---------|
 | `WORKER_SECRET` | — | Shared with Vercel. Required unless `INTERNAL_JOB_SECRET` is set. |
 | `WORKER_CONCURRENCY` | **1** | Whole books in flight, not sections. `2` only after a mastered book fits in RAM. |
-| `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
+| `TTS_SECTIONS_PER_TICK` | **8** | Edge/Google claim budget. Kokoro lanes ignore it (they use `SOWELL_BOOK_LANES`, defaulting to the ONNX call cap). Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–16). A 429 or 503 halves this for the process. Fish and clones ignore it. |
 | `PARADEE_URL` | `http://127.0.0.1:8791` | Local Paradee sidecar base URL. Unset on Vercel so previews go through `/paradee/synthesize`. |
 | `PARADEE_SECRET` | unset | Bearer token for the sidecar when it sets the same env. |

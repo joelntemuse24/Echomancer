@@ -2040,14 +2040,6 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
-  /**
-   * Explicit `TTS_SECTIONS_PER_TICK` only. Kokoro lanes must not fall back to
-   * the planned fair share: that share is re-read per claim, and capping the
-   * tick at the share it saw at start would freeze the book there.
-   */
-  const explicitPerTick = process.env.TTS_SECTIONS_PER_TICK?.trim()
-    ? Number(process.env.TTS_SECTIONS_PER_TICK)
-    : Number.NaN;
   const clonePath = usesModalClone(job.catalog_voice_id);
   /**
    * How many sections one tick may claim.
@@ -2067,20 +2059,20 @@ async function runClaimedTick(
    * tick opens the whole per-book ceiling and lets the budget gate each claim.
    * A book that starts mid-wave then takes lanes as another book finishes
    * sections instead of being stuck at the share it saw at tick start.
+   *
+   * `TTS_SECTIONS_PER_TICK` is the Edge wave size. It must not become the
+   * Kokoro lane count: book 95626151 ran 8 lanes on a 64-call ONNX fleet
+   * because that env was still applied here. `opts.sectionsPerTick` still
+   * limits how many sections this tick claims; it does not size the pool.
    */
   const claimDefault = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
     : kokoroBook
-      ? // Open the whole per-book ceiling; `kokoroLaneBudget` gates each
-        // claim. An explicit `TTS_SECTIONS_PER_TICK` still caps the total.
-        Math.min(
-          sowellCap,
-          Number.isFinite(explicitPerTick) ? explicitPerTick : sowellCap
-        )
+      ? sowellCap
       : Number.isFinite(envPerTick)
         ? envPerTick
         : fanout;
-  const claimRequest = opts?.sectionsPerTick ?? claimDefault;
+  const claimRequest = kokoroBook ? sowellCap : (opts?.sectionsPerTick ?? claimDefault);
   // Non-clone paths keep the account/fan-out ceiling they always had. The
   // clone path is the one place `batch` — not `lanes` — is the useful unit,
   // because one call decodes all of its rows in a single GPU pass.
@@ -3264,9 +3256,12 @@ async function runClaimedTick(
       // ffmpeg pass and segment write. Every finished section still writes the
       // same `segments_json` row, so a restarted worker resumes from the DB.
       const claimedSet = new Set<number>();
-      const claimsPerTick = opts?.deadlineMs
-        ? opts.sectionsPerTick ?? Number.POSITIVE_INFINITY
-        : maxClaim;
+      // Lane width is the per-book ceiling. A caller-supplied
+      // `sectionsPerTick` (a short wave, or a test) only limits how many
+      // sections this tick starts. `TTS_SECTIONS_PER_TICK` is not consulted.
+      const claimsPerTick =
+        opts?.sectionsPerTick ??
+        (opts?.deadlineMs ? Number.POSITIVE_INFINITY : maxClaim);
       let claimsLeft = claimsPerTick;
       console.log(
         `[Job ${jobId}] kokoro rolling pool lanes=${maxClaim} fleet=${kokoroFleetCap} ` +
@@ -3280,12 +3275,15 @@ async function runClaimedTick(
           providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
+          // Reserve before the lease read. The pool has one lane per
+          // container, and those lanes call this together; checking after
+          // an await let a 2-section tick start a whole fair share.
+          if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
           if (await takehomeLeaseStopped(jobId, lease)) {
             throw new LeaseLostError(jobId);
           }
           const index = nextClaimableIndex(segments, total, claimedSet);
           if (index === null) return null;
-          if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
           claimedSet.add(index);
           await writeWithLease(
             jobId,
@@ -3628,9 +3626,9 @@ async function runClaimedTick(
     if (liveJoinOn) await liveJoinTail.catch(() => undefined);
     let rolling: Awaited<ReturnType<typeof finalizeLiveJoin>> = null;
     if (liveJoinOn && complete && holesLeft === 0) {
+      const crossfadeMs =
+        typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
       try {
-        const crossfadeMs =
-          typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
         await extendLiveJoin({
           jobId,
           segments,
@@ -3639,6 +3637,16 @@ async function runClaimedTick(
           flush: true,
           holdsLease: () => liveJoinHoldsLease(jobId, lease),
         });
+      } catch (err) {
+        console.warn(
+          `[Job ${jobId}] live-join flush:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+      try {
+        // A flush that throws must not hide a file that already covers
+        // every section. That file is the book; the Modal concat below
+        // (and its 20s accept wait) does not run.
         rolling = await finalizeLiveJoin({
           jobId,
           total,
@@ -3661,7 +3669,9 @@ async function runClaimedTick(
       ).catch(() => undefined);
     } else {
     // Concat runs only when the rolling file does not already cover the book.
-    // CPU_RUNNER=modal still places that fallback and waits for it. A local
+    // CPU_RUNNER=modal still places that fallback. The orchestrator waits
+    // CPU_DISPATCH_ACCEPT_MS (20s) for the container to accept; a timeout
+    // keeps that placement and does not start a second encode here. A local
     // join is the worker's own ffmpeg. The lease stays until it finishes.
     // Mark the book ready before a long concat so the player leaves "generating".
     const concatHold = await holdBookConcat(jobId);
