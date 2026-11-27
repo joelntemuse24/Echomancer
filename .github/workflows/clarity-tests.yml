@@ -1,0 +1,62 @@
+name: clarity gate tests
+
+# The Andrew clarity research directory ships Python that a future run depends on: the
+# clarity gates, the replacement losses, and the cost model. None of it needs a GPU, a Modal
+# account, a model download or a paid API — everything is numpy/torch on synthetic signals
+# and small deterministic tone fixtures.
+#
+# `paths` is limited to this directory so an unrelated push does not pay for the torch
+# download. Widen it if the research package starts being imported from somewhere else.
+
+on:
+  push:
+    paths:
+      - "research/andrew_clarity/**"
+      - ".github/workflows/clarity-tests.yml"
+  pull_request:
+    paths:
+      - "research/andrew_clarity/**"
+      - ".github/workflows/clarity-tests.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: clarity-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # CPU torch from the CPU index: ~200 MB rather than ~2 GB of CUDA wheels. The same
+      # split the modal suite uses, and for the same reason.
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install "numpy<2.3" scipy librosa soundfile pytest==9.2.0
+
+      # `clarity_gate` and `losses` are dependency-light by design; this catches a change
+      # that quietly adds a heavy import to either.
+      - name: Import check
+        run: |
+          python -c "import research.andrew_clarity.clarity_gate as g; print(g.score.__name__)"
+          python -c "import research.andrew_clarity.losses as l; print(l.ClarityLoss)"
+          python -c "import research.andrew_clarity.plan as p; print(p.L4_USD_PER_HOUR)"
+
+      - name: Tests
+        run: python -m pytest research/andrew_clarity -q
+
+      # The cost model is the deliverable that stops a run overspending. Failing the build
+      # on a budget overshoot is cheaper than discovering it on the invoice.
+      - name: Plan fits the budget
+        run: python research/andrew_clarity/plan.py --budget 6.80
