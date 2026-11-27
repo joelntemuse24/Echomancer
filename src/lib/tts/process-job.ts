@@ -170,7 +170,7 @@ import {
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
-import { extendLiveJoin, finalizeLiveJoin } from "@/lib/tts/live-join";
+import { awaitLiveJoin, extendLiveJoin, finalizeLiveJoin } from "@/lib/tts/live-join";
 import { commitSectionAudio, promoteFinishedSections, recoverOrphanRawSections } from "@/lib/cpu/section-publish";
 import { requeueExpiredCpuTasks } from "@/lib/cpu/tasks";
 import { runInsideCpuTask } from "@/lib/cpu/task-slot";
@@ -847,6 +847,14 @@ async function heartbeatLease(
   return result.rowsAffected > 0;
 }
 
+async function liveJoinHoldsLease(jobId: string, lease: string): Promise<boolean> {
+  const row = await queryOne<{
+    processing_lease_token: string | null;
+    deleted_at: number | null;
+  }>(`SELECT processing_lease_token, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+  return row?.processing_lease_token === lease && row.deleted_at == null;
+}
+
 /** Hand the job back so the next worker can claim it immediately. */
 async function releaseLease(
   jobId: string,
@@ -866,6 +874,7 @@ async function releaseLease(
     sealLease?: boolean;
   }
 ): Promise<void> {
+  await awaitLiveJoin(jobId);
   const delay = patch.notBeforeSec && patch.notBeforeSec > 0 ? patch.notBeforeSec : 0;
   if (delay > 0 && patch.sealLease) {
     await execute(
@@ -2456,10 +2465,14 @@ async function runClaimedTick(
         });
         if (liveJoinOn && stored.mastered && stored.path.endsWith(".mp3")) {
           const snapshot = segments;
+          const crossfadeMs =
+            typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
           liveJoinTail = extendLiveJoin({
             jobId,
             segments: snapshot,
             joinKinds: packed.map((section) => section.joinKind),
+            crossfadeMs,
+            holdsLease: () => liveJoinHoldsLease(jobId, lease),
           })
             .then(async (joined) => {
               if (!joined) return;
@@ -2477,6 +2490,7 @@ async function runClaimedTick(
                 err instanceof Error ? err.message : err
               );
             });
+          await liveJoinTail;
         }
       } finally {
         endLife();
@@ -3615,7 +3629,21 @@ async function runClaimedTick(
     let rolling: Awaited<ReturnType<typeof finalizeLiveJoin>> = null;
     if (liveJoinOn && complete && holesLeft === 0) {
       try {
-        rolling = await finalizeLiveJoin({ jobId, total });
+        const crossfadeMs =
+          typeof ttsOptions.crossfadeMs === "number" ? ttsOptions.crossfadeMs : undefined;
+        await extendLiveJoin({
+          jobId,
+          segments,
+          joinKinds: packed.map((section) => section.joinKind),
+          crossfadeMs,
+          flush: true,
+          holdsLease: () => liveJoinHoldsLease(jobId, lease),
+        });
+        rolling = await finalizeLiveJoin({
+          jobId,
+          total,
+          holdsLease: () => liveJoinHoldsLease(jobId, lease),
+        });
       } catch (err) {
         console.warn(
           `[Job ${jobId}] live-join finalize:`,

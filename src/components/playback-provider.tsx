@@ -695,10 +695,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (samePath && at > 0) {
         const restore = () => {
           if (srcRef.current !== src) return;
-          audio.currentTime = at;
+          if (Math.abs(audio.currentTime - at) < 0.25) return;
+          try {
+            audio.currentTime = at;
+          } catch {
+            /* canplay retries once the range exists */
+          }
           if (wasPlaying) void audio.play().catch(() => undefined);
         };
         audio.addEventListener("loadedmetadata", restore, { once: true });
+        audio.addEventListener("canplay", restore, { once: true });
       }
     }
     setIdentity((prev) =>

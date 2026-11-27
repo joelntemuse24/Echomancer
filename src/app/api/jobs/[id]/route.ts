@@ -122,7 +122,16 @@ export async function GET(
         ...resumeFields(resume),
         ...(chapters.length > 0 ? { chapters } : {}),
         ...(wait.waitingForText ? { waiting_for_text: true } : {}),
-        ...(ownerId ? { playback_grant: signPlaybackGrant(ownerId, `audiobooks/${id}`) } : {}),
+        ...(ownerId
+          ? {
+              playback_grant: signPlaybackGrant(
+                ownerId,
+                `audiobooks/${id}`,
+                Date.now(),
+                Number(current.playback_nonce ?? 0) || 0
+              ),
+            }
+          : {}),
       },
     });
   } catch (error) {

@@ -4,6 +4,7 @@ import { execute } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { titleForDownload } from "@/lib/book-title";
+import { prebuiltDownloadPath } from "@/lib/jobs/direct-download";
 import type { JobSegment } from "@/lib/tts/types";
 import {
   concatReadySegments,
@@ -36,10 +37,11 @@ export async function GET(
       titleForDownload(String(job.book_title || ""))
         .replace(/[^a-z0-9]+/gi, "_")
         .toLowerCase() || "audiobook";
-    const audioStoragePath =
+    const storedPath =
       typeof job.audio_storage_path === "string" ? job.audio_storage_path : null;
+    const audioStoragePath = prebuiltDownloadPath(job.status, storedPath);
 
-    if (audioStoragePath && !isSectionStoragePath(audioStoragePath)) {
+    if (audioStoragePath) {
       try {
         const opened = await openDownloadBody(audioStoragePath, request.signal);
         if (opened) {
@@ -98,6 +100,14 @@ export async function GET(
     if (!built) {
       // A book whose join failed at finalize is published without a full file
       // and keeps its sections as `sections.zip`; hand that over instead.
+      // While the job is still processing, that zip is not the finished book.
+      if (job.status !== "ready") {
+        if (joinError) throw joinError;
+        return NextResponse.json(
+          { error: "No audio segments available" },
+          { status: 404 }
+        );
+      }
       const zipPath = `audiobooks/${id}/sections.zip`;
       const zipped = await openDownloadBody(zipPath, request.signal).catch(() => null);
       if (zipped) {
@@ -118,7 +128,7 @@ export async function GET(
 
     // A finished job that still points at section 0 predates the full-file
     // artifact; build it once so later downloads take the fast path.
-    if (job.status === "ready" && isSectionStoragePath(audioStoragePath)) {
+    if (job.status === "ready" && isSectionStoragePath(storedPath)) {
       void materializeFullAudiobook(id, segments)
         .then(async (path) => {
           if (!path) return;

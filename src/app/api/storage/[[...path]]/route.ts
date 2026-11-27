@@ -14,11 +14,9 @@ import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { ownsStoragePath } from "@/lib/auth/guard";
-import {
-  playbackAuthFresh,
-  playbackGrantAllows,
-  rememberPlaybackAuth,
-} from "@/lib/auth/playback-grant";
+import { playbackRowAllows, readPlaybackGrant } from "@/lib/auth/playback-grant";
+import { queryOne } from "@/lib/turso";
+import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
   clientIp,
   createRateLimiter,
@@ -80,6 +78,7 @@ function contentTypeForPath(storagePath: string, fallback?: string): string {
   if (storagePath.endsWith(".wav")) return "audio/wav";
   if (storagePath.endsWith(".mp3")) return "audio/mpeg";
   if (storagePath.endsWith(".ogg")) return "audio/ogg";
+  if (storagePath.endsWith(".m3u8")) return "audio/mpegurl";
   const lookedUp = mime.lookup(storagePath);
   return lookedUp || fallback || "application/octet-stream";
 }
@@ -238,11 +237,21 @@ export async function GET(
     const userId = await resolveSessionUserId(request);
     if (!userId) return notFound();
 
-    const grant = request.nextUrl.searchParams.get("g");
-    const known =
-      playbackGrantAllows(userId, storagePath, grant) ||
-      playbackAuthFresh(userId, storagePath);
-    if (!known) {
+    const grant = readPlaybackGrant(
+      userId,
+      storagePath,
+      request.nextUrl.searchParams.get("g")
+    );
+    if (grant) {
+      await ensureTtsJobColumns();
+      const jobId = storagePath.split("/")[1] ?? "";
+      const row = await queryOne<{
+        user_id: string;
+        deleted_at: number | null;
+        playback_nonce: number | null;
+      }>(`SELECT user_id, deleted_at, playback_nonce FROM jobs WHERE id = ?`, [jobId]);
+      if (!playbackRowAllows(row, userId, grant.nonce)) return notFound();
+    } else {
       if (!(await storageRateLimit(
         await rateLimitIdentity({
           userId,
@@ -261,7 +270,6 @@ export async function GET(
         );
         return notFound();
       }
-      rememberPlaybackAuth(userId, storagePath);
     }
 
     const rangeHeader = request.headers.get("range");

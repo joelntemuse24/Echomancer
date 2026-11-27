@@ -1,38 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
-  clearPlaybackAuthCache,
-  playbackAuthFresh,
-  playbackGrantAllows,
-  rememberPlaybackAuth,
+  playbackRowAllows,
+  readPlaybackGrant,
   signPlaybackGrant,
 } from "@/lib/auth/playback-grant";
 
 describe("playback grant", () => {
-  it("allows the signed folder for that session until it expires", () => {
+  it("allows the signed folder until the window ends", () => {
     const now = 1_700_000_000_000;
-    const token = signPlaybackGrant("user_a", "audiobooks/job1", now);
-    expect(playbackGrantAllows("user_a", "audiobooks/job1/sections/0001.mp3", token, now)).toBe(
-      true
-    );
-    expect(playbackGrantAllows("user_a", "audiobooks/job1/full.mp3", token, now)).toBe(true);
-    expect(playbackGrantAllows("user_b", "audiobooks/job1/full.mp3", token, now)).toBe(false);
-    expect(playbackGrantAllows("user_a", "audiobooks/other/full.mp3", token, now)).toBe(false);
-    expect(playbackGrantAllows("user_a", "audiobooks/job1/full.mp3", token, now + 10 * 60_000)).toBe(
-      false
-    );
-    expect(signPlaybackGrant("user_a", "audiobooks/job1", now + 1000)).toBe(token);
+    const token = signPlaybackGrant("user_a", "audiobooks/job1", now, 0);
+    expect(readPlaybackGrant("user_a", "audiobooks/job1/sections/0001.mp3", token, now)).toEqual({
+      prefix: "audiobooks/job1",
+      nonce: 0,
+    });
+    expect(readPlaybackGrant("user_a", "audiobooks/job1/full.mp3", token, now)?.nonce).toBe(0);
+    expect(readPlaybackGrant("user_b", "audiobooks/job1/full.mp3", token, now)).toBeNull();
+    expect(readPlaybackGrant("user_a", "audiobooks/other/full.mp3", token, now)).toBeNull();
+    expect(readPlaybackGrant("user_a", "audiobooks/job1/full.mp3", token, now + 10 * 60_000)).toBeNull();
+    expect(signPlaybackGrant("user_a", "audiobooks/job1", now + 1000, 0)).toBe(token);
   });
-});
 
-describe("playback auth cache", () => {
-  it("remembers an ownership answer for one folder and then drops it", () => {
-    clearPlaybackAuthCache();
-    const now = 1_000;
-    expect(playbackAuthFresh("user_a", "audiobooks/job1/sections/0000.mp3", now)).toBe(false);
-    rememberPlaybackAuth("user_a", "audiobooks/job1/sections/0000.mp3", now);
-    expect(playbackAuthFresh("user_a", "audiobooks/job1/full.mp3", now + 1000)).toBe(true);
-    expect(playbackAuthFresh("user_a", "audiobooks/job2/full.mp3", now + 1000)).toBe(false);
-    expect(playbackAuthFresh("user_b", "audiobooks/job1/full.mp3", now + 1000)).toBe(false);
-    expect(playbackAuthFresh("user_a", "audiobooks/job1/full.mp3", now + 61_000)).toBe(false);
+  it("stops a grant that still has minutes left once the row nonce changes or the book is deleted", () => {
+    const now = 100_001;
+    const token = signPlaybackGrant("user_a", "audiobooks/job1", now, 0);
+    const later = now + 2 * 60_000;
+    expect(readPlaybackGrant("user_a", "audiobooks/job1/live/0000.mp3", token, later)?.nonce).toBe(0);
+    const row = { user_id: "user_a", deleted_at: null, playback_nonce: 0 };
+    expect(playbackRowAllows(row, "user_a", 0)).toBe(true);
+    expect(playbackRowAllows({ ...row, playback_nonce: 1 }, "user_a", 0)).toBe(false);
+    expect(playbackRowAllows({ ...row, deleted_at: later }, "user_a", 0)).toBe(false);
+    expect(playbackRowAllows({ ...row, user_id: "user_b" }, "user_a", 0)).toBe(false);
+    expect(playbackRowAllows(null, "user_a", 0)).toBe(false);
   });
 });

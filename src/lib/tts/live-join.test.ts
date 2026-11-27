@@ -6,6 +6,7 @@ import { playbackChaptersWithTimes } from "@/lib/player/playback-chapters";
 import {
   appendMasteredSection,
   joinMasteredMp3s,
+  publishedPrefix,
   type LiveJoinCursor,
 } from "@/lib/tts/section-master";
 import { spawnFfmpeg } from "@/lib/tts/stream-finalize";
@@ -72,6 +73,7 @@ describe("incremental mastered join", () => {
       const joins = ["paragraph", "chapter", "paragraph"] as const;
       let audio: Buffer | null = null;
       let cursor: LiveJoinCursor | null = null;
+      let published: Buffer | null = null;
       for (let index = 0; index < files.length; index++) {
         const work = path.join(root, `step${index}`);
         await mkdir(work, { recursive: true });
@@ -89,8 +91,12 @@ describe("incremental mastered join", () => {
         });
         expect("rebuild" in step).toBe(false);
         if ("rebuild" in step) return;
+        if (published && published.length > 0) {
+          expect(step.audio.subarray(0, published.length).equals(published)).toBe(true);
+        }
         audio = step.audio;
         cursor = step.cursor;
+        published = await publishedPrefix(step.audio);
       }
       const finalDir = path.join(root, "final");
       await mkdir(finalDir, { recursive: true });
@@ -106,6 +112,9 @@ describe("incremental mastered join", () => {
       });
       const finalBytes = await readFile(outPath);
       expect(audio!.equals(finalBytes)).toBe(true);
+      if (published && published.length > 0) {
+        expect(finalBytes.subarray(0, published.length).equals(published)).toBe(true);
+      }
       expect(cursor!.totalSeconds).toBeCloseTo(joined.totalSeconds, 2);
       expect(cursor!.sectionStarts).toEqual(joined.sectionStarts);
       const timing = finalizeTiming({
@@ -117,6 +126,82 @@ describe("incremental mastered join", () => {
       expect(timing.chapters[0]).toMatchObject({ title: "One", startSeconds: 0 });
       expect(timing.chapters[1]!.startSeconds).toBeCloseTo(joined.sectionStarts[1]!, 2);
       expect(timing.sectionStarts).toEqual(joined.sectionStarts);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("keeps the published prefix when a short section is folded forward", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "live-join-short-"));
+    try {
+      const longA = path.join(root, "a.mp3");
+      const short = path.join(root, "b.mp3");
+      const longB = path.join(root, "c.mp3");
+      await sine(longA, 220);
+      await spawnFfmpeg(
+        [
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          "sine=frequency=330:duration=1",
+          "-ac",
+          "1",
+          "-ar",
+          "44100",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "128k",
+          "-write_xing",
+          "0",
+          short,
+        ],
+        20_000
+      );
+      await sine(longB, 440);
+      const firstDir = path.join(root, "first");
+      await mkdir(firstDir, { recursive: true });
+      const first = await appendMasteredSection({
+        joined: null,
+        cursor: null,
+        previousFile: null,
+        nextFile: longA,
+        previousJoin: "paragraph",
+        nextJoin: "paragraph",
+        crossfadeMs: 120,
+        workDir: firstDir,
+        run: spawnFfmpeg,
+        timeoutMs: 60_000,
+      });
+      if ("rebuild" in first) throw new Error("opening section rebuilt");
+      const published = await publishedPrefix(first.audio);
+      expect(published.length).toBeGreaterThan(0);
+      const folded = path.join(root, "folded.mp3");
+      const list = path.join(root, "list.txt");
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(list, `file '${short}'\nfile '${longB}'\n`);
+      await spawnFfmpeg(
+        ["-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-write_xing", "0", folded],
+        20_000
+      );
+      const secondDir = path.join(root, "second");
+      await mkdir(secondDir, { recursive: true });
+      const second = await appendMasteredSection({
+        joined: first.audio,
+        cursor: first.cursor,
+        previousFile: longA,
+        nextFile: folded,
+        previousJoin: "paragraph",
+        nextJoin: "paragraph",
+        crossfadeMs: 120,
+        workDir: secondDir,
+        run: spawnFfmpeg,
+        timeoutMs: 60_000,
+      });
+      expect("rebuild" in second).toBe(false);
+      if ("rebuild" in second) return;
+      expect(second.audio.subarray(0, published.length).equals(published)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

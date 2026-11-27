@@ -420,7 +420,9 @@ function dropMp3GaplessDelay(pcm: Buffer): Buffer {
  * last half-second of the previous one. Shorter than this, that search
  * has nowhere to land, and the old code aborted the whole book.
  */
-const COPY_JOIN_MIN_SECONDS = 4;
+export const COPY_JOIN_MIN_SECONDS = 4;
+/** Tail the next join may replace. Paragraph keep is about 0.33s plus one frame. */
+export const STABLE_HOLD_SECONDS = 0.5;
 
 /** Index in `haystack` of the first sample after `needle`. */
 function indexAfter(needle: Buffer, haystack: Buffer): number {
@@ -620,6 +622,24 @@ function slicePackets(
     if (packet) end = Math.max(start, Math.min(audio.length, packet.pos));
   }
   return audio.subarray(start, end);
+}
+
+/**
+ * Bytes a listener may already have. The last `holdSeconds` stay unpublished
+ * so the next crossfade can rewrite that tail. A piece under the copy-join
+ * minimum is held entirely: a later section folds it forward.
+ */
+export async function publishedPrefix(
+  audio: Buffer,
+  holdSeconds = STABLE_HOLD_SECONDS
+): Promise<Buffer> {
+  const packets = await indexMp3Packets(audio);
+  const duration = mp3IndexedDuration(packets);
+  if (holdSeconds <= 0) return slicePackets(audio, packets, 0, null);
+  if (!(duration > holdSeconds + 0.08) || duration < COPY_JOIN_MIN_SECONDS) {
+    return Buffer.alloc(0);
+  }
+  return slicePackets(audio, packets, 0, duration - holdSeconds);
 }
 
 type CopyPiece = {

@@ -972,7 +972,7 @@ Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-
 
 The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
 
-There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready** when every section index is mastered and staged, before `full.mp3` exists. The lease stays for the join in that same tick. The player plays the section files while `audio_storage_path` is still null, and the download route concatenates if the full file is missing. A thrown join leaves the book ready with the warning "The full download is still being prepared." A book with holes is still not marked ready. A book with holes is **failed**, with the audio that exists left in place and `progress` under 100 (`process-job.ts`). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fish fan-out is 4, or 5 when no live Fish request is in flight (`TTS_TAKEHOME_FANOUT` can pin it). It is not a fixed 5. Clone ticks claim toward the batch size, not that Fish cap.
+There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready** when every section index is mastered and staged. While it is still processing, the worker appends each contiguous mastered section to `full.mp3` and to an EVENT playlist (`live.m3u8` plus immutable `live/NNNN.mp3` segments). The last half-second stays unpublished so the next crossfade can rewrite only that tail, and a section under four seconds is held and folded into the next piece. The upload is awaited before the lease is released and aborted if the lease is lost. A restart trusts the object in storage: the recomputed audio must start with those bytes. The player attaches one Media Source (or a Managed Media Source, or the playlist where MPEG source buffers are unavailable) and appends new segments. That element is not reloaded when the book grows or when it becomes ready. `full.mp3` with its ID3 chapters is what a fresh page load and a finished download use. A download while the job is still processing does not stream that rolling object; it concatenates the sections once they are all present. The lease stays for the join in that same tick. The download route concatenates if the finished file is missing. A thrown join leaves the book ready with the warning "The full download is still being prepared." A book with holes is still not marked ready. A book with holes is **failed**, with the audio that exists left in place and `progress` under 100 (`process-job.ts`). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fish fan-out is 4, or 5 when no live Fish request is in flight (`TTS_TAKEHOME_FANOUT` can pin it). It is not a fixed 5. Clone ticks claim toward the batch size, not that Fish cap.
 
 `deliveryPrefix` is still resolved and stored for older clients. Narration
 ignores it: the retired seminar prefix is not prepended. The narrator page no
@@ -1224,7 +1224,7 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
 
 1. Reject empty / `.` / `..` / absolute segments
 2. No session → **404**
-3. Rate limit fail-open
+3. A playback grant (`g`) is checked against `jobs.playback_nonce`, `user_id`, and `deleted_at` on every request. A bucketed grant can still be inside its window for a few minutes; a delete or an ownership move bumps the nonce, and that request is 404. There is no in-memory ownership cache. A missing or expired grant falls through to the rate limit and `ownsStoragePath`.
 4. `ownsStoragePath` → else 404
 5. Optional `?download=` filename for `Content-Disposition: attachment`.
    That response is `application/octet-stream` with `X-Content-Type-Options: nosniff`
@@ -1916,7 +1916,9 @@ continuation token stops it. Keys outside the prefix are dropped.
 live job uses that folder and the uploads row is this user's or has no
 owner. Paths remembered in `segments_json` are not deleted on their own.
 `ownsStoragePath` treats a soft-deleted book as not owned, so playback is
-404 while the objects still exist. Lease writes, heartbeats, and
+404 while the objects still exist. `softDeleteJob` and
+`mergeAnonymousOwnership` also increment `playback_nonce`, so a grant
+signed before that write fails the storage check immediately. Lease writes, heartbeats, and
 `releaseLease` require `deleted_at IS NULL`, so a tick cannot put the row
 back in the queue. `commitSectionAudio` and concat skip the upload when the
 book is already closed, and delete an object that landed after the close.
@@ -2240,7 +2242,7 @@ Env knobs (defaults):
 | `releaseLease` | Clear token; set queued/failed |
 | `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
-| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set (a retry hole before any later section) → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → assemble only when nothing is still claimable. Each contiguous mastered section is appended to `full.mp3` on the worker with the same crossfade as the final join. When that file covers every section, finalize writes ID3 chapters, duration, and section timing and skips the Modal concat. A book without that file still uses `materializeFullAudiobook`. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
+| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set (a retry hole before any later section) → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → assemble only when nothing is still claimable. Each contiguous mastered section is appended to `full.mp3` and to `live/NNNN.mp3` on the worker, using the book's `ttsOptions.crossfadeMs`. The published bytes are a prefix of the next join. The PUT is awaited, and aborted when the lease is gone, before the lease is released. When that file covers every section, finalize flushes the held tail, writes the EVENT playlist end, ID3 chapters, duration, and section timing, and skips the Modal concat. A book without that file still uses `materializeFullAudiobook`. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host: waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
@@ -3024,7 +3026,13 @@ that is not a preset is snapped to the nearest one
 
 ### Playback shell — `src/components/playback-provider.tsx`
 
-One `<audio>` in the root layout. The player page points it at a source
+One `<audio>` in the root layout. While a take-home book is still being
+read, the page points it once at a Media Source (Managed Media Source on
+iOS when `audio/mpeg` is supported, otherwise the `live.m3u8` playlist) and
+appends each new segment. Ready does not change that source. A fresh load
+of a finished book uses `full.mp3`. The same-path playhead restore runs on
+`loadedmetadata` and again on `canplay`. There is no second audio element
+for the next section. The player page points it at a source
 (`setSource`), reports the book clock and its transport (`reportSession`), and
 on unmount only calls `detachSession` — the element, `src`, metadata, and
 action handlers all stay. `src` is released by exactly three things: the mini

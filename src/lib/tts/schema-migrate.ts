@@ -68,6 +68,9 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   // the book is waiting on CPU or a full provider cap so the same row
   // does not spin and hold the only orchestrator slot.
   { name: "sched_not_before", def: "INTEGER" },
+  // Bumped when the book is deleted or its owner changes, so a playback
+  // grant signed for the previous value stops on the next storage read.
+  { name: "playback_nonce", def: "INTEGER DEFAULT 0" },
 ];
 
 const CREATE_JOBS_SQL = `
@@ -111,7 +114,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   stream_timeline_json TEXT,
   provider_pin TEXT,
   clone_wait_started_at INTEGER,
-  sched_not_before INTEGER
+  sched_not_before INTEGER,
+  playback_nonce INTEGER DEFAULT 0
 )`;
 
 /**

@@ -10,6 +10,13 @@ export function isSectionPath(path: string): boolean {
   return /\/sections\//.test(path);
 }
 
+/** The stored full file is the finished book only after the job is ready. */
+export function prebuiltDownloadPath(status: unknown, storagePath: unknown): string | null {
+  if (status !== "ready" || typeof storagePath !== "string" || !storagePath) return null;
+  if (isSectionPath(storagePath)) return null;
+  return storagePath;
+}
+
 /** `My Book!` → `my_book_.mp3`, matching `/api/jobs/[id]/download`. */
 export function downloadFilename(bookTitle: unknown, storagePath: string): string {
   const safeTitle = titleForDownload(String(bookTitle || ""))

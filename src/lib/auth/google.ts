@@ -202,10 +202,11 @@ export async function mergeAnonymousOwnership(
     return;
   }
   await ensureTtsJobColumns();
-  await execute(`UPDATE jobs SET user_id = ? WHERE user_id = ?`, [
-    durableUserId,
-    anonUserId,
-  ]);
+  await execute(
+    `UPDATE jobs SET user_id = ?, playback_nonce = COALESCE(playback_nonce, 0) + 1
+     WHERE user_id = ?`,
+    [durableUserId, anonUserId]
+  );
   await execute(`UPDATE uploads SET user_id = ? WHERE user_id = ?`, [
     durableUserId,
     anonUserId,

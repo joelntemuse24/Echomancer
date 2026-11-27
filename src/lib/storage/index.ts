@@ -40,7 +40,8 @@ export async function uploadFile(
   directory: string,
   filename: string,
   data: Buffer | ArrayBuffer | Uint8Array,
-  contentType?: string
+  contentType?: string,
+  options?: { abortSignal?: AbortSignal }
 ): Promise<{ path: string; size: number }> {
   let buffer: Buffer;
   if (Buffer.isBuffer(data)) {
@@ -53,8 +54,15 @@ export async function uploadFile(
 
   const storagePath = `${directory}/${filename}`;
 
+  if (options?.abortSignal?.aborted) {
+    const err = new Error("Aborted");
+    err.name = "AbortError";
+    throw err;
+  }
   if (isR2Configured()) {
-    await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream");
+    await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream", {
+      abortSignal: options?.abortSignal,
+    });
   } else {
     // Dev-only local fallback
     const filePath = path.join(STORAGE_ROOT, storagePath);
