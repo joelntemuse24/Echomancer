@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chooseLivePart, hlsEventPlaylist, liveAttachResumeAt } from "@/lib/player/live-playlist";
+import {
+  chooseLivePart,
+  hlsEventPlaylist,
+  liveAttachResumeAt,
+  liveSectionHold,
+  segmentUrisAhead,
+} from "@/lib/player/live-playlist";
 import {
   absoluteFromPlaylist,
   liveAttachToken,
+  liveBufferedSeconds,
   releaseLiveSession,
   retargetLiveResume,
   setLivePlayIntent,
@@ -623,7 +630,7 @@ describe("syncLivePlayback", () => {
     }
   );
 
-  it("attaches again only once the playlist covers the time the listener left for", async () => {
+  it("keeps a chosen section after the playlist covers the time the listener left for", async () => {
     const audio = fakeAudio();
     audio.paused = true;
     const section = "https://app.test/api/storage/audiobooks/job/sections/0002.mp3";
@@ -687,8 +694,9 @@ describe("syncLivePlayback", () => {
       resumeAt: 80,
       play: false,
     });
-    expect(landed.attached).toBe(true);
-    expect(audio.state.currentTime).toBe(80);
+    expect(landed.attached).toBe(false);
+    expect(audio.src).toBe(section);
+    expect(audio.state.currentTime).toBe(0);
     expect(audio.state.plays).toBe(0);
   });
 
@@ -931,5 +939,153 @@ describe("syncLivePlayback", () => {
     expect(audio.state.currentTime).toBe(65);
     expect(audio.state.plays).toBe(0);
     expect(audio.paused).toBe(true);
+  });
+
+  it("reads the buffered end when the element duration is infinite", () => {
+    const audio = fakeAudio();
+    audio.state.duration = Number.POSITIVE_INFINITY;
+    Object.defineProperty(audio, "buffered", { value: { length: 1, end: () => 320 } });
+    expect(liveBufferedSeconds(audio)).toBe(320);
+    expect(segmentUrisAhead(
+      Array.from({ length: 6 }, (_, index) => ({ uri: `live/${index}.mp3`, seconds: 10 })),
+      30
+    )).toHaveLength(3);
+    expect(
+      liveSectionHold({
+        src: "https://app.test/sections/0008.mp3",
+        ended: false,
+        resumeAt: 120,
+      })
+    ).toBe(true);
+    expect(
+      liveSectionHold({
+        src: "https://app.test/sections/0000.mp3",
+        ended: false,
+        resumeAt: 12,
+      })
+    ).toBe(false);
+    expect(
+      liveSectionHold({
+        src: "https://app.test/sections/0003.mp3",
+        ended: false,
+        resumeAt: 60,
+        chosen: true,
+        bufferedEnd: 20,
+      })
+    ).toBe(true);
+    expect(
+      liveSectionHold({
+        src: "https://app.test/sections/0003.mp3",
+        ended: false,
+        resumeAt: 45,
+        bufferedEnd: 20,
+      })
+    ).toBe(true);
+  });
+
+  it("appends the window ahead of the playhead and extends it as the clock moves", async () => {
+    const audio = fakeAudio();
+    const buffer = new FakeBuffer(audio);
+    installSource(buffer);
+    const playlist = hlsEventPlaylist(
+      Array.from({ length: 6 }, (_, index) => ({
+        uri: `live/${String(index).padStart(4, "0")}.mp3`,
+        seconds: 10,
+      })),
+      100,
+      false
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-window",
+      resumeAt: 0,
+      play: false,
+    });
+    expect(buffer.appends).toHaveLength(3);
+    audio.state.currentTime = 8;
+    audio.dispatch("timeupdate");
+    await vi.waitFor(() => expect(buffer.appends.length).toBeGreaterThan(3));
+  });
+
+  it("leaves a far section playing instead of opening the live element at 0:00", async () => {
+    const audio = fakeAudio();
+    audio.paused = false;
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0008.mp3";
+    audio.src = section;
+    audio.state.currentTime = 4;
+    installSource(new FakeBuffer(audio));
+    const playlist = hlsEventPlaylist(
+      Array.from({ length: 12 }, (_, index) => ({
+        uri: `live/${String(index).padStart(4, "0")}.mp3`,
+        seconds: 15,
+      })),
+      100,
+      false
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1]), { status: 200 });
+    });
+    const result = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-far",
+      resumeAt: 120,
+      play: true,
+    });
+    expect(result.attached).toBe(false);
+    expect(audio.src).toBe(section);
+    expect(audio.state.currentTime).toBe(4);
+    expect(audio.state.plays).toBe(0);
+  });
+
+  it("keeps a section chosen inside the first 90 seconds through the next poll", async () => {
+    const audio = fakeAudio();
+    audio.paused = false;
+    installSource(new FakeBuffer(audio));
+    Object.defineProperty(audio, "buffered", { value: { length: 1, end: () => 30 } });
+    const playlist = hlsEventPlaylist(
+      Array.from({ length: 12 }, (_, index) => ({
+        uri: `live/${String(index).padStart(4, "0")}.mp3`,
+        seconds: 15,
+      })),
+      100,
+      false
+    );
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("live.m3u8")) return new Response(playlist, { status: 200 });
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    const started = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-mid",
+      resumeAt: 15,
+      play: true,
+    });
+    expect(started.attached).toBe(true);
+    const section = "https://app.test/api/storage/audiobooks/job/sections/0003.mp3";
+    releaseLiveSession(audio, 60);
+    audio.src = section;
+    audio.state.currentTime = 2;
+    audio.paused = false;
+    const plays = audio.state.plays;
+    const again = await syncLivePlayback({
+      audio,
+      playlistUrl: "https://app.test/api/storage/audiobooks/job/live.m3u8",
+      jobId: "job-mid",
+      resumeAt: 60,
+      play: true,
+    });
+    expect(again.attached).toBe(false);
+    expect(audio.src).toBe(section);
+    expect(audio.src.startsWith("blob:")).toBe(false);
+    expect(audio.state.currentTime).toBe(2);
+    expect(audio.state.plays).toBe(plays);
   });
 });

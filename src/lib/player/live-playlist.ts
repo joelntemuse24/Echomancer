@@ -166,6 +166,61 @@ export function chooseLivePart(input: {
   };
 }
 
+/**
+ * How far ahead of the playhead the live element appends. The rest of a
+ * generated book stays on its section file until the playhead gets there,
+ * so a tap does not wait on a fetch of every earlier part.
+ */
+export const LIVE_AHEAD_SECONDS = 30;
+
+/**
+ * A section the listener did not choose, whose book time is past this, stays
+ * on that file. A deliberate parts tap or scrub stays on the section at any
+ * book time. Swapping either for a new Media Source starts at 0:00.
+ */
+export const LIVE_SECTION_ATTACH_MAX = 90;
+
+/** Playlist URIs from the start through `throughSeconds`, including the one that crosses it. */
+export function segmentUrisAhead(
+  segments: readonly LiveSegment[],
+  throughSeconds: number
+): string[] {
+  const need = Number.isFinite(throughSeconds) ? Math.max(0, throughSeconds) : 0;
+  let sum = 0;
+  const uris: string[] = [];
+  for (const segment of segments) {
+    uris.push(segment.uri);
+    sum += Number.isFinite(segment.seconds) ? Math.max(0, segment.seconds) : 0;
+    if (sum + 0.05 >= need) break;
+  }
+  return uris;
+}
+
+/**
+ * The element is already on a section file that a live attach would replace
+ * with 0:00. A short prefix still attaches when the listener did not choose
+ * this file. A section they just chose stays, at any book time, and so does
+ * one past the buffered end or the short prefix. An ended section stays so
+ * the next file can load.
+ */
+export function liveSectionHold(input: {
+  src: string;
+  ended: boolean;
+  resumeAt: number;
+  /** The listener released the live element onto this section. */
+  chosen?: boolean;
+  /** Buffered end of the live element they left. */
+  bufferedEnd?: number;
+}): boolean {
+  if (!input.src.includes("/sections/")) return false;
+  if (input.ended) return true;
+  if (input.chosen) return true;
+  const at = Number.isFinite(input.resumeAt) ? input.resumeAt : 0;
+  const covered = Number.isFinite(input.bufferedEnd) ? Math.max(0, input.bufferedEnd ?? 0) : 0;
+  if (covered > 0 && at > covered + 0.05) return true;
+  return at > LIVE_SECTION_ATTACH_MAX;
+}
+
 /** Seconds of already-played media to leave in the SourceBuffer. */
 export const LIVE_BACK_BUFFER_SECONDS = 30;
 

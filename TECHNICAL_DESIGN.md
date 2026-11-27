@@ -3057,8 +3057,19 @@ playing, and the next poll tries the live element again. When the book is ready,
 snapshot listen both move onto the finished file at the same book time
 and keep playing. A listener already playing a section is
 handed over at that section's offset plus the element's current time, and
-stays playing. A Parts tap seeks inside the buffer or releases the session
-before loading that section. A second poll does not append a segment
+stays playing. A Parts tap or a scrub seeks inside the bytes already appended.
+Sequence mode reports `duration` as Infinity, so that check uses the
+buffered end. Past those bytes the section file plays. A later poll keeps that file
+when the listener just chose it, at any book time, and when the book time
+is past the buffered end. The short prefix still attaches only for a
+section they did not just choose, so the element is not put back at 0:00. The append window stays a short
+stretch ahead of the playhead and grows on `timeupdate`. A segment fetch
+or `appendBuffer` that does not finish is aborted, and one hung job poll
+does not cancel the next. A tick does not store a playhead that jumped
+backward from the last confirmed book time. A reload keeps that pending
+seek until the element reports it, including a second try on `canplay`
+and `seeked`, so a pause at the start of the part does not replace the
+saved book time and the page resumes where the listener was. A second poll does not append a segment
 that is already reserved. Ready does not change that source. A fresh load
 of a finished book uses `full.mp3`. A resume or seek past the buffered
 prefix waits until the buffer covers it, including across `durationchange`.

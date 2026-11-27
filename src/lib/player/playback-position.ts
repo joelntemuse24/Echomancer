@@ -326,6 +326,8 @@ export function snapshotForPersist(input: {
   droppedSeek?: boolean;
   /** Element time this tab has already accepted. Progress is measured from here. */
   confirmedSeconds?: number | null;
+  /** Book time last confirmed. A tick behind it is a reset, not a new position. */
+  confirmedBookSeconds?: number | null;
   onSection: boolean;
   sectionIndex: number | null;
   spans: readonly SectionSpan[];
@@ -381,6 +383,16 @@ export function snapshotForPersist(input: {
     sectionIndex: input.onSection ? input.sectionIndex : null,
     spans: input.spans,
   });
+  const confirmedBook = input.confirmedBookSeconds;
+  if (
+    !userAct &&
+    typeof confirmedBook === "number" &&
+    Number.isFinite(confirmedBook) &&
+    mapped.seconds + 2 < confirmedBook
+  ) {
+    if (pendingTime != null && pendingTime > 0.05) return commit(pendingTime, true);
+    return null;
+  }
   return commit(mapped.seconds, mapped.absolute);
 }
 
